@@ -27,8 +27,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     settings = Settings()  # type: ignore[call-arg]
     database = Database(settings.database_url)
 
-    db_path = Path(database._db_path)
-    if database._db_path != ":memory:":
+    db_path = Path(database.db_path)
+    if database.db_path != ":memory:":
         db_path.parent.mkdir(parents=True, exist_ok=True)
 
     await database.initialize()

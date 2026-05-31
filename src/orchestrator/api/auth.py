@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from functools import lru_cache
+
 from fastapi import Depends, HTTPException
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
@@ -11,6 +13,7 @@ from orchestrator.config import Settings
 security = HTTPBearer()
 
 
+@lru_cache(maxsize=1)
 def get_settings() -> Settings:
     """Return current application settings from environment."""
 
