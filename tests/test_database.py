@@ -1,4 +1,5 @@
 """Database module tests."""
+# ruff: noqa: S101, S105
 
 from __future__ import annotations
 

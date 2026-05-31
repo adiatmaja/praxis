@@ -1,4 +1,5 @@
 """Unit tests for application settings."""
+# ruff: noqa: S101, S104, S105
 
 from __future__ import annotations
 
