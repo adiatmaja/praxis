@@ -7,14 +7,20 @@ import pytest
 from pydantic import ValidationError
 
 from orchestrator.models.schemas import (
+    AgentRunResponse,
+    AgentRunStatus,
     OpusImprovementPayload,
     OpusPlanPayload,
     OpusReviewPayload,
+    OpusStateResponse,
     OpusStatus,
     PlanCreate,
+    PlanResponse,
     PlanStatus,
     ProjectCreate,
+    ProjectResponse,
     ProjectUpdate,
+    TaskResponse,
     TaskStatus,
 )
 
@@ -46,6 +52,56 @@ def test_project_update_partial_values() -> None:
 def test_project_create_missing_required_fields_raises() -> None:
     with pytest.raises(ValidationError):
         ProjectCreate(name="Praxis")
+
+
+@pytest.mark.unit
+def test_project_create_rejects_blank_required_strings() -> None:
+    with pytest.raises(ValidationError):
+        ProjectCreate(
+            name="   ",
+            repo_url="https://github.com/adiatmaja/praxis.git",
+            model_name="qwen2.5-coder",
+        )
+    with pytest.raises(ValidationError):
+        ProjectCreate(
+            name="Praxis",
+            repo_url="  ",
+            model_name="qwen2.5-coder",
+        )
+    with pytest.raises(ValidationError):
+        ProjectCreate(
+            name="Praxis",
+            repo_url="https://github.com/adiatmaja/praxis.git",
+            model_name="  ",
+        )
+    with pytest.raises(ValidationError):
+        ProjectCreate(
+            name="Praxis",
+            repo_url="https://github.com/adiatmaja/praxis.git",
+            model_name="qwen2.5-coder",
+            default_branch=" ",
+        )
+    with pytest.raises(ValidationError):
+        ProjectCreate(
+            name="Praxis",
+            repo_url="https://github.com/adiatmaja/praxis.git",
+            model_name="qwen2.5-coder",
+            lm_studio_url=" ",
+        )
+
+
+@pytest.mark.unit
+def test_project_update_rejects_blank_strings_when_provided() -> None:
+    with pytest.raises(ValidationError):
+        ProjectUpdate(name=" ")
+    with pytest.raises(ValidationError):
+        ProjectUpdate(repo_url=" ")
+    with pytest.raises(ValidationError):
+        ProjectUpdate(model_name=" ")
+    with pytest.raises(ValidationError):
+        ProjectUpdate(default_branch=" ")
+    with pytest.raises(ValidationError):
+        ProjectUpdate(lm_studio_url=" ")
 
 
 @pytest.mark.unit
@@ -144,3 +200,68 @@ def test_status_enums_have_expected_values() -> None:
         "rate_limited",
         "resuming",
     ]
+
+
+@pytest.mark.unit
+def test_response_models_construct_successfully() -> None:
+    project_response = ProjectResponse(
+        id=1,
+        user_id=1,
+        name="Praxis",
+        repo_url="https://github.com/adiatmaja/praxis.git",
+        model_name="qwen2.5-coder",
+        default_branch="main",
+        approval_gate=True,
+        confidence_threshold=0.7,
+        max_retries=3,
+        max_improvement_cycles=5,
+        lm_studio_url="http://host.docker.internal:1234",
+        created_at="2026-06-01T00:00:00Z",
+    )
+    plan_response = PlanResponse(
+        id=1,
+        project_id=1,
+        spec="Build Plan 1 foundation",
+        opus_plan=None,
+        plan_branch_name="plan/2026-06-01-plan-1",
+        source="user",
+        confidence=0.8,
+        confidence_reason="Spec is clear",
+        status=PlanStatus.pending,
+        created_at="2026-06-01T00:00:00Z",
+    )
+    task_response = TaskResponse(
+        id=1,
+        plan_id=1,
+        title="Create database module",
+        description="Add migrations and helpers",
+        branch_name="agent/create-database-module",
+        pr_url=None,
+        status=TaskStatus.pending,
+        attempt=1,
+        review_feedback=None,
+        created_at="2026-06-01T00:00:00Z",
+        updated_at="2026-06-01T00:00:00Z",
+    )
+    agent_run_response = AgentRunResponse(
+        id=1,
+        task_id=1,
+        container_id="container-1",
+        status=AgentRunStatus.running,
+        logs="",
+        started_at="2026-06-01T00:00:00Z",
+        finished_at=None,
+    )
+    opus_state_response = OpusStateResponse(
+        id=1,
+        status=OpusStatus.available,
+        rate_limited_at=None,
+        resume_at=None,
+        queued_actions="[]",
+    )
+
+    assert project_response.id == 1
+    assert plan_response.status == PlanStatus.pending
+    assert task_response.status == TaskStatus.pending
+    assert agent_run_response.status == AgentRunStatus.running
+    assert opus_state_response.status == OpusStatus.available

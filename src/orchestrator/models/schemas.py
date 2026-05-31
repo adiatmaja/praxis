@@ -58,6 +58,21 @@ class ProjectCreate(BaseModel):
     max_improvement_cycles: int = 5
     lm_studio_url: str = "http://host.docker.internal:1234"
 
+    @field_validator(
+        "name",
+        "repo_url",
+        "model_name",
+        "default_branch",
+        "lm_studio_url",
+    )
+    @classmethod
+    def validate_required_nonempty(cls, value: str) -> str:
+        trimmed = value.strip()
+        if not trimmed:
+            msg = "value must not be empty"
+            raise ValueError(msg)
+        return trimmed
+
 
 class ProjectUpdate(BaseModel):
     """Request payload for updating a project."""
@@ -71,6 +86,23 @@ class ProjectUpdate(BaseModel):
     max_retries: int | None = None
     max_improvement_cycles: int | None = None
     lm_studio_url: str | None = None
+
+    @field_validator(
+        "name",
+        "repo_url",
+        "model_name",
+        "default_branch",
+        "lm_studio_url",
+    )
+    @classmethod
+    def validate_optional_nonempty(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        trimmed = value.strip()
+        if not trimmed:
+            msg = "value must not be empty"
+            raise ValueError(msg)
+        return trimmed
 
 
 class PlanCreate(BaseModel):
