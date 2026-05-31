@@ -3,9 +3,14 @@
 from __future__ import annotations
 
 from enum import StrEnum
+from sys import version_info
+from typing import TypedDict
 
-from pydantic import BaseModel, Field, field_validator
-from typing_extensions import TypedDict
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+
+if version_info < (3, 12):
+    from typing_extensions import TypedDict
 
 
 class TaskStatus(StrEnum):
@@ -54,8 +59,8 @@ class ProjectCreate(BaseModel):
     default_branch: str = "main"
     approval_gate: bool = True
     confidence_threshold: float = Field(default=0.7, ge=0.0, le=1.0)
-    max_retries: int = 3
-    max_improvement_cycles: int = 5
+    max_retries: int = Field(default=3, ge=1, le=10)
+    max_improvement_cycles: int = Field(default=5, ge=1, le=20)
     lm_studio_url: str = "http://host.docker.internal:1234"
 
     @field_validator(
@@ -77,21 +82,19 @@ class ProjectCreate(BaseModel):
 class ProjectUpdate(BaseModel):
     """Request payload for updating a project."""
 
+    model_config = ConfigDict(extra="forbid")
+
     name: str | None = None
-    repo_url: str | None = None
     model_name: str | None = None
-    default_branch: str | None = None
     approval_gate: bool | None = None
     confidence_threshold: float | None = Field(default=None, ge=0.0, le=1.0)
-    max_retries: int | None = None
-    max_improvement_cycles: int | None = None
+    max_retries: int | None = Field(default=None, ge=1, le=10)
+    max_improvement_cycles: int | None = Field(default=None, ge=1, le=20)
     lm_studio_url: str | None = None
 
     @field_validator(
         "name",
-        "repo_url",
         "model_name",
-        "default_branch",
         "lm_studio_url",
     )
     @classmethod
@@ -183,11 +186,10 @@ class AgentRunResponse(BaseModel):
 class OpusStateResponse(BaseModel):
     """Current Opus state response payload."""
 
-    id: int
     status: OpusStatus
     rate_limited_at: str | None = None
     resume_at: str | None = None
-    queued_actions: str
+    queued_count: int
 
 
 class OpusTaskItem(TypedDict):
