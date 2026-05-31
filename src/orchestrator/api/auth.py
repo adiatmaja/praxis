@@ -14,7 +14,7 @@ security = HTTPBearer()
 def get_settings() -> Settings:
     """Return current application settings from environment."""
 
-    return Settings()
+    return Settings()  # type: ignore[call-arg]
 
 
 async def verify_token(

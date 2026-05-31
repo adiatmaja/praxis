@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from enum import StrEnum
+
 from pydantic import BaseModel, Field, field_validator
 from typing_extensions import TypedDict
 

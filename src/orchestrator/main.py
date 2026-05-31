@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
+import logging
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import AsyncIterator
-import logging
 
 from fastapi import FastAPI
 
@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Initialize and teardown shared application resources."""
 
-    settings = Settings()
+    settings = Settings()  # type: ignore[call-arg]
     database = Database(settings.database_url)
 
     db_path = Path(database._db_path)
