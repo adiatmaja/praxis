@@ -181,6 +181,12 @@ def test_opus_improvement_payload_validates_confidence_range() -> None:
 
 @pytest.mark.unit
 def test_status_enums_have_expected_values() -> None:
+    assert TaskStatus.PENDING.value == "pending"
+    assert TaskStatus.IN_PROGRESS.value == "in_progress"
+    assert TaskStatus.REVIEWING.value == "reviewing"
+    assert TaskStatus.PASSED.value == "passed"
+    assert TaskStatus.FAILED.value == "failed"
+    assert TaskStatus.MERGED.value == "merged"
     assert [status.value for status in TaskStatus] == [
         "pending",
         "in_progress",
@@ -189,24 +195,35 @@ def test_status_enums_have_expected_values() -> None:
         "failed",
         "merged",
     ]
+    assert PlanStatus.PENDING.value == "pending"
+    assert PlanStatus.ACTIVE.value == "active"
+    assert PlanStatus.COMPLETED.value == "completed"
+    assert PlanStatus.REJECTED.value == "rejected"
     assert [status.value for status in PlanStatus] == [
         "pending",
         "active",
         "completed",
         "rejected",
     ]
+    assert OpusStatus.AVAILABLE.value == "available"
+    assert OpusStatus.RATE_LIMITED.value == "rate_limited"
+    assert OpusStatus.RESUMING.value == "resuming"
     assert [status.value for status in OpusStatus] == [
         "available",
         "rate_limited",
         "resuming",
     ]
+    assert AgentRunStatus.RUNNING.value == "running"
+    assert AgentRunStatus.COMPLETED.value == "completed"
+    assert AgentRunStatus.FAILED.value == "failed"
+    assert AgentRunStatus.STOPPED.value == "stopped"
 
 
 @pytest.mark.unit
 def test_response_models_construct_successfully() -> None:
     project_response = ProjectResponse(
-        id=1,
-        user_id=1,
+        id="project-1",
+        user_id="user-1",
         name="Praxis",
         repo_url="https://github.com/adiatmaja/praxis.git",
         model_name="qwen2.5-coder",
@@ -219,49 +236,53 @@ def test_response_models_construct_successfully() -> None:
         created_at="2026-06-01T00:00:00Z",
     )
     plan_response = PlanResponse(
-        id=1,
-        project_id=1,
+        id="plan-1",
+        project_id="project-1",
         spec="Build Plan 1 foundation",
         opus_plan=None,
         plan_branch_name="plan/2026-06-01-plan-1",
         source="user",
         confidence=0.8,
         confidence_reason="Spec is clear",
-        status=PlanStatus.pending,
+        status=PlanStatus.PENDING,
         created_at="2026-06-01T00:00:00Z",
     )
     task_response = TaskResponse(
-        id=1,
-        plan_id=1,
+        id="task-1",
+        plan_id="plan-1",
         title="Create database module",
         description="Add migrations and helpers",
         branch_name="agent/create-database-module",
         pr_url=None,
-        status=TaskStatus.pending,
+        status=TaskStatus.PENDING,
         attempt=1,
         review_feedback=None,
         created_at="2026-06-01T00:00:00Z",
         updated_at="2026-06-01T00:00:00Z",
     )
     agent_run_response = AgentRunResponse(
-        id=1,
-        task_id=1,
+        id="run-1",
+        task_id="task-1",
         container_id="container-1",
-        status=AgentRunStatus.running,
+        status=AgentRunStatus.RUNNING,
         logs="",
         started_at="2026-06-01T00:00:00Z",
         finished_at=None,
     )
     opus_state_response = OpusStateResponse(
         id=1,
-        status=OpusStatus.available,
+        status=OpusStatus.AVAILABLE,
         rate_limited_at=None,
         resume_at=None,
         queued_actions="[]",
     )
 
-    assert project_response.id == 1
-    assert plan_response.status == PlanStatus.pending
-    assert task_response.status == TaskStatus.pending
-    assert agent_run_response.status == AgentRunStatus.running
-    assert opus_state_response.status == OpusStatus.available
+    assert project_response.id == "project-1"
+    assert plan_response.status == PlanStatus.PENDING
+    assert task_response.status == TaskStatus.PENDING
+    assert agent_run_response.status == AgentRunStatus.RUNNING
+    assert opus_state_response.status == OpusStatus.AVAILABLE
+    assert plan_response.model_dump(mode="json")["status"] == "pending"
+    assert task_response.model_dump(mode="json")["status"] == "pending"
+    assert agent_run_response.model_dump(mode="json")["status"] == "running"
+    assert opus_state_response.model_dump(mode="json")["status"] == "available"

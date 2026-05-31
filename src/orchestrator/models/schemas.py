@@ -11,38 +11,38 @@ from typing_extensions import TypedDict
 class TaskStatus(StrEnum):
     """Task lifecycle status."""
 
-    pending = "pending"
-    in_progress = "in_progress"
-    reviewing = "reviewing"
-    passed = "passed"
-    failed = "failed"
-    merged = "merged"
+    PENDING = "pending"
+    IN_PROGRESS = "in_progress"
+    REVIEWING = "reviewing"
+    PASSED = "passed"
+    FAILED = "failed"
+    MERGED = "merged"
 
 
 class PlanStatus(StrEnum):
     """Plan lifecycle status."""
 
-    pending = "pending"
-    active = "active"
-    completed = "completed"
-    rejected = "rejected"
+    PENDING = "pending"
+    ACTIVE = "active"
+    COMPLETED = "completed"
+    REJECTED = "rejected"
 
 
 class OpusStatus(StrEnum):
     """Claude Opus availability status."""
 
-    available = "available"
-    rate_limited = "rate_limited"
-    resuming = "resuming"
+    AVAILABLE = "available"
+    RATE_LIMITED = "rate_limited"
+    RESUMING = "resuming"
 
 
 class AgentRunStatus(StrEnum):
     """Aider agent run status."""
 
-    running = "running"
-    completed = "completed"
-    failed = "failed"
-    stopped = "stopped"
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    STOPPED = "stopped"
 
 
 class ProjectCreate(BaseModel):
@@ -123,8 +123,8 @@ class PlanCreate(BaseModel):
 class ProjectResponse(BaseModel):
     """Project response payload."""
 
-    id: int
-    user_id: int
+    id: str
+    user_id: str
     name: str
     repo_url: str
     model_name: str
@@ -140,8 +140,8 @@ class ProjectResponse(BaseModel):
 class PlanResponse(BaseModel):
     """Plan response payload."""
 
-    id: int
-    project_id: int
+    id: str
+    project_id: str
     spec: str
     opus_plan: str | None = None
     plan_branch_name: str | None = None
@@ -155,11 +155,11 @@ class PlanResponse(BaseModel):
 class TaskResponse(BaseModel):
     """Task response payload."""
 
-    id: int
-    plan_id: int
+    id: str
+    plan_id: str
     title: str
     description: str
-    branch_name: str | None = None
+    branch_name: str
     pr_url: str | None = None
     status: TaskStatus
     attempt: int
@@ -171,9 +171,9 @@ class TaskResponse(BaseModel):
 class AgentRunResponse(BaseModel):
     """Agent run response payload."""
 
-    id: int
-    task_id: int
-    container_id: str | None = None
+    id: str
+    task_id: str
+    container_id: str
     status: AgentRunStatus
     logs: str
     started_at: str

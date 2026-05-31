@@ -15,7 +15,7 @@ SQLITE_URL_PREFIX = "sqlite+aiosqlite:///"
 MIGRATIONS: tuple[str, ...] = (
     """
     CREATE TABLE IF NOT EXISTS users (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        id TEXT PRIMARY KEY,
         name TEXT NOT NULL,
         token_hash TEXT NOT NULL,
         created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
@@ -23,8 +23,8 @@ MIGRATIONS: tuple[str, ...] = (
     """,
     """
     CREATE TABLE IF NOT EXISTS projects (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        user_id INTEGER NOT NULL,
+        id TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL,
         name TEXT NOT NULL,
         repo_url TEXT NOT NULL,
         default_branch TEXT NOT NULL DEFAULT 'main',
@@ -40,8 +40,8 @@ MIGRATIONS: tuple[str, ...] = (
     """,
     """
     CREATE TABLE IF NOT EXISTS plans (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        project_id INTEGER NOT NULL,
+        id TEXT PRIMARY KEY,
+        project_id TEXT NOT NULL,
         spec TEXT NOT NULL,
         opus_plan TEXT,
         plan_branch_name TEXT,
@@ -55,11 +55,11 @@ MIGRATIONS: tuple[str, ...] = (
     """,
     """
     CREATE TABLE IF NOT EXISTS tasks (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        plan_id INTEGER NOT NULL,
+        id TEXT PRIMARY KEY,
+        plan_id TEXT NOT NULL,
         title TEXT NOT NULL,
         description TEXT NOT NULL,
-        branch_name TEXT,
+        branch_name TEXT NOT NULL,
         pr_url TEXT,
         status TEXT NOT NULL DEFAULT 'pending',
         attempt INTEGER NOT NULL DEFAULT 1,
@@ -71,9 +71,9 @@ MIGRATIONS: tuple[str, ...] = (
     """,
     """
     CREATE TABLE IF NOT EXISTS agent_runs (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        task_id INTEGER NOT NULL,
-        container_id TEXT,
+        id TEXT PRIMARY KEY,
+        task_id TEXT NOT NULL,
+        container_id TEXT NOT NULL,
         status TEXT NOT NULL DEFAULT 'running',
         logs TEXT NOT NULL DEFAULT '',
         started_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
