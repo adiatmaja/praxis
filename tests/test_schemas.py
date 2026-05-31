@@ -65,7 +65,7 @@ def test_project_create_rejects_blank_required_strings() -> None:
     with pytest.raises(ValidationError):
         ProjectCreate(
             name="Praxis",
-            repo_url="  ",
+            repo_url=" ",
             model_name="qwen2.5-coder",
         )
     with pytest.raises(ValidationError):
@@ -95,13 +95,61 @@ def test_project_update_rejects_blank_strings_when_provided() -> None:
     with pytest.raises(ValidationError):
         ProjectUpdate(name=" ")
     with pytest.raises(ValidationError):
-        ProjectUpdate(repo_url=" ")
-    with pytest.raises(ValidationError):
         ProjectUpdate(model_name=" ")
     with pytest.raises(ValidationError):
-        ProjectUpdate(default_branch=" ")
-    with pytest.raises(ValidationError):
         ProjectUpdate(lm_studio_url=" ")
+
+
+@pytest.mark.unit
+def test_project_create_validates_retry_and_cycle_bounds() -> None:
+    with pytest.raises(ValidationError):
+        ProjectCreate(
+            name="Praxis",
+            repo_url="https://github.com/adiatmaja/praxis.git",
+            model_name="qwen2.5-coder",
+            max_retries=0,
+        )
+    with pytest.raises(ValidationError):
+        ProjectCreate(
+            name="Praxis",
+            repo_url="https://github.com/adiatmaja/praxis.git",
+            model_name="qwen2.5-coder",
+            max_retries=11,
+        )
+    with pytest.raises(ValidationError):
+        ProjectCreate(
+            name="Praxis",
+            repo_url="https://github.com/adiatmaja/praxis.git",
+            model_name="qwen2.5-coder",
+            max_improvement_cycles=0,
+        )
+    with pytest.raises(ValidationError):
+        ProjectCreate(
+            name="Praxis",
+            repo_url="https://github.com/adiatmaja/praxis.git",
+            model_name="qwen2.5-coder",
+            max_improvement_cycles=21,
+        )
+
+
+@pytest.mark.unit
+def test_project_update_validates_retry_and_cycle_bounds() -> None:
+    with pytest.raises(ValidationError):
+        ProjectUpdate(max_retries=0)
+    with pytest.raises(ValidationError):
+        ProjectUpdate(max_retries=11)
+    with pytest.raises(ValidationError):
+        ProjectUpdate(max_improvement_cycles=0)
+    with pytest.raises(ValidationError):
+        ProjectUpdate(max_improvement_cycles=21)
+
+
+@pytest.mark.unit
+def test_project_update_rejects_removed_fields() -> None:
+    with pytest.raises(ValidationError):
+        ProjectUpdate(repo_url="https://github.com/adiatmaja/praxis.git")
+    with pytest.raises(ValidationError):
+        ProjectUpdate(default_branch="main")
 
 
 @pytest.mark.unit
@@ -270,11 +318,10 @@ def test_response_models_construct_successfully() -> None:
         finished_at=None,
     )
     opus_state_response = OpusStateResponse(
-        id=1,
         status=OpusStatus.AVAILABLE,
         rate_limited_at=None,
         resume_at=None,
-        queued_actions="[]",
+        queued_count=0,
     )
 
     assert project_response.id == "project-1"
@@ -282,6 +329,7 @@ def test_response_models_construct_successfully() -> None:
     assert task_response.status == TaskStatus.PENDING
     assert agent_run_response.status == AgentRunStatus.RUNNING
     assert opus_state_response.status == OpusStatus.AVAILABLE
+    assert opus_state_response.queued_count == 0
     assert plan_response.model_dump(mode="json")["status"] == "pending"
     assert task_response.model_dump(mode="json")["status"] == "pending"
     assert agent_run_response.model_dump(mode="json")["status"] == "running"
