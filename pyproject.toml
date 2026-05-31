@@ -1,6 +1,6 @@
 [build-system]
-requires = ["setuptools>=61.0"]
-build-backend = "setuptools.build_meta:__legacy__"
+requires = ["setuptools>=68"]
+build-backend = "setuptools.backends._legacy:_Backend"
 
 [project]
 name = "praxis"
@@ -68,5 +68,8 @@ no_implicit_optional = true
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
-markers = ["unit", "integration"]
+markers = [
+    "unit: fast, isolated unit tests",
+    "integration: tests that touch the database",
+]
 addopts = "-v --tb=short"
