@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+import sqlite3
+
 import pytest
 
 from orchestrator.database import Database
@@ -55,6 +57,15 @@ async def test_initialize_seeds_opus_state_row(db: Database) -> None:
     assert row is not None
     assert row["id"] == 1
     assert row["status"] == "available"
+
+
+@pytest.mark.integration
+async def test_opus_state_rejects_non_singleton_id(db: Database) -> None:
+    with pytest.raises(sqlite3.IntegrityError):
+        await db.execute(
+            "INSERT INTO opus_state (id, status, queued_actions) VALUES (?, ?, ?)",
+            (2, "available", "[]"),
+        )
 
 
 @pytest.mark.integration

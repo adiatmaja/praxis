@@ -83,7 +83,7 @@ MIGRATIONS: tuple[str, ...] = (
     """,
     """
     CREATE TABLE IF NOT EXISTS opus_state (
-        id INTEGER PRIMARY KEY,
+        id INTEGER PRIMARY KEY CHECK (id = 1),
         status TEXT NOT NULL DEFAULT 'available',
         rate_limited_at TEXT,
         resume_at TEXT,
@@ -100,6 +100,12 @@ class Database:
         self._database_url = database_url
         self._db_path = self._extract_sqlite_path(database_url)
         self._connection: aiosqlite.Connection | None = None
+
+    @property
+    def db_path(self) -> str:
+        """Resolved SQLite database filesystem path."""
+
+        return self._db_path
 
     @staticmethod
     def _extract_sqlite_path(database_url: str) -> str:
@@ -150,16 +156,16 @@ class Database:
         self, query: str, params: tuple[Any, ...] = ()
     ) -> dict[str, Any] | None:
         connection = self._require_connection()
-        cursor = await connection.execute(query, params)
-        row = await cursor.fetchone()
+        async with connection.execute(query, params) as cursor:
+            row = await cursor.fetchone()
         return None if row is None else dict(row)
 
     async def fetch_all(
         self, query: str, params: tuple[Any, ...] = ()
     ) -> list[dict[str, Any]]:
         connection = self._require_connection()
-        cursor = await connection.execute(query, params)
-        rows = await cursor.fetchall()
+        async with connection.execute(query, params) as cursor:
+            rows = await cursor.fetchall()
         return [dict(row) for row in rows]
 
     def _require_connection(self) -> aiosqlite.Connection:
