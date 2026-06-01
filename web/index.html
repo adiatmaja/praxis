@@ -343,6 +343,161 @@
       .detail-content { padding: 16px; }
       .detail-actions { padding: 12px 16px; }
     }
+
+    /* Dashboard view */
+    .health-bar {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      padding: 10px 20px;
+      background: var(--panel-alt);
+      border-bottom: 1px solid var(--border);
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--text-muted);
+      flex-wrap: wrap;
+    }
+    .health-item { display: flex; align-items: center; gap: 6px; }
+    .health-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+    .health-dot.available { background: #22c55e; }
+    .health-dot.rate_limited { background: #eab308; }
+    .health-dot.resuming { background: #ef4444; }
+    .health-attention {
+      background: var(--badge-reviewing-bg);
+      color: var(--badge-reviewing-text);
+      padding: 2px 8px;
+      border-radius: 4px;
+      font-size: 11px;
+    }
+    .health-spacer { margin-left: auto; }
+
+    .dashboard-body { flex: 1; overflow-y: auto; padding: 0; display: flex; }
+    .dashboard-lanes { flex: 1; min-width: 0; overflow-y: auto; }
+
+    .swim-lane { border-bottom: 1px solid var(--border); }
+    .lane-header {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 12px 20px;
+      flex-wrap: wrap;
+    }
+    .lane-spec { font-size: 13px; font-weight: 700; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
+    .lane-meta { color: var(--text-faint); font-size: 11px; font-family: "Cascadia Mono", "SF Mono", Consolas, monospace; white-space: nowrap; }
+    .lane-spec-full { padding: 0 20px 12px; font-size: 13px; line-height: 1.6; color: var(--text-muted); white-space: pre-wrap; }
+
+    .lane-cards { display: flex; gap: 10px; padding: 0 20px 14px; overflow-x: auto; }
+    .task-card {
+      min-width: 170px;
+      max-width: 220px;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 10px 12px;
+      background: var(--panel);
+      cursor: pointer;
+      flex-shrink: 0;
+      transition: border-color 0.15s;
+    }
+    .task-card:hover { border-color: var(--text-faint); }
+    .task-card.selected { border-color: var(--selected-border); border-width: 2px; padding: 9px 11px; }
+    .task-card.status-merged { border-left: 3px solid var(--badge-passed-text); opacity: 0.75; }
+    .task-card.status-passed { border-left: 3px solid var(--badge-passed-text); }
+    .task-card.status-reviewing { border-left: 3px solid var(--badge-reviewing-text); }
+    .task-card.status-in_progress { border-left: 3px solid var(--badge-active-text); }
+    .task-card.status-failed { border-left: 3px solid var(--badge-failed-text); background: color-mix(in srgb, var(--badge-failed-bg) 20%, var(--panel)); }
+    .task-card.status-pending { border-left: 3px solid var(--text-faint); }
+    .card-title { font-size: 12px; font-weight: 700; margin-top: 6px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .card-meta { font-size: 10px; color: var(--text-faint); margin-top: 4px; }
+    .card-log-line { font-size: 10px; color: var(--badge-active-text); margin-top: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: "Cascadia Mono", "SF Mono", Consolas, monospace; }
+
+    @keyframes pulse-dot {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.3; }
+    }
+    .pulse-dot {
+      display: inline-block;
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      animation: pulse-dot 1.5s ease-in-out infinite;
+    }
+    .pulse-dot.green { background: #22c55e; }
+    .pulse-dot.amber { background: #eab308; }
+
+    .completed-lane { opacity: 0.6; transition: opacity 0.2s; }
+    .completed-lane.expanded { opacity: 1; }
+    .completed-header {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 10px 20px;
+      cursor: pointer;
+      font-size: 13px;
+    }
+    .completed-header:hover { background: var(--hover-bg); }
+    .disclosure { font-size: 10px; color: var(--text-faint); transition: transform 0.2s; }
+    .disclosure.open { transform: rotate(90deg); }
+    .completed-meta { color: var(--text-faint); font-size: 11px; }
+
+    .side-panel {
+      width: 0;
+      overflow: hidden;
+      border-left: 1px solid var(--border);
+      background: var(--panel);
+      display: flex;
+      flex-direction: column;
+      transition: width 0.2s ease;
+      flex-shrink: 0;
+    }
+    .side-panel.open { width: 35%; min-width: 320px; }
+    .side-panel-header {
+      padding: 16px;
+      border-bottom: 1px solid var(--border-subtle);
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: 10px;
+    }
+    .side-panel-close {
+      border: 0;
+      background: transparent;
+      color: var(--text-faint);
+      cursor: pointer;
+      font-size: 18px;
+      line-height: 1;
+      padding: 0 4px;
+    }
+    .side-panel-close:hover { color: var(--text); }
+    .side-panel-content { flex: 1; overflow-y: auto; padding: 16px; }
+    .side-panel-actions { padding: 12px 16px; border-top: 1px solid var(--border); display: flex; gap: 8px; flex-wrap: wrap; }
+    .side-panel-log {
+      height: 180px;
+      overflow-y: auto;
+      background: var(--log-bg);
+      color: var(--log-text);
+      border-radius: 6px;
+      padding: 8px 10px;
+      font-family: "Cascadia Mono", "SF Mono", Consolas, monospace;
+      font-size: 11px;
+      line-height: 1.4;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+    .dashboard-idle {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 60px 20px 20px;
+      color: var(--text-faint);
+      font-size: 14px;
+    }
+
+    @media (max-width: 768px) {
+      .side-panel.open { width: 100%; min-width: 0; position: absolute; top: 0; left: 0; right: 0; bottom: 0; z-index: 10; }
+      .lane-cards { flex-wrap: wrap; }
+      .task-card { min-width: 140px; }
+    }
   </style>
 </head>
 <body>
