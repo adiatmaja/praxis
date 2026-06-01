@@ -1060,6 +1060,10 @@
       const pendingPlans = plans.filter(plan => plan.status === "pending");
       const completedPlans = plans.filter(plan => plan.status === "completed").slice(0, 5);
       const plansToLoad = [...activePlans, ...pendingPlans, ...completedPlans];
+      const currentPlanIds = new Set(plansToLoad.map(plan => String(plan.id)));
+      for (const planId of Object.keys(dashboardTasks)) {
+        if (!currentPlanIds.has(String(planId))) delete dashboardTasks[planId];
+      }
 
       for (const plan of plansToLoad) {
         try {
