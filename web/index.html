@@ -4,297 +4,401 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Praxis</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <style>
     :root {
-      --bg: #101214;
-      --panel: #181c20;
-      --panel-2: #20262b;
-      --line: #303840;
-      --text: #edf1f4;
-      --muted: #9ba7b0;
-      --teal: #2aa889;
-      --blue: #4f8cc9;
-      --amber: #d69332;
-      --red: #d85b5b;
-      --green: #58b06f;
+      --bg: #f7f7f5;
+      --panel: #ffffff;
+      --panel-alt: #f2f2ef;
+      --border: #dfdfda;
+      --border-subtle: #eeeeea;
+      --text: #171717;
+      --text-muted: #666a70;
+      --text-faint: #9a9da2;
+      --hover-bg: #f0f1ec;
+      --active-bg: #e9ebe4;
+      --selected-bg: #eef4f0;
+      --selected-border: #245846;
+      --log-bg: #111312;
+      --log-text: #dce7df;
+      --btn-primary-bg: #171717;
+      --btn-primary-text: #ffffff;
+      --btn-primary-border: #171717;
+      --btn-secondary-bg: transparent;
+      --btn-secondary-text: #4f5358;
+      --btn-secondary-border: #d8d8d2;
+      --btn-danger-text: #b91c1c;
+      --badge-active-bg: #dbeafe; --badge-active-text: #1d4ed8;
+      --badge-pending-bg: #ecefed; --badge-pending-text: #5f666b;
+      --badge-passed-bg: #dcfce7; --badge-passed-text: #15803d;
+      --badge-merged-bg: #dcfce7; --badge-merged-text: #15803d;
+      --badge-completed-bg: #dcfce7; --badge-completed-text: #15803d;
+      --badge-reviewing-bg: #fef3c7; --badge-reviewing-text: #b45309;
+      --badge-failed-bg: #fee2e2; --badge-failed-text: #dc2626;
+      --badge-rejected-bg: #fee2e2; --badge-rejected-text: #dc2626;
     }
 
-    * { box-sizing: border-box; }
+    [data-theme="dark"] {
+      --bg: #1c1c1e;
+      --panel: #222224;
+      --panel-alt: #1b1b1d;
+      --border: #303033;
+      --border-subtle: #29292c;
+      --text: #d9d9dc;
+      --text-muted: #9a9a9f;
+      --text-faint: #66666d;
+      --hover-bg: #2a2a2d;
+      --active-bg: #313135;
+      --selected-bg: #252b28;
+      --selected-border: #8bc4a8;
+      --log-bg: #141416;
+      --log-text: #d6ddd8;
+      --btn-primary-bg: transparent;
+      --btn-primary-text: #d9d9dc;
+      --btn-primary-border: #5a5a61;
+      --btn-secondary-bg: transparent;
+      --btn-secondary-text: #b0b0b6;
+      --btn-secondary-border: #3d3d42;
+      --btn-danger-text: #fca5a5;
+      --badge-active-bg: #1e3a5f; --badge-active-text: #60a5fa;
+      --badge-pending-bg: #2e2e30; --badge-pending-text: #a1a1aa;
+      --badge-passed-bg: #14532d; --badge-passed-text: #86efac;
+      --badge-merged-bg: #14532d; --badge-merged-text: #86efac;
+      --badge-completed-bg: #14532d; --badge-completed-text: #86efac;
+      --badge-reviewing-bg: #451a03; --badge-reviewing-text: #fbbf24;
+      --badge-failed-bg: #450a0a; --badge-failed-text: #fca5a5;
+      --badge-rejected-bg: #450a0a; --badge-rejected-text: #fca5a5;
+    }
 
+    * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
-      margin: 0;
-      min-height: 100vh;
+      height: 100vh;
+      overflow: hidden;
+      display: flex;
       background: var(--bg);
       color: var(--text);
       font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
       font-size: 14px;
+      line-height: 1.5;
     }
 
-    header {
-      min-height: 64px;
-      border-bottom: 1px solid var(--line);
-      background: #15191d;
+    button, input, select, textarea { font: inherit; }
+    a { color: var(--text-muted); text-decoration: none; }
+    a:hover { color: var(--text); text-decoration: underline; }
+    label { display: block; margin-bottom: 5px; color: var(--text-muted); font-size: 12px; font-weight: 500; }
+    input, select, textarea {
+      width: 100%;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      background: var(--bg);
+      color: var(--text);
+      padding: 8px 10px;
+      font-size: 13px;
+    }
+    textarea { min-height: 140px; resize: vertical; line-height: 1.45; }
+
+    .sidebar {
+      width: 240px;
+      height: 100vh;
+      flex-shrink: 0;
+      display: flex;
+      flex-direction: column;
+      background: var(--panel);
+      border-right: 1px solid var(--border);
+    }
+    .sidebar-header { padding: 20px 20px 16px; border-bottom: 1px solid var(--border); }
+    .sidebar-logo { font-size: 18px; font-weight: 700; letter-spacing: 0; }
+    .sidebar-logo span { margin-left: 8px; color: var(--text-faint); font-size: 12px; font-weight: 400; }
+    .sidebar-nav { flex: 1; padding: 12px 10px; overflow-y: auto; }
+    .nav-section {
+      padding: 16px 10px 6px;
+      color: var(--text-faint);
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: .06em;
+      text-transform: uppercase;
+    }
+    .nav-section:first-child { padding-top: 4px; }
+    .nav-item {
+      width: 100%;
+      height: 34px;
+      border: 0;
+      border-radius: 6px;
+      background: transparent;
+      color: var(--text-muted);
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 0 10px;
+      cursor: pointer;
+      font-size: 13px;
+      font-weight: 600;
+      text-align: left;
+    }
+    .nav-item:hover { background: var(--hover-bg); color: var(--text); }
+    .nav-item.active { background: var(--active-bg); color: var(--text); }
+    .nav-icon { width: 18px; color: var(--text-faint); text-align: center; }
+
+    .sidebar-stats, .sidebar-connections { padding: 14px 20px; border-top: 1px solid var(--border); }
+    .section-label {
+      margin-bottom: 8px;
+      color: var(--text-faint);
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: .06em;
+      text-transform: uppercase;
+    }
+    .stat-row { display: flex; justify-content: space-between; padding: 4px 0; color: var(--text-muted); font-size: 12px; }
+    .stat-row strong { color: var(--text); font-weight: 700; }
+    .connection-row { display: flex; gap: 8px; align-items: flex-start; margin-bottom: 9px; min-width: 0; }
+    .connection-row:last-child { margin-bottom: 0; }
+    .conn-dot { width: 8px; height: 8px; margin-top: 5px; border-radius: 50%; flex-shrink: 0; background: var(--text-faint); }
+    .conn-dot.connected { background: #22c55e; }
+    .conn-dot.disconnected { background: #ef4444; }
+    .conn-dot.rate_limited { background: #eab308; }
+    .conn-info { min-width: 0; color: var(--text-muted); font-size: 12px; }
+    .conn-role { color: var(--text); font-weight: 700; }
+    .conn-model { overflow: hidden; color: var(--text-faint); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+
+    .main { min-width: 0; flex: 1; display: flex; flex-direction: column; }
+    .topbar {
+      height: 52px;
+      flex-shrink: 0;
       display: flex;
       align-items: center;
       justify-content: space-between;
-      gap: 16px;
+      gap: 12px;
       padding: 0 24px;
-    }
-
-    h1, h2, h3, p { margin: 0; }
-    h1 { font-size: 20px; font-weight: 700; }
-    h2 { font-size: 16px; font-weight: 650; margin-bottom: 14px; }
-
-    button, input, select, textarea {
-      font: inherit;
-    }
-
-    button {
-      min-height: 36px;
-      border: 0;
-      border-radius: 6px;
-      padding: 0 13px;
-      background: var(--teal);
-      color: #fff;
-      cursor: pointer;
-      font-weight: 650;
-    }
-
-    button:hover { filter: brightness(1.08); }
-    button.secondary { background: var(--panel-2); color: var(--text); border: 1px solid var(--line); }
-    button.danger { background: var(--red); }
-    button.success { background: var(--green); }
-    button.compact { min-height: 30px; padding: 0 9px; font-size: 12px; }
-
-    input, select, textarea {
-      width: 100%;
-      border: 1px solid var(--line);
-      border-radius: 6px;
-      background: #101417;
-      color: var(--text);
-      padding: 9px 10px;
-    }
-
-    textarea { min-height: 132px; resize: vertical; line-height: 1.45; }
-    label { display: block; color: var(--muted); font-size: 12px; margin-bottom: 5px; }
-    a { color: #7eb6e8; }
-
-    .statusbar {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 14px;
-      color: var(--muted);
-      font-size: 13px;
-    }
-
-    .dot {
-      display: inline-block;
-      width: 8px;
-      height: 8px;
-      border-radius: 50%;
-      margin-right: 6px;
-      background: var(--muted);
-    }
-
-    .dot.available { background: var(--green); }
-    .dot.rate_limited { background: var(--amber); }
-    .dot.resuming { background: var(--blue); }
-
-    main { max-width: 1280px; margin: 0 auto; padding: 22px; }
-
-    .tabs {
-      display: flex;
-      gap: 4px;
-      margin-bottom: 18px;
-      border-bottom: 1px solid var(--line);
-    }
-
-    .tab {
-      border-radius: 6px 6px 0 0;
-      border: 1px solid transparent;
-      border-bottom: 0;
-      background: transparent;
-      color: var(--muted);
-      min-width: 96px;
-    }
-
-    .tab.active {
-      color: var(--text);
       background: var(--panel);
-      border-color: var(--line);
+      border-bottom: 1px solid var(--border);
     }
+    .topbar-title { min-width: 0; overflow: hidden; font-size: 15px; font-weight: 700; text-overflow: ellipsis; white-space: nowrap; }
+    .topbar-actions { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
 
-    .grid { display: grid; grid-template-columns: minmax(280px, 400px) 1fr; gap: 16px; }
-    .panel {
-      background: var(--panel);
-      border: 1px solid var(--line);
-      border-radius: 8px;
-      padding: 16px;
-    }
-
-    .formrow { margin-bottom: 12px; }
-    .actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
-    .muted { color: var(--muted); }
-    .hidden { display: none; }
-
-    table { width: 100%; border-collapse: collapse; }
-    th, td { border-bottom: 1px solid var(--line); padding: 10px 8px; text-align: left; vertical-align: top; }
-    th { color: var(--muted); font-size: 12px; font-weight: 650; }
-    tr:last-child td { border-bottom: 0; }
-
-    .badge {
+    .btn {
+      height: 32px;
       display: inline-flex;
       align-items: center;
-      min-height: 22px;
+      justify-content: center;
+      gap: 5px;
+      border: 1px solid var(--btn-secondary-border);
+      border-radius: 6px;
+      background: var(--btn-secondary-bg);
+      color: var(--btn-secondary-text);
+      padding: 0 12px;
+      cursor: pointer;
+      font-size: 12px;
+      font-weight: 600;
+      white-space: nowrap;
+    }
+    .btn:hover { border-color: var(--text-muted); color: var(--text); }
+    .btn-primary { background: var(--btn-primary-bg); color: var(--btn-primary-text); border-color: var(--btn-primary-border); }
+    .btn-primary:hover { opacity: .85; }
+    .btn-danger { color: var(--btn-danger-text); }
+    .btn-compact { height: 28px; padding: 0 9px; font-size: 11px; }
+    .theme-btn { width: 32px; padding: 0; font-size: 15px; }
+
+    .master-detail { min-height: 0; flex: 1; display: flex; overflow: hidden; }
+    .master-panel {
+      width: 48%;
+      min-width: 360px;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      background: var(--panel);
+      border-right: 1px solid var(--border);
+    }
+    .master-header {
+      min-height: 56px;
+      flex-shrink: 0;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      padding: 12px 20px;
+      border-bottom: 1px solid var(--border-subtle);
+    }
+    .master-title { color: var(--text-muted); font-size: 13px; font-weight: 700; }
+    .master-list { flex: 1; overflow-y: auto; }
+    .master-row {
+      min-height: 56px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 12px 20px;
+      border: 0;
+      border-bottom: 1px solid var(--border-subtle);
+      background: transparent;
+      color: var(--text);
+      cursor: pointer;
+      text-align: left;
+      width: 100%;
+    }
+    .master-row:hover { background: var(--hover-bg); }
+    .master-row.selected { background: var(--selected-bg); border-left: 2px solid var(--selected-border); padding-left: 18px; }
+    .row-main { min-width: 0; flex: 1; }
+    .row-name { overflow: hidden; font-size: 13px; font-weight: 700; text-overflow: ellipsis; white-space: nowrap; }
+    .row-meta { overflow: hidden; color: var(--text-faint); font-family: "Cascadia Mono", "SF Mono", Consolas, monospace; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+
+    .badge {
+      height: 20px;
+      display: inline-flex;
+      align-items: center;
       border-radius: 4px;
       padding: 0 7px;
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: .03em;
+      text-transform: uppercase;
+      white-space: nowrap;
+    }
+    .badge.active, .badge.in_progress { background: var(--badge-active-bg); color: var(--badge-active-text); }
+    .badge.pending { background: var(--badge-pending-bg); color: var(--badge-pending-text); }
+    .badge.passed { background: var(--badge-passed-bg); color: var(--badge-passed-text); }
+    .badge.merged { background: var(--badge-merged-bg); color: var(--badge-merged-text); }
+    .badge.completed { background: var(--badge-completed-bg); color: var(--badge-completed-text); }
+    .badge.reviewing { background: var(--badge-reviewing-bg); color: var(--badge-reviewing-text); }
+    .badge.failed, .badge.rejected { background: var(--badge-failed-bg); color: var(--badge-failed-text); }
+    .badge.stopped { background: var(--badge-failed-bg); color: var(--badge-failed-text); }
+
+    .detail-panel { min-width: 0; flex: 1; display: flex; flex-direction: column; overflow: hidden; background: var(--bg); }
+    .detail-header { flex-shrink: 0; padding: 16px 24px; background: var(--panel); border-bottom: 1px solid var(--border-subtle); }
+    .detail-title { margin-bottom: 4px; font-size: 16px; font-weight: 700; overflow-wrap: anywhere; }
+    .detail-subtitle { color: var(--text-faint); font-size: 12px; overflow-wrap: anywhere; }
+    .detail-content { flex: 1; overflow-y: auto; padding: 20px 24px; }
+    .detail-section { margin-bottom: 20px; }
+    .detail-section-title {
+      margin-bottom: 10px;
+      color: var(--text-faint);
       font-size: 11px;
       font-weight: 700;
+      letter-spacing: .05em;
       text-transform: uppercase;
-      background: var(--panel-2);
-      color: var(--muted);
     }
-
-    .badge.pending { color: #b7c7ff; background: #273050; }
-    .badge.active, .badge.in_progress { color: #b9ddff; background: #22384d; }
-    .badge.reviewing { color: #ffd79c; background: #4c3920; }
-    .badge.completed, .badge.passed, .badge.merged { color: #bcf2c8; background: #21462c; }
-    .badge.failed, .badge.rejected { color: #ffc2c2; background: #4c2424; }
-
+    .detail-card { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 14px 16px; }
+    .detail-field { display: flex; justify-content: space-between; gap: 16px; padding: 8px 0; border-bottom: 1px solid var(--border-subtle); }
+    .detail-field:last-child { border-bottom: 0; }
+    .field-label { color: var(--text-muted); font-size: 12px; }
+    .field-value { min-width: 0; color: var(--text); font-size: 12px; font-weight: 600; overflow-wrap: anywhere; text-align: right; }
+    .detail-actions { flex-shrink: 0; display: flex; gap: 8px; padding: 14px 24px; background: var(--panel); border-top: 1px solid var(--border); }
+    .detail-empty { margin: auto; color: var(--text-faint); font-size: 13px; }
+    .formrow { margin-bottom: 12px; }
+    .form-actions { display: flex; gap: 8px; margin-top: 16px; flex-wrap: wrap; }
     .log {
-      min-height: 520px;
-      max-height: 66vh;
+      width: 100%;
+      height: 100%;
       overflow: auto;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--log-bg);
+      color: var(--log-text);
+      padding: 12px;
+      font-family: "Cascadia Mono", "SF Mono", Consolas, monospace;
+      font-size: 12px;
+      line-height: 1.45;
       white-space: pre-wrap;
       word-break: break-word;
-      border-radius: 6px;
-      border: 1px solid var(--line);
-      background: #090b0d;
-      color: #d7e5dd;
-      padding: 12px;
-      line-height: 1.45;
-      font-family: "Cascadia Mono", "SFMono-Regular", Consolas, monospace;
-      font-size: 12px;
     }
+    .empty-list { padding: 20px; color: var(--text-faint); font-size: 13px; }
 
-    .split { display: grid; grid-template-columns: 1fr auto; gap: 10px; align-items: end; }
-
-    @media (max-width: 820px) {
-      header { align-items: flex-start; flex-direction: column; padding: 14px 16px; }
-      main { padding: 14px; }
-      .grid { grid-template-columns: 1fr; }
-      .tabs { overflow-x: auto; }
-      table { display: block; overflow-x: auto; }
+    @media (max-width: 1024px) {
+      .sidebar { width: 204px; }
+      .master-panel { width: 46%; min-width: 320px; }
+    }
+    @media (max-width: 768px) {
+      body { flex-direction: column; overflow: auto; height: auto; min-height: 100vh; }
+      .sidebar { width: 100%; height: auto; border-right: 0; border-bottom: 1px solid var(--border); }
+      .sidebar-nav { display: flex; gap: 6px; padding: 10px; overflow-x: auto; }
+      .nav-section { display: none; }
+      .nav-item { width: auto; min-width: 104px; justify-content: center; }
+      .sidebar-stats, .sidebar-connections { display: none; }
+      .main { min-height: 720px; }
+      .topbar { padding: 0 14px; }
+      .master-detail { flex-direction: column; overflow: visible; }
+      .master-panel { width: 100%; min-width: 0; max-height: 42vh; border-right: 0; border-bottom: 1px solid var(--border); }
+      .detail-panel { min-height: 420px; }
+      .detail-content { padding: 16px; }
+      .detail-actions { padding: 12px 16px; }
     }
   </style>
 </head>
 <body>
-  <header>
-    <h1>Praxis</h1>
-    <div class="statusbar">
-      <span><span id="opus-dot" class="dot"></span><span id="opus-status">opus</span></span>
-      <span>agents <strong id="agent-count">0</strong></span>
-      <span>queue <strong id="queue-count">0</strong></span>
-      <button class="secondary compact" type="button" onclick="resetToken()">Token</button>
+  <aside class="sidebar">
+    <div class="sidebar-header">
+      <div class="sidebar-logo">Praxis <span>orchestrator</span></div>
     </div>
-  </header>
-
-  <main>
-    <nav class="tabs" aria-label="Views">
-      <button class="tab active" type="button" data-tab="projects" onclick="showTab(event, 'projects')">Projects</button>
-      <button class="tab" type="button" data-tab="plans" onclick="showTab(event, 'plans')">Plans</button>
-      <button class="tab" type="button" data-tab="tasks" onclick="showTab(event, 'tasks')">Tasks</button>
-      <button class="tab" type="button" data-tab="logs" onclick="showTab(event, 'logs')">Logs</button>
+    <nav class="sidebar-nav" aria-label="Views">
+      <div class="nav-section">Workspace</div>
+      <button class="nav-item active" type="button" data-view="projects" onclick="switchView('projects')"><span class="nav-icon">P</span>Projects</button>
+      <button class="nav-item" type="button" data-view="plans" onclick="switchView('plans')"><span class="nav-icon">S</span>Plans</button>
+      <button class="nav-item" type="button" data-view="tasks" onclick="switchView('tasks')"><span class="nav-icon">T</span>Tasks</button>
+      <button class="nav-item" type="button" data-view="logs" onclick="switchView('logs')"><span class="nav-icon">L</span>Live Logs</button>
     </nav>
-
-    <section id="tab-projects">
-      <div class="grid">
-        <form class="panel" onsubmit="addProject(event)">
-          <h2>Add Project</h2>
-          <div class="formrow">
-            <label for="project-name">Name</label>
-            <input id="project-name" required autocomplete="off">
-          </div>
-          <div class="formrow">
-            <label for="project-repo">Repository URL</label>
-            <input id="project-repo" required autocomplete="off" placeholder="https://github.com/user/repo">
-          </div>
-          <div class="formrow">
-            <label for="project-model">Model</label>
-            <input id="project-model" required autocomplete="off" value="deepseek-coder-v2">
-          </div>
-          <button type="submit">Add</button>
-        </form>
-
-        <div class="panel">
-          <h2>Projects</h2>
-          <table>
-            <thead><tr><th>Name</th><th>Repository</th><th>Gate</th><th></th></tr></thead>
-            <tbody id="projects-list"></tbody>
-          </table>
+    <div class="sidebar-stats">
+      <div class="section-label">Stats</div>
+      <div class="stat-row"><span>Projects</span><strong id="stat-projects">0</strong></div>
+      <div class="stat-row"><span>Plans</span><strong id="stat-plans">0</strong></div>
+      <div class="stat-row"><span>Agents</span><strong id="stat-agents">0</strong></div>
+      <div class="stat-row"><span>Queue</span><strong id="stat-queue">0</strong></div>
+    </div>
+    <div class="sidebar-connections">
+      <div class="section-label">Connections</div>
+      <div class="connection-row">
+        <span id="agent-dot" class="conn-dot disconnected"></span>
+        <div class="conn-info">
+          <div class="conn-role">Agent</div>
+          <div id="agent-model" class="conn-model">unknown</div>
         </div>
       </div>
-    </section>
-
-    <section id="tab-plans" class="hidden">
-      <div class="grid">
-        <form class="panel" onsubmit="submitPlan(event)">
-          <h2>Submit Spec</h2>
-          <div class="formrow">
-            <label for="plan-project">Project</label>
-            <select id="plan-project" required></select>
-          </div>
-          <div class="formrow">
-            <label for="plan-spec">Specification</label>
-            <textarea id="plan-spec" required></textarea>
-          </div>
-          <button type="submit">Submit</button>
-        </form>
-
-        <div class="panel">
-          <h2>Plans</h2>
-          <table>
-            <thead><tr><th>Spec</th><th>Source</th><th>Status</th><th>Confidence</th><th></th></tr></thead>
-            <tbody id="plans-list"></tbody>
-          </table>
+      <div class="connection-row">
+        <span id="subagent-dot" class="conn-dot disconnected"></span>
+        <div class="conn-info">
+          <div class="conn-role">Subagent</div>
+          <div id="subagent-model" class="conn-model">unknown</div>
         </div>
       </div>
-    </section>
+    </div>
+  </aside>
 
-    <section id="tab-tasks" class="hidden">
-      <div class="panel">
-        <div class="split">
-          <div>
-            <h2>Tasks</h2>
-            <label for="task-plan">Plan</label>
-            <select id="task-plan" onchange="loadTasks()"></select>
-          </div>
-          <button class="secondary" type="button" onclick="loadTasks()">Refresh</button>
-        </div>
-        <table>
-          <thead><tr><th>Title</th><th>Branch</th><th>Status</th><th>Attempt</th><th>PR</th><th></th></tr></thead>
-          <tbody id="tasks-list"></tbody>
-        </table>
+  <main class="main">
+    <header class="topbar">
+      <div id="topbar-title" class="topbar-title">Projects</div>
+      <div class="topbar-actions">
+        <button id="primary-action" class="btn btn-primary" type="button" onclick="primaryAction()">+ New Project</button>
+        <button class="btn theme-btn" type="button" onclick="toggleTheme()" title="Toggle theme">T</button>
+        <button class="btn" type="button" onclick="resetToken()">Token</button>
       </div>
-    </section>
-
-    <section id="tab-logs" class="hidden">
-      <div class="panel">
-        <div class="split">
-          <h2>Live Events</h2>
-          <button class="secondary" type="button" onclick="connectEvents()">Reconnect</button>
-        </div>
-        <div id="log-output" class="log"></div>
-      </div>
-    </section>
+    </header>
+    <section id="view-container" class="master-detail"></section>
   </main>
 
   <script>
     const API = window.location.origin;
     let token = localStorage.getItem("praxis_token") || "";
     let eventSource = null;
+    let currentView = "projects";
     let projects = [];
     let plans = [];
+    let currentTasks = [];
+    let selectedProjectId = null;
+    let selectedPlanId = null;
+    let selectedTaskId = null;
+    let showingForm = false;
+
+    initTheme();
+
+    function initTheme() {
+      const stored = localStorage.getItem("praxis_theme") || "light";
+      document.documentElement.dataset.theme = stored;
+    }
+
+    function toggleTheme() {
+      const next = document.documentElement.dataset.theme === "dark" ? "light" : "dark";
+      document.documentElement.dataset.theme = next;
+      localStorage.setItem("praxis_theme", next);
+    }
 
     function ensureToken() {
       if (!token) resetToken();
@@ -309,7 +413,7 @@
 
     function headers() {
       return {
-        "Authorization": `Bearer ${ensureToken()}`,
+        "Authorization": "Bearer " + ensureToken(),
         "Content-Type": "application/json"
       };
     }
@@ -317,160 +421,400 @@
     async function api(method, path, body) {
       const options = { method, headers: headers() };
       if (body !== undefined) options.body = JSON.stringify(body);
-      const response = await fetch(`${API}${path}`, options);
+      const response = await fetch(API + path, options);
       if (!response.ok) throw new Error(await response.text());
+      if (response.status === 204) return null;
       return response.json();
     }
 
-    function text(value) {
+    function esc(value) {
       return String(value ?? "").replace(/[&<>"']/g, c => ({
         "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
       }[c]));
     }
 
     function badge(status) {
-      return `<span class="badge ${text(status)}">${text(status)}</span>`;
+      return '<span class="badge ' + esc(status) + '">' + esc(status) + '</span>';
     }
 
-    function showTab(event, name) {
-      document.querySelectorAll("section[id^='tab-']").forEach(el => el.classList.add("hidden"));
-      document.getElementById(`tab-${name}`).classList.remove("hidden");
-      document.querySelectorAll(".tab").forEach(el => el.classList.remove("active"));
-      event.currentTarget.classList.add("active");
-      if (name === "projects") loadProjects();
-      if (name === "plans") loadPlans();
-      if (name === "tasks") loadPlans().then(loadTasks);
-      if (name === "logs") connectEvents();
+    function mono(value) {
+      return '<span style="font-family:Cascadia Mono, SF Mono, Consolas, monospace;font-size:12px;">' + esc(value || "-") + '</span>';
     }
 
-    async function addProject(event) {
-      event.preventDefault();
-      await api("POST", "/api/projects", {
-        name: document.getElementById("project-name").value,
-        repo_url: document.getElementById("project-repo").value,
-        model_name: document.getElementById("project-model").value
-      });
-      event.target.reset();
-      document.getElementById("project-model").value = "deepseek-coder-v2";
-      await loadProjects();
+    function setTopbar(title, actionLabel) {
+      document.getElementById("topbar-title").textContent = title;
+      document.getElementById("primary-action").textContent = actionLabel;
+    }
+
+    function primaryAction() {
+      if (currentView === "projects") {
+        showingForm = true;
+        renderProjectsView();
+      } else if (currentView === "plans") {
+        showingForm = true;
+        renderPlansView();
+      } else if (currentView === "tasks") {
+        renderTasks();
+      } else {
+        connectEvents();
+      }
+    }
+
+    async function switchView(name) {
+      currentView = name;
+      showingForm = false;
+      document.querySelectorAll(".nav-item").forEach(el => el.classList.toggle("active", el.dataset.view === name));
+      if (eventSource && name !== "logs") {
+        eventSource.close();
+        eventSource = null;
+      }
+      if (name === "projects") {
+        setTopbar("Projects", "+ New Project");
+        await loadProjects();
+      } else if (name === "plans") {
+        setTopbar("Plans", "+ Submit Spec");
+        await loadPlans();
+      } else if (name === "tasks") {
+        setTopbar("Tasks", "Refresh");
+        await renderTasks();
+      } else if (name === "logs") {
+        setTopbar("Live Logs", "Reconnect");
+        renderLogs();
+      }
     }
 
     async function loadProjects() {
       projects = await api("GET", "/api/projects");
-      document.getElementById("projects-list").innerHTML = projects.map(project => `
-        <tr>
-          <td>${text(project.name)}</td>
-          <td><a href="${text(project.repo_url)}" target="_blank" rel="noreferrer">${text(project.repo_url)}</a></td>
-          <td>${project.approval_gate ? "on" : "off"}</td>
-          <td><button class="compact secondary" type="button" onclick="selectProject('${text(project.id)}')">Select</button></td>
-        </tr>
-      `).join("") || `<tr><td colspan="4" class="muted">No projects</td></tr>`;
-      document.getElementById("plan-project").innerHTML = projects.map(project =>
-        `<option value="${text(project.id)}">${text(project.name)}</option>`
-      ).join("");
+      if (!selectedProjectId && projects.length) selectedProjectId = projects[0].id;
+      if (!projects.some(project => project.id === selectedProjectId)) selectedProjectId = projects[0]?.id || null;
+      document.getElementById("stat-projects").textContent = projects.length;
+      if (currentView === "projects") renderProjectsView();
+    }
+
+    async function loadPlans() {
+      if (!projects.length) await loadProjects();
+      plans = [];
+      for (const project of projects) {
+        const projectPlans = await api("GET", "/api/projects/" + project.id + "/plans");
+        plans.push(...projectPlans.map(plan => ({ ...plan, projectName: project.name })));
+      }
+      if (!selectedPlanId && plans.length) selectedPlanId = plans[0].id;
+      if (!plans.some(plan => plan.id === selectedPlanId)) selectedPlanId = plans[0]?.id || null;
+      document.getElementById("stat-plans").textContent = plans.length;
+      if (currentView === "plans") renderPlansView();
+    }
+
+    function renderProjectsView() {
+      const container = document.getElementById("view-container");
+      const masterRows = projects.map(project =>
+        '<button class="master-row' + (selectedProjectId === project.id ? ' selected' : '') +
+        '" type="button" onclick="selectProject(\'' + esc(project.id) + '\')">' +
+          '<div class="row-main"><div class="row-name">' + esc(project.name) + '</div>' +
+          '<div class="row-meta">' + esc(project.repo_url) + '</div></div>' +
+          (project.approval_gate ? badge("active") : badge("pending")) +
+        '</button>'
+      ).join("") || '<div class="empty-list">No projects</div>';
+      const detail = showingForm ? renderProjectForm() :
+        selectedProjectId ? renderProjectDetail(projects.find(project => project.id === selectedProjectId)) :
+        '<div class="detail-empty">Select a project</div>';
+
+      container.innerHTML =
+        '<div class="master-panel">' +
+          '<div class="master-header"><div class="master-title">' + projects.length + ' Projects</div>' +
+          '<button class="btn btn-compact" type="button" onclick="loadProjects()">Refresh</button></div>' +
+          '<div class="master-list">' + masterRows + '</div>' +
+        '</div><div class="detail-panel">' + detail + '</div>';
     }
 
     function selectProject(id) {
-      document.querySelector("[data-tab='plans']").click();
-      document.getElementById("plan-project").value = id;
+      selectedProjectId = id;
+      showingForm = false;
+      renderProjectsView();
+    }
+
+    function renderProjectDetail(project) {
+      if (!project) return '<div class="detail-empty">Project not found</div>';
+      return '<div class="detail-header">' +
+        '<div class="detail-title">' + esc(project.name) + '</div>' +
+        '<div class="detail-subtitle">' + esc(project.repo_url) + '</div>' +
+      '</div><div class="detail-content">' +
+        '<div class="detail-section"><div class="detail-section-title">Configuration</div><div class="detail-card">' +
+          '<div class="detail-field"><span class="field-label">Model</span><span class="field-value">' + mono(project.model_name) + '</span></div>' +
+          '<div class="detail-field"><span class="field-label">Default Branch</span><span class="field-value">' + esc(project.default_branch) + '</span></div>' +
+          '<div class="detail-field"><span class="field-label">Approval Gate</span><span class="field-value">' + (project.approval_gate ? "On" : "Off") + '</span></div>' +
+          '<div class="detail-field"><span class="field-label">Max Retries</span><span class="field-value">' + esc(project.max_retries) + '</span></div>' +
+          '<div class="detail-field"><span class="field-label">Confidence Threshold</span><span class="field-value">' + Math.round((project.confidence_threshold || 0) * 100) + '%</span></div>' +
+          '<div class="detail-field"><span class="field-label">LM Studio</span><span class="field-value">' + mono(project.lm_studio_url) + '</span></div>' +
+        '</div></div>' +
+      '</div><div class="detail-actions">' +
+        '<button class="btn btn-primary" type="button" onclick="switchView(\'plans\')">View Plans</button>' +
+        '<button class="btn btn-danger" type="button" onclick="deleteProject(\'' + esc(project.id) + '\')">Delete</button>' +
+      '</div>';
+    }
+
+    function renderProjectForm() {
+      return '<div class="detail-header"><div class="detail-title">New Project</div>' +
+        '<div class="detail-subtitle">Add a repository for orchestration</div></div>' +
+        '<div class="detail-content"><form onsubmit="submitProject(event)">' +
+          '<div class="formrow"><label>Name</label><input id="pf-name" required autocomplete="off"></div>' +
+          '<div class="formrow"><label>Repository URL</label><input id="pf-repo" required autocomplete="off" placeholder="https://github.com/user/repo"></div>' +
+          '<div class="formrow"><label>Model</label><input id="pf-model" required autocomplete="off" value="deepseek-coder-v2"></div>' +
+          '<div class="form-actions"><button type="submit" class="btn btn-primary">Create</button>' +
+          '<button type="button" class="btn" onclick="showingForm=false;renderProjectsView()">Cancel</button></div>' +
+        '</form></div>';
+    }
+
+    async function submitProject(event) {
+      event.preventDefault();
+      const project = await api("POST", "/api/projects", {
+        name: document.getElementById("pf-name").value,
+        repo_url: document.getElementById("pf-repo").value,
+        model_name: document.getElementById("pf-model").value
+      });
+      selectedProjectId = project.id;
+      showingForm = false;
+      await loadProjects();
+    }
+
+    async function deleteProject(id) {
+      if (!confirm("Delete this project?")) return;
+      await api("DELETE", "/api/projects/" + id);
+      selectedProjectId = null;
+      selectedPlanId = null;
+      await loadProjects();
+    }
+
+    function renderPlansView() {
+      const container = document.getElementById("view-container");
+      const masterRows = plans.map(plan =>
+        '<button class="master-row' + (selectedPlanId === plan.id ? ' selected' : '') +
+        '" type="button" onclick="selectPlan(\'' + esc(plan.id) + '\')">' +
+          '<div class="row-main"><div class="row-name">' + esc(plan.spec).slice(0, 100) + '</div>' +
+          '<div class="row-meta">' + esc(plan.projectName) + '</div></div>' + badge(plan.status) +
+        '</button>'
+      ).join("") || '<div class="empty-list">No plans</div>';
+      const detail = showingForm ? renderPlanForm() :
+        selectedPlanId ? renderPlanDetail(plans.find(plan => plan.id === selectedPlanId)) :
+        '<div class="detail-empty">Select a plan</div>';
+
+      container.innerHTML =
+        '<div class="master-panel">' +
+          '<div class="master-header"><div class="master-title">' + plans.length + ' Plans</div>' +
+          '<button class="btn btn-compact" type="button" onclick="loadPlans()">Refresh</button></div>' +
+          '<div class="master-list">' + masterRows + '</div>' +
+        '</div><div class="detail-panel">' + detail + '</div>';
+    }
+
+    function selectPlan(id) {
+      selectedPlanId = id;
+      showingForm = false;
+      renderPlansView();
+    }
+
+    function renderPlanDetail(plan) {
+      if (!plan) return '<div class="detail-empty">Plan not found</div>';
+      const approveReject = (plan.status === "pending" && plan.source === "autonomous") ?
+        '<button class="btn btn-primary" type="button" onclick="approvePlan(\'' + esc(plan.id) + '\')">Approve</button>' +
+        '<button class="btn btn-danger" type="button" onclick="rejectPlan(\'' + esc(plan.id) + '\')">Reject</button>' : "";
+      return '<div class="detail-header"><div class="detail-title">' + esc(plan.projectName) + '</div>' +
+        '<div class="detail-subtitle">Source: ' + esc(plan.source) + ' &middot; Confidence: ' +
+        (plan.confidence != null ? Math.round(plan.confidence * 100) + "%" : "-") + '</div></div>' +
+        '<div class="detail-content">' +
+          '<div class="detail-section"><div class="detail-section-title">Specification</div>' +
+          '<div class="detail-card" style="white-space:pre-wrap;font-size:13px;line-height:1.6;">' + esc(plan.spec) + '</div></div>' +
+          (plan.opus_plan ? '<div class="detail-section"><div class="detail-section-title">Opus Plan</div>' +
+          '<div class="detail-card" style="white-space:pre-wrap;font-size:12px;font-family:Cascadia Mono, SF Mono, Consolas, monospace;line-height:1.5;">' + esc(plan.opus_plan) + '</div></div>' : "") +
+          '<div class="detail-section"><div class="detail-section-title">Status</div><div class="detail-card">' +
+          '<div class="detail-field"><span class="field-label">Status</span><span class="field-value">' + badge(plan.status) + '</span></div>' +
+          '<div class="detail-field"><span class="field-label">Branch</span><span class="field-value">' + mono(plan.plan_branch_name) + '</span></div>' +
+          '<div class="detail-field"><span class="field-label">Created</span><span class="field-value">' + esc(plan.created_at) + '</span></div>' +
+          '</div></div></div>' +
+          (approveReject ? '<div class="detail-actions">' + approveReject + '</div>' : "");
+    }
+
+    function renderPlanForm() {
+      const opts = projects.map(project => '<option value="' + esc(project.id) + '">' + esc(project.name) + '</option>').join("");
+      return '<div class="detail-header"><div class="detail-title">Submit Spec</div>' +
+        '<div class="detail-subtitle">Create a new plan from a specification</div></div>' +
+        '<div class="detail-content"><form onsubmit="submitPlan(event)">' +
+          '<div class="formrow"><label>Project</label><select id="plf-project" required>' + opts + '</select></div>' +
+          '<div class="formrow"><label>Specification</label><textarea id="plf-spec" required></textarea></div>' +
+          '<div class="form-actions"><button type="submit" class="btn btn-primary">Submit</button>' +
+          '<button type="button" class="btn" onclick="showingForm=false;renderPlansView()">Cancel</button></div>' +
+        '</form></div>';
     }
 
     async function submitPlan(event) {
       event.preventDefault();
-      const projectId = document.getElementById("plan-project").value;
-      await api("POST", `/api/projects/${projectId}/plans`, {
-        spec: document.getElementById("plan-spec").value
+      const projectId = document.getElementById("plf-project").value;
+      const plan = await api("POST", "/api/projects/" + projectId + "/plans", {
+        spec: document.getElementById("plf-spec").value
       });
-      document.getElementById("plan-spec").value = "";
+      selectedPlanId = plan.id;
+      showingForm = false;
       await loadPlans();
     }
 
-    async function loadPlans() {
-      if (projects.length === 0) await loadProjects();
-      plans = [];
-      for (const project of projects) {
-        const projectPlans = await api("GET", `/api/projects/${project.id}/plans`);
-        plans.push(...projectPlans.map(plan => ({ ...plan, projectName: project.name })));
-      }
-      document.getElementById("plans-list").innerHTML = plans.map(plan => `
-        <tr>
-          <td>${text(plan.spec)}</td>
-          <td>${text(plan.source)}</td>
-          <td>${badge(plan.status)}</td>
-          <td>${plan.confidence == null ? "-" : `${Math.round(plan.confidence * 100)}%`}</td>
-          <td class="actions">${plan.status === "pending" && plan.source === "autonomous" ? `
-            <button class="compact success" type="button" onclick="approvePlan('${text(plan.id)}')">Approve</button>
-            <button class="compact danger" type="button" onclick="rejectPlan('${text(plan.id)}')">Reject</button>
-          ` : ""}</td>
-        </tr>
-      `).join("") || `<tr><td colspan="5" class="muted">No plans</td></tr>`;
-      document.getElementById("task-plan").innerHTML = plans.map(plan =>
-        `<option value="${text(plan.id)}">${text(plan.projectName)}: ${text(plan.spec).slice(0, 60)}</option>`
+    async function approvePlan(id) { await api("POST", "/api/plans/" + id + "/approve"); await loadPlans(); }
+    async function rejectPlan(id) { await api("POST", "/api/plans/" + id + "/reject"); await loadPlans(); }
+
+    async function renderTasks() {
+      if (!plans.length) await loadPlans();
+      const container = document.getElementById("view-container");
+      const planOpts = plans.map(plan =>
+        '<option value="' + esc(plan.id) + '"' + (selectedPlanId === plan.id ? " selected" : "") + '>' +
+        esc(plan.projectName) + ": " + esc(plan.spec).slice(0, 56) + '</option>'
       ).join("");
+
+      container.innerHTML =
+        '<div class="master-panel">' +
+          '<div class="master-header"><div class="master-title">Tasks</div>' +
+          '<button class="btn btn-compact" type="button" onclick="renderTasks()">Refresh</button></div>' +
+          '<div style="padding:12px 20px;border-bottom:1px solid var(--border-subtle);"><label>Plan</label>' +
+          '<select id="task-plan-select" onchange="onTaskPlanChange()">' + planOpts + '</select></div>' +
+          '<div class="master-list" id="tasks-master-list"></div>' +
+        '</div><div class="detail-panel" id="task-detail-panel"><div class="detail-empty">Select a task</div></div>';
+
+      const planId = selectedPlanId || plans[0]?.id;
+      if (planId) {
+        selectedPlanId = planId;
+        await loadTasksForPlan(planId);
+      } else {
+        document.getElementById("tasks-master-list").innerHTML = '<div class="empty-list">No plans</div>';
+      }
     }
 
-    async function approvePlan(id) {
-      await api("POST", `/api/plans/${id}/approve`);
-      await loadPlans();
+    function onTaskPlanChange() {
+      selectedPlanId = document.getElementById("task-plan-select").value;
+      selectedTaskId = null;
+      loadTasksForPlan(selectedPlanId);
     }
 
-    async function rejectPlan(id) {
-      await api("POST", `/api/plans/${id}/reject`);
-      await loadPlans();
+    async function loadTasksForPlan(planId) {
+      currentTasks = await api("GET", "/api/plans/" + planId + "/tasks");
+      const list = document.getElementById("tasks-master-list");
+      if (!list) return;
+      list.innerHTML = currentTasks.map(task =>
+        '<button class="master-row' + (selectedTaskId === task.id ? ' selected' : '') +
+        '" type="button" onclick="selectTask(\'' + esc(task.id) + '\')">' +
+          '<div class="row-main"><div class="row-name">' + esc(task.title) + '</div>' +
+          '<div class="row-meta">' + esc(task.branch_name) + '</div></div>' + badge(task.status) +
+        '</button>'
+      ).join("") || '<div class="empty-list">No tasks for this plan</div>';
     }
 
-    async function loadTasks() {
-      const planId = document.getElementById("task-plan").value;
-      if (!planId) {
-        document.getElementById("tasks-list").innerHTML = `<tr><td colspan="6" class="muted">No plan selected</td></tr>`;
+    function selectTask(id) {
+      selectedTaskId = id;
+      const task = currentTasks.find(item => item.id === id);
+      document.querySelectorAll("#tasks-master-list .master-row").forEach(row => row.classList.remove("selected"));
+      const rows = Array.from(document.querySelectorAll("#tasks-master-list .master-row"));
+      const index = currentTasks.findIndex(item => item.id === id);
+      if (rows[index]) rows[index].classList.add("selected");
+      renderTaskDetail(task);
+    }
+
+    function renderTaskDetail(task) {
+      const panel = document.getElementById("task-detail-panel");
+      if (!panel) return;
+      if (!task) {
+        panel.innerHTML = '<div class="detail-empty">Task not found</div>';
         return;
       }
-      const tasks = await api("GET", `/api/plans/${planId}/tasks`);
-      document.getElementById("tasks-list").innerHTML = tasks.map(task => `
-        <tr>
-          <td>${text(task.title)}</td>
-          <td>${text(task.branch_name)}</td>
-          <td>${badge(task.status)}</td>
-          <td>${text(task.attempt)}</td>
-          <td>${task.pr_url ? `<a href="${text(task.pr_url)}" target="_blank" rel="noreferrer">PR</a>` : "-"}</td>
-          <td class="actions">
-            ${task.status === "in_progress" ? `<button class="compact danger" type="button" onclick="stopTask('${text(task.id)}')">Stop</button>` : ""}
-            <button class="compact secondary" type="button" onclick="connectTaskLogs('${text(task.id)}')">Logs</button>
-          </td>
-        </tr>
-      `).join("") || `<tr><td colspan="6" class="muted">No tasks</td></tr>`;
+      const stopBtn = task.status === "in_progress" ?
+        '<button class="btn btn-danger" type="button" onclick="stopTask(\'' + esc(task.id) + '\')">Stop</button>' : "";
+      panel.innerHTML =
+        '<div class="detail-header"><div class="detail-title">' + esc(task.title) + '</div>' +
+        '<div class="detail-subtitle">' + esc(task.branch_name) + '</div></div>' +
+        '<div class="detail-content">' +
+          '<div class="detail-section"><div class="detail-section-title">Configuration</div><div class="detail-card">' +
+          '<div class="detail-field"><span class="field-label">Status</span><span class="field-value">' + badge(task.status) + '</span></div>' +
+          '<div class="detail-field"><span class="field-label">Attempt</span><span class="field-value">' + esc(task.attempt) + '</span></div>' +
+          '<div class="detail-field"><span class="field-label">PR</span><span class="field-value">' +
+          (task.pr_url ? '<a href="' + esc(task.pr_url) + '" target="_blank" rel="noreferrer">View PR</a>' : "-") + '</span></div>' +
+          '<div class="detail-field"><span class="field-label">Updated</span><span class="field-value">' + esc(task.updated_at) + '</span></div>' +
+          '</div></div>' +
+          (task.description ? '<div class="detail-section"><div class="detail-section-title">Description</div>' +
+          '<div class="detail-card" style="white-space:pre-wrap;font-size:13px;line-height:1.6;">' + esc(task.description) + '</div></div>' : "") +
+          (task.review_feedback ? '<div class="detail-section"><div class="detail-section-title">Review Feedback</div>' +
+          '<div class="detail-card" style="white-space:pre-wrap;font-size:12px;font-family:Cascadia Mono, SF Mono, Consolas, monospace;line-height:1.5;">' + esc(task.review_feedback) + '</div></div>' : "") +
+        '</div><div class="detail-actions">' + stopBtn +
+        '<button class="btn" type="button" onclick="viewTaskLogs(\'' + esc(task.id) + '\')">View Logs</button></div>';
     }
 
     async function stopTask(id) {
-      await api("POST", `/api/tasks/${id}/stop`);
-      await loadTasks();
+      await api("POST", "/api/tasks/" + id + "/stop");
+      await loadTasksForPlan(selectedPlanId);
+      document.getElementById("task-detail-panel").innerHTML = '<div class="detail-empty">Select a task</div>';
+    }
+
+    function viewTaskLogs(taskId) {
+      switchView("logs");
+      setTimeout(() => connectTaskLogs(taskId), 100);
+    }
+
+    function renderLogs() {
+      const container = document.getElementById("view-container");
+      container.innerHTML =
+        '<div class="master-panel">' +
+          '<div class="master-header"><div class="master-title">Log Sources</div>' +
+          '<button class="btn btn-compact" type="button" onclick="renderLogs()">Refresh</button></div>' +
+          '<div class="master-list">' +
+            '<button class="master-row selected" type="button" onclick="connectEvents()">' +
+              '<div class="row-main"><div class="row-name">System Events</div><div class="row-meta">SSE</div></div>' +
+            '</button>' + buildTaskLogSources() +
+          '</div>' +
+        '</div><div class="detail-panel">' +
+          '<div class="detail-header" style="display:flex;align-items:center;justify-content:space-between;gap:12px;">' +
+            '<div><div class="detail-title" id="log-title">System Events</div><div class="detail-subtitle">Server-sent event stream</div></div>' +
+            '<button class="btn btn-compact" type="button" onclick="connectEvents()">Reconnect</button>' +
+          '</div>' +
+          '<div style="flex:1;overflow:hidden;padding:12px 24px 24px;"><div id="log-output" class="log"></div></div>' +
+        '</div>';
+      connectEvents();
+    }
+
+    function buildTaskLogSources() {
+      return currentTasks
+        .filter(task => task.status === "in_progress" || task.status === "reviewing")
+        .map(task =>
+          '<button class="master-row" type="button" onclick="connectTaskLogs(\'' + esc(task.id) + '\')">' +
+            '<div class="row-main"><div class="row-name">' + esc(task.title) + '</div><div class="row-meta">' + esc(task.branch_name) + '</div></div>' +
+            badge(task.status) +
+          '</button>'
+        ).join("");
     }
 
     function appendLog(line) {
       const log = document.getElementById("log-output");
-      log.textContent += `${line}\n`;
+      if (!log) return;
+      log.textContent += line + "\n";
       log.scrollTop = log.scrollHeight;
     }
 
     function connectEvents() {
-      openSse(`/api/events?token=${encodeURIComponent(ensureToken())}`);
+      const title = document.getElementById("log-title");
+      if (title) title.textContent = "System Events";
+      openSse("/api/events?token=" + encodeURIComponent(ensureToken()));
     }
 
     function connectTaskLogs(taskId) {
-      document.querySelector("[data-tab='logs']").click();
-      openSse(`/api/tasks/${taskId}/logs?token=${encodeURIComponent(ensureToken())}`);
+      const task = currentTasks.find(item => item.id === taskId);
+      const title = document.getElementById("log-title");
+      if (title) title.textContent = task ? task.title : "Task Logs";
+      openSse("/api/tasks/" + taskId + "/logs?token=" + encodeURIComponent(ensureToken()));
     }
 
     function openSse(path) {
       if (eventSource) eventSource.close();
-      document.getElementById("log-output").textContent = "";
-      eventSource = new EventSource(`${API}${path}`);
+      const logEl = document.getElementById("log-output");
+      if (logEl) logEl.textContent = "";
+      eventSource = new EventSource(API + path);
       eventSource.onopen = () => appendLog("connected");
       eventSource.onerror = () => appendLog("connection error");
       eventSource.onmessage = event => appendLog(event.data);
       ["plan_activated", "agent_dispatched", "review_completed", "improvement_proposed",
        "task_completed", "task_failed", "task_retry", "opus_queued", "log", "agent_log"].forEach(type => {
-        eventSource.addEventListener(type, event => appendLog(`[${type}] ${event.data}`));
+        eventSource.addEventListener(type, event => appendLog("[" + type + "] " + event.data));
       });
     }
 
@@ -478,19 +822,26 @@
       if (!token) return;
       try {
         const status = await api("GET", "/api/status");
-        const opus = status.opus_state.status;
-        const dot = document.getElementById("opus-dot");
-        dot.className = `dot ${opus}`;
-        document.getElementById("opus-status").textContent = opus;
-        document.getElementById("agent-count").textContent = status.active_agents;
-        document.getElementById("queue-count").textContent = status.opus_state.queued_count;
+        document.getElementById("stat-agents").textContent = status.active_agents;
+        document.getElementById("stat-queue").textContent = status.opus_state.queued_count;
+        setConnection("agent", status.agent_model, status.opus_state.status);
+        setConnection("subagent", status.subagent_model, status.subagent_model.connected ? "connected" : "disconnected");
       } catch (error) {
-        document.getElementById("opus-status").textContent = "offline";
+        setConnection("agent", { name: "offline", connected: false }, "disconnected");
+        setConnection("subagent", { name: "offline", connected: false }, "disconnected");
       }
     }
 
+    function setConnection(prefix, info, status) {
+      const dot = document.getElementById(prefix + "-dot");
+      const model = document.getElementById(prefix + "-model");
+      const connected = info && info.connected;
+      dot.className = "conn-dot " + (status === "rate_limited" ? "rate_limited" : connected ? "connected" : "disconnected");
+      model.textContent = info && info.name ? info.name : "unknown";
+    }
+
     ensureToken();
-    loadProjects().catch(error => appendLog(error.message));
+    switchView("projects").catch(error => appendLog(error.message));
     pollStatus();
     window.setInterval(pollStatus, 5000);
   </script>
