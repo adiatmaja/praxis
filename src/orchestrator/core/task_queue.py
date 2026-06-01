@@ -1,0 +1,190 @@
+"""Plan and task lifecycle management."""
+
+from __future__ import annotations
+
+import json
+import logging
+import uuid
+from datetime import UTC, datetime
+from typing import Any
+
+from orchestrator.database import Database
+from orchestrator.models.schemas import PlanStatus, TaskStatus
+
+
+logger = logging.getLogger(__name__)
+
+
+class TaskQueue:
+    """Manage plan, task, and agent-run lifecycle with SQLite persistence."""
+
+    def __init__(self, db: Database) -> None:
+        self._db = db
+
+    async def create_plan(
+        self,
+        project_id: str,
+        spec: str,
+        source: str = "user",
+        confidence: float | None = None,
+        confidence_reason: str | None = None,
+    ) -> str:
+        plan_id = str(uuid.uuid4())
+        await self._db.execute(
+            """INSERT INTO plans
+               (id, project_id, spec, source, confidence, confidence_reason)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (plan_id, project_id, spec, source, confidence, confidence_reason),
+        )
+        logger.info("Created plan %s for project %s", plan_id, project_id)
+        return plan_id
+
+    async def get_plan(self, plan_id: str) -> dict[str, Any] | None:
+        return await self._db.fetch_one("SELECT * FROM plans WHERE id = ?", (plan_id,))
+
+    async def get_plans_for_project(self, project_id: str) -> list[dict[str, Any]]:
+        return await self._db.fetch_all(
+            "SELECT * FROM plans WHERE project_id = ? ORDER BY created_at DESC, rowid",
+            (project_id,),
+        )
+
+    async def activate_plan(
+        self,
+        plan_id: str,
+        opus_plan: dict[str, Any],
+        plan_branch_name: str,
+    ) -> None:
+        await self._db.execute(
+            """UPDATE plans
+               SET status = ?, opus_plan = ?, plan_branch_name = ?
+               WHERE id = ?""",
+            (PlanStatus.ACTIVE, json.dumps(opus_plan), plan_branch_name, plan_id),
+        )
+        for task_data in opus_plan["tasks"]:
+            task_id = str(uuid.uuid4())
+            await self._db.execute(
+                """INSERT INTO tasks
+                   (id, plan_id, title, description, branch_name)
+                   VALUES (?, ?, ?, ?, ?)""",
+                (
+                    task_id,
+                    plan_id,
+                    task_data["title"],
+                    task_data["description"],
+                    f"agent/{task_data['slug']}",
+                ),
+            )
+        logger.info("Activated plan %s with %d tasks", plan_id, len(opus_plan["tasks"]))
+
+    async def update_plan_status(self, plan_id: str, status: PlanStatus) -> None:
+        await self._db.execute(
+            "UPDATE plans SET status = ? WHERE id = ?",
+            (status, plan_id),
+        )
+
+    async def get_task(self, task_id: str) -> dict[str, Any] | None:
+        return await self._db.fetch_one("SELECT * FROM tasks WHERE id = ?", (task_id,))
+
+    async def get_tasks_for_plan(self, plan_id: str) -> list[dict[str, Any]]:
+        return await self._db.fetch_all(
+            "SELECT * FROM tasks WHERE plan_id = ? ORDER BY rowid",
+            (plan_id,),
+        )
+
+    async def update_task_status(self, task_id: str, status: TaskStatus | str) -> None:
+        now = datetime.now(UTC).isoformat()
+        await self._db.execute(
+            "UPDATE tasks SET status = ?, updated_at = ? WHERE id = ?",
+            (status, now, task_id),
+        )
+
+    async def fail_task(self, task_id: str, feedback: str) -> None:
+        now = datetime.now(UTC).isoformat()
+        await self._db.execute(
+            """UPDATE tasks
+               SET status = ?, review_feedback = ?, updated_at = ?
+               WHERE id = ?""",
+            (TaskStatus.FAILED, feedback, now, task_id),
+        )
+
+    async def retry_task(self, task_id: str) -> None:
+        task = await self.get_task(task_id)
+        if task is None:
+            message = f"Task {task_id} not found"
+            raise ValueError(message)
+        now = datetime.now(UTC).isoformat()
+        await self._db.execute(
+            """UPDATE tasks
+               SET status = ?, attempt = ?, updated_at = ?
+               WHERE id = ?""",
+            (TaskStatus.PENDING, int(task["attempt"]) + 1, now, task_id),
+        )
+
+    async def set_task_pr_url(self, task_id: str, pr_url: str) -> None:
+        now = datetime.now(UTC).isoformat()
+        await self._db.execute(
+            "UPDATE tasks SET pr_url = ?, updated_at = ? WHERE id = ?",
+            (pr_url, now, task_id),
+        )
+
+    async def get_dispatchable_tasks(self, plan_id: str) -> list[dict[str, Any]]:
+        """Return pending tasks whose declared dependencies are merged."""
+        plan = await self.get_plan(plan_id)
+        if plan is None or plan["opus_plan"] is None:
+            return []
+
+        opus_plan = json.loads(plan["opus_plan"])
+        tasks = await self.get_tasks_for_plan(plan_id)
+        slug_to_task = {
+            task_data["slug"]: tasks[index]
+            for index, task_data in enumerate(opus_plan["tasks"])
+            if index < len(tasks)
+        }
+
+        dispatchable: list[dict[str, Any]] = []
+        for task_data in opus_plan["tasks"]:
+            task = slug_to_task.get(task_data["slug"])
+            if task is None or task["status"] != TaskStatus.PENDING:
+                continue
+            dependencies = task_data.get("depends_on", [])
+            if all(
+                slug_to_task.get(dep, {}).get("status") == TaskStatus.MERGED
+                for dep in dependencies
+            ):
+                dispatchable.append(task)
+        return dispatchable
+
+    async def all_tasks_done(self, plan_id: str) -> bool:
+        tasks = await self.get_tasks_for_plan(plan_id)
+        return bool(tasks) and all(
+            task["status"] == TaskStatus.MERGED for task in tasks
+        )
+
+    async def create_agent_run(self, task_id: str, container_id: str) -> str:
+        run_id = str(uuid.uuid4())
+        await self._db.execute(
+            "INSERT INTO agent_runs (id, task_id, container_id) VALUES (?, ?, ?)",
+            (run_id, task_id, container_id),
+        )
+        return run_id
+
+    async def get_agent_run(self, run_id: str) -> dict[str, Any] | None:
+        return await self._db.fetch_one(
+            "SELECT * FROM agent_runs WHERE id = ?",
+            (run_id,),
+        )
+
+    async def get_runs_for_task(self, task_id: str) -> list[dict[str, Any]]:
+        return await self._db.fetch_all(
+            "SELECT * FROM agent_runs WHERE task_id = ? ORDER BY rowid",
+            (task_id,),
+        )
+
+    async def complete_agent_run(self, run_id: str, status: str, logs: str) -> None:
+        now = datetime.now(UTC).isoformat()
+        await self._db.execute(
+            """UPDATE agent_runs
+               SET status = ?, logs = ?, finished_at = ?
+               WHERE id = ?""",
+            (status, logs, now, run_id),
+        )
