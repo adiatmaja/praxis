@@ -6,6 +6,7 @@ import uuid
 from typing import Any, cast
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi.responses import Response
 
 from orchestrator.api.auth import verify_token
 from orchestrator.models.schemas import ProjectCreate, ProjectResponse, ProjectUpdate
@@ -111,3 +112,18 @@ async def update_project(
     if updated is None:
         raise HTTPException(status_code=500, detail="Project update failed")
     return cast(dict[str, Any], updated)
+
+
+@router.delete("/projects/{project_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_project(request: Request, project_id: str) -> Response:
+    """Delete a project."""
+
+    db = request.app.state.db
+    project = await db.fetch_one("SELECT id FROM projects WHERE id = ?", (project_id,))
+    if project is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Project not found"
+        )
+
+    await db.execute("DELETE FROM projects WHERE id = ?", (project_id,))
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
