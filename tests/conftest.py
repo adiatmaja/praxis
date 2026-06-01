@@ -3,11 +3,17 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import pytest
+import pytest_asyncio
+from httpx import ASGITransport, AsyncClient
 
 from orchestrator.config import Settings
+from orchestrator.core.opus_bridge import OpusBridge
+from orchestrator.core.task_queue import TaskQueue
 from orchestrator.database import Database
+from orchestrator.main import app
 
 
 @pytest.fixture
@@ -25,3 +31,49 @@ async def db(test_settings: Settings) -> Database:
     await database.initialize()
     yield database
     await database.close()
+
+
+class FakeAgentManager:
+    """Test double for Docker-backed agent manager."""
+
+    def __init__(self) -> None:
+        self.stopped: list[str] = []
+        self.cleaned: list[str] = []
+
+    def stop_agent(self, container_id: str) -> None:
+        self.stopped.append(container_id)
+
+    def get_container_logs(self, container_id: str, tail: int = 500) -> str:
+        return f"logs for {container_id}"
+
+    def cleanup_container(self, container_id: str) -> None:
+        self.cleaned.append(container_id)
+
+    def list_agent_containers(self) -> list[dict[str, Any]]:
+        return []
+
+
+@pytest_asyncio.fixture
+async def client(db: Database, test_settings: Settings) -> AsyncClient:
+    app.state.db = db
+    app.state.settings = test_settings
+    app.state.task_queue = TaskQueue(db)
+    app.state.opus_bridge = OpusBridge(db)
+    app.state.agent_manager = FakeAgentManager()
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as async_client:
+        async_client.app = app  # type: ignore[attr-defined]
+        yield async_client
+
+
+@pytest.fixture
+def auth_headers() -> dict[str, str]:
+    return {"Authorization": "Bearer test-auth"}
+
+
+async def seed_user(db: Database) -> str:
+    await db.execute(
+        "INSERT INTO users (id, name, token_hash) VALUES (?, ?, ?)",
+        ("test-user", "Test User", "hash"),
+    )
+    return "test-user"
