@@ -1067,7 +1067,7 @@
       });
     }
 
-    async function loadDashboard() {
+    async function loadDashboard(options = {}) {
       if (!projects.length) await loadProjects();
       if (!plans.length) await loadPlans();
       const activePlans = plans.filter(plan => plan.status === "active");
@@ -1088,7 +1088,7 @@
       }
 
       renderDashboard();
-      connectDashboardSse();
+      if (!options.skipSseReconnect) connectDashboardSse();
     }
 
     function renderDashboard() {
@@ -1334,7 +1334,7 @@
           logLineEl.textContent = dashboardTaskLogs[taskId] || "";
         });
 
-        if (selectedDashboardTaskId === taskId) {
+        if (String(selectedDashboardTaskId) === String(taskId)) {
           const logTail = document.getElementById("dashboard-log-tail");
           if (!logTail) return;
           logTail.textContent += logText + "\n";
@@ -1344,7 +1344,7 @@
 
       ["plan_activated", "agent_dispatched", "review_completed", "task_completed", "task_failed", "task_retry", "improvement_proposed"].forEach(type => {
         source.addEventListener(type, () => {
-          if (currentView === "dashboard") void loadDashboard();
+          if (currentView === "dashboard") void loadDashboard({ skipSseReconnect: true });
         });
       });
 
