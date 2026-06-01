@@ -1197,46 +1197,10 @@
 
     function openDashboardTask(taskId, planId) {
       selectedDashboardTaskId = taskId;
-      const sidePanel = document.getElementById("dashboard-side-panel");
-      if (!sidePanel) return;
-      const task = (dashboardTasks[planId] || []).find(item => item.id === taskId);
-      if (!task) return;
-      sidePanel.classList.add("open");
-      sidePanel.innerHTML =
-        '<div class="side-panel-header">' +
-          '<div><div class="detail-title">' + esc(task.title) + '</div><div class="detail-subtitle">' + esc(task.branch_name || "-") + '</div></div>' +
-          '<button class="side-panel-close" type="button" onclick="selectedDashboardTaskId=null;renderDashboard()">x</button>' +
-        '</div>' +
-        '<div class="side-panel-content">' +
-          '<div class="detail-field"><span class="field-label">Status</span><span class="field-value">' + badge(task.status) + '</span></div>' +
-          '<div class="detail-field"><span class="field-label">Attempt</span><span class="field-value">' + esc(task.attempt) + '</span></div>' +
-          (task.description ? '<div class="detail-section"><div class="detail-section-title">Description</div><div class="detail-card" style="white-space:pre-wrap;font-size:12px;line-height:1.5;">' + esc(task.description) + '</div></div>' : "") +
-          '<div class="detail-section"><div class="detail-section-title">Live Log</div><div class="side-panel-log">' + esc(dashboardTaskLogs[task.id] || "No logs yet") + '</div></div>' +
-        '</div>' +
-        '<div class="side-panel-actions">' +
-          (task.pr_url ? '<a class="btn btn-compact" href="' + esc(task.pr_url) + '" target="_blank" rel="noreferrer">View PR</a>' : "") +
-          '<button class="btn btn-compact" type="button" onclick="viewTaskLogs(\'' + esc(task.id) + '\')">Full Logs</button>' +
-        '</div>';
     }
 
     function connectDashboardSse() {
-      if (dashboardSseSource) dashboardSseSource.close();
-      dashboardSseSource = new EventSource(API + "/api/events?token=" + encodeURIComponent(ensureToken()));
-      dashboardSseSource.onerror = function() { /* keep quiet; dashboard remains usable */ };
-      dashboardSseSource.addEventListener("agent_log", function(event) {
-        try {
-          const payload = JSON.parse(event.data);
-          if (!payload.task_id) return;
-          dashboardTaskLogs[payload.task_id] = payload.message || payload.log || event.data;
-        } catch (error) {
-          // not json, skip
-        }
-      });
-      ["task_completed", "task_failed", "task_retry", "review_completed", "plan_activated"].forEach(type => {
-        dashboardSseSource.addEventListener(type, () => {
-          loadDashboard();
-        });
-      });
+      /* implemented in Task 6 */
     }
 
     function toggleSpec(planId) {
