@@ -1056,8 +1056,219 @@
     async function loadDashboard() {
       if (!projects.length) await loadProjects();
       if (!plans.length) await loadPlans();
+      const activePlans = plans.filter(plan => plan.status === "active");
+      const pendingPlans = plans.filter(plan => plan.status === "pending");
+      const completedPlans = plans.filter(plan => plan.status === "completed").slice(0, 5);
+      const plansToLoad = [...activePlans, ...pendingPlans, ...completedPlans];
+
+      for (const plan of plansToLoad) {
+        try {
+          dashboardTasks[plan.id] = await api("GET", "/api/plans/" + plan.id + "/tasks");
+        } catch (error) {
+          dashboardTasks[plan.id] = [];
+        }
+      }
+
+      renderDashboard();
+      connectDashboardSse();
+    }
+
+    function renderDashboard() {
+      const activePendingPlans = plans.filter(plan => plan.status === "active" || plan.status === "pending");
+      const completedPlans = plans.filter(plan => plan.status === "completed").slice(0, 5);
+      const attentionCount = plans.filter(plan => plan.status === "pending").length +
+        Object.values(dashboardTasks).flat().filter(task => task.status === "failed").length;
+      const lanesHtml = activePendingPlans.map(renderSwimLane).join("");
+      const completedHtml = completedPlans.length ? completedPlans.map(renderCompletedLane).join("") : "";
+      const bodyHtml = activePendingPlans.length ?
+        lanesHtml + completedHtml :
+        '<div class="dashboard-idle"><div>No active plans right now</div><div style="font-size:12px;margin-top:8px;">Submit a spec to start orchestration.</div></div>' +
+        completedHtml;
       const container = document.getElementById("view-container");
-      container.innerHTML = '<div class="dashboard-idle">Loading dashboard...</div>';
+      container.innerHTML =
+        renderHealthBar(attentionCount) +
+        '<div class="dashboard-body">' +
+          '<div class="dashboard-lanes">' + bodyHtml + '</div>' +
+          '<div class="side-panel" id="dashboard-side-panel"></div>' +
+        '</div>';
+      if (selectedDashboardTaskId) {
+        const selectedTask = Object.values(dashboardTasks).flat().find(task => task.id === selectedDashboardTaskId);
+        if (selectedTask) {
+          openDashboardTask(selectedTask.id, selectedTask.plan_id);
+        } else {
+          selectedDashboardTaskId = null;
+        }
+      }
+    }
+
+    function renderHealthBar(attentionCount) {
+      const agentDot = document.getElementById("agent-dot");
+      const agentCount = Number(document.getElementById("stat-agents")?.textContent || 0);
+      const queueCount = Number(document.getElementById("stat-queue")?.textContent || 0);
+      let opusStatus = "unknown";
+      if (agentDot && agentDot.classList.contains("rate_limited")) opusStatus = "rate_limited";
+      if (agentDot && agentDot.classList.contains("connected")) opusStatus = "available";
+      if (agentDot && agentDot.classList.contains("disconnected")) opusStatus = "resuming";
+      const attentionBadge = attentionCount > 0 ? '<span class="health-attention">' + attentionCount + ' needs attention</span>' : "";
+      return '<div class="health-bar">' +
+        '<div class="health-item"><span class="health-dot ' + esc(opusStatus) + '"></span><span>Opus ' + esc(opusStatus.replace("_", " ")) + '</span></div>' +
+        '<div class="health-item"><span>Agents: ' + esc(agentCount) + '</span></div>' +
+        '<div class="health-item"><span>Queue: ' + esc(queueCount) + '</span></div>' +
+        '<span class="health-spacer"></span>' + attentionBadge +
+      '</div>';
+    }
+
+    function renderSwimLane(plan) {
+      const tasks = (dashboardTasks[plan.id] || []).slice();
+      const statusOrder = { merged: 0, passed: 1, reviewing: 2, in_progress: 3, failed: 4, pending: 5 };
+      tasks.sort((a, b) => (statusOrder[a.status] ?? 99) - (statusOrder[b.status] ?? 99));
+      const isSpecExpanded = expandedSpecs.has(plan.id);
+      const specPreview = esc(plan.spec).slice(0, 80);
+      const approvalActions = (plan.status === "pending" && plan.source === "autonomous") ?
+        '<button class="btn btn-compact btn-primary" type="button" onclick="dashboardApprove(\'' + esc(plan.id) + '\')">Approve</button>' +
+        '<button class="btn btn-compact btn-danger" type="button" onclick="dashboardReject(\'' + esc(plan.id) + '\')">Reject</button>' : "";
+      const taskCards = tasks.length ? tasks.map(renderTaskCard).join("") :
+        '<div class="card-meta" style="padding:2px 0;">Planning in progress - task cards will appear shortly.</div>';
+      return '<section class="swim-lane">' +
+        '<div class="lane-header">' +
+          badge(plan.status) +
+          '<div class="lane-spec">' + specPreview + '</div>' +
+          '<div class="lane-meta">' + esc(plan.projectName || "unknown") + " - " + esc(plan.plan_branch_name || "-") + '</div>' +
+          '<button class="btn btn-compact" type="button" onclick="toggleSpec(\'' + esc(plan.id) + '\')">' + (isSpecExpanded ? "Hide Spec" : "View Spec") + '</button>' +
+          approvalActions +
+        '</div>' +
+        (isSpecExpanded ? '<div class="lane-spec-full">' + esc(plan.spec) + '</div>' : "") +
+        '<div class="lane-cards">' + taskCards + '</div>' +
+      '</section>';
+    }
+
+    function renderTaskCard(task) {
+      const isSelected = selectedDashboardTaskId === task.id;
+      const isPulsing = task.status === "in_progress" || task.status === "reviewing";
+      const pulseClass = task.status === "reviewing" ? "amber" : "green";
+      const retryAction = task.status === "failed" ?
+        '<button class="btn btn-compact btn-danger" type="button" onclick="event.stopPropagation();dashboardRetry(\'' + esc(task.id) + '\')">Retry</button>' : "";
+      const prLink = task.pr_url ?
+        '<a href="' + esc(task.pr_url) + '" target="_blank" rel="noreferrer" onclick="event.stopPropagation()">PR</a>' : "";
+      const logLine = dashboardTaskLogs[task.id] ? '<div class="card-log-line">' + esc(dashboardTaskLogs[task.id]) + '</div>' : "";
+      return '<article class="task-card status-' + esc(task.status) + (isSelected ? " selected" : "") +
+        '" onclick="openDashboardTask(\'' + esc(task.id) + '\',\'' + esc(task.plan_id) + '\')">' +
+        '<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;">' +
+          badge(task.status) +
+          (isPulsing ? '<span class="pulse-dot ' + pulseClass + '"></span>' : "") +
+        '</div>' +
+        '<div class="card-title">' + esc(task.title) + '</div>' +
+        '<div class="card-meta">' + esc(task.branch_name || "-") + '</div>' +
+        '<div class="card-meta" style="display:flex;align-items:center;gap:8px;margin-top:6px;">' + retryAction + prLink + '</div>' +
+        logLine +
+      '</article>';
+    }
+
+    function renderCompletedLane(plan) {
+      const isExpanded = expandedCompletedPlans.has(plan.id);
+      const tasks = dashboardTasks[plan.id] || [];
+      const mergedCount = tasks.filter(task => task.status === "merged").length;
+      const specPreview = esc(plan.spec).slice(0, 80);
+      return '<section class="swim-lane completed-lane' + (isExpanded ? " expanded" : "") + '">' +
+        '<div class="completed-header" onclick="toggleCompletedPlan(\'' + esc(plan.id) + '\')">' +
+          '<span class="disclosure' + (isExpanded ? " open" : "") + '">></span>' +
+          '<span class="badge completed">completed</span>' +
+          '<span class="lane-spec">' + specPreview + '</span>' +
+          '<span class="completed-meta">' + mergedCount + "/" + tasks.length + ' merged</span>' +
+          '<span class="completed-meta">' + esc(timeAgo(plan.created_at)) + '</span>' +
+        '</div>' +
+        (isExpanded ? '<div class="lane-cards">' + (tasks.length ? tasks.map(renderTaskCard).join("") : '<div class="card-meta">No tasks</div>') + '</div>' : "") +
+      '</section>';
+    }
+
+    function timeAgo(isoString) {
+      if (!isoString) return "-";
+      const then = new Date(isoString).getTime();
+      if (Number.isNaN(then)) return "-";
+      const seconds = Math.max(0, Math.floor((Date.now() - then) / 1000));
+      if (seconds < 60) return seconds + "s ago";
+      const minutes = Math.floor(seconds / 60);
+      if (minutes < 60) return minutes + "m ago";
+      const hours = Math.floor(minutes / 60);
+      if (hours < 24) return hours + "h ago";
+      const days = Math.floor(hours / 24);
+      return days + "d ago";
+    }
+
+    function openDashboardTask(taskId, planId) {
+      selectedDashboardTaskId = taskId;
+      const sidePanel = document.getElementById("dashboard-side-panel");
+      if (!sidePanel) return;
+      const task = (dashboardTasks[planId] || []).find(item => item.id === taskId);
+      if (!task) return;
+      sidePanel.classList.add("open");
+      sidePanel.innerHTML =
+        '<div class="side-panel-header">' +
+          '<div><div class="detail-title">' + esc(task.title) + '</div><div class="detail-subtitle">' + esc(task.branch_name || "-") + '</div></div>' +
+          '<button class="side-panel-close" type="button" onclick="selectedDashboardTaskId=null;renderDashboard()">x</button>' +
+        '</div>' +
+        '<div class="side-panel-content">' +
+          '<div class="detail-field"><span class="field-label">Status</span><span class="field-value">' + badge(task.status) + '</span></div>' +
+          '<div class="detail-field"><span class="field-label">Attempt</span><span class="field-value">' + esc(task.attempt) + '</span></div>' +
+          (task.description ? '<div class="detail-section"><div class="detail-section-title">Description</div><div class="detail-card" style="white-space:pre-wrap;font-size:12px;line-height:1.5;">' + esc(task.description) + '</div></div>' : "") +
+          '<div class="detail-section"><div class="detail-section-title">Live Log</div><div class="side-panel-log">' + esc(dashboardTaskLogs[task.id] || "No logs yet") + '</div></div>' +
+        '</div>' +
+        '<div class="side-panel-actions">' +
+          (task.pr_url ? '<a class="btn btn-compact" href="' + esc(task.pr_url) + '" target="_blank" rel="noreferrer">View PR</a>' : "") +
+          '<button class="btn btn-compact" type="button" onclick="viewTaskLogs(\'' + esc(task.id) + '\')">Full Logs</button>' +
+        '</div>';
+    }
+
+    function connectDashboardSse() {
+      if (dashboardSseSource) dashboardSseSource.close();
+      dashboardSseSource = new EventSource(API + "/api/events?token=" + encodeURIComponent(ensureToken()));
+      dashboardSseSource.onerror = function() { /* keep quiet; dashboard remains usable */ };
+      dashboardSseSource.addEventListener("agent_log", function(event) {
+        try {
+          const payload = JSON.parse(event.data);
+          if (!payload.task_id) return;
+          dashboardTaskLogs[payload.task_id] = payload.message || payload.log || event.data;
+        } catch (error) {
+          // not json, skip
+        }
+      });
+      ["task_completed", "task_failed", "task_retry", "review_completed", "plan_activated"].forEach(type => {
+        dashboardSseSource.addEventListener(type, () => {
+          loadDashboard();
+        });
+      });
+    }
+
+    function toggleSpec(planId) {
+      if (expandedSpecs.has(planId)) expandedSpecs.delete(planId); else expandedSpecs.add(planId);
+      renderDashboard();
+    }
+
+    function toggleCompletedPlan(planId) {
+      if (expandedCompletedPlans.has(planId)) expandedCompletedPlans.delete(planId); else expandedCompletedPlans.add(planId);
+      renderDashboard();
+    }
+
+    async function dashboardApprove(planId) {
+      await api("POST", "/api/plans/" + planId + "/approve");
+      await loadPlans();
+      await loadDashboard();
+    }
+
+    async function dashboardReject(planId) {
+      await api("POST", "/api/plans/" + planId + "/reject");
+      await loadPlans();
+      await loadDashboard();
+    }
+
+    async function dashboardRetry(taskId) {
+      await api("POST", "/api/tasks/" + taskId + "/retry");
+      const owningPlan = Object.entries(dashboardTasks).find(([, tasks]) => tasks.some(task => task.id === taskId));
+      if (owningPlan) {
+        const planId = owningPlan[0];
+        dashboardTasks[planId] = await api("GET", "/api/plans/" + planId + "/tasks");
+      }
+      renderDashboard();
     }
 
     async function pollStatus() {
