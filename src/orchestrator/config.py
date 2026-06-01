@@ -12,6 +12,7 @@ class Settings(BaseSettings):
     github_token: str
     database_url: str = "sqlite+aiosqlite:///data/orchestrator.db"
     lm_studio_url: str = "http://host.docker.internal:1234"
+    agent_model_name: str = "claude-opus-4-6"
     host: str = "0.0.0.0"  # noqa: S104
     port: int = 8080
 
