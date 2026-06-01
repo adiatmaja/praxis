@@ -118,7 +118,9 @@ class Orchestrator:
 
         pr_number = await self._git.extract_pr_number(task["pr_url"])
         diff = await self._git.get_pr_diff(".", pr_number)
-        review = await self._opus.review_diff(diff, task["description"] or task["title"])
+        review = await self._opus.review_diff(
+            diff, task["description"] or task["title"]
+        )
         verdict = str(review["verdict"]).lower()
         feedback = str(review.get("feedback", ""))
 
