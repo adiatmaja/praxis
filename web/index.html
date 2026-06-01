@@ -1156,7 +1156,7 @@
         '<a href="' + esc(task.pr_url) + '" target="_blank" rel="noreferrer" onclick="event.stopPropagation()">PR</a>' : "";
       const logLine = dashboardTaskLogs[task.id] ? '<div class="card-log-line">' + esc(dashboardTaskLogs[task.id]) + '</div>' : "";
       return '<article class="task-card status-' + esc(task.status) + (isSelected ? " selected" : "") +
-        '" onclick="openDashboardTask(\'' + esc(task.id) + '\',\'' + esc(task.plan_id) + '\')">' +
+        '" data-task-id="' + esc(task.id) + '" onclick="openDashboardTask(\'' + esc(task.id) + '\',\'' + esc(task.plan_id) + '\')">' +
         '<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;">' +
           badge(task.status) +
           (isPulsing ? '<span class="pulse-dot ' + pulseClass + '"></span>' : "") +
@@ -1201,6 +1201,66 @@
 
     function openDashboardTask(taskId, planId) {
       selectedDashboardTaskId = taskId;
+      const task = (dashboardTasks[planId] || []).find(item => item.id === taskId);
+      if (!task) return;
+      document.querySelectorAll(".task-card").forEach(el => {
+        el.classList.toggle("selected", el.dataset.taskId === taskId);
+      });
+      renderSidePanel(task);
+    }
+
+    function renderSidePanel(task) {
+      const panel = document.getElementById("dashboard-side-panel");
+      if (!panel) return;
+      const stopBtn = task.status === "in_progress" ?
+        '<button class="btn btn-danger" type="button" onclick="dashboardStop(\'' + esc(task.id) + '\')">Stop</button>' : "";
+      const retryBtn = task.status === "failed" ?
+        '<button class="btn btn-danger" type="button" onclick="dashboardRetry(\'' + esc(task.id) + '\')">Retry</button>' : "";
+      const logsBtn = '<button class="btn" type="button" onclick="viewTaskLogs(\'' + esc(task.id) + '\')">View Full Logs</button>';
+      panel.innerHTML =
+        '<div class="side-panel-header">' +
+          '<div class="side-panel-title-wrap">' +
+            '<div class="side-panel-title">' + esc(task.title) + '</div>' +
+            '<div class="side-panel-branch">' + esc(task.branch_name || "-") + '</div>' +
+          '</div>' +
+          '<button class="side-panel-close" type="button" onclick="closeDashboardPanel()">x</button>' +
+        '</div>' +
+        '<div class="side-panel-content">' +
+          '<div class="side-panel-section">' +
+            '<div class="side-panel-section-title">Details</div>' +
+            '<div class="side-panel-field"><span>Status</span><span>' + badge(task.status) + '</span></div>' +
+            '<div class="side-panel-field"><span>Attempt</span><span>' + esc(task.attempt) + '</span></div>' +
+            '<div class="side-panel-field"><span>PR</span><span>' + (task.pr_url ? '<a href="' + esc(task.pr_url) + '" target="_blank" rel="noreferrer">View PR</a>' : "-") + '</span></div>' +
+            '<div class="side-panel-field"><span>Created</span><span>' + esc(task.created_at || "-") + '</span></div>' +
+            '<div class="side-panel-field"><span>Updated</span><span>' + esc(task.updated_at || "-") + '</span></div>' +
+          '</div>' +
+          (task.description ? '<div class="side-panel-section"><div class="side-panel-section-title">Description</div><div class="side-panel-block">' + esc(task.description) + '</div></div>' : "") +
+          (task.review_feedback ? '<div class="side-panel-section"><div class="side-panel-section-title">Review Feedback</div><div class="side-panel-block">' + esc(task.review_feedback) + '</div></div>' : "") +
+          '<div class="side-panel-section"><div class="side-panel-section-title">Live Log</div><div class="side-panel-log" id="dashboard-log-tail"></div></div>' +
+        '</div>' +
+        '<div class="side-panel-actions">' + stopBtn + retryBtn + logsBtn + '</div>';
+      panel.classList.add("open");
+    }
+
+    function closeDashboardPanel() {
+      selectedDashboardTaskId = null;
+      const panel = document.getElementById("dashboard-side-panel");
+      if (panel) {
+        panel.classList.remove("open");
+        panel.innerHTML = "";
+      }
+      document.querySelectorAll(".task-card").forEach(el => el.classList.remove("selected"));
+    }
+
+    async function dashboardStop(taskId) {
+      await api("POST", "/api/tasks/" + taskId + "/stop");
+      const owningPlan = Object.entries(dashboardTasks).find(([, tasks]) => tasks.some(task => task.id === taskId));
+      if (owningPlan) {
+        const planId = owningPlan[0];
+        dashboardTasks[planId] = await api("GET", "/api/plans/" + planId + "/tasks");
+      }
+      closeDashboardPanel();
+      renderDashboard();
     }
 
     function connectDashboardSse() {
