@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from enum import StrEnum
 from sys import version_info
 from typing import TypedDict
@@ -63,13 +64,35 @@ class ProjectCreate(BaseModel):
     max_improvement_cycles: int = Field(default=5, ge=1, le=20)
     lm_studio_url: str = "http://host.docker.internal:1234"
 
-    @field_validator(
-        "name",
-        "repo_url",
-        "model_name",
-        "default_branch",
-        "lm_studio_url",
-    )
+    @field_validator("name")
+    @classmethod
+    def validate_name(cls, value: str) -> str:
+        trimmed = value.strip()
+        if not (2 <= len(trimmed) <= 100):
+            raise ValueError("name must be between 2 and 100 characters")
+        if not re.match(r"^[a-zA-Z0-9 _-]+$", trimmed):
+            raise ValueError("name can only contain alphanumeric characters, spaces, hyphens, and underscores")
+        return trimmed
+
+    @field_validator("repo_url")
+    @classmethod
+    def validate_repo_url(cls, value: str) -> str:
+        trimmed = value.strip()
+        if not trimmed.startswith("https://"):
+            raise ValueError("repo_url must start with https://")
+        return trimmed
+
+    @field_validator("model_name")
+    @classmethod
+    def validate_model_name(cls, value: str) -> str:
+        trimmed = value.strip()
+        if not trimmed:
+            raise ValueError("model_name must not be empty")
+        if len(trimmed) > 100:
+            raise ValueError("model_name must be at most 100 characters")
+        return trimmed
+
+    @field_validator("default_branch", "lm_studio_url")
     @classmethod
     def validate_required_nonempty(cls, value: str) -> str:
         trimmed = value.strip()
