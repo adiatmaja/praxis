@@ -1284,7 +1284,81 @@
     }
 
     function connectDashboardSse() {
-      /* implemented in Task 6 */
+      if (dashboardSseSource && dashboardSseSource !== eventSource) {
+        dashboardSseSource.close();
+      }
+      if (eventSource) eventSource.close();
+
+      const source = new EventSource(API + "/api/events?token=" + encodeURIComponent(ensureToken()));
+      eventSource = source;
+      dashboardSseSource = source;
+
+      source.onerror = () => {
+        const healthBar = document.querySelector(".health-bar");
+        if (!healthBar || healthBar.querySelector(".reconnecting")) return;
+        const reconnecting = document.createElement("span");
+        reconnecting.className = "reconnecting";
+        reconnecting.style.cssText = "color:var(--badge-reviewing-text);font-size:11px;";
+        reconnecting.textContent = "reconnecting...";
+        healthBar.appendChild(reconnecting);
+      };
+
+      source.onopen = () => {
+        const reconnecting = document.querySelector(".health-bar .reconnecting");
+        if (reconnecting) reconnecting.remove();
+      };
+
+      source.addEventListener("agent_log", event => {
+        let data;
+        try {
+          data = JSON.parse(event.data);
+        } catch (error) {
+          return;
+        }
+
+        const taskId = data?.task_id;
+        if (!taskId) return;
+
+        const logText = String(data.logs || data.line || "");
+        const lines = logText.split(/\r?\n/).map(line => line.trim()).filter(Boolean);
+        if (lines.length) dashboardTaskLogs[taskId] = lines[lines.length - 1];
+
+        document.querySelectorAll(".task-card").forEach(card => {
+          if (card.dataset.taskId !== String(taskId)) return;
+          let logLineEl = card.querySelector(".card-log-line");
+          if (!logLineEl) {
+            logLineEl = document.createElement("div");
+            logLineEl.className = "card-log-line";
+            card.appendChild(logLineEl);
+          }
+          logLineEl.textContent = dashboardTaskLogs[taskId] || "";
+        });
+
+        if (selectedDashboardTaskId === taskId) {
+          const logTail = document.getElementById("dashboard-log-tail");
+          if (!logTail) return;
+          logTail.textContent += logText + "\n";
+          logTail.scrollTop = logTail.scrollHeight;
+        }
+      });
+
+      ["plan_activated", "agent_dispatched", "review_completed", "task_completed", "task_failed", "task_retry", "improvement_proposed"].forEach(type => {
+        source.addEventListener(type, () => {
+          if (currentView === "dashboard") void loadDashboard();
+        });
+      });
+
+      source.addEventListener("opus_queued", event => {
+        let data;
+        try {
+          data = JSON.parse(event.data);
+        } catch (error) {
+          return;
+        }
+        if (data?.queued_count != null) {
+          document.getElementById("stat-queue").textContent = String(data.queued_count);
+        }
+      });
     }
 
     function toggleSpec(planId) {
