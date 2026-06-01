@@ -1068,8 +1068,8 @@
     }
 
     async function loadDashboard(options = {}) {
-      if (!projects.length) await loadProjects();
-      if (!plans.length) await loadPlans();
+      await loadProjects();
+      await loadPlans();
       const activePlans = plans.filter(plan => plan.status === "active");
       const pendingPlans = plans.filter(plan => plan.status === "pending");
       const completedPlans = plans.filter(plan => plan.status === "completed").slice(0, 5);
