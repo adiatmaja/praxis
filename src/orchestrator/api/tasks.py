@@ -66,3 +66,27 @@ async def stop_task(request: Request, task_id: str) -> dict[str, int]:
         stopped += 1
     await queue.update_task_status(task_id, TaskStatus.FAILED)
     return {"stopped": stopped}
+
+
+@router.post("/tasks/{task_id}/retry", response_model=TaskResponse)
+async def retry_task(request: Request, task_id: str) -> dict[str, Any]:
+    """Retry a failed task by resetting it to pending."""
+
+    queue = request.app.state.task_queue
+    task = await queue.get_task(task_id)
+    if task is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Task not found"
+        )
+    if task["status"] != TaskStatus.FAILED:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Task is not failed - only failed tasks can be retried",
+        )
+    await queue.retry_task(task_id)
+
+    event_bus = request.app.state.event_bus
+    event_bus.publish({"type": "task_retry", "task_id": task_id})
+
+    updated = await queue.get_task(task_id)
+    return cast(dict[str, Any], updated)
