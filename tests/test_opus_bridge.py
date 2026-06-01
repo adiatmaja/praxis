@@ -177,9 +177,7 @@ async def test_is_available_resumes_after_resume_at() -> None:
     bridge._db.fetch_one = AsyncMock(
         return_value={
             "status": OpusStatus.RATE_LIMITED,
-            "resume_at": (
-                datetime.now(UTC) - timedelta(minutes=1)
-            ).isoformat(),
+            "resume_at": (datetime.now(UTC) - timedelta(minutes=1)).isoformat(),
         }
     )
     bridge._db.execute = AsyncMock()

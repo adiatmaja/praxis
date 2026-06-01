@@ -10,6 +10,10 @@ from pathlib import Path
 from fastapi import FastAPI
 
 from orchestrator.config import Settings
+from orchestrator.core.agent_manager import AgentManager
+from orchestrator.core.git_ops import GitOps
+from orchestrator.core.opus_bridge import OpusBridge
+from orchestrator.core.task_queue import TaskQueue
 from orchestrator.database import Database
 
 
@@ -34,6 +38,17 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     await database.initialize()
     app.state.db = database
     app.state.settings = settings
+    app.state.task_queue = TaskQueue(database)
+    app.state.opus_bridge = OpusBridge(database)
+    app.state.git_ops = GitOps(settings.github_token)
+    try:
+        app.state.agent_manager = AgentManager(
+            lm_studio_url=settings.lm_studio_url,
+            github_token=settings.github_token,
+        )
+    except Exception as exc:
+        logger.warning("Agent manager unavailable during startup: %s", exc)
+        app.state.agent_manager = None
     logger.info("Application startup complete")
 
     try:
@@ -44,6 +59,19 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 
 app = FastAPI(title="AI Agent Orchestrator", version="0.1.0", lifespan=lifespan)
+
+from orchestrator.api.internal import router as internal_router  # noqa: E402
+from orchestrator.api.plans import router as plans_router  # noqa: E402
+from orchestrator.api.projects import router as projects_router  # noqa: E402
+from orchestrator.api.system import router as system_router  # noqa: E402
+from orchestrator.api.tasks import router as tasks_router  # noqa: E402
+
+
+app.include_router(projects_router, prefix="/api")
+app.include_router(plans_router, prefix="/api")
+app.include_router(tasks_router, prefix="/api")
+app.include_router(system_router, prefix="/api")
+app.include_router(internal_router, prefix="/api/internal")
 
 
 @app.get("/health")
