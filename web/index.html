@@ -507,7 +507,8 @@
     </div>
     <nav class="sidebar-nav" aria-label="Views">
       <div class="nav-section">Workspace</div>
-      <button class="nav-item active" type="button" data-view="projects" onclick="switchView('projects')"><span class="nav-icon">P</span>Projects</button>
+      <button class="nav-item active" type="button" data-view="dashboard" onclick="switchView('dashboard')"><span class="nav-icon">D</span>Dashboard</button>
+      <button class="nav-item" type="button" data-view="projects" onclick="switchView('projects')"><span class="nav-icon">P</span>Projects</button>
       <button class="nav-item" type="button" data-view="plans" onclick="switchView('plans')"><span class="nav-icon">S</span>Plans</button>
       <button class="nav-item" type="button" data-view="tasks" onclick="switchView('tasks')"><span class="nav-icon">T</span>Tasks</button>
       <button class="nav-item" type="button" data-view="logs" onclick="switchView('logs')"><span class="nav-icon">L</span>Live Logs</button>
@@ -554,7 +555,7 @@
     const API = window.location.origin;
     let token = localStorage.getItem("praxis_token") || "";
     let eventSource = null;
-    let currentView = "projects";
+    let currentView = "dashboard";
     let projects = [];
     let plans = [];
     let currentTasks = [];
@@ -562,6 +563,12 @@
     let selectedPlanId = null;
     let selectedTaskId = null;
     let showingForm = false;
+    let dashboardTasks = {};       // map: planId -> tasks[]
+    let dashboardTaskLogs = {};    // map: taskId -> last log line
+    let selectedDashboardTaskId = null;
+    let expandedCompletedPlans = new Set();
+    let expandedSpecs = new Set();
+    let dashboardSseSource = null;
 
     initTheme();
 
@@ -623,7 +630,11 @@
     }
 
     function primaryAction() {
-      if (currentView === "projects") {
+      if (currentView === "dashboard") {
+        switchView("plans");
+        showingForm = true;
+        renderPlansView();
+      } else if (currentView === "projects") {
         showingForm = true;
         renderProjectsView();
       } else if (currentView === "plans") {
@@ -640,11 +651,14 @@
       currentView = name;
       showingForm = false;
       document.querySelectorAll(".nav-item").forEach(el => el.classList.toggle("active", el.dataset.view === name));
-      if (eventSource && name !== "logs") {
+      if (eventSource && name !== "logs" && name !== "dashboard") {
         eventSource.close();
         eventSource = null;
       }
-      if (name === "projects") {
+      if (name === "dashboard") {
+        setTopbar("Dashboard", "+ Submit Spec");
+        await loadDashboard();
+      } else if (name === "projects") {
         setTopbar("Projects", "+ New Project");
         await loadProjects();
       } else if (name === "plans") {
@@ -1039,6 +1053,13 @@
       });
     }
 
+    async function loadDashboard() {
+      if (!projects.length) await loadProjects();
+      if (!plans.length) await loadPlans();
+      const container = document.getElementById("view-container");
+      container.innerHTML = '<div class="dashboard-idle">Loading dashboard...</div>';
+    }
+
     async function pollStatus() {
       if (!token) return;
       try {
@@ -1062,12 +1083,12 @@
     }
 
     ensureToken();
-    switchView("projects").catch(error => {
+    switchView("dashboard").catch(error => {
       document.getElementById("view-container").innerHTML =
         '<div class="detail-empty" style="padding:40px;text-align:center;">' +
         '<div style="margin-bottom:8px;font-weight:700;">Connection failed</div>' +
         '<div style="color:var(--text-muted);font-size:12px;margin-bottom:16px;">' + esc(error.message) + '</div>' +
-        '<button class="btn btn-primary" type="button" onclick="switchView(\'projects\')">Retry</button></div>';
+        '<button class="btn btn-primary" type="button" onclick="switchView(\'dashboard\')">Retry</button></div>';
     });
     pollStatus();
     window.setInterval(pollStatus, 5000);
