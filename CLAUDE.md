@@ -134,6 +134,24 @@ Tables: `users`, `projects`, `plans`, `tasks`, `agent_runs`, `opus_state`
   The EventBus is in-memory only — events are lost if no subscribers are connected
 - **SQLite DB file** is created at `data/orchestrator.db` relative to CWD. The `data/`
   directory is auto-created by lifespan. Delete the file to reset all state
+- **Aider agent image is standalone** — `aider-agent:latest` is not in docker-compose.
+  Build it directly: `docker build -t aider-agent:latest -f docker/aider-agent/Dockerfile docker/aider-agent/`
+- **Agent container runs as non-root** — The `agent` user cannot write to `/`.
+  Workspace is at `/home/agent/workspace`. Do not change WORKDIR to a root-owned path
+- **Agent git auth uses `GH_TOKEN`** — configured via credential helper in entrypoint.
+  Without it, HTTPS git operations (clone private repos, push branches) fail with
+  "could not read Username"
+- **`OPENAI_API_KEY` required by Aider** — even for local LLMs via LM Studio, Aider's
+  litellm backend requires a non-empty API key. The entrypoint sets a dummy value
+  (`not-needed`) if not provided
+- **Aider URL scraping** — Aider auto-detects URLs in prompts and tries to scrape them
+  (installing Playwright). Use `--no-browser --no-detect-urls` flags to prevent this
+- **Plan branch race condition** — Multiple agents dispatched in parallel may try to
+  create the same `plan/` base branch. The entrypoint handles this: if push fails
+  (branch already exists), it fetches from remote instead
+- **Approve sets plan to ACTIVE immediately** — If the orchestration loop hasn't called
+  Opus to break the spec into tasks yet, an ACTIVE plan with no `opus_plan` will trigger
+  `plan_and_activate` on the next loop iteration
 
 ## Documentation
 
