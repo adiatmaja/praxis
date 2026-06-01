@@ -46,7 +46,7 @@ class Orchestrator:
             self._bus.publish({"type": "opus_queued", "action": "plan"})
             return
 
-        opus_plan = await self._opus.plan_spec(plan["spec"])
+        opus_plan = await self._opus.plan_spec(plan["spec"], project["repo_url"])
         today = datetime.now(UTC).date().isoformat()
         branch = f"plan/{today}-{opus_plan['plan_slug']}"
         await self._tq.activate_plan(plan_id, opus_plan, branch)

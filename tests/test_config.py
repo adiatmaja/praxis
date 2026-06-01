@@ -45,7 +45,7 @@ def test_settings_missing_required_env_raises(
     monkeypatch.delenv("GITHUB_TOKEN", raising=False)
 
     with pytest.raises(ValidationError):
-        Settings()
+        Settings(_env_file=None)
 
 
 @pytest.mark.unit

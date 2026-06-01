@@ -40,6 +40,16 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         db_path.parent.mkdir(parents=True, exist_ok=True)
 
     await database.initialize()
+
+    # Seed default user for single-token auth (v1)
+    existing = await database.fetch_one("SELECT id FROM users LIMIT 1")
+    if existing is None:
+        await database.execute(
+            "INSERT INTO users (id, name, token_hash) VALUES (?, ?, ?)",
+            ("default", "admin", settings.auth_token),
+        )
+        logger.info("Seeded default admin user")
+
     app.state.db = database
     app.state.settings = settings
     app.state.task_queue = TaskQueue(database)

@@ -4,13 +4,10 @@
 
 ## Overview
 
-Praxis is a Docker-based AI agent orchestration system that uses Claude Opus (via Claude Code
-CLI subscription) as the planning and review brain, and local LLM models (via LM Studio + Aider)
-as implementation workers. Submit a spec, Opus breaks it into tasks, agents implement on separate
-branches, Opus reviews PRs, and the system autonomously iterates until quality meets the bar.
-
-Named after the Greek *praxis* (turning theory into practice through reflection-action cycles) —
-the system doesn't just execute, it reflects, judges, and improves.
+Praxis automates the code-ship cycle: submit a spec, Claude Opus breaks it into tasks,
+Aider agents implement on isolated branches, Opus reviews PRs, and the system iterates
+until quality meets the bar. Optional autonomous improvement loop for continuous codebase
+enhancement.
 
 ## Architecture
 
@@ -44,163 +41,88 @@ the system doesn't just execute, it reflects, judges, and improves.
                           localhost:1234
 ```
 
-## Workflow
-
-```
-  ┌──────────┐     ┌──────────────┐     ┌──────────────┐
-  │  User    │────▶│  Opus plans  │────▶│  Create plan │
-  │  submits │     │  via claude  │     │  branch      │
-  │  spec    │     │  -p CLI      │     │              │
-  └──────────┘     └──────────────┘     └──────┬───────┘
-                                               │
-                          ┌────────────────────┼────────────────────┐
-                          ▼                    ▼                    ▼
-                   ┌────────────┐       ┌────────────┐      ┌────────────┐
-                   │ Aider      │       │ Aider      │      │ Aider      │
-                   │ agent/     │       │ agent/     │      │ agent/     │
-                   │ task-1     │       │ task-2     │      │ task-3     │
-                   └─────┬──────┘       └─────┬──────┘      └─────┬──────┘
-                         │                    │                    │
-                         └────────────────────┼────────────────────┘
-                                              │
-                                              ▼
-                                     ┌────────────────┐
-                                     │  Opus reviews  │
-                                     │  PR diffs      │
-                                     └───────┬────────┘
-                                             │
-                                 ┌───────────┴───────────┐
-                                 ▼                       ▼
-                           ┌──────────┐           ┌───────────┐
-                           │  Pass:   │           │  Fail:    │
-                           │  squash  │           │  feedback │
-                           │  merge   │           │  + retry  │
-                           └────┬─────┘           └───────────┘
-                                │
-                                ▼
-                       ┌─────────────────┐
-                       │  Integration PR │
-                       │  to main        │
-                       └─────────────────┘
-                                │
-                                ▼
-                       ┌─────────────────┐
-                       │  Improvement    │
-                       │  loop (optional)│
-                       └─────────────────┘
-```
-
 ## Quick Start
 
 ```bash
-# Clone
 git clone https://github.com/adiatmaja/praxis.git
 cd praxis
 
-# Setup Python environment
-uv venv
-uv sync --extra dev
+uv venv && uv sync --extra dev
 cp .env.example .env
-# Edit .env with your AUTH_TOKEN and GITHUB_TOKEN
+# Edit .env: set AUTH_TOKEN (any secret) and GITHUB_TOKEN (GitHub PAT)
 
-# Run locally
 uv run uvicorn orchestrator.main:app --port 8080
-
-# Or run via Docker
-docker compose up --build
+# Dashboard: http://localhost:8080
+# API docs:  http://localhost:8080/docs
 ```
 
 ## Configuration
 
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
-| `AUTH_TOKEN` | Yes | — | Bearer token for API authentication |
-| `GITHUB_TOKEN` | Yes | — | GitHub personal access token |
-| `DATABASE_URL` | No | `sqlite+aiosqlite:///data/orchestrator.db` | SQLite database path |
+| `AUTH_TOKEN` | Yes | — | Bearer token for API auth |
+| `GITHUB_TOKEN` | Yes | — | GitHub PAT (`repo` scope) |
+| `DATABASE_URL` | No | `sqlite+aiosqlite:///data/orchestrator.db` | SQLite path |
 | `LM_STUDIO_URL` | No | `http://host.docker.internal:1234` | LM Studio endpoint |
-| `HOST` | No | `0.0.0.0` | Server bind address |
+| `HOST` | No | `0.0.0.0` | Bind address |
 | `PORT` | No | `8080` | Server port |
+
+## Docker
+
+```bash
+# Local mode
+docker compose up --build
+
+# Hosted mode (Caddy auto-HTTPS)
+DOMAIN=praxis.example.com docker compose --profile hosted up --build
+```
 
 ## Project Structure
 
 ```
 praxis/
-├── src/orchestrator/          # FastAPI backend
-│   ├── config.py              #   Settings (env vars)
-│   ├── database.py            #   SQLite async wrapper
-│   ├── main.py                #   App entrypoint
-│   ├── api/                   #   REST endpoints
-│   ├── core/                  #   Business logic
-│   │   ├── task_queue.py      #     Task state machine
-│   │   ├── git_ops.py         #     Git/GitHub operations
-│   │   ├── opus_bridge.py     #     Claude CLI integration
-│   │   ├── agent_manager.py   #     Docker container lifecycle
-│   │   └── improvement.py     #     Autonomous improvement loop
-│   └── models/schemas.py      #   Pydantic models
-├── cli/main.py                # Typer CLI client
-├── web/index.html             # Single-file dashboard
-├── docker/
-│   ├── orchestrator/          # Server Dockerfile
-│   ├── aider-agent/           # Worker Dockerfile + entrypoint
-│   └── caddy/                 # Reverse proxy (hosted mode)
-├── tests/                     # pytest test suite
-├── docs/superpowers/
-│   ├── specs/                 # Design specification
-│   └── plans/                 # 5 implementation plans
-├── docker-compose.yml         # Production compose
-├── docker-compose.local.yml   # Local dev overrides
-└── pyproject.toml             # Project config
+├── src/
+│   ├── orchestrator/         # FastAPI backend
+│   │   ├── main.py           #   App entrypoint + lifespan
+│   │   ├── config.py         #   Settings (pydantic-settings)
+│   │   ├── database.py       #   SQLite async wrapper
+│   │   ├── api/              #   REST + SSE endpoints
+│   │   ├── core/             #   Business logic
+│   │   └── models/           #   Pydantic schemas
+│   └── cli/main.py           # Typer CLI client
+├── web/index.html            # Single-file dashboard
+├── docker/                   # Dockerfiles + Caddyfile
+├── tests/                    # pytest (101 tests, 88% coverage)
+├── docker-compose.yml
+└── pyproject.toml
 ```
-
-## Deployment Modes
-
-**Local mode** — orchestrator + LM Studio on the same machine:
-```bash
-docker compose up --build
-# Dashboard at http://localhost:8080
-# LM Studio at localhost:1234
-```
-
-**Hosted mode** — orchestrator on VPS with Caddy auto-HTTPS:
-```bash
-DOMAIN=praxis.example.com docker compose --profile hosted up --build
-# Dashboard at https://praxis.example.com
-```
-
-## Per-Project Settings
-
-Each registered GitHub repo can be configured with:
-
-| Setting | Default | Description |
-|---------|---------|-------------|
-| `approval_gate` | `true` | Require user approval for autonomous improvements |
-| `confidence_threshold` | `0.7` | Minimum confidence for Opus to propose improvements |
-| `max_retries` | `3` | Max re-dispatches per failed review |
-| `max_improvement_cycles` | `5` | Hard cap on autonomous improvement loops |
-| `model_name` | *(required)* | LLM model identifier for Aider |
 
 ## Development
 
 ```bash
-# Run tests with coverage
+# Tests
 uv run pytest --cov=orchestrator --cov-report=term-missing -v
 
-# Format and lint
-uv run ruff fmt src/ tests/ cli/
-uv run ruff check --fix src/ tests/ cli/
+# Lint + format
+uv run ruff format src/ tests/
+uv run ruff check --fix src/ tests/
 
 # Type check
 uv run mypy src/orchestrator/ --ignore-missing-imports
-
-# Build Docker images
-docker build -t orchestrator:latest -f docker/orchestrator/Dockerfile .
-docker build -t aider-agent:latest -f docker/aider-agent/Dockerfile docker/aider-agent/
 ```
 
-## Documentation
+## How It Works
 
-- **Design Spec:** `docs/superpowers/specs/2026-06-01-ai-agent-orchestrator-design.md`
-- **Implementation Plans:** `docs/superpowers/plans/` (5 sequential plans)
+1. User submits spec via Web UI, CLI, or API
+2. Opus breaks spec into tasks with dependency graph
+3. Orchestrator creates `plan/{date}-{slug}` branch
+4. Aider agents implement tasks on `agent/{task-slug}` branches
+5. Opus reviews PR diffs — pass: squash merge, fail: retry (max 3)
+6. All tasks merged -> integration PR to main
+7. Optional: Opus proposes improvements if confidence >= threshold
+
+See [docs/architecture.md](docs/architecture.md), [docs/workflow.md](docs/workflow.md),
+and [docs/deployment.md](docs/deployment.md) for detailed documentation.
 
 ## License
 
