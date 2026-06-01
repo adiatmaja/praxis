@@ -29,7 +29,7 @@ def test_settings_uses_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("HOST", raising=False)
     monkeypatch.delenv("PORT", raising=False)
 
-    settings = Settings()
+    settings = Settings(_env_file=None)
 
     assert settings.database_url == "sqlite+aiosqlite:///data/orchestrator.db"
     assert settings.lm_studio_url == "http://host.docker.internal:1234"

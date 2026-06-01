@@ -841,7 +841,13 @@
     }
 
     ensureToken();
-    switchView("projects").catch(error => appendLog(error.message));
+    switchView("projects").catch(error => {
+      document.getElementById("view-container").innerHTML =
+        '<div class="detail-empty" style="padding:40px;text-align:center;">' +
+        '<div style="margin-bottom:8px;font-weight:700;">Connection failed</div>' +
+        '<div style="color:var(--text-muted);font-size:12px;margin-bottom:16px;">' + esc(error.message) + '</div>' +
+        '<button class="btn btn-primary" type="button" onclick="switchView(\'projects\')">Retry</button></div>';
+    });
     pollStatus();
     window.setInterval(pollStatus, 5000);
   </script>
