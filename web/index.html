@@ -303,6 +303,27 @@
     }
     .empty-list { padding: 20px; color: var(--text-faint); font-size: 13px; }
 
+    .json-toggle { display: flex; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
+    .json-toggle-btn {
+      height: 26px;
+      border: 0;
+      background: transparent;
+      color: var(--text-muted);
+      padding: 0 10px;
+      cursor: pointer;
+      font-size: 11px;
+      font-weight: 600;
+    }
+    .json-toggle-btn:not(:last-child) { border-right: 1px solid var(--border); }
+    .json-toggle-btn.active { background: var(--active-bg); color: var(--text); }
+    .opus-plan-pretty .op-summary { margin-bottom: 12px; font-size: 13px; font-weight: 600; line-height: 1.5; }
+    .opus-plan-pretty .op-task { margin-bottom: 14px; padding: 12px; background: var(--bg); border: 1px solid var(--border-subtle); border-radius: 6px; }
+    .opus-plan-pretty .op-task:last-child { margin-bottom: 0; }
+    .opus-plan-pretty .op-task-title { font-size: 13px; font-weight: 700; margin-bottom: 4px; }
+    .opus-plan-pretty .op-task-slug { font-family: "Cascadia Mono", "SF Mono", Consolas, monospace; font-size: 11px; color: var(--text-faint); margin-bottom: 8px; }
+    .opus-plan-pretty .op-task-desc { font-size: 12px; line-height: 1.55; color: var(--text-muted); white-space: pre-wrap; }
+    .opus-plan-pretty .op-task-deps { margin-top: 6px; font-size: 11px; color: var(--text-faint); }
+
     @media (max-width: 1024px) {
       .sidebar { width: 204px; }
       .master-panel { width: 46%; min-width: 320px; }
@@ -622,8 +643,7 @@
         '<div class="detail-content">' +
           '<div class="detail-section"><div class="detail-section-title">Specification</div>' +
           '<div class="detail-card" style="white-space:pre-wrap;font-size:13px;line-height:1.6;">' + esc(plan.spec) + '</div></div>' +
-          (plan.opus_plan ? '<div class="detail-section"><div class="detail-section-title">Opus Plan</div>' +
-          '<div class="detail-card" style="white-space:pre-wrap;font-size:12px;font-family:Cascadia Mono, SF Mono, Consolas, monospace;line-height:1.5;">' + esc(plan.opus_plan) + '</div></div>' : "") +
+          (plan.opus_plan ? renderOpusPlan(plan.opus_plan, plan.id) : "") +
           '<div class="detail-section"><div class="detail-section-title">Status</div><div class="detail-card">' +
           '<div class="detail-field"><span class="field-label">Status</span><span class="field-value">' + badge(plan.status) + '</span></div>' +
           '<div class="detail-field"><span class="field-label">Branch</span><span class="field-value">' + mono(plan.plan_branch_name) + '</span></div>' +
@@ -653,6 +673,52 @@
       selectedPlanId = plan.id;
       showingForm = false;
       await loadPlans();
+    }
+
+    let opusPlanViewMode = {};
+
+    function renderOpusPlan(raw, planId) {
+      const mode = opusPlanViewMode[planId] || "pretty";
+      const toggleHtml = '<div style="display:flex;align-items:center;justify-content:space-between;">' +
+        '<div class="detail-section-title" style="margin-bottom:0;">Opus Plan</div>' +
+        '<div class="json-toggle">' +
+          '<button class="json-toggle-btn' + (mode === "pretty" ? " active" : "") + '" type="button" onclick="toggleOpusPlanView(\'' + esc(planId) + '\',\'pretty\')">Pretty</button>' +
+          '<button class="json-toggle-btn' + (mode === "raw" ? " active" : "") + '" type="button" onclick="toggleOpusPlanView(\'' + esc(planId) + '\',\'raw\')">Raw</button>' +
+        '</div></div>';
+      let content;
+      if (mode === "raw") {
+        let formatted;
+        try { formatted = JSON.stringify(JSON.parse(raw), null, 2); } catch (e) { formatted = raw; }
+        content = '<div class="detail-card" style="white-space:pre-wrap;font-size:12px;font-family:Cascadia Mono, SF Mono, Consolas, monospace;line-height:1.5;overflow-x:auto;">' + esc(formatted) + '</div>';
+      } else {
+        content = renderOpusPlanPretty(raw);
+      }
+      return '<div class="detail-section">' + toggleHtml + '<div style="margin-top:10px;">' + content + '</div></div>';
+    }
+
+    function renderOpusPlanPretty(raw) {
+      let data;
+      try { data = JSON.parse(raw); } catch (e) { return '<div class="detail-card" style="white-space:pre-wrap;font-size:13px;">' + esc(raw) + '</div>'; }
+      let html = '<div class="detail-card opus-plan-pretty">';
+      if (data.plan_summary) html += '<div class="op-summary">' + esc(data.plan_summary) + '</div>';
+      if (data.tasks && data.tasks.length) {
+        html += '<div class="detail-section-title" style="margin-bottom:8px;">Tasks (' + data.tasks.length + ')</div>';
+        data.tasks.forEach(function(task, i) {
+          html += '<div class="op-task">';
+          html += '<div class="op-task-title">' + (i + 1) + '. ' + esc(task.title) + '</div>';
+          if (task.slug) html += '<div class="op-task-slug">' + esc(task.slug) + '</div>';
+          if (task.description) html += '<div class="op-task-desc">' + esc(task.description) + '</div>';
+          if (task.depends_on && task.depends_on.length) html += '<div class="op-task-deps">Depends on: ' + task.depends_on.map(esc).join(", ") + '</div>';
+          html += '</div>';
+        });
+      }
+      html += '</div>';
+      return html;
+    }
+
+    function toggleOpusPlanView(planId, mode) {
+      opusPlanViewMode[planId] = mode;
+      renderPlansView();
     }
 
     async function approvePlan(id) { await api("POST", "/api/plans/" + id + "/approve"); await loadPlans(); }

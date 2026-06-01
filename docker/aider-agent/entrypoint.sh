@@ -11,7 +11,7 @@ set -euo pipefail
 : "${CALLBACK_URL:?CALLBACK_URL is required}"
 : "${TASK_ID:?TASK_ID is required}"
 
-WORKSPACE="/workspace"
+WORKSPACE="/home/agent/workspace"
 STATUS="completed"
 PR_URL=""
 
@@ -51,6 +51,9 @@ echo "Branch: ${BRANCH}"
 echo "Base: ${BASE_BRANCH}"
 echo "Model: ${AIDER_MODEL}"
 
+echo "--- Configuring git auth ---"
+git config --global credential.helper '!f() { echo "username=x-access-token"; echo "password=${GH_TOKEN}"; }; f'
+
 echo "--- Cloning repository ---"
 git clone "${REPO_URL}" "${WORKSPACE}"
 cd "${WORKSPACE}"
@@ -59,10 +62,21 @@ git config user.email "agent@orchestrator.local"
 git config user.name "AI Agent"
 
 echo "--- Creating branch ${BRANCH} from ${BASE_BRANCH} ---"
-git checkout "${BASE_BRANCH}" 2>/dev/null || git checkout -b "${BASE_BRANCH}" "origin/${BASE_BRANCH}"
+if git rev-parse --verify "origin/${BASE_BRANCH}" >/dev/null 2>&1; then
+    git checkout -b "${BASE_BRANCH}" "origin/${BASE_BRANCH}"
+else
+    echo "Base branch ${BASE_BRANCH} not found on remote, creating from default branch"
+    git checkout -b "${BASE_BRANCH}"
+    if ! git push -u origin "${BASE_BRANCH}" 2>/dev/null; then
+        echo "Push failed (branch may already exist), fetching from remote"
+        git fetch origin "${BASE_BRANCH}"
+        git reset --hard "origin/${BASE_BRANCH}"
+    fi
+fi
 git checkout -b "${BRANCH}"
 
 echo "--- Running Aider ---"
+export OPENAI_API_KEY="${OPENAI_API_KEY:-not-needed}"
 aider \
     --message "${TASK_PROMPT}" \
     --model "${AIDER_MODEL}" \
@@ -70,7 +84,9 @@ aider \
     --yes-always \
     --no-auto-lint \
     --no-suggest-shell-commands \
-    --no-show-model-warnings
+    --no-show-model-warnings \
+    --no-browser \
+    --no-detect-urls
 
 echo "--- Pushing branch ---"
 git push -u origin "${BRANCH}"

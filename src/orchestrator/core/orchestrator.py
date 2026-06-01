@@ -118,7 +118,7 @@ class Orchestrator:
 
         pr_number = await self._git.extract_pr_number(task["pr_url"])
         diff = await self._git.get_pr_diff(".", pr_number)
-        review = await self._opus.review_diff(diff)
+        review = await self._opus.review_diff(diff, task["description"] or task["title"])
         verdict = str(review["verdict"]).lower()
         feedback = str(review.get("feedback", ""))
 
@@ -261,6 +261,9 @@ class Orchestrator:
         ):
             return
         if plan["status"] == PlanStatus.PENDING:
+            await self.plan_and_activate(plan_id, project)
+            return
+        if plan["status"] == PlanStatus.ACTIVE and plan["opus_plan"] is None:
             await self.plan_and_activate(plan_id, project)
             return
         if plan["status"] != PlanStatus.ACTIVE:
