@@ -1,0 +1,212 @@
+"""Claude Opus CLI bridge and rate-limit state management."""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+import re
+from datetime import UTC, datetime, timedelta
+from typing import Any, cast
+
+from orchestrator.database import Database
+from orchestrator.models.schemas import OpusStatus
+
+
+logger = logging.getLogger(__name__)
+
+PLAN_PROMPT_TEMPLATE = """You are an AI project planner. Given a specification, break it into implementation tasks.
+
+Repository: {repo_url}
+
+Specification:
+{spec}
+
+Respond with ONLY valid JSON in this exact format:
+{{
+  "plan_summary": "one-line description",
+  "plan_slug": "url-safe-slug",
+  "tasks": [
+    {{
+      "title": "task name",
+      "slug": "url-safe-task-slug",
+      "description": "detailed implementation instructions for a coding agent",
+      "depends_on": ["slug-of-dependency"]
+    }}
+  ]
+}}
+
+Rules:
+- Each task should be independently implementable on its own git branch
+- Use depends_on only when a task MUST read files created by another task
+- Keep tasks focused - one feature or component per task
+- Description should be detailed enough for an AI coding agent to implement without questions
+"""
+
+REVIEW_PROMPT_TEMPLATE = """You are a senior code reviewer. Review this PR diff for a task.
+
+Task description: {task_description}
+
+Diff:
+{diff}
+
+Respond with ONLY valid JSON in this exact format:
+{{
+  "verdict": "pass" or "fail",
+  "feedback": "summary of your review",
+  "issues": ["list of specific issues if verdict is fail"]
+}}
+
+Pass if the code correctly implements the task and has no critical issues.
+Fail if there are bugs, missing functionality, or security problems.
+"""
+
+IMPROVEMENT_PROMPT_TEMPLATE = """You are a senior software architect. Analyze this project for improvements.
+
+Project summary:
+{project_summary}
+
+Respond with ONLY valid JSON in this exact format:
+{{
+  "confidence": 0.0 to 1.0,
+  "reason": "why these improvements are worth doing",
+  "proposed_tasks": [
+    {{
+      "title": "improvement name",
+      "slug": "url-safe-slug",
+      "description": "detailed implementation instructions"
+    }}
+  ]
+}}
+
+Rules:
+- Set confidence to 0.0 if no meaningful improvements are needed
+- Only propose improvements that materially improve quality, security, or functionality
+- Do not propose cosmetic or stylistic changes
+"""
+
+
+class OpusBridge:
+    """Interface to Claude Opus via the `claude -p` CLI."""
+
+    def __init__(self, db: Database) -> None:
+        self._db = db
+
+    async def _run_claude_raw(self, prompt: str) -> tuple[int, str, str]:
+        proc = await asyncio.create_subprocess_exec(
+            "claude",
+            "-p",
+            prompt,
+            "--output-format",
+            "text",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await proc.communicate()
+        return (
+            proc.returncode or 0,
+            stdout.decode().strip(),
+            stderr.decode().strip(),
+        )
+
+    async def _check_and_handle_rate_limit(
+        self,
+        code: int,
+        stdout: str,
+        stderr: str,
+    ) -> bool:
+        combined = f"{stdout} {stderr}".lower()
+        rate_limited = any(
+            pattern in combined
+            for pattern in ("rate limit", "usage limit", "too many requests")
+        ) or (code != 0 and "limit" in combined)
+        if not rate_limited:
+            return False
+
+        now = datetime.now(UTC)
+        resume_at = now + timedelta(hours=5, minutes=1)
+        await self._db.execute(
+            """UPDATE opus_state
+               SET status = ?, rate_limited_at = ?, resume_at = ?
+               WHERE id = 1""",
+            (OpusStatus.RATE_LIMITED, now.isoformat(), resume_at.isoformat()),
+        )
+        logger.warning("Opus rate limited. Will resume at %s", resume_at.isoformat())
+        return True
+
+    async def _run_claude(self, prompt: str) -> str:
+        code, stdout, stderr = await self._run_claude_raw(prompt)
+        if await self._check_and_handle_rate_limit(code, stdout, stderr):
+            message = "Opus rate limited"
+            raise RuntimeError(message)
+        if code != 0:
+            message = f"claude -p failed (exit {code}): {stderr}"
+            raise RuntimeError(message)
+        return stdout
+
+    def _extract_json(self, raw: str) -> dict[str, Any]:
+        code_block = re.search(r"```(?:json)?\s*\n(.*?)\n```", raw, re.DOTALL)
+        if code_block is not None:
+            return cast(dict[str, Any], json.loads(code_block.group(1)))
+
+        json_object = re.search(r"\{.*\}", raw, re.DOTALL)
+        if json_object is not None:
+            return cast(dict[str, Any], json.loads(json_object.group(0)))
+
+        message = f"Could not extract JSON from response: {raw[:200]}"
+        raise ValueError(message)
+
+    async def plan_spec(self, spec: str, repo_url: str) -> dict[str, Any]:
+        prompt = PLAN_PROMPT_TEMPLATE.format(spec=spec, repo_url=repo_url)
+        return self._extract_json(await self._run_claude(prompt))
+
+    async def review_diff(self, diff: str, task_description: str) -> dict[str, Any]:
+        prompt = REVIEW_PROMPT_TEMPLATE.format(
+            diff=diff,
+            task_description=task_description,
+        )
+        return self._extract_json(await self._run_claude(prompt))
+
+    async def analyze_improvements(self, project_summary: str) -> dict[str, Any]:
+        prompt = IMPROVEMENT_PROMPT_TEMPLATE.format(project_summary=project_summary)
+        return self._extract_json(await self._run_claude(prompt))
+
+    async def get_opus_state(self) -> dict[str, Any]:
+        state = await self._db.fetch_one("SELECT * FROM opus_state WHERE id = 1")
+        if state is None:
+            message = "Opus state row is missing"
+            raise RuntimeError(message)
+        return state
+
+    async def is_available(self) -> bool:
+        state = await self.get_opus_state()
+        if state["status"] == OpusStatus.AVAILABLE:
+            return True
+        if state["status"] == OpusStatus.RATE_LIMITED and state["resume_at"]:
+            resume_at = datetime.fromisoformat(state["resume_at"])
+            if datetime.now(UTC) >= resume_at:
+                await self._db.execute(
+                    "UPDATE opus_state SET status = ? WHERE id = 1",
+                    (OpusStatus.AVAILABLE,),
+                )
+                logger.info("Opus rate limit expired, now available")
+                return True
+        return False
+
+    async def queue_action(self, action: dict[str, Any]) -> None:
+        state = await self.get_opus_state()
+        queued = json.loads(state["queued_actions"])
+        queued.append(action)
+        await self._db.execute(
+            "UPDATE opus_state SET queued_actions = ? WHERE id = 1",
+            (json.dumps(queued),),
+        )
+
+    async def get_queued_actions(self) -> list[dict[str, Any]]:
+        state = await self.get_opus_state()
+        return cast(list[dict[str, Any]], json.loads(state["queued_actions"]))
+
+    async def clear_queued_actions(self) -> None:
+        await self._db.execute(
+            "UPDATE opus_state SET queued_actions = '[]' WHERE id = 1"
+        )
