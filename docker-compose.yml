@@ -1,0 +1,41 @@
+services:
+  orchestrator:
+    build:
+      context: .
+      dockerfile: docker/orchestrator/Dockerfile
+    container_name: orchestrator
+    ports:
+      - "${PORT:-8080}:8080"
+    volumes:
+      - ./data:/app/data
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ${SSH_KEY_PATH:-~/.ssh}:/root/.ssh:ro
+    environment:
+      - AUTH_TOKEN=${AUTH_TOKEN}
+      - GITHUB_TOKEN=${GITHUB_TOKEN}
+      - DATABASE_URL=sqlite+aiosqlite:///data/orchestrator.db
+      - LM_STUDIO_URL=${LM_STUDIO_URL:-http://host.docker.internal:1234}
+      - HOST=0.0.0.0
+      - PORT=8080
+    restart: unless-stopped
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  caddy:
+    image: caddy:2-alpine
+    container_name: caddy
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./docker/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - orchestrator
+    profiles:
+      - hosted
+
+volumes:
+  caddy_data:
+  caddy_config:

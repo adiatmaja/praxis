@@ -5,8 +5,9 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-import docker
 import docker.errors
+
+import docker
 
 
 logger = logging.getLogger(__name__)
@@ -20,7 +21,7 @@ class AgentManager:
     def __init__(self, lm_studio_url: str, github_token: str) -> None:
         self._lm_studio_url = lm_studio_url
         self._github_token = github_token
-        self._client = docker.from_env()
+        self._client = docker.from_env()  # type: ignore[attr-defined]
 
     def spawn_agent(
         self,

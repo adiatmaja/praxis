@@ -1,0 +1,14 @@
+services:
+  orchestrator:
+    build:
+      context: .
+      dockerfile: docker/orchestrator/Dockerfile
+    volumes:
+      - ./src:/app/src
+      - ./web:/app/web
+    command: uvicorn orchestrator.main:app --host 0.0.0.0 --port 8080 --reload
+    environment:
+      - AUTH_TOKEN=${AUTH_TOKEN:-dev-token}
+      - GITHUB_TOKEN=${GITHUB_TOKEN:-ghp_dev}
+      - DATABASE_URL=sqlite+aiosqlite:///data/orchestrator.db
+      - LM_STUDIO_URL=${LM_STUDIO_URL:-http://host.docker.internal:1234}
