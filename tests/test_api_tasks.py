@@ -81,6 +81,54 @@ async def test_stop_task(
 
 
 @pytest.mark.integration
+async def test_retry_task_success(
+    client: AsyncClient,
+    db: Database,
+    auth_headers: dict[str, str],
+) -> None:
+    _, task_id = await _setup_plan_with_task(client, db, auth_headers)
+    queue = client.app.state.task_queue  # type: ignore[attr-defined]
+    await queue.update_task_status(task_id, TaskStatus.IN_PROGRESS)
+    await queue.fail_task(task_id, "tests failing")
+
+    response = await client.post(f"/api/tasks/{task_id}/retry", headers=auth_headers)
+    task = await queue.get_task(task_id)
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "pending"
+    assert response.json()["attempt"] == 2
+    assert task["status"] == TaskStatus.PENDING
+    assert task["attempt"] == 2
+
+
+@pytest.mark.integration
+async def test_retry_task_not_failed_returns_409(
+    client: AsyncClient,
+    db: Database,
+    auth_headers: dict[str, str],
+) -> None:
+    _, task_id = await _setup_plan_with_task(client, db, auth_headers)
+
+    response = await client.post(f"/api/tasks/{task_id}/retry", headers=auth_headers)
+
+    assert response.status_code == 409
+    assert "not failed" in response.json()["detail"].lower()
+
+
+@pytest.mark.integration
+async def test_retry_task_not_found_returns_404(
+    client: AsyncClient,
+    db: Database,
+    auth_headers: dict[str, str],
+) -> None:
+    await seed_user(db)
+
+    response = await client.post("/api/tasks/nonexistent/retry", headers=auth_headers)
+
+    assert response.status_code == 404
+
+
+@pytest.mark.integration
 async def test_stream_task_logs(
     client: AsyncClient,
     db: Database,
