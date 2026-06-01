@@ -64,6 +64,30 @@ async def test_list_get_and_update_projects(
 
 
 @pytest.mark.integration
+async def test_delete_project(
+    client: AsyncClient,
+    db: Database,
+    auth_headers: dict[str, str],
+) -> None:
+    await seed_user(db)
+    created = await client.post(
+        "/api/projects",
+        json={"name": "App", "repo_url": "https://github.com/u/a", "model_name": "m"},
+        headers=auth_headers,
+    )
+    project_id = created.json()["id"]
+
+    delete_response = await client.delete(
+        f"/api/projects/{project_id}",
+        headers=auth_headers,
+    )
+    get_response = await client.get(f"/api/projects/{project_id}", headers=auth_headers)
+
+    assert delete_response.status_code == 204
+    assert get_response.status_code == 404
+
+
+@pytest.mark.integration
 async def test_project_not_found_and_unauthorized(
     client: AsyncClient,
     db: Database,
