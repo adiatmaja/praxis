@@ -38,6 +38,27 @@ def test_settings_uses_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.mark.unit
+def test_settings_agent_model_name_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("AUTH_TOKEN", "auth-secret")
+    monkeypatch.setenv("GITHUB_TOKEN", "gh-secret")
+
+    settings = Settings()
+
+    assert settings.agent_model_name == "claude-opus-4-6"
+
+
+@pytest.mark.unit
+def test_settings_agent_model_name_custom(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("AUTH_TOKEN", "auth-secret")
+    monkeypatch.setenv("GITHUB_TOKEN", "gh-secret")
+    monkeypatch.setenv("AGENT_MODEL_NAME", "gpt-5.5-medium")
+
+    settings = Settings()
+
+    assert settings.agent_model_name == "gpt-5.5-medium"
+
+
+@pytest.mark.unit
 def test_settings_missing_required_env_raises(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
