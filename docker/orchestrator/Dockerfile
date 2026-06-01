@@ -20,6 +20,7 @@ WORKDIR /app
 
 COPY pyproject.toml uv.lock README.md ./
 COPY src/ src/
+COPY web/ web/
 RUN uv pip install --system -e ".[dev]" --no-cache
 
 RUN mkdir -p /app/data

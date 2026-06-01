@@ -48,6 +48,24 @@ class TaskQueue:
             (project_id,),
         )
 
+    async def get_runnable_plans(self) -> list[dict[str, Any]]:
+        """Return pending and active plans for orchestration."""
+
+        return await self._db.fetch_all(
+            """SELECT * FROM plans
+               WHERE status IN (?, ?)
+               ORDER BY created_at, rowid""",
+            (PlanStatus.PENDING, PlanStatus.ACTIVE),
+        )
+
+    async def get_project(self, project_id: str) -> dict[str, Any] | None:
+        """Return a project by ID."""
+
+        return await self._db.fetch_one(
+            "SELECT * FROM projects WHERE id = ?",
+            (project_id,),
+        )
+
     async def activate_plan(
         self,
         plan_id: str,

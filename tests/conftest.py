@@ -10,7 +10,9 @@ import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
 from orchestrator.config import Settings
+from orchestrator.core.event_bus import EventBus
 from orchestrator.core.opus_bridge import OpusBridge
+from orchestrator.core.orchestrator import Orchestrator
 from orchestrator.core.task_queue import TaskQueue
 from orchestrator.database import Database
 from orchestrator.main import app
@@ -60,6 +62,14 @@ async def client(db: Database, test_settings: Settings) -> AsyncClient:
     app.state.task_queue = TaskQueue(db)
     app.state.opus_bridge = OpusBridge(db)
     app.state.agent_manager = FakeAgentManager()
+    app.state.event_bus = EventBus()
+    app.state.orchestrator = Orchestrator(
+        task_queue=app.state.task_queue,
+        agent_manager=app.state.agent_manager,
+        opus_bridge=app.state.opus_bridge,
+        git_ops=None,
+        event_bus=app.state.event_bus,
+    )
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as async_client:
         async_client.app = app  # type: ignore[attr-defined]
