@@ -616,6 +616,20 @@
       }[c]));
     }
 
+    function jsArg(value) {
+      return esc(JSON.stringify(String(value ?? "")));
+    }
+
+    function safeHref(value) {
+      try {
+        const url = new URL(String(value ?? ""), window.location.href);
+        if (url.protocol === "http:" || url.protocol === "https:") return esc(url.href);
+      } catch (error) {
+        return "";
+      }
+      return "";
+    }
+
     function badge(status) {
       return '<span class="badge ' + esc(status) + '">' + esc(status) + '</span>';
     }
@@ -1151,12 +1165,13 @@
       const isPulsing = task.status === "in_progress" || task.status === "reviewing";
       const pulseClass = task.status === "reviewing" ? "amber" : "green";
       const retryAction = task.status === "failed" ?
-        '<button class="btn btn-compact btn-danger" type="button" onclick="event.stopPropagation();dashboardRetry(\'' + esc(task.id) + '\')">Retry</button>' : "";
-      const prLink = task.pr_url ?
-        '<a href="' + esc(task.pr_url) + '" target="_blank" rel="noreferrer" onclick="event.stopPropagation()">PR</a>' : "";
+        '<button class="btn btn-compact btn-danger" type="button" onclick="event.stopPropagation();dashboardRetry(' + jsArg(task.id) + ')">Retry</button>' : "";
+      const prHref = task.pr_url ? safeHref(task.pr_url) : "";
+      const prLink = prHref ?
+        '<a href="' + prHref + '" target="_blank" rel="noreferrer" onclick="event.stopPropagation()">PR</a>' : "";
       const logLine = dashboardTaskLogs[task.id] ? '<div class="card-log-line">' + esc(dashboardTaskLogs[task.id]) + '</div>' : "";
       return '<article class="task-card status-' + esc(task.status) + (isSelected ? " selected" : "") +
-        '" data-task-id="' + esc(task.id) + '" onclick="openDashboardTask(\'' + esc(task.id) + '\',\'' + esc(task.plan_id) + '\')">' +
+        '" data-task-id="' + esc(task.id) + '" onclick="openDashboardTask(' + jsArg(task.id) + ',' + jsArg(task.plan_id) + ')">' +
         '<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;">' +
           badge(task.status) +
           (isPulsing ? '<span class="pulse-dot ' + pulseClass + '"></span>' : "") +
@@ -1200,9 +1215,13 @@
     }
 
     function openDashboardTask(taskId, planId) {
-      selectedDashboardTaskId = taskId;
       const task = (dashboardTasks[planId] || []).find(item => item.id === taskId);
-      if (!task) return;
+      if (!task) {
+        selectedDashboardTaskId = null;
+        document.querySelectorAll(".task-card").forEach(el => el.classList.remove("selected"));
+        return;
+      }
+      selectedDashboardTaskId = taskId;
       document.querySelectorAll(".task-card").forEach(el => {
         el.classList.toggle("selected", el.dataset.taskId === taskId);
       });
@@ -1213,10 +1232,11 @@
       const panel = document.getElementById("dashboard-side-panel");
       if (!panel) return;
       const stopBtn = task.status === "in_progress" ?
-        '<button class="btn btn-danger" type="button" onclick="dashboardStop(\'' + esc(task.id) + '\')">Stop</button>' : "";
+        '<button class="btn btn-danger" type="button" onclick="dashboardStop(' + jsArg(task.id) + ')">Stop</button>' : "";
       const retryBtn = task.status === "failed" ?
-        '<button class="btn btn-danger" type="button" onclick="dashboardRetry(\'' + esc(task.id) + '\')">Retry</button>' : "";
-      const logsBtn = '<button class="btn" type="button" onclick="viewTaskLogs(\'' + esc(task.id) + '\')">View Full Logs</button>';
+        '<button class="btn btn-danger" type="button" onclick="dashboardRetry(' + jsArg(task.id) + ')">Retry</button>' : "";
+      const logsBtn = '<button class="btn" type="button" onclick="viewTaskLogs(' + jsArg(task.id) + ')">View Full Logs</button>';
+      const panelPrHref = task.pr_url ? safeHref(task.pr_url) : "";
       panel.innerHTML =
         '<div class="side-panel-header">' +
           '<div class="side-panel-title-wrap">' +
@@ -1230,7 +1250,7 @@
             '<div class="side-panel-section-title">Details</div>' +
             '<div class="side-panel-field"><span>Status</span><span>' + badge(task.status) + '</span></div>' +
             '<div class="side-panel-field"><span>Attempt</span><span>' + esc(task.attempt) + '</span></div>' +
-            '<div class="side-panel-field"><span>PR</span><span>' + (task.pr_url ? '<a href="' + esc(task.pr_url) + '" target="_blank" rel="noreferrer">View PR</a>' : "-") + '</span></div>' +
+            '<div class="side-panel-field"><span>PR</span><span>' + (panelPrHref ? '<a href="' + panelPrHref + '" target="_blank" rel="noreferrer">View PR</a>' : "-") + '</span></div>' +
             '<div class="side-panel-field"><span>Created</span><span>' + esc(task.created_at || "-") + '</span></div>' +
             '<div class="side-panel-field"><span>Updated</span><span>' + esc(task.updated_at || "-") + '</span></div>' +
           '</div>' +
