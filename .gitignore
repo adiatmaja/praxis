@@ -13,12 +13,15 @@ venv/
 
 .vscode/
 .idea/
+CLAUDE.local.md
 
 htmlcov/
 .coverage
 .pytest_cache/
 
 data/*.db
+data/*.db-shm
+data/*.db-wal
 
 .superpowers/
 .worktrees/
