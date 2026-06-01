@@ -5,7 +5,6 @@ from __future__ import annotations
 from typing import Any, cast
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
-from sse_starlette.sse import EventSourceResponse
 
 from orchestrator.api.auth import verify_token
 from orchestrator.models.schemas import TaskResponse, TaskStatus
@@ -43,29 +42,6 @@ async def get_task(request: Request, task_id: str) -> dict[str, Any]:
         "task": task,
         "runs": await queue.get_runs_for_task(task_id),
     }
-
-
-@router.get("/tasks/{task_id}/logs")
-async def stream_task_logs(request: Request, task_id: str) -> EventSourceResponse:
-    """Stream current task logs as server-sent events."""
-
-    queue = request.app.state.task_queue
-    task = await queue.get_task(task_id)
-    if task is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Task not found"
-        )
-
-    async def event_generator() -> Any:
-        agent_manager = getattr(request.app.state, "agent_manager", None)
-        runs = await queue.get_runs_for_task(task_id)
-        for run in runs:
-            logs = run["logs"]
-            if run["status"] == "running" and agent_manager is not None:
-                logs = agent_manager.get_container_logs(run["container_id"])
-            yield {"event": "logs", "data": logs}
-
-    return EventSourceResponse(event_generator())
 
 
 @router.post("/tasks/{task_id}/stop")
