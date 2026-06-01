@@ -18,7 +18,7 @@ class AgentDonePayload(BaseModel):
     """Agent completion callback payload."""
 
     task_id: str
-    run_id: str
+    run_id: str | None = None
     status: str
     pr_url: str | None = None
 
@@ -29,7 +29,10 @@ async def agent_done(request: Request, body: AgentDonePayload) -> dict[str, str]
 
     queue = request.app.state.task_queue
     task = await queue.get_task(body.task_id)
-    run = await queue.get_agent_run(body.run_id)
+    run = await queue.get_agent_run(body.run_id) if body.run_id else None
+    if run is None:
+        runs = await queue.get_runs_for_task(body.task_id)
+        run = runs[-1] if runs else None
     if task is None or run is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -40,7 +43,7 @@ async def agent_done(request: Request, body: AgentDonePayload) -> dict[str, str]
     logs = ""
     if agent_manager is not None:
         logs = agent_manager.get_container_logs(run["container_id"])
-    await queue.complete_agent_run(body.run_id, body.status, logs)
+    await queue.complete_agent_run(run["id"], body.status, logs)
 
     if body.pr_url is not None:
         await queue.set_task_pr_url(body.task_id, body.pr_url)

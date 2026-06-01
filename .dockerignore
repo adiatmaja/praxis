@@ -1,0 +1,14 @@
+.git
+.worktrees
+.venv
+venv
+__pycache__
+*.pyc
+.pytest_cache
+htmlcov
+.coverage
+.env
+.superpowers
+data/*.db
+docker/aider-agent
+node_modules

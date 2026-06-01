@@ -125,6 +125,26 @@ async def test_agent_done_callback(
 
 
 @pytest.mark.integration
+async def test_agent_done_callback_without_run_id_uses_latest_run(
+    client: AsyncClient,
+    db: Database,
+    auth_headers: dict[str, str],
+) -> None:
+    _, task_id = await _setup_plan_with_task(client, db, auth_headers)
+    queue = client.app.state.task_queue  # type: ignore[attr-defined]
+    await queue.create_agent_run(task_id, "container-latest")
+
+    response = await client.post(
+        "/api/internal/agent-done",
+        json={"task_id": task_id, "status": "completed"},
+    )
+    task = await queue.get_task(task_id)
+
+    assert response.status_code == 200
+    assert task["status"] == TaskStatus.REVIEWING
+
+
+@pytest.mark.integration
 async def test_missing_task_returns_404(
     client: AsyncClient,
     db: Database,
