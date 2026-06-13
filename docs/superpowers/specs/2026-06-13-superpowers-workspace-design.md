@@ -15,6 +15,17 @@ This epic is one cohesive goal delivered in five units, built in order. Each uni
 own implementation plan (mirroring the existing `design + plan-1..N` pattern in this repo).
 UX clarity (Unit E) is a lens applied across A–D, not a separate build.
 
+## Features
+
+- **Unit A — Dashboard layout fix** — eliminate the empty-center flex-row bug.
+- **Unit B — Docs-aware Specs & Plans views** — docs as source of truth, hybrid Haiku
+  classification, checklist progress bars, Refresh button.
+- **Unit C — Superpowers lifecycle** — interactive Create Spec chat, gated plan generation
+  with full-context tasks, execution wiring.
+- **Unit D — Context Sync** — auto-draft + human-approve updates to CLAUDE.md / MEMORY.md;
+  new Memory page; MEMORY.md in the target repo.
+- **Unit E — UX clarity** — woven across A–D.
+
 ```
   ┌─────────┐   ┌─────────┐   ┌──────────┐   ┌──────────────┐
   │ 1 Spec  │──▶│ 2 Plan  │──▶│ 3 Execute│──▶│ 4 Context    │
