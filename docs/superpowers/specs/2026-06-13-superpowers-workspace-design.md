@@ -104,6 +104,26 @@ match checklist state; Refresh re-reads from disk; unchanged files are not re-se
   (`docs/superpowers/specs/<date>-<slug>-design.md`) and does **not** auto-advance to
   planning.
 
+**Generated spec structure (required).** Every spec the flow produces must be skimmable.
+Directly below the title it carries a **Big Picture** block, then per-feature bullets:
+
+```
+# <Title>
+
+## Big Picture
+<2–4 sentence summary of the problem and the solution at a glance.>
+
+## Features
+- **<Feature 1>** — one-line description
+- **<Feature 2>** — one-line description
+- ...
+
+## <detailed sections follow: architecture, data model, acceptance, etc.>
+```
+
+The brainstorming prompt enforces this template so a reader grasps scope before diving into
+detail.
+
 ### Stage 2 — Create Plan from a spec
 
 - From the Specs view: **modify spec first** (edit markdown directly, or refine via chat),
