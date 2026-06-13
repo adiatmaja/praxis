@@ -10,6 +10,61 @@
 
 ---
 
+## Execution Setup (read first)
+
+This plan runs in a **fresh session with zero prior context** — everything you need is in this
+file. Before touching code, create an isolated worktree and push its branch:
+
+```bash
+# From the praxis repo root (default branch = main):
+git worktree add ../praxis-superpowers-workspace -b feat/superpowers-workspace main
+cd ../praxis-superpowers-workspace
+git push -u origin feat/superpowers-workspace
+```
+
+(Prefer the `superpowers:using-git-worktrees` skill if available — it wraps this.)
+
+Then work entirely inside that worktree:
+
+- Do **all** task commits on `feat/superpowers-workspace` (never directly on `main`).
+- After **each task's commit**, push: `git push` — so progress is durable and reviewable in
+  a new session and the branch is always up to date.
+- When the plan is complete, open a PR from `feat/superpowers-workspace` into `main`
+  (`gh pr create`) rather than merging locally.
+- Remove the worktree when done: `git worktree remove ../praxis-superpowers-workspace`.
+
+## Repo Orientation (full context for a cold start)
+
+- **What Praxis is:** a Docker-based AI agent orchestrator. Opus (via `claude -p`) plans/reviews;
+  a local LLM (LM Studio + Aider in containers) implements. FastAPI backend + single-file HTML
+  dashboard (`web/index.html`) + Typer CLI. SQLite persistence (raw SQL, no ORM).
+- **Layout:** backend in `src/orchestrator/` (`api/`, `core/`, `models/schemas.py`,
+  `config.py`, `database.py`, `main.py`); CLI in `src/cli/`; dashboard in `web/index.html`;
+  Docker in `docker/`. Read `CLAUDE.md` and `CLAUDE.local.md` first.
+- **Setup:** `uv venv && uv sync --extra dev && cp .env.example .env` (set `AUTH_TOKEN` to any
+  string; `GITHUB_TOKEN` may be `placeholder` for local-only work).
+- **Verify commands** (use these for every task's test/lint steps):
+  - Tests: `uv run pytest --cov=orchestrator --cov-report=term-missing -v`
+  - Single test: `uv run pytest tests/path::test_name -v`
+  - Format: `uv run ruff format src/ tests/`  *(the command is `ruff format`, not `ruff fmt`)*
+  - Lint: `uv run ruff check --fix src/ tests/`
+  - Types: `uv run mypy src/orchestrator/ --ignore-missing-imports`
+  - Run server: `uv run uvicorn orchestrator.main:app --host 127.0.0.1 --port 8080`
+- **Gotchas that bite cold-start sessions:**
+  - Tests asserting missing env vars must pass `Settings(_env_file=None)` — `.env` is read as
+    a fallback by pydantic-settings.
+  - A `default` admin user is auto-seeded in `main.py` lifespan; without it project creation
+    500s. Delete `data/orchestrator.db` to reset all state.
+  - SQLite migrations are inline `CREATE TABLE IF NOT EXISTS` in `database.MIGRATIONS`; add new
+    columns to existing DBs with a guarded `ALTER TABLE`.
+  - Windows: free a port with `taskkill //PID <pid> //F` (bash `kill -9` won't).
+  - The SSE endpoint `/api/events` is long-lived — never wait for `networkidle` in browser
+    checks; use `domcontentloaded` + a fixed wait.
+- **Hard rule (all parts):** subscription `claude -p` + local LM Studio only — **never** add an
+  Anthropic API key path.
+
+---
+
 ## Global Execution Order
 
 | Part | Unit | Tasks | Depends on |
