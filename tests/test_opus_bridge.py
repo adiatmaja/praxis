@@ -1,4 +1,5 @@
 """Opus bridge tests."""
+
 # ruff: noqa: S101
 
 from __future__ import annotations
@@ -170,6 +171,27 @@ async def test_queue_action_round_trip() -> None:
     bridge._db.execute.assert_awaited_once()
 
 
+async def test_run_claude_raw_passes_model(mocker) -> None:
+    bridge = OpusBridge(db=mocker.MagicMock(), default_model="claude-opus-4-8")
+    captured: dict = {}
+
+    async def fake_exec(*args, **kwargs):
+        captured["args"] = args
+        proc = mocker.MagicMock()
+
+        async def communicate():
+            return (b"ok", b"")
+
+        proc.communicate = communicate
+        proc.returncode = 0
+        return proc
+
+    mocker.patch("asyncio.create_subprocess_exec", side_effect=fake_exec)
+    await bridge._run_claude_raw("hi")
+    assert "--model" in captured["args"]
+    assert "claude-opus-4-8" in captured["args"]
+
+
 @pytest.mark.unit
 async def test_is_available_resumes_after_resume_at() -> None:
     bridge = OpusBridge.__new__(OpusBridge)
@@ -184,3 +206,58 @@ async def test_is_available_resumes_after_resume_at() -> None:
 
     assert await bridge.is_available() is True
     bridge._db.execute.assert_awaited_once()
+
+
+@pytest.mark.unit
+async def test_classify_doc_uses_haiku(mocker: pytest.MonkeyPatch) -> None:
+    bridge = OpusBridge(db=mocker.MagicMock())
+    run = mocker.patch.object(bridge, "_run_claude", new=AsyncMock(return_value="plan"))
+    result = await bridge.classify_doc("some ambiguous markdown")
+    assert result == "plan"
+    assert run.call_args.kwargs.get("model") == "claude-haiku-4-5"
+
+
+@pytest.mark.unit
+async def test_classify_doc_normalizes_unexpected_to_other(
+    mocker: pytest.MonkeyPatch,
+) -> None:
+    bridge = OpusBridge(db=mocker.MagicMock())
+    mocker.patch.object(bridge, "_run_claude", new=AsyncMock(return_value="garbage"))
+    result = await bridge.classify_doc("x")
+    assert result == "other"
+
+
+@pytest.mark.unit
+async def test_classify_doc_spec_exact(mocker: pytest.MonkeyPatch) -> None:
+    bridge = OpusBridge(db=mocker.MagicMock())
+    mocker.patch.object(bridge, "_run_claude", new=AsyncMock(return_value="spec"))
+    assert await bridge.classify_doc("x") == "spec"
+
+
+@pytest.mark.unit
+async def test_classify_doc_plan_exact(mocker: pytest.MonkeyPatch) -> None:
+    bridge = OpusBridge(db=mocker.MagicMock())
+    mocker.patch.object(bridge, "_run_claude", new=AsyncMock(return_value="plan"))
+    assert await bridge.classify_doc("x") == "plan"
+
+
+@pytest.mark.unit
+async def test_classify_doc_plan_with_trailing_period(
+    mocker: pytest.MonkeyPatch,
+) -> None:
+    """'Plan.' should be stripped to 'plan' and matched exactly."""
+    bridge = OpusBridge(db=mocker.MagicMock())
+    mocker.patch.object(bridge, "_run_claude", new=AsyncMock(return_value="Plan."))
+    assert await bridge.classify_doc("x") == "plan"
+
+
+@pytest.mark.unit
+async def test_classify_doc_prefers_last_mention(mocker: pytest.MonkeyPatch) -> None:
+    """'this is not a spec, it's a plan' -> 'plan' (last word-boundary match wins)."""
+    bridge = OpusBridge(db=mocker.MagicMock())
+    mocker.patch.object(
+        bridge,
+        "_run_claude",
+        new=AsyncMock(return_value="this is not a spec, it's a plan"),
+    )
+    assert await bridge.classify_doc("x") == "plan"

@@ -7,7 +7,37 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from orchestrator.core.git_ops import GitOps
+from orchestrator.core.git_ops import (
+    GitOps,
+    clone_with_token,
+    commit_and_push,
+)
+
+
+@pytest.mark.unit
+@patch("orchestrator.core.git_ops.subprocess.run")
+def test_clone_with_token_keeps_token_in_env_not_url(mock_run: object) -> None:
+    clone_with_token("https://github.com/u/r", "/tmp/ws", "tok123", depth=20)
+    call = mock_run.call_args  # type: ignore[attr-defined]
+    argv = call.args[0]
+    # Clean URL in argv, token never embedded
+    assert "https://github.com/u/r" in argv
+    assert not any("tok123" in part for part in argv)
+    assert "--depth" in argv and "20" in argv
+    # Token supplied via env, and a credential helper is configured
+    assert call.kwargs["env"]["GH_TOKEN"] == "tok123"
+    assert "credential.helper=" in argv
+
+
+@pytest.mark.unit
+@patch("orchestrator.core.git_ops.subprocess.run")
+def test_commit_and_push_stages_commits_pushes(mock_run: object) -> None:
+    commit_and_push("/tmp/ws", "tok123", "msg", paths=["a.md"])
+    cmds = [c.args[0] for c in mock_run.call_args_list]  # type: ignore[attr-defined]
+    assert any("add" in c and "a.md" in c for c in cmds)
+    assert any("commit" in c for c in cmds)
+    push = next(c for c in cmds if "push" in c)
+    assert not any("tok123" in part for part in push)
 
 
 @pytest.mark.unit

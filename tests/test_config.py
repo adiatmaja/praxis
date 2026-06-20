@@ -38,24 +38,24 @@ def test_settings_uses_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.mark.unit
-def test_settings_agent_model_name_default(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_settings_agent_model_default(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("AUTH_TOKEN", "auth-secret")
     monkeypatch.setenv("GITHUB_TOKEN", "gh-secret")
 
     settings = Settings()
 
-    assert settings.agent_model_name == "claude-opus-4-6"
+    assert settings.agent_model == "claude-opus-4-8"
 
 
 @pytest.mark.unit
-def test_settings_agent_model_name_custom(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_settings_agent_model_custom(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("AUTH_TOKEN", "auth-secret")
     monkeypatch.setenv("GITHUB_TOKEN", "gh-secret")
-    monkeypatch.setenv("AGENT_MODEL_NAME", "gpt-5.5-medium")
+    monkeypatch.setenv("AGENT_MODEL", "gpt-5.5-medium")
 
     settings = Settings()
 
-    assert settings.agent_model_name == "gpt-5.5-medium"
+    assert settings.agent_model == "gpt-5.5-medium"
 
 
 @pytest.mark.unit
@@ -67,6 +67,12 @@ def test_settings_missing_required_env_raises(
 
     with pytest.raises(ValidationError):
         Settings(_env_file=None)
+
+
+def test_agent_model_default_is_opus_4_8():
+    s = Settings(auth_token="x", github_token="y", _env_file=None)
+    assert s.agent_model == "claude-opus-4-8"
+    assert s.agent_model_effort is None
 
 
 @pytest.mark.unit
@@ -88,3 +94,8 @@ def test_settings_custom_values_override_defaults(
     assert settings.lm_studio_url == "http://127.0.0.1:1234"
     assert settings.host == "127.0.0.1"
     assert settings.port == 9001
+
+
+def test_memory_md_path_default():
+    s = Settings(auth_token="x", github_token="y", _env_file=None)
+    assert s.memory_md_path == "docs/MEMORY.md"

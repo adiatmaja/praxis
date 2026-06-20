@@ -371,6 +371,7 @@
     }
     .health-spacer { margin-left: auto; }
 
+    .dashboard-shell { flex: 1; min-height: 0; display: flex; flex-direction: column; }
     .dashboard-body { flex: 1; overflow-y: auto; padding: 0; display: flex; }
     .dashboard-lanes { flex: 1; min-width: 0; overflow-y: auto; }
 
@@ -498,6 +499,133 @@
       .lane-cards { flex-wrap: wrap; }
       .task-card { min-width: 140px; }
     }
+    .doc-bar { width: 120px; height: 6px; background: var(--border-subtle); border-radius: 3px; overflow: hidden; }
+    .doc-bar-fill { height: 100%; background: var(--badge-passed-text); }
+    .doc-bar-label { font-size: 11px; color: var(--text-faint); margin-left: 8px; }
+    .doc-tag { font-size: 10px; color: var(--text-faint); border: 1px solid var(--border); border-radius: 4px; padding: 0 4px; }
+    .list-header { display: flex; align-items: center; justify-content: space-between; padding: 16px 20px; border-bottom: 1px solid var(--border); }
+
+    /* Create-Spec chat panel */
+    .mem-pane { padding: 12px 20px; border-bottom: 1px solid var(--border); }
+    .mem-doc { background: var(--panel-alt); padding: 10px; border-radius: 6px; max-height: 320px; overflow: auto; white-space: pre-wrap; font-size: 12px; }
+    .mem-diff { background: var(--log-bg); color: var(--log-text); padding: 10px; border-radius: 6px; max-height: 320px; overflow: auto; white-space: pre-wrap; font-size: 12px; }
+
+    /* Create-Spec chat panel */
+    .spec-chat-overlay {
+      display: none;
+      position: fixed;
+      inset: 0;
+      z-index: 100;
+      background: rgba(0,0,0,0.25);
+      align-items: flex-end;
+      justify-content: flex-end;
+    }
+    .spec-chat-overlay.open { display: flex; }
+    .spec-chat-panel {
+      width: 420px;
+      max-width: 100vw;
+      height: 560px;
+      max-height: calc(100vh - 32px);
+      margin: 16px;
+      display: flex;
+      flex-direction: column;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      box-shadow: 0 8px 32px rgba(0,0,0,0.18);
+      overflow: hidden;
+    }
+    .spec-chat-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      padding: 12px 16px;
+      border-bottom: 1px solid var(--border);
+      flex-shrink: 0;
+    }
+    .spec-chat-header-title { font-size: 14px; font-weight: 700; }
+    .spec-chat-header-sub { font-size: 11px; color: var(--text-faint); margin-top: 1px; }
+    .spec-chat-close {
+      border: 0;
+      background: transparent;
+      color: var(--text-faint);
+      cursor: pointer;
+      font-size: 18px;
+      line-height: 1;
+      padding: 0 4px;
+      flex-shrink: 0;
+    }
+    .spec-chat-close:hover { color: var(--text); }
+    .spec-chat-messages {
+      flex: 1;
+      overflow-y: auto;
+      padding: 14px 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .spec-chat-empty {
+      margin: auto;
+      color: var(--text-faint);
+      font-size: 13px;
+      text-align: center;
+      line-height: 1.6;
+    }
+    .spec-chat-bubble {
+      max-width: 88%;
+      padding: 9px 13px;
+      border-radius: 8px;
+      font-size: 13px;
+      line-height: 1.5;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+    .spec-chat-bubble.user {
+      align-self: flex-end;
+      background: var(--active-bg);
+      color: var(--text);
+      border-bottom-right-radius: 2px;
+    }
+    .spec-chat-bubble.assistant {
+      align-self: flex-start;
+      background: var(--panel-alt);
+      color: var(--text);
+      border: 1px solid var(--border-subtle);
+      border-bottom-left-radius: 2px;
+    }
+    .spec-chat-bubble.assistant.streaming { border-color: var(--selected-border); }
+    .spec-chat-footer {
+      display: flex;
+      gap: 8px;
+      padding: 10px 12px;
+      border-top: 1px solid var(--border);
+      flex-shrink: 0;
+    }
+    .spec-chat-input {
+      flex: 1;
+      min-height: 36px;
+      max-height: 120px;
+      resize: none;
+      border-radius: 6px;
+      border: 1px solid var(--border);
+      background: var(--bg);
+      color: var(--text);
+      padding: 8px 10px;
+      font-size: 13px;
+      line-height: 1.4;
+      font-family: inherit;
+    }
+    .spec-chat-input:focus { outline: none; border-color: var(--selected-border); }
+    .spec-chat-send {
+      height: 36px;
+      align-self: flex-end;
+      flex-shrink: 0;
+    }
+    @media (max-width: 768px) {
+      .spec-chat-panel { width: 100vw; margin: 0; border-radius: 10px 10px 0 0; height: 70vh; }
+      .spec-chat-overlay.open { align-items: flex-end; justify-content: center; }
+    }
   </style>
 </head>
 <body>
@@ -512,6 +640,9 @@
       <button class="nav-item" type="button" data-view="plans" onclick="switchView('plans')"><span class="nav-icon">S</span>Plans</button>
       <button class="nav-item" type="button" data-view="tasks" onclick="switchView('tasks')"><span class="nav-icon">T</span>Tasks</button>
       <button class="nav-item" type="button" data-view="logs" onclick="switchView('logs')"><span class="nav-icon">L</span>Live Logs</button>
+      <button class="nav-item" type="button" data-view="specs" onclick="switchView('specs')"><span class="nav-icon">F</span>Specs</button>
+      <button class="nav-item" type="button" data-view="docplans" onclick="switchView('docplans')"><span class="nav-icon">N</span>Plan Docs</button>
+      <button class="nav-item" type="button" data-view="memory" onclick="switchView('memory')"><span class="nav-icon">M</span>Memory</button>
     </nav>
     <div class="sidebar-stats">
       <div class="section-label">Stats</div>
@@ -544,12 +675,33 @@
       <div id="topbar-title" class="topbar-title">Projects</div>
       <div class="topbar-actions">
         <button id="primary-action" class="btn btn-primary" type="button" onclick="primaryAction()">+ New Project</button>
+        <button class="btn" type="button" onclick="openSpecChat()" title="Create a new spec via chat">+ Create Spec</button>
         <button class="btn theme-btn" type="button" onclick="toggleTheme()" title="Toggle theme">T</button>
         <button class="btn" type="button" onclick="resetToken()">Token</button>
       </div>
     </header>
     <section id="view-container" class="master-detail"></section>
   </main>
+
+  <!-- Create-Spec chat panel -->
+  <div id="spec-chat-overlay" class="spec-chat-overlay" onclick="onSpecChatOverlayClick(event)">
+    <div class="spec-chat-panel">
+      <div class="spec-chat-header">
+        <div>
+          <div class="spec-chat-header-title">Create Spec</div>
+          <div id="spec-chat-project-label" class="spec-chat-header-sub">No project selected</div>
+        </div>
+        <button class="spec-chat-close" type="button" onclick="closeSpecChat()">&#x2715;</button>
+      </div>
+      <div id="spec-chat-messages" class="spec-chat-messages">
+        <div class="spec-chat-empty">Describe what you want to build.<br>Claude will help you shape it into a spec.</div>
+      </div>
+      <div class="spec-chat-footer">
+        <textarea id="spec-chat-input" class="spec-chat-input" rows="2" placeholder="What should be built?" onkeydown="onSpecChatKey(event)"></textarea>
+        <button id="spec-chat-send" class="btn btn-primary spec-chat-send" type="button" onclick="sendSpecChatMessage()">Send</button>
+      </div>
+    </div>
+  </div>
 
   <script>
     const API = window.location.origin;
@@ -684,6 +836,15 @@
       } else if (name === "logs") {
         setTopbar("Live Logs", "Reconnect");
         renderLogs();
+      } else if (name === "specs") {
+        setTopbar("Specs", "Refresh");
+        await renderDocs("spec");
+      } else if (name === "docplans") {
+        setTopbar("Plan Docs", "Refresh");
+        await renderDocs("plan");
+      } else if (name === "memory") {
+        setTopbar("Memory", "");
+        await renderMemory();
       }
     }
 
@@ -763,9 +924,29 @@
           '<div class="formrow"><label>Name</label><input id="pf-name" required autocomplete="off"></div>' +
           '<div class="formrow"><label>Repository URL</label><input id="pf-repo" required autocomplete="off" placeholder="https://github.com/user/repo"></div>' +
           '<div class="formrow"><label>Model</label><input id="pf-model" required autocomplete="off" value="deepseek-coder-v2"></div>' +
+          '<div class="formrow"><label>Agent model (reasoning)</label>' +
+            '<select id="pf-agent-model-preset" onchange="onAgentModelPreset(this.value)">' +
+              '<option value="">Global default</option>' +
+              '<option value="claude-opus-4-8|">Opus (claude-opus-4-8)</option>' +
+              '<option value="claude-opus-4-8|low">Opus — low effort</option>' +
+              '<option value="claude-sonnet-4-6|">Sonnet (claude-sonnet-4-6)</option>' +
+              '<option value="claude-haiku-4-5|">Haiku (claude-haiku-4-5)</option>' +
+              '<option value="custom">Custom…</option>' +
+            '</select>' +
+            '<input id="pf-agent-model" placeholder="custom model id" style="display:none;margin-top:6px;">' +
+          '</div>' +
           '<div class="form-actions"><button type="submit" class="btn btn-primary">Create</button>' +
           '<button type="button" class="btn" onclick="showingForm=false;renderProjectsView()">Cancel</button></div>' +
         '</form></div>';
+    }
+
+    function onAgentModelPreset(value) {
+      const custom = document.getElementById("pf-agent-model");
+      if (value === "custom") { custom.style.display = "block"; return; }
+      custom.style.display = "none";
+      const [model, effort] = value.split("|");
+      custom.dataset.model = model || "";
+      custom.dataset.effort = effort || "";
     }
 
     async function submitProject(event) {
@@ -773,7 +954,11 @@
       const project = await api("POST", "/api/projects", {
         name: document.getElementById("pf-name").value,
         repo_url: document.getElementById("pf-repo").value,
-        model_name: document.getElementById("pf-model").value
+        model_name: document.getElementById("pf-model").value,
+        agent_model: (document.getElementById("pf-agent-model").style.display === "block"
+          ? document.getElementById("pf-agent-model").value
+          : document.getElementById("pf-agent-model").dataset.model) || null,
+        agent_model_effort: document.getElementById("pf-agent-model").dataset.effort || null
       });
       selectedProjectId = project.id;
       showingForm = false;
@@ -1001,6 +1186,103 @@
       setTimeout(() => connectTaskLogs(taskId), 100);
     }
 
+    async function renderDocs(category) {
+      const docs = await api("GET", "/api/docs?category=" + category);
+      const rows = docs.map(d => {
+        const pct = d.total_count ? Math.round(100 * d.done_count / d.total_count) : 0;
+        const bar = category === "plan"
+          ? '<div class="doc-bar"><div class="doc-bar-fill" style="width:' + pct + '%"></div></div>'
+            + '<span class="doc-bar-label">' + d.done_count + '/' + d.total_count + '</span>'
+          : "";
+        const llm = d.classified_by === "haiku" ? ' <span class="doc-tag">haiku</span>' : "";
+        return '<div class="row" onclick="openDoc(\'' + esc(d.path) + '\')">' +
+          '<div class="row-main"><div class="row-name">' + esc(d.title || d.path) + '</div>' +
+          '<div class="row-sub">' + esc(d.path) + llm + '</div></div>' + bar + '</div>';
+      }).join("");
+      document.getElementById("view-container").innerHTML =
+        '<div class="list-header"><h2>' + (category === "spec" ? "Specs" : "Plan Docs") + '</h2>' +
+        '<button class="btn" type="button" onclick="refreshDocs()">Refresh</button></div>' +
+        '<div class="list">' + (rows || '<div class="empty">No ' + category + ' docs found</div>') + '</div>';
+    }
+
+    async function refreshDocs() {
+      await api("POST", "/api/docs/refresh");
+      const v = currentView === "specs" ? "spec" : "plan";
+      renderDocs(v);
+    }
+
+    async function openDoc(path) {
+      const doc = await api("GET", "/api/docs/raw?path=" + encodeURIComponent(path));
+      const isSpec = path.includes("/specs/");
+      const container = document.getElementById("view-container");
+      // Replace list area with a two-panel layout: list on left, editor on right
+      const existingList = container.querySelector(".list");
+      const existingHeader = container.querySelector(".list-header");
+      // Remove any prior detail pane
+      const prior = container.querySelector(".spec-detail-pane");
+      if (prior) prior.remove();
+      const pane = document.createElement("div");
+      pane.className = "spec-detail-pane";
+      pane.style.cssText = "flex:1;display:flex;flex-direction:column;overflow:hidden;background:var(--bg);border-left:1px solid var(--border-subtle);";
+      const escapedPath = esc(path);
+      pane.innerHTML =
+        '<div class="detail-header" style="display:flex;align-items:center;justify-content:space-between;gap:12px;">' +
+          '<div><div class="detail-title">' + escapedPath + '</div>' +
+          '<div class="detail-subtitle">' + (isSpec ? "Spec document" : "Plan document") + '</div></div>' +
+          '<button class="btn btn-compact" type="button" onclick="this.closest(\'.spec-detail-pane\').remove()">Close</button>' +
+        '</div>' +
+        '<div style="flex:1;overflow:auto;padding:12px 24px;">' +
+          '<textarea id="spec-editor-content" style="width:100%;height:220px;resize:vertical;font-family:var(--font-mono,monospace);font-size:13px;background:var(--panel);color:var(--text);border:1px solid var(--border-subtle);border-radius:6px;padding:10px;box-sizing:border-box;">' +
+            esc(doc.content) +
+          '</textarea>' +
+          (isSpec
+            ? '<div style="display:flex;gap:8px;margin-top:8px;">' +
+                '<button class="btn" type="button" onclick="saveSpec(\'' + escapedPath + '\')">Save</button>' +
+              '</div>' +
+              '<div style="margin-top:16px;border-top:1px solid var(--border-subtle);padding-top:12px;">' +
+                '<div class="detail-subtitle" style="margin-bottom:6px;">Generate Plan</div>' +
+                '<textarea id="spec-plan-notes" placeholder="Extra notes for the plan (optional)…" style="width:100%;height:72px;resize:vertical;font-family:var(--font-mono,monospace);font-size:13px;background:var(--panel);color:var(--text);border:1px solid var(--border-subtle);border-radius:6px;padding:8px;box-sizing:border-box;"></textarea>' +
+                '<div style="margin-top:8px;">' +
+                  '<button class="btn" type="button" onclick="createPlanFromSpec(\'' + escapedPath + '\')">Create Plan</button>' +
+                '</div>' +
+              '</div>'
+            : '') +
+        '</div>';
+      // Make container flex so pane sits beside the list
+      container.style.display = "flex";
+      container.style.overflow = "hidden";
+      container.style.flex = "1";
+      if (existingList) existingList.style.overflowY = "auto";
+      container.appendChild(pane);
+    }
+
+    async function saveSpec(specPath) {
+      const content = document.getElementById("spec-editor-content").value;
+      await api("POST", "/api/specs/modify", {
+        project_id: selectedProjectId,
+        spec_path: specPath,
+        content: content,
+      });
+    }
+
+    async function createPlanFromSpec(specPath) {
+      const notes = (document.getElementById("spec-plan-notes") || {value: ""}).value;
+      const btn = event.target;
+      btn.disabled = true;
+      btn.textContent = "Generating…";
+      try {
+        await api("POST", "/api/specs/plan", {
+          project_id: selectedProjectId,
+          spec_path: specPath,
+          notes: notes,
+        });
+        btn.textContent = "Plan queued";
+      } catch (e) {
+        btn.disabled = false;
+        btn.textContent = "Create Plan";
+      }
+    }
+
     function renderLogs() {
       const container = document.getElementById("view-container");
       container.innerHTML =
@@ -1061,6 +1343,7 @@
       eventSource.onopen = () => appendLog("connected");
       eventSource.onerror = () => appendLog("connection error");
       eventSource.onmessage = event => appendLog(event.data);
+      handleBrainstormSse(eventSource);
       ["plan_activated", "agent_dispatched", "review_completed", "improvement_proposed",
        "task_completed", "task_failed", "task_retry", "opus_queued", "log", "agent_log"].forEach(type => {
         eventSource.addEventListener(type, event => appendLog("[" + type + "] " + event.data));
@@ -1104,10 +1387,12 @@
         completedHtml;
       const container = document.getElementById("view-container");
       container.innerHTML =
-        renderHealthBar(attentionCount) +
-        '<div class="dashboard-body">' +
-          '<div class="dashboard-lanes">' + bodyHtml + '</div>' +
-          '<div class="side-panel" id="dashboard-side-panel"></div>' +
+        '<div class="dashboard-shell">' +
+          renderHealthBar(attentionCount) +
+          '<div class="dashboard-body">' +
+            '<div class="dashboard-lanes">' + bodyHtml + '</div>' +
+            '<div class="side-panel" id="dashboard-side-panel"></div>' +
+          '</div>' +
         '</div>';
       if (selectedDashboardTaskId) {
         const selectedTask = Object.values(dashboardTasks).flat().find(task => task.id === selectedDashboardTaskId);
@@ -1293,6 +1578,8 @@
       eventSource = source;
       dashboardSseSource = source;
 
+      handleBrainstormSse(source);
+
       source.onerror = () => {
         const healthBar = document.querySelector(".health-bar");
         if (!healthBar || healthBar.querySelector(".reconnecting")) return;
@@ -1414,6 +1701,164 @@
       dot.className = "conn-dot " + (status === "rate_limited" ? "rate_limited" : connected ? "connected" : "disconnected");
       model.textContent = info && info.name ? info.name : "unknown";
     }
+
+    // ── Create-Spec chat panel ───────────────────────────────────────────────
+
+    let specChatSessionId = null;
+    let specChatStreamingBubble = null;
+
+    function openSpecChat() {
+      const overlay = document.getElementById("spec-chat-overlay");
+      overlay.classList.add("open");
+      const label = document.getElementById("spec-chat-project-label");
+      const project = projects.find(p => p.id === selectedProjectId);
+      label.textContent = project ? project.name : (projects.length ? projects[0].name : "No project selected");
+      document.getElementById("spec-chat-input").focus();
+    }
+
+    function closeSpecChat() {
+      document.getElementById("spec-chat-overlay").classList.remove("open");
+      // Reset session so the next open starts a fresh conversation
+      specChatSessionId = null;
+      specChatStreamingBubble = null;
+      const messages = document.getElementById("spec-chat-messages");
+      if (messages) messages.innerHTML = '<div class="spec-chat-empty">Describe what you want to build.<br>Claude will help you shape it into a spec.</div>';
+      setChatInputEnabled(true);
+    }
+
+    function onSpecChatOverlayClick(event) {
+      if (event.target === document.getElementById("spec-chat-overlay")) closeSpecChat();
+    }
+
+    function onSpecChatKey(event) {
+      if (event.key === "Enter" && !event.shiftKey) {
+        event.preventDefault();
+        sendSpecChatMessage();
+      }
+    }
+
+    function appendChatMessage(role, text) {
+      const messages = document.getElementById("spec-chat-messages");
+      if (!messages) return;
+      // Remove empty-state placeholder on first message
+      const empty = messages.querySelector(".spec-chat-empty");
+      if (empty) empty.remove();
+
+      if (role === "assistant" && specChatStreamingBubble) {
+        // Append to existing streaming bubble
+        specChatStreamingBubble.textContent += text;
+      } else {
+        const bubble = document.createElement("div");
+        bubble.className = "spec-chat-bubble " + (role === "user" ? "user" : "assistant streaming");
+        bubble.textContent = text;
+        messages.appendChild(bubble);
+        if (role === "assistant") specChatStreamingBubble = bubble;
+      }
+      messages.scrollTop = messages.scrollHeight;
+    }
+
+    function setChatInputEnabled(enabled) {
+      const input = document.getElementById("spec-chat-input");
+      const send = document.getElementById("spec-chat-send");
+      if (input) input.disabled = !enabled;
+      if (send) send.disabled = !enabled;
+      if (enabled && input) input.focus();
+    }
+
+    async function sendSpecChatMessage() {
+      const input = document.getElementById("spec-chat-input");
+      if (!input) return;
+      const text = input.value.trim();
+      if (!text) return;
+
+      const projectId = selectedProjectId || projects[0]?.id;
+      if (!projectId) {
+        alert("Select a project first (Projects view).");
+        return;
+      }
+
+      input.value = "";
+      setChatInputEnabled(false);
+      appendChatMessage("user", text);
+      specChatStreamingBubble = null;
+
+      try {
+        if (!specChatSessionId) {
+          const result = await api("POST", "/api/specs/sessions", { project_id: projectId, message: text });
+          specChatSessionId = result.session_id;
+        } else {
+          await api("POST", "/api/specs/sessions/" + specChatSessionId + "/message", { message: text });
+        }
+      } catch (error) {
+        appendChatMessage("assistant", "Error: " + error.message);
+        setChatInputEnabled(true);
+      }
+    }
+
+    // SSE handlers for brainstorm events (wired into connectDashboardSse source)
+    function handleBrainstormSse(source) {
+      source.addEventListener("brainstorm_message", event => {
+        let data;
+        try { data = JSON.parse(event.data); } catch (e) { return; }
+        if (data.type === "brainstorm_message") {
+          appendChatMessage("assistant", data.text);
+        }
+      });
+      source.addEventListener("context_draft_ready", event => {
+        let data;
+        try { data = JSON.parse(event.data); } catch (e) { return; }
+        if (data.type === "context_draft_ready" && currentView === "memory") {
+          showDraft({ draft_id: data.draft_id, diff: "" });
+        }
+      });
+      source.addEventListener("brainstorm_turn_done", () => {
+        // Finalize streaming bubble — remove streaming class
+        if (specChatStreamingBubble) {
+          specChatStreamingBubble.classList.remove("streaming");
+          specChatStreamingBubble = null;
+        }
+        setChatInputEnabled(true);
+      });
+    }
+
+    // ── End Create-Spec chat panel ───────────────────────────────────────────
+
+    // ── Memory page ──────────────────────────────────────────────────────────
+
+    function activeProjectId() {
+      return selectedProjectId;
+    }
+
+    async function renderMemory() {
+      const pid = activeProjectId();
+      const ctx = await api("GET", "/api/projects/" + pid + "/context");
+      document.getElementById("view-container").innerHTML =
+        '<div class="list-header"><h2>Memory</h2>' +
+        '<button class="btn" type="button" onclick="syncContext()">Sync now</button></div>' +
+        '<div class="mem-pane"><h3>CLAUDE.md</h3><pre class="mem-doc">' + esc(ctx.claude_md) + '</pre></div>' +
+        '<div class="mem-pane"><h3>MEMORY.md</h3><pre class="mem-doc">' + esc(ctx.memory_md) + '</pre></div>' +
+        '<div id="ctx-draft"></div>';
+    }
+
+    async function syncContext() {
+      const pid = activeProjectId();
+      const draft = await api("POST", "/api/projects/" + pid + "/context-sync", { summary: "manual sync" });
+      showDraft(draft);
+    }
+
+    function showDraft(draft) {
+      document.getElementById("ctx-draft").innerHTML =
+        '<div class="mem-pane"><h3>Proposed changes</h3><pre class="mem-diff">' + esc(draft.diff || "(no changes)") + '</pre>' +
+        (draft.draft_id ? '<button class="btn btn-primary" onclick="approveDraft(\'' + esc(draft.draft_id) + '\')">Approve &amp; commit</button>' : "") +
+        '</div>';
+    }
+
+    async function approveDraft(id) {
+      await api("POST", "/api/context-drafts/" + id + "/approve");
+      renderMemory();
+    }
+
+    // ── End Memory page ───────────────────────────────────────────────────────
 
     ensureToken();
     switchView("dashboard").catch(error => {

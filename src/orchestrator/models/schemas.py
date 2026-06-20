@@ -62,6 +62,8 @@ class ProjectCreate(BaseModel):
     max_retries: int = Field(default=3, ge=1, le=10)
     max_improvement_cycles: int = Field(default=5, ge=1, le=20)
     lm_studio_url: str = "http://host.docker.internal:1234"
+    agent_model: str | None = None
+    agent_model_effort: str | None = None
 
     @field_validator(
         "name",
@@ -91,6 +93,8 @@ class ProjectUpdate(BaseModel):
     max_retries: int | None = Field(default=None, ge=1, le=10)
     max_improvement_cycles: int | None = Field(default=None, ge=1, le=20)
     lm_studio_url: str | None = None
+    agent_model: str | None = None
+    agent_model_effort: str | None = None
 
     @field_validator(
         "name",
@@ -137,6 +141,8 @@ class ProjectResponse(BaseModel):
     max_retries: int
     max_improvement_cycles: int
     lm_studio_url: str
+    agent_model: str | None = None
+    agent_model_effort: str | None = None
     created_at: str
 
 
@@ -239,3 +245,16 @@ class OpusImprovementPayload(BaseModel):
     confidence: float = Field(ge=0.0, le=1.0)
     reason: str
     proposed_tasks: list[OpusImprovementTaskItem]
+
+
+class DocResponse(BaseModel):
+    """Doc index entry response payload."""
+
+    path: str
+    category: str
+    title: str | None = None
+    branch: str | None = None
+    done_count: int = 0
+    total_count: int = 0
+    classified_by: str = "marker"
+    updated_at: str | None = None

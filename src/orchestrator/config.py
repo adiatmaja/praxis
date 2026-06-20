@@ -12,8 +12,12 @@ class Settings(BaseSettings):
     github_token: str
     database_url: str = "sqlite+aiosqlite:///data/orchestrator.db"
     lm_studio_url: str = "http://host.docker.internal:1234"
-    agent_model_name: str = "claude-opus-4-6"
+    agent_model: str = "claude-opus-4-8"
+    agent_model_effort: str | None = None
     host: str = "0.0.0.0"  # noqa: S104
     port: int = 8080
+    docs_root: str = "docs"
+    brainstorm_workspace: str = "/tmp/praxis-brainstorm"
+    memory_md_path: str = "docs/MEMORY.md"
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")

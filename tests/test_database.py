@@ -119,6 +119,21 @@ async def test_fetch_one_returns_none_for_missing_row(db: Database) -> None:
 
 
 @pytest.mark.integration
+async def test_doc_index_table_exists(db: Database) -> None:
+    rows = await db.fetch_all(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='doc_index'"
+    )
+    assert len(rows) == 1
+
+
+@pytest.mark.integration
+async def test_projects_have_agent_model_columns(db: Database) -> None:
+    cols = [r["name"] for r in await db.fetch_all("PRAGMA table_info(projects)")]
+    assert "agent_model" in cols
+    assert "agent_model_effort" in cols
+
+
+@pytest.mark.integration
 async def test_string_ids_work_across_related_tables(db: Database) -> None:
     await db.execute(
         "INSERT INTO users (id, name, token_hash) VALUES (?, ?, ?)",
