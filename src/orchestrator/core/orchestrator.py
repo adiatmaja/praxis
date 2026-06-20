@@ -27,6 +27,7 @@ class Orchestrator:
         git_ops: Any,
         event_bus: EventBus,
         doc_indexer: Any = None,
+        context_sync: Any = None,
     ) -> None:
         self._tq = task_queue
         self._agents = agent_manager
@@ -34,6 +35,7 @@ class Orchestrator:
         self._git = git_ops
         self._bus = event_bus
         self._doc_indexer = doc_indexer
+        self._context_sync = context_sync
 
     async def plan_and_activate(self, plan_id: str, project: dict[str, Any]) -> None:
         """Ask Opus to plan a pending spec and activate the resulting task graph."""
@@ -202,6 +204,27 @@ class Orchestrator:
                 "_sync_plan_checkbox failed for task %s: %s", task.get("id"), exc
             )
 
+    async def on_plan_completed(self, plan_id: str) -> None:
+        """Draft a context sync when all tasks in a plan have merged."""
+
+        if self._context_sync is None:
+            return
+        plan = await self._tq.get_plan(plan_id)
+        if plan is None:
+            return
+        project = await self._tq.get_project(plan["project_id"])
+        if project is None:
+            return
+        summary = f"Completed plan: {plan.get('plan_branch_name') or plan_id}"
+        draft = await self._context_sync.draft(project["repo_url"], summary)
+        self._bus.publish(
+            {
+                "type": "context_draft_ready",
+                "project_id": project["id"],
+                "draft_id": draft["draft_id"],
+            }
+        )
+
     async def check_improvements(
         self,
         plan_id: str,
@@ -327,6 +350,10 @@ class Orchestrator:
                 await self.review_task(task["id"], project)
         if await self._tq.all_tasks_done(plan_id):
             await self._tq.update_plan_status(plan_id, PlanStatus.COMPLETED)
+            try:
+                await self.on_plan_completed(plan_id)
+            except Exception as exc:  # noqa: BLE001 - non-fatal
+                logger.warning("on_plan_completed failed for plan %s: %s", plan_id, exc)
             analysis = await self.check_improvements(plan_id, project)
             if analysis is not None:
                 await self.create_improvement_plan(

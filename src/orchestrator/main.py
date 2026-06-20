@@ -100,6 +100,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         classify=app.state.opus_bridge.classify_doc,
     )
     app.state.orchestrator._doc_indexer = app.state.doc_indexer
+    app.state.orchestrator._context_sync = app.state.context_sync
     try:
         await app.state.doc_indexer.scan()
     except Exception as exc:  # noqa: BLE001 - non-fatal at startup

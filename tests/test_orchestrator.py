@@ -512,6 +512,31 @@ class TestOrchestrationLoop:
         assert gated_plan["status"] == PlanStatus.PENDING
 
 
+@pytest.mark.integration
+class TestContextSyncOnPlanCompletion:
+    async def test_plan_completion_triggers_context_draft(self, db: Database) -> None:
+        task_queue, plan_id, task_id = await _setup(db)
+        await task_queue.update_task_status(task_id, TaskStatus.MERGED)
+
+        mock_context_sync = MagicMock()
+        mock_context_sync.draft = AsyncMock(
+            return_value={"draft_id": "d1", "diff": "x"}
+        )
+
+        orch = Orchestrator(
+            task_queue=task_queue,
+            agent_manager=MagicMock(),
+            opus_bridge=AsyncMock(),
+            git_ops=AsyncMock(),
+            event_bus=EventBus(),
+            context_sync=mock_context_sync,
+        )
+
+        await orch.on_plan_completed(plan_id=plan_id)
+
+        mock_context_sync.draft.assert_awaited()
+
+
 def test_flip_checkbox_marks_task_done():
     from orchestrator.core.git_ops import flip_checklist_item
 
