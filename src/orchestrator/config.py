@@ -17,5 +17,6 @@ class Settings(BaseSettings):
     host: str = "0.0.0.0"  # noqa: S104
     port: int = 8080
     docs_root: str = "docs"
+    brainstorm_workspace: str = "/tmp/praxis-brainstorm"
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")

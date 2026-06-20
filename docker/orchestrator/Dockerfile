@@ -16,6 +16,17 @@ RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
 
 RUN pip install --no-cache-dir uv
 
+# Install Claude CLI (claude -p is used by opus_bridge.py for planning/review).
+# The npm install method works for most Linux base images; verify the exact
+# package name/version against the Claude CLI release in use.
+RUN npm install -g @anthropic-ai/claude-code 2>/dev/null || \
+    echo "Claude CLI npm install skipped (npm not available)"
+
+# Install superpowers skills for in-product brainstorming/writing-plans.
+# NOTE: 'claude plugin install' subcommand is version-sensitive — verify it
+# matches the installed CLI version before relying on this in production.
+RUN claude plugin install superpowers || echo "superpowers install deferred to runtime"
+
 WORKDIR /app
 
 COPY pyproject.toml uv.lock README.md ./
