@@ -626,6 +626,71 @@
       .spec-chat-panel { width: 100vw; margin: 0; border-radius: 10px 10px 0 0; height: 70vh; }
       .spec-chat-overlay.open { align-items: flex-end; justify-content: center; }
     }
+
+    /* Harness About modal */
+    .harness-overlay {
+      display: none;
+      position: fixed;
+      inset: 0;
+      z-index: 100;
+      background: rgba(0,0,0,0.35);
+      align-items: center;
+      justify-content: center;
+    }
+    .harness-overlay.open { display: flex; }
+    .harness-modal {
+      width: 680px;
+      max-width: calc(100vw - 32px);
+      max-height: calc(100vh - 64px);
+      display: flex;
+      flex-direction: column;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      box-shadow: 0 8px 32px rgba(0,0,0,0.22);
+      overflow: hidden;
+    }
+    .harness-modal-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      padding: 14px 20px;
+      border-bottom: 1px solid var(--border);
+      flex-shrink: 0;
+    }
+    .harness-modal-title { font-size: 15px; font-weight: 700; }
+    .harness-modal-close {
+      border: 0;
+      background: transparent;
+      color: var(--text-faint);
+      cursor: pointer;
+      font-size: 18px;
+      line-height: 1;
+      padding: 0 4px;
+    }
+    .harness-modal-close:hover { color: var(--text); }
+    .harness-modal-body { flex: 1; overflow-y: auto; padding: 16px 20px; display: flex; flex-direction: column; gap: 14px; }
+    .harness-card {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 14px 16px;
+    }
+    .harness-card h3 { font-size: 14px; font-weight: 700; margin-bottom: 6px; }
+    .harness-card h3 small { font-size: 11px; color: var(--text-faint); font-weight: 400; margin-left: 6px; }
+    .harness-card p { font-size: 13px; line-height: 1.55; color: var(--text-muted); margin-bottom: 6px; }
+    .harness-card p:last-child { margin-bottom: 0; }
+    .harness-cols { display: flex; gap: 16px; margin-top: 8px; }
+    .harness-cols > div { flex: 1; min-width: 0; }
+    .harness-cols strong { display: block; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; color: var(--text-faint); margin-bottom: 4px; }
+    .harness-cols ul { padding-left: 16px; font-size: 12px; color: var(--text-muted); line-height: 1.6; }
+    .harness-modal-footer { flex-shrink: 0; padding: 12px 20px; border-top: 1px solid var(--border); display: flex; justify-content: flex-end; }
+    @media (max-width: 768px) {
+      .harness-modal { width: 100vw; max-height: 85vh; border-radius: 10px 10px 0 0; }
+      .harness-overlay.open { align-items: flex-end; }
+      .harness-cols { flex-direction: column; gap: 8px; }
+    }
   </style>
 </head>
 <body>
@@ -703,6 +768,20 @@
     </div>
   </div>
 
+  <!-- Harness About modal -->
+  <div id="harness-overlay" class="harness-overlay" onclick="onHarnessOverlayClick(event)">
+    <div class="harness-modal">
+      <div class="harness-modal-header">
+        <div class="harness-modal-title">About Harnesses</div>
+        <button class="harness-modal-close" type="button" id="harness-about-close">&#x2715;</button>
+      </div>
+      <div class="harness-modal-body" id="harness-about-body"></div>
+      <div class="harness-modal-footer">
+        <button class="btn" type="button" id="harness-about-close-footer">Close</button>
+      </div>
+    </div>
+  </div>
+
   <script>
     const API = window.location.origin;
     let token = localStorage.getItem("praxis_token") || "";
@@ -721,6 +800,7 @@
     let expandedCompletedPlans = new Set();
     let expandedSpecs = new Set();
     let dashboardSseSource = null;
+    let HARNESSES = [];
 
     initTheme();
 
@@ -918,7 +998,7 @@
     }
 
     function renderProjectForm() {
-      return '<div class="detail-header"><div class="detail-title">New Project</div>' +
+      const html = '<div class="detail-header"><div class="detail-title">New Project</div>' +
         '<div class="detail-subtitle">Add a repository for orchestration</div></div>' +
         '<div class="detail-content"><form onsubmit="submitProject(event)">' +
           '<div class="formrow"><label>Name</label><input id="pf-name" required autocomplete="off"></div>' +
@@ -935,9 +1015,18 @@
             '</select>' +
             '<input id="pf-agent-model" placeholder="custom model id" style="display:none;margin-top:6px;">' +
           '</div>' +
+          '<div class="formrow"><label for="project-harness">Harness</label>' +
+            '<div style="display:flex;gap:8px;align-items:center;">' +
+              '<select id="project-harness" name="harness" style="flex:1;"></select>' +
+              '<button type="button" class="btn btn-compact" onclick="renderHarnessAbout()">About harnesses</button>' +
+            '</div>' +
+          '</div>' +
           '<div class="form-actions"><button type="submit" class="btn btn-primary">Create</button>' +
           '<button type="button" class="btn" onclick="showingForm=false;renderProjectsView()">Cancel</button></div>' +
         '</form></div>';
+      // Populate harness dropdown after DOM update (async, next microtask)
+      setTimeout(loadHarnesses, 0);
+      return html;
     }
 
     function onAgentModelPreset(value) {
@@ -958,7 +1047,8 @@
         agent_model: (document.getElementById("pf-agent-model").style.display === "block"
           ? document.getElementById("pf-agent-model").value
           : document.getElementById("pf-agent-model").dataset.model) || null,
-        agent_model_effort: document.getElementById("pf-agent-model").dataset.effort || null
+        agent_model_effort: document.getElementById("pf-agent-model").dataset.effort || null,
+        harness: document.getElementById("project-harness")?.value || null
       });
       selectedProjectId = project.id;
       showingForm = false;
@@ -1859,6 +1949,62 @@
     }
 
     // ── End Memory page ───────────────────────────────────────────────────────
+
+    // ── Harness dropdown + About panel ───────────────────────────────────────
+
+    async function loadHarnesses() {
+      try {
+        HARNESSES = await api("GET", "/api/harnesses");
+      } catch (e) {
+        HARNESSES = [];
+        return;
+      }
+      const sel = document.getElementById("project-harness");
+      if (!sel) return;
+      sel.innerHTML = "";
+      for (const h of HARNESSES) {
+        const opt = document.createElement("option");
+        opt.value = h.id;
+        opt.textContent = h.recommended ? h.display_name + " (recommended)" : h.display_name;
+        sel.appendChild(opt);
+      }
+    }
+
+    function renderHarnessAbout() {
+      const body = document.getElementById("harness-about-body");
+      if (!body) return;
+      if (!HARNESSES.length) {
+        body.innerHTML = '<p style="color:var(--text-faint);font-size:13px;padding:8px 0;">No harness data available.</p>';
+      } else {
+        body.innerHTML = HARNESSES.map(h =>
+          '<section class="harness-card">' +
+          '<h3>' + esc(h.display_name) + (h.recommended ? ' ⭐ recommended' : '') + '<small>(' + esc(h.maturity) + ')</small></h3>' +
+          '<p>' + esc(h.description) + '</p>' +
+          '<p><strong>What\'s unique:</strong> ' + esc(h.uniqueness) + '</p>' +
+          '<p><strong>When to pick:</strong> ' + esc(h.when_to_pick) + '</p>' +
+          '<div class="harness-cols">' +
+            '<div><strong>Pros</strong><ul>' + (h.pros || []).map(p => '<li>' + esc(p) + '</li>').join('') + '</ul></div>' +
+            '<div><strong>Cons</strong><ul>' + (h.cons || []).map(c => '<li>' + esc(c) + '</li>').join('') + '</ul></div>' +
+          '</div>' +
+          (h.notes && h.notes.length ? '<p style="margin-top:8px;font-size:12px;color:var(--text-faint);">Notes: ' + h.notes.map(n => esc(n)).join(' &middot; ') + '</p>' : '') +
+          '</section>'
+        ).join('');
+      }
+      document.getElementById("harness-overlay").classList.add("open");
+    }
+
+    function closeHarnessAbout() {
+      document.getElementById("harness-overlay").classList.remove("open");
+    }
+
+    function onHarnessOverlayClick(event) {
+      if (event.target === document.getElementById("harness-overlay")) closeHarnessAbout();
+    }
+
+    // ── End Harness dropdown + About panel ────────────────────────────────────
+
+    document.getElementById("harness-about-close").addEventListener("click", closeHarnessAbout);
+    document.getElementById("harness-about-close-footer").addEventListener("click", closeHarnessAbout);
 
     ensureToken();
     switchView("dashboard").catch(error => {
