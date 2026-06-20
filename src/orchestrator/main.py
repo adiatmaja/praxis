@@ -13,6 +13,7 @@ from fastapi.staticfiles import StaticFiles
 
 from orchestrator.config import Settings
 from orchestrator.core.agent_manager import AgentManager
+from orchestrator.core.effective_settings import EffectiveSettings
 from orchestrator.core.event_bus import EventBus
 from orchestrator.core.git_ops import GitOps
 from orchestrator.core.opus_bridge import OpusBridge
@@ -52,11 +53,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     app.state.db = database
     app.state.settings = settings
+    effective_settings = EffectiveSettings(settings, database)
+    app.state.effective_settings = effective_settings
     app.state.task_queue = TaskQueue(database)
     app.state.opus_bridge = OpusBridge(
         database,
         default_model=settings.agent_model,
         default_effort=settings.agent_model_effort,
+        effective_settings=effective_settings,
     )
     git_ops = GitOps(settings.github_token)
     app.state.git_ops = git_ops
@@ -65,6 +69,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         app.state.agent_manager = AgentManager(
             lm_studio_url=settings.lm_studio_url,
             github_token=settings.github_token,
+            effective_settings=effective_settings,
         )
     except Exception as exc:
         logger.warning("Agent manager unavailable during startup: %s", exc)
@@ -130,6 +135,7 @@ from orchestrator.api.harnesses import router as harnesses_router  # noqa: E402
 from orchestrator.api.internal import router as internal_router  # noqa: E402
 from orchestrator.api.plans import router as plans_router  # noqa: E402
 from orchestrator.api.projects import router as projects_router  # noqa: E402
+from orchestrator.api.settings import router as settings_router  # noqa: E402
 from orchestrator.api.specs import router as specs_router  # noqa: E402
 from orchestrator.api.system import router as system_router  # noqa: E402
 from orchestrator.api.tasks import router as tasks_router  # noqa: E402
@@ -145,6 +151,7 @@ app.include_router(system_router, prefix="/api")
 app.include_router(internal_router, prefix="/api/internal")
 app.include_router(events_router, prefix="/api")
 app.include_router(harnesses_router, prefix="/api")
+app.include_router(settings_router, prefix="/api")
 
 
 @app.get("/health")

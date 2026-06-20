@@ -10,6 +10,7 @@ import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
 from orchestrator.config import Settings
+from orchestrator.core.effective_settings import EffectiveSettings
 from orchestrator.core.event_bus import EventBus
 from orchestrator.core.opus_bridge import OpusBridge
 from orchestrator.core.orchestrator import Orchestrator
@@ -62,6 +63,7 @@ async def client(db: Database, test_settings: Settings) -> AsyncClient:
 
     app.state.db = db
     app.state.settings = test_settings
+    app.state.effective_settings = EffectiveSettings(test_settings, db)
     app.state.task_queue = TaskQueue(db)
     app.state.opus_bridge = OpusBridge(db)
     app.state.agent_manager = FakeAgentManager()

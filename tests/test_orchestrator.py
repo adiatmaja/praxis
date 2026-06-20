@@ -60,7 +60,7 @@ class TestOrchestrationDispatch:
     async def test_dispatch_pending_tasks(self, db: Database) -> None:
         task_queue, plan_id, task_id = await _setup(db)
         mock_agent_manager = MagicMock()
-        mock_agent_manager.spawn_agent.return_value = "container-123"
+        mock_agent_manager.spawn_agent = AsyncMock(return_value="container-123")
         event_bus = EventBus()
         events = event_bus.subscribe()
 
@@ -88,7 +88,7 @@ class TestOrchestrationDispatch:
         # Override harness to something non-default so the assertion is unambiguous.
         await db.execute("UPDATE projects SET harness = 'openhands' WHERE id = 'p1'")
         mock_agent_manager = MagicMock()
-        mock_agent_manager.spawn_agent.return_value = "container-456"
+        mock_agent_manager.spawn_agent = AsyncMock(return_value="container-456")
 
         orch = Orchestrator(
             task_queue=task_queue,

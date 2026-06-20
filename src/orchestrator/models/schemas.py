@@ -283,3 +283,25 @@ class DocResponse(BaseModel):
     total_count: int = 0
     classified_by: str = "marker"
     updated_at: str | None = None
+
+
+class SettingsEditableEntry(BaseModel):
+    """Single editable setting with override status."""
+
+    value: str | None
+    overridden: bool
+
+
+class SettingsReadonly(BaseModel):
+    """Read-only system settings (never includes secrets)."""
+
+    host: str
+    port: int
+    database_url: str
+
+
+class SettingsResponse(BaseModel):
+    """Response payload for GET /api/settings."""
+
+    editable: dict[str, SettingsEditableEntry]
+    readonly: SettingsReadonly

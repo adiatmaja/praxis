@@ -93,7 +93,7 @@ class Orchestrator:
 
         for task in await self._tq.get_dispatchable_tasks(plan_id):
             prompt = self._task_prompt(task, project)
-            container_id = self._agents.spawn_agent(
+            container_id = await self._agents.spawn_agent(
                 task_id=task["id"],
                 repo_url=project["repo_url"],
                 branch=task["branch_name"],

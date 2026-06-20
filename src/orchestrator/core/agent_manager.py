@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import docker.errors
 
 import docker
 from orchestrator.core.harnesses import REGISTRY, default_harness_id
+
+
+if TYPE_CHECKING:
+    from orchestrator.core.effective_settings import EffectiveSettings
 
 
 logger = logging.getLogger(__name__)
@@ -17,12 +21,18 @@ logger = logging.getLogger(__name__)
 class AgentManager:
     """Manage Aider agent Docker containers."""
 
-    def __init__(self, lm_studio_url: str, github_token: str) -> None:
+    def __init__(
+        self,
+        lm_studio_url: str,
+        github_token: str,
+        effective_settings: EffectiveSettings | None = None,
+    ) -> None:
         self._lm_studio_url = lm_studio_url
         self._github_token = github_token
+        self._effective_settings = effective_settings
         self._client = docker.from_env()  # type: ignore[attr-defined]
 
-    def spawn_agent(
+    async def spawn_agent(
         self,
         task_id: str,
         repo_url: str,
@@ -35,12 +45,16 @@ class AgentManager:
     ) -> str:
         harness_id = harness or default_harness_id()
         spec = REGISTRY[harness_id]
+        if self._effective_settings is not None:
+            lm_studio_url = await self._effective_settings.lm_studio_url()
+        else:
+            lm_studio_url = self._lm_studio_url
         environment = {
             "REPO_URL": repo_url,
             "BRANCH": branch,
             "BASE_BRANCH": base_branch,
             "TASK_PROMPT": task_prompt,
-            "OPENAI_API_BASE": f"{self._lm_studio_url}/v1",
+            "OPENAI_API_BASE": f"{lm_studio_url}/v1",
             "MODEL": model_name,
             "HARNESS": harness_id,
             "GH_TOKEN": self._github_token,

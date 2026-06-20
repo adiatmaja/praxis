@@ -778,6 +778,130 @@
     /* Memory page headings */
     .mem-pane h3 { margin-bottom: 8px; font-size: 13px; font-weight: 700; }
     .list-header h2, .mem-pane h3 { color: var(--text); }
+
+    /* Settings modal */
+    .settings-overlay {
+      display: none;
+      position: fixed;
+      inset: 0;
+      z-index: 200;
+      background: rgba(0,0,0,0.35);
+      align-items: center;
+      justify-content: center;
+    }
+    .settings-overlay.open { display: flex; }
+    .settings-modal {
+      width: 620px;
+      max-width: calc(100vw - 32px);
+      max-height: calc(100vh - 64px);
+      display: flex;
+      flex-direction: column;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      box-shadow: 0 8px 32px rgba(0,0,0,0.22);
+      overflow: hidden;
+    }
+    .settings-modal-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      padding: 14px 20px;
+      border-bottom: 1px solid var(--border);
+      flex-shrink: 0;
+    }
+    .settings-modal-title { font-size: 15px; font-weight: 700; }
+    .settings-modal-close {
+      border: 0;
+      background: transparent;
+      color: var(--text-faint);
+      cursor: pointer;
+      font-size: 18px;
+      line-height: 1;
+      padding: 0 4px;
+    }
+    .settings-modal-close:hover { color: var(--text); }
+    .settings-tabs {
+      display: flex;
+      gap: 0;
+      border-bottom: 1px solid var(--border);
+      flex-shrink: 0;
+      padding: 0 20px;
+    }
+    .settings-tab {
+      height: 38px;
+      border: 0;
+      border-bottom: 2px solid transparent;
+      background: transparent;
+      color: var(--text-muted);
+      padding: 0 14px;
+      cursor: pointer;
+      font-size: 13px;
+      font-weight: 600;
+      margin-bottom: -1px;
+    }
+    .settings-tab:hover { color: var(--text); }
+    .settings-tab.active { color: var(--text); border-bottom-color: var(--selected-border); }
+    .settings-body { flex: 1; overflow-y: auto; padding: 18px 20px; display: flex; flex-direction: column; gap: 14px; }
+    .settings-tab-panel { display: none; }
+    .settings-tab-panel.active { display: block; }
+    .settings-field-row { margin-bottom: 14px; }
+    .settings-field-row label { display: flex; align-items: center; gap: 6px; margin-bottom: 5px; color: var(--text-muted); font-size: 12px; font-weight: 500; }
+    .settings-field-row input, .settings-field-row select {
+      width: 100%;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      background: var(--bg);
+      color: var(--text);
+      padding: 7px 10px;
+      font-size: 13px;
+    }
+    .settings-field-row input:disabled, .settings-field-row select:disabled {
+      opacity: 0.55;
+      cursor: not-allowed;
+    }
+    .settings-overridden-badge {
+      display: inline-block;
+      background: var(--badge-reviewing-bg);
+      color: var(--badge-reviewing-text);
+      border-radius: 4px;
+      padding: 0 5px;
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: .03em;
+      text-transform: uppercase;
+      vertical-align: middle;
+    }
+    .settings-field-actions { display: flex; gap: 6px; margin-top: 5px; align-items: center; }
+    .settings-note { color: var(--text-faint); font-size: 11px; margin-top: 4px; }
+    .settings-section-title {
+      margin: 0 0 12px;
+      color: var(--text-faint);
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: .05em;
+      text-transform: uppercase;
+    }
+    .settings-readonly-group { background: var(--panel-alt); border: 1px solid var(--border-subtle); border-radius: 8px; padding: 12px 14px; margin-bottom: 14px; }
+    .settings-modal-footer {
+      flex-shrink: 0;
+      padding: 12px 20px;
+      border-top: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+    }
+    .settings-feedback { font-size: 12px; font-weight: 600; }
+    .settings-feedback.success { color: #15803d; }
+    .settings-feedback.error { color: #dc2626; }
+    [data-theme="dark"] .settings-feedback.success { color: #86efac; }
+    [data-theme="dark"] .settings-feedback.error { color: #fca5a5; }
+    @media (max-width: 768px) {
+      .settings-modal { width: 100vw; max-height: 85vh; border-radius: 10px 10px 0 0; }
+      .settings-overlay.open { align-items: flex-end; }
+    }
   </style>
 </head>
 <body>
@@ -842,6 +966,12 @@
             <line x1="11.95" y1="4.05" x2="13.07" y2="2.93"/>
           </svg>
         </button>
+        <button class="btn theme-btn" type="button" onclick="openSettings()" title="Settings">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <circle cx="8" cy="8" r="2.5"/>
+            <path d="M8 1.5v1M8 13.5v1M1.5 8h1M13.5 8h1M3.4 3.4l.7.7M11.9 11.9l.7.7M3.4 12.6l.7-.7M11.9 4.1l.7-.7"/>
+          </svg>
+        </button>
         <button class="btn" type="button" onclick="resetToken()">API Token</button>
       </div>
     </header>
@@ -878,6 +1008,45 @@
       <div class="harness-modal-body" id="harness-about-body"></div>
       <div class="harness-modal-footer">
         <button class="btn" type="button" id="harness-about-close-footer">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Settings modal -->
+  <div id="settings-overlay" class="settings-overlay" onclick="onSettingsOverlayClick(event)">
+    <div class="settings-modal">
+      <div class="settings-modal-header">
+        <div class="settings-modal-title">Settings</div>
+        <button class="settings-modal-close" type="button" onclick="closeSettings()">&#x2715;</button>
+      </div>
+      <div class="settings-tabs">
+        <button class="settings-tab active" type="button" id="settings-tab-global" onclick="switchSettingsTab('global')">Global</button>
+        <button class="settings-tab" type="button" id="settings-tab-project" onclick="switchSettingsTab('project')">Project</button>
+      </div>
+      <div class="settings-body">
+        <!-- Global tab -->
+        <div class="settings-tab-panel active" id="settings-panel-global">
+          <div id="settings-global-content">
+            <div style="color:var(--text-faint);font-size:13px;">Loading…</div>
+          </div>
+        </div>
+        <!-- Project tab -->
+        <div class="settings-tab-panel" id="settings-panel-project">
+          <div class="settings-field-row">
+            <label for="settings-project-select">Project</label>
+            <select id="settings-project-select" onchange="onSettingsProjectChange()">
+              <option value="">— select a project —</option>
+            </select>
+          </div>
+          <div id="settings-project-content"></div>
+        </div>
+      </div>
+      <div class="settings-modal-footer">
+        <span class="settings-feedback" id="settings-feedback"></span>
+        <div style="display:flex;gap:8px;">
+          <button class="btn" type="button" onclick="closeSettings()">Close</button>
+          <button class="btn btn-primary" type="button" id="settings-save-btn" onclick="saveSettings()">Save</button>
+        </div>
       </div>
     </div>
   </div>
@@ -2173,6 +2342,353 @@
 
     document.getElementById("harness-about-close").addEventListener("click", closeHarnessAbout);
     document.getElementById("harness-about-close-footer").addEventListener("click", closeHarnessAbout);
+
+    // ── Settings modal ────────────────────────────────────────────────────────
+
+    let settingsCurrentTab = "global";
+    // Holds original fetched values for dirty-checking: { key: originalValue }
+    let settingsGlobalOriginal = {};
+    // Holds original project field values for dirty-checking
+    let settingsProjectOriginal = {};
+    let settingsSelectedProjectId = null;
+
+    function openSettings() {
+      document.getElementById("settings-overlay").classList.add("open");
+      clearSettingsFeedback();
+      switchSettingsTab(settingsCurrentTab);
+    }
+
+    function closeSettings() {
+      document.getElementById("settings-overlay").classList.remove("open");
+    }
+
+    function onSettingsOverlayClick(event) {
+      if (event.target === document.getElementById("settings-overlay")) closeSettings();
+    }
+
+    function switchSettingsTab(tab) {
+      settingsCurrentTab = tab;
+      document.querySelectorAll(".settings-tab").forEach(btn => {
+        btn.classList.toggle("active", btn.id === "settings-tab-" + tab);
+      });
+      document.querySelectorAll(".settings-tab-panel").forEach(panel => {
+        panel.classList.toggle("active", panel.id === "settings-panel-" + tab);
+      });
+      clearSettingsFeedback();
+      if (tab === "global") {
+        loadGlobalSettings();
+      } else if (tab === "project") {
+        loadSettingsProjectList();
+      }
+    }
+
+    function clearSettingsFeedback() {
+      const el = document.getElementById("settings-feedback");
+      if (el) { el.textContent = ""; el.className = "settings-feedback"; }
+    }
+
+    function showSettingsFeedback(msg, isError) {
+      const el = document.getElementById("settings-feedback");
+      if (!el) return;
+      el.textContent = msg;
+      el.className = "settings-feedback " + (isError ? "error" : "success");
+      if (!isError) setTimeout(() => { if (el.textContent === msg) { el.textContent = ""; } }, 3000);
+    }
+
+    // ── Global settings ───────────────────────────────────────────────────────
+
+    const SETTINGS_EDITABLE_META = {
+      lm_studio_url:         { label: "LM Studio URL",           type: "text" },
+      agent_model:           { label: "Agent Model",             type: "text" },
+      agent_model_effort:    { label: "Agent Model Effort",      type: "text", hint: "low | medium | high (empty = default)" },
+      docs_root:             { label: "Docs Root Path",          type: "text" },
+      memory_md_path:        { label: "MEMORY.md Path",          type: "text" },
+      brainstorm_workspace:  { label: "Brainstorm Workspace",    type: "text" },
+    };
+
+    async function loadGlobalSettings() {
+      const container = document.getElementById("settings-global-content");
+      container.innerHTML = '<div style="color:var(--text-faint);font-size:13px;">Loading…</div>';
+      try {
+        const data = await api("GET", "/api/settings");
+        settingsGlobalOriginal = {};
+        for (const key of Object.keys(SETTINGS_EDITABLE_META)) {
+          const entry = data.editable ? data.editable[key] : null;
+          settingsGlobalOriginal[key] = entry ? entry.value : null;
+        }
+        container.innerHTML = renderGlobalSettings(data);
+      } catch (e) {
+        const msg = e.message || "Unknown error";
+        const isAuth = msg.includes("401") || msg.toLowerCase().includes("unauthorized");
+        container.innerHTML =
+          '<div style="color:var(--btn-danger-text);font-size:13px;padding:8px 0;">' +
+          esc(isAuth ? "Authentication failed. Check your API token." : "Failed to load settings: " + msg) +
+          '</div>';
+      }
+    }
+
+    function renderGlobalSettings(data) {
+      const editable = data.editable || {};
+      const readonly = data.readonly || {};
+      let html = '<div class="settings-section-title">Editable Settings</div>';
+
+      for (const [key, meta] of Object.entries(SETTINGS_EDITABLE_META)) {
+        const entry = editable[key] || {};
+        const val = entry.value != null ? String(entry.value) : "";
+        const overridden = !!entry.overridden;
+        const escapedKey = esc(key);
+        const escapedVal = esc(val);
+        html += '<div class="settings-field-row">' +
+          '<label for="sg-' + escapedKey + '">' + esc(meta.label) +
+            (overridden ? ' <span class="settings-overridden-badge">overridden by env</span>' : '') +
+          '</label>' +
+          '<input id="sg-' + escapedKey + '" type="' + esc(meta.type || "text") + '" ' +
+            'data-settings-key="' + escapedKey + '" ' +
+            'value="' + escapedVal + '" ' +
+            'autocomplete="off">' +
+          (meta.hint ? '<div class="settings-note">' + esc(meta.hint) + '</div>' : '') +
+          '<div class="settings-field-actions">' +
+            '<button class="btn btn-compact" type="button" onclick="resetSettingsField(' + JSON.stringify(key) + ')">Reset to default</button>' +
+          '</div>' +
+        '</div>';
+      }
+
+      html += '<div class="settings-section-title" style="margin-top:18px;">Read-only (require restart)</div>';
+      html += '<div class="settings-readonly-group">';
+      for (const [key, val] of Object.entries(readonly)) {
+        html += '<div class="settings-field-row" style="margin-bottom:10px;">' +
+          '<label>' + esc(key) + '</label>' +
+          '<input type="text" value="' + esc(String(val != null ? val : "")) + '" disabled>' +
+        '</div>';
+      }
+      html += '<div class="settings-note">These values are set via environment variables and require a server restart to change.</div>';
+      html += '</div>';
+
+      return html;
+    }
+
+    async function resetSettingsField(key) {
+      clearSettingsFeedback();
+      try {
+        const data = await api("PUT", "/api/settings", { [key]: null });
+        showSettingsFeedback("'" + key + "' reset to default.", false);
+        // Re-render with fresh data
+        const container = document.getElementById("settings-global-content");
+        settingsGlobalOriginal[key] = null;
+        container.innerHTML = renderGlobalSettings({ editable: data, readonly: {} });
+        // Reload to get readonly section too
+        loadGlobalSettings();
+      } catch (e) {
+        const msg = e.message || "Unknown error";
+        showSettingsFeedback("Error: " + msg, true);
+      }
+    }
+
+    // ── Project settings ──────────────────────────────────────────────────────
+
+    const PROJECT_EDITABLE_FIELDS = [
+      { key: "name",                  label: "Name",                   type: "text" },
+      { key: "model_name",            label: "Model (implementer)",    type: "text" },
+      { key: "agent_model",           label: "Agent Model (planner)",  type: "text", hint: "Leave blank to use global default" },
+      { key: "agent_model_effort",    label: "Agent Model Effort",     type: "text", hint: "low | medium | high (empty = default)" },
+      { key: "lm_studio_url",         label: "LM Studio URL",          type: "text", hint: "Leave blank to use global default" },
+      { key: "default_branch",        label: "Default Branch",         type: "text" },
+      { key: "approval_gate",         label: "Approval Gate",          type: "checkbox" },
+      { key: "confidence_threshold",  label: "Confidence Threshold",   type: "number", hint: "0.0 – 1.0" },
+      { key: "max_retries",           label: "Max Retries",            type: "number" },
+      { key: "max_improvement_cycles",label: "Max Improvement Cycles", type: "number" },
+    ];
+
+    async function loadSettingsProjectList() {
+      if (!projects.length) {
+        try { await loadProjects(); } catch (e) { /* handled below */ }
+      }
+      const sel = document.getElementById("settings-project-select");
+      if (!sel) return;
+      sel.innerHTML = '<option value="">— select a project —</option>';
+      for (const p of projects) {
+        const opt = document.createElement("option");
+        opt.value = p.id;
+        opt.textContent = p.name;
+        if (p.id === settingsSelectedProjectId) opt.selected = true;
+        sel.appendChild(opt);
+      }
+      if (settingsSelectedProjectId) loadSettingsProject(settingsSelectedProjectId);
+    }
+
+    function onSettingsProjectChange() {
+      const sel = document.getElementById("settings-project-select");
+      settingsSelectedProjectId = sel ? sel.value : null;
+      clearSettingsFeedback();
+      if (settingsSelectedProjectId) {
+        loadSettingsProject(settingsSelectedProjectId);
+      } else {
+        document.getElementById("settings-project-content").innerHTML = "";
+      }
+    }
+
+    async function loadSettingsProject(id) {
+      const container = document.getElementById("settings-project-content");
+      container.innerHTML = '<div style="color:var(--text-faint);font-size:13px;padding:4px 0;">Loading…</div>';
+      try {
+        const proj = await api("GET", "/api/projects/" + id);
+        settingsProjectOriginal = {};
+        for (const f of PROJECT_EDITABLE_FIELDS) {
+          settingsProjectOriginal[f.key] = proj[f.key] != null ? proj[f.key] : null;
+        }
+        container.innerHTML = renderProjectSettingsForm(proj);
+      } catch (e) {
+        const msg = e.message || "Unknown error";
+        const isAuth = msg.includes("401") || msg.toLowerCase().includes("unauthorized");
+        container.innerHTML =
+          '<div style="color:var(--btn-danger-text);font-size:13px;padding:8px 0;">' +
+          esc(isAuth ? "Authentication failed. Check your API token." : "Failed to load project: " + msg) +
+          '</div>';
+      }
+    }
+
+    function renderProjectSettingsForm(proj) {
+      let html = '';
+      for (const f of PROJECT_EDITABLE_FIELDS) {
+        const val = proj[f.key] != null ? proj[f.key] : "";
+        const escapedKey = esc(f.key);
+        html += '<div class="settings-field-row">';
+        html += '<label for="sp-' + escapedKey + '">' + esc(f.label) + '</label>';
+        if (f.type === "checkbox") {
+          html += '<div style="display:flex;align-items:center;gap:8px;">' +
+            '<input id="sp-' + escapedKey + '" type="checkbox" ' +
+              'data-proj-key="' + escapedKey + '" ' +
+              (val ? 'checked' : '') +
+              ' style="width:auto;margin:0;">' +
+            '<span style="font-size:12px;color:var(--text-muted);">Enabled</span>' +
+          '</div>';
+        } else {
+          html += '<input id="sp-' + escapedKey + '" type="' + esc(f.type || "text") + '" ' +
+            'data-proj-key="' + escapedKey + '" ' +
+            'value="' + esc(String(val)) + '" ' +
+            'autocomplete="off"' +
+            (f.type === "number" ? ' step="any"' : '') +
+            '>';
+        }
+        if (f.hint) html += '<div class="settings-note">' + esc(f.hint) + '</div>';
+        html += '</div>';
+      }
+      return html;
+    }
+
+    // ── Save dispatcher ───────────────────────────────────────────────────────
+
+    async function saveSettings() {
+      clearSettingsFeedback();
+      if (settingsCurrentTab === "global") {
+        await saveGlobalSettings();
+      } else {
+        await saveProjectSettings();
+      }
+    }
+
+    async function saveGlobalSettings() {
+      const inputs = document.querySelectorAll("#settings-panel-global [data-settings-key]");
+      const changed = {};
+      inputs.forEach(input => {
+        const key = input.dataset.settingsKey;
+        const newVal = input.value.trim();
+        const origVal = settingsGlobalOriginal[key] != null ? String(settingsGlobalOriginal[key]) : "";
+        if (newVal !== origVal) {
+          changed[key] = newVal === "" ? null : newVal;
+        }
+      });
+
+      if (!Object.keys(changed).length) {
+        showSettingsFeedback("No changes to save.", false);
+        return;
+      }
+
+      const btn = document.getElementById("settings-save-btn");
+      btn.disabled = true;
+      try {
+        const data = await api("PUT", "/api/settings", changed);
+        showSettingsFeedback("Global settings saved.", false);
+        // Re-render with returned editable data
+        const container = document.getElementById("settings-global-content");
+        // Update originals
+        for (const [key, entry] of Object.entries(data)) {
+          settingsGlobalOriginal[key] = entry && entry.value != null ? entry.value : null;
+        }
+        container.innerHTML = renderGlobalSettings({ editable: data, readonly: {} });
+        // Full reload to get readonly back
+        loadGlobalSettings();
+      } catch (e) {
+        const msg = e.message || "Unknown error";
+        const isAuth = msg.includes("401") || msg.toLowerCase().includes("unauthorized");
+        showSettingsFeedback(isAuth ? "Authentication failed." : "Error: " + msg, true);
+      } finally {
+        btn.disabled = false;
+      }
+    }
+
+    async function saveProjectSettings() {
+      if (!settingsSelectedProjectId) {
+        showSettingsFeedback("Select a project first.", true);
+        return;
+      }
+      const inputs = document.querySelectorAll("#settings-panel-project [data-proj-key]");
+      const changed = {};
+      inputs.forEach(input => {
+        const key = input.dataset.projKey;
+        let newVal;
+        if (input.type === "checkbox") {
+          newVal = input.checked;
+        } else if (input.type === "number") {
+          newVal = input.value.trim() === "" ? null : Number(input.value);
+        } else {
+          newVal = input.value.trim() === "" ? null : input.value.trim();
+        }
+        const origVal = settingsProjectOriginal[key];
+        // Compare by string for most, direct for booleans/numbers
+        const origStr = origVal != null ? String(origVal) : "";
+        const newStr = newVal != null ? String(newVal) : "";
+        if (origStr !== newStr) {
+          changed[key] = newVal;
+        }
+      });
+
+      if (!Object.keys(changed).length) {
+        showSettingsFeedback("No changes to save.", false);
+        return;
+      }
+
+      const btn = document.getElementById("settings-save-btn");
+      btn.disabled = true;
+      try {
+        await api("PATCH", "/api/projects/" + settingsSelectedProjectId, changed);
+        showSettingsFeedback("Project settings saved.", false);
+        // Refresh local projects cache and re-render
+        await loadProjects();
+        // Reload project form with fresh data
+        await loadSettingsProject(settingsSelectedProjectId);
+      } catch (e) {
+        const msg = e.message || "Unknown error";
+        const isAuth = msg.includes("401") || msg.toLowerCase().includes("unauthorized");
+        showSettingsFeedback(isAuth ? "Authentication failed." : "Error: " + msg, true);
+      } finally {
+        btn.disabled = false;
+      }
+    }
+
+    // Esc key closes settings modal (and other modals if none open)
+    document.addEventListener("keydown", function(event) {
+      if (event.key !== "Escape") return;
+      if (document.getElementById("settings-overlay").classList.contains("open")) {
+        closeSettings();
+      } else if (document.getElementById("harness-overlay").classList.contains("open")) {
+        closeHarnessAbout();
+      } else if (document.getElementById("spec-chat-overlay").classList.contains("open")) {
+        closeSpecChat();
+      }
+    });
+
+    // ── End Settings modal ────────────────────────────────────────────────────
 
     ensureToken();
     switchView("dashboard").catch(error => {

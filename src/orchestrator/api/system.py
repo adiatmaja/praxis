@@ -61,7 +61,15 @@ async def system_status(request: Request) -> dict[str, Any]:
 
     opus_status = opus_state["status"]
     agent_connected = opus_status in ("available", "rate_limited", "resuming")
-    subagent_info = await _probe_subagent(settings.lm_studio_url)
+    # Use effective_settings for live override support (lm_studio_url, agent_model)
+    es = getattr(request.app.state, "effective_settings", None)
+    if es is not None:
+        effective_lm_studio_url = await es.lm_studio_url()
+        effective_agent_model = await es.agent_model()
+    else:
+        effective_lm_studio_url = settings.lm_studio_url
+        effective_agent_model = settings.agent_model
+    subagent_info = await _probe_subagent(effective_lm_studio_url)
 
     return {
         "opus_state": _opus_state_response(opus_state),
@@ -70,7 +78,7 @@ async def system_status(request: Request) -> dict[str, Any]:
         ),
         "total_agents": len(containers),
         "agent_model": {
-            "name": settings.agent_model,
+            "name": effective_agent_model,
             "connected": agent_connected,
         },
         "subagent_model": subagent_info,
