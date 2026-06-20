@@ -6,7 +6,7 @@ set -euo pipefail
 : "${BASE_BRANCH:?BASE_BRANCH is required}"
 : "${TASK_PROMPT:?TASK_PROMPT is required}"
 : "${OPENAI_API_BASE:?OPENAI_API_BASE is required}"
-: "${AIDER_MODEL:?AIDER_MODEL is required}"
+: "${MODEL:?MODEL is required}"
 : "${GH_TOKEN:?GH_TOKEN is required}"
 : "${CALLBACK_URL:?CALLBACK_URL is required}"
 : "${TASK_ID:?TASK_ID is required}"
@@ -49,7 +49,7 @@ echo "=== Agent starting ==="
 echo "Repo: ${REPO_URL}"
 echo "Branch: ${BRANCH}"
 echo "Base: ${BASE_BRANCH}"
-echo "Model: ${AIDER_MODEL}"
+echo "Model: openai/${MODEL}"
 
 echo "--- Configuring git auth ---"
 git config --global credential.helper '!f() { echo "username=x-access-token"; echo "password=${GH_TOKEN}"; }; f'
@@ -79,7 +79,7 @@ echo "--- Running Aider ---"
 export OPENAI_API_KEY="${OPENAI_API_KEY:-not-needed}"
 aider \
     --message "${TASK_PROMPT}" \
-    --model "${AIDER_MODEL}" \
+    --model "openai/${MODEL}" \
     --auto-commits \
     --yes-always \
     --no-auto-lint \
