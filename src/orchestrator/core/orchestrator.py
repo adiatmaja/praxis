@@ -564,22 +564,72 @@ class Orchestrator:
         reason = (
             f"Agent container exited (code {exit_code}) without a completion callback"
         )
-        await self._tq.complete_agent_run(run["id"], "failed", logs or reason)
-        await self._tq.fail_task(run["task_id"], reason)
-        self._bus.publish(
-            {"type": "task_failed", "task_id": run["task_id"], "feedback": reason}
-        )
-        logger.warning("Reconciled exited run %s: %s", run["id"], reason)
+        # Docker is available on this path (we observed the container exit),
+        # so a fresh dispatch can succeed — allow a bounded retry.
+        await self._resolve_failed_run(run, reason, logs=logs, can_retry=True)
 
     async def _fail_orphan(self, run: dict[str, Any], reason: str) -> None:
-        """Mark an unmonitorable running run (and its task) as failed."""
-        logs = self._safe_logs(run["container_id"])
-        await self._tq.complete_agent_run(run["id"], "failed", logs or reason)
+        """Resolve an unmonitorable running run (and its task).
+
+        Retries when the agent manager is available (the container merely
+        vanished); fails terminally when Docker itself is unavailable, since
+        re-dispatch would only thrash.
+        """
+        await self._resolve_failed_run(run, reason, can_retry=self._agents is not None)
+
+    async def _resolve_failed_run(
+        self,
+        run: dict[str, Any],
+        reason: str,
+        *,
+        can_retry: bool,
+        logs: str | None = None,
+    ) -> None:
+        """Finalize a failed run as either a bounded retry or terminal failure.
+
+        Marks the agent run ``failed``, then re-queues the task as ``pending``
+        (incrementing its attempt) when retries remain and ``can_retry`` is
+        set, otherwise marks the task ``failed``. This is what makes a lost
+        completion callback self-recover instead of stalling.
+        """
+        log_text = logs if logs is not None else self._safe_logs(run["container_id"])
+        await self._tq.complete_agent_run(run["id"], "failed", log_text or reason)
+
+        task = await self._tq.get_task(run["task_id"])
+        max_retries = 0
+        if task is not None:
+            plan = await self._tq.get_plan(task["plan_id"])
+            project = (
+                await self._tq.get_project(plan["project_id"])
+                if plan is not None
+                else None
+            )
+            if project is not None:
+                max_retries = int(project["max_retries"])
+
         await self._tq.fail_task(run["task_id"], reason)
-        self._bus.publish(
-            {"type": "task_failed", "task_id": run["task_id"], "feedback": reason}
-        )
-        logger.warning("Reconciled orphaned run %s: %s", run["id"], reason)
+        if can_retry and task is not None and int(task["attempt"]) < max_retries:
+            await self._tq.retry_task(run["task_id"])
+            self._bus.publish(
+                {
+                    "type": "task_retry",
+                    "task_id": run["task_id"],
+                    "attempt": int(task["attempt"]) + 1,
+                    "reason": reason,
+                }
+            )
+            logger.warning(
+                "Reconciled run %s -> retry %d/%d: %s",
+                run["id"],
+                int(task["attempt"]) + 1,
+                max_retries,
+                reason,
+            )
+        else:
+            self._bus.publish(
+                {"type": "task_failed", "task_id": run["task_id"], "feedback": reason}
+            )
+            logger.warning("Reconciled run %s -> failed: %s", run["id"], reason)
 
     async def shutdown(self) -> None:
         """Cancel all in-flight log monitors."""

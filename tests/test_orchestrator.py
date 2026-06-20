@@ -713,9 +713,11 @@ class FakeAgents:
 async def _orch_with_running_run(
     db: Database,
     agents: Any,
+    attempt: int = 1,
 ) -> tuple[Orchestrator, TaskQueue, EventBus, str, str]:
     task_queue, _plan_id, task_id = await _setup(db)
     await task_queue.update_task_status(task_id, TaskStatus.IN_PROGRESS)
+    await db.execute("UPDATE tasks SET attempt = ? WHERE id = ?", (attempt, task_id))
     run_id = await task_queue.create_agent_run(task_id, "container-xyz")
     event_bus = EventBus()
     orch = Orchestrator(
@@ -746,9 +748,12 @@ class TestReconciliation:
         assert task["status"] == TaskStatus.FAILED
         assert events.get_nowait()["type"] == "task_failed"
 
-    async def test_orphan_failed_when_container_missing(self, db: Database) -> None:
+    async def test_missing_container_retries_when_attempts_remain(
+        self, db: Database
+    ) -> None:
         agents = FakeAgents(statuses=[None])
-        orch, tq, _bus, task_id, run_id = await _orch_with_running_run(db, agents)
+        orch, tq, bus, task_id, run_id = await _orch_with_running_run(db, agents)
+        events = bus.subscribe()
 
         await orch.reconcile_runs()
 
@@ -757,9 +762,11 @@ class TestReconciliation:
         assert run is not None
         assert run["status"] == "failed"
         assert task is not None
-        assert task["status"] == TaskStatus.FAILED
+        assert task["status"] == TaskStatus.PENDING
+        assert task["attempt"] == 2
+        assert events.get_nowait()["type"] == "task_retry"
 
-    async def test_exited_without_callback_fails_task(self, db: Database) -> None:
+    async def test_exited_without_callback_retries(self, db: Database) -> None:
         agents = FakeAgents(statuses=[{"status": "exited", "exit_code": 1}])
         orch, tq, _bus, task_id, run_id = await _orch_with_running_run(db, agents)
 
@@ -770,7 +777,23 @@ class TestReconciliation:
         assert run is not None
         assert run["status"] == "failed"
         assert task is not None
+        assert task["status"] == TaskStatus.PENDING
+        assert task["attempt"] == 2
+
+    async def test_exited_at_max_retries_fails_terminally(self, db: Database) -> None:
+        # attempt already at max_retries (3) -> no retry left, terminal failure.
+        agents = FakeAgents(statuses=[{"status": "exited", "exit_code": 1}])
+        orch, tq, bus, task_id, run_id = await _orch_with_running_run(
+            db, agents, attempt=3
+        )
+        events = bus.subscribe()
+
+        await orch.reconcile_runs()
+
+        task = await tq.get_task(task_id)
+        assert task is not None
         assert task["status"] == TaskStatus.FAILED
+        assert events.get_nowait()["type"] == "task_failed"
 
     async def test_running_container_starts_monitor(self, db: Database) -> None:
         agents = FakeAgents(statuses=[{"status": "running", "exit_code": 0}])
@@ -799,7 +822,9 @@ class TestReconciliation:
 
 @pytest.mark.integration
 class TestLogMonitor:
-    async def test_monitor_streams_logs_and_fails_on_exit(self, db: Database) -> None:
+    async def test_monitor_streams_logs_and_reconciles_on_exit(
+        self, db: Database
+    ) -> None:
         agents = FakeAgents(
             statuses=[
                 {"status": "running", "exit_code": 1},
@@ -816,11 +841,15 @@ class TestLogMonitor:
         while not events.empty():
             kinds.append(events.get_nowait()["type"])
         assert "agent_log" in kinds
-        assert "task_failed" in kinds
+        # attempt 1 of max 3 -> exit without callback triggers a bounded retry.
+        assert "task_retry" in kinds
         run = await tq.get_agent_run(run_id)
         assert run is not None
         assert "line one" in (run["logs"] or "")
         assert run["status"] == "failed"
+        task = await tq.get_task(task_id)
+        assert task is not None
+        assert task["status"] == TaskStatus.PENDING
 
     async def test_reconcile_exited_noop_when_callback_completed(
         self, db: Database

@@ -29,10 +29,24 @@ send_callback() {
         run_json=$(printf "%s" "${RUN_ID}" | json_escape)
     fi
 
-    curl -s -X POST "${CALLBACK_URL}" \
-        -H "Content-Type: application/json" \
-        -d "{\"task_id\":\"${TASK_ID}\",\"run_id\":${run_json},\"status\":\"${STATUS}\",\"pr_url\":${pr_json}}" \
-        || echo "WARNING: Failed to send callback"
+    local payload="{\"task_id\":\"${TASK_ID}\",\"run_id\":${run_json},\"status\":\"${STATUS}\",\"pr_url\":${pr_json}}"
+    local max_attempts="${CALLBACK_MAX_ATTEMPTS:-5}"
+    local attempt=1
+    while [ "${attempt}" -le "${max_attempts}" ]; do
+        local code
+        code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 \
+            -X POST "${CALLBACK_URL}" \
+            -H "Content-Type: application/json" \
+            -d "${payload}" || echo "000")
+        if [ "${code}" = "200" ]; then
+            echo "Callback delivered on attempt ${attempt}"
+            return 0
+        fi
+        echo "WARNING: callback attempt ${attempt}/${max_attempts} failed (HTTP ${code})"
+        attempt=$((attempt + 1))
+        sleep $((attempt * 2))
+    done
+    echo "ERROR: callback failed after ${max_attempts} attempts; orchestrator will reconcile"
 }
 
 cleanup() {

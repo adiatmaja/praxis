@@ -152,6 +152,22 @@ Tables: `users`, `projects`, `plans`, `tasks`, `agent_runs`, `opus_state`
   cleans up its `read-{uuid}` dir in a `finally`. Clone/git failures surface as a
   `502` from `GET /api/projects/{id}/context` (handled in `api/context.py`), not an
   opaque 500. The Memory view re-clones on each open — no caching yet
+- **Agent runs are reconciled, not fire-and-forget** — `Orchestrator.reconcile_runs()`
+  runs every loop pass and at startup. It fails/retries any `running` agent run whose
+  container vanished or exited without an `agent-done` callback, and attaches a live-log
+  monitor (`monitor_run`) to still-running containers. This is what stops a lost callback
+  from wedging a task in `in_progress` forever. Reconciled runs auto-retry up to the
+  project's `max_retries` when Docker is available (gated so a broken Docker can't thrash),
+  else go terminal `failed`. `_reconcile_exited` waits `_callback_grace` (5s) and re-checks
+  status so it never races a real in-flight callback.
+- **`agent_log` events are produced by `monitor_run`** — the live-log SSE
+  (`/api/tasks/{id}/logs`) streams these and falls back to the run's persisted `logs`
+  column (checkpointed each poll), so the panel works even when Docker is down. There is
+  no other producer of `agent_log`.
+- **Agent callbacks retry with backoff** — each `docker/<harness>-agent/entrypoint.sh`
+  `send_callback` retries the POST to `/api/internal/agent-done` up to
+  `CALLBACK_MAX_ATTEMPTS` (default 5) until HTTP 200. The orchestrator's reconciliation
+  is the backstop if all attempts fail.
 - **Aider agent image is standalone** — `aider-agent:latest` is not in docker-compose.
   Build it directly: `docker build -t aider-agent:latest -f docker/aider-agent/Dockerfile docker/aider-agent/`
 - **Agent container runs as non-root** — The `agent` user cannot write to `/`.
