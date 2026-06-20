@@ -26,3 +26,25 @@ def checklist_progress(text: str) -> tuple[int, int]:
     boxes = _CHECKBOX.findall(text)
     done = sum(1 for state in boxes if state in ("x", "X"))
     return done, len(boxes)
+
+
+_FRONTMATTER_TYPE = re.compile(r"^---\n(.*?)\n---", re.DOTALL)
+_TYPE_LINE = re.compile(r"^type:\s*(spec|plan)\s*$", re.MULTILINE)
+_TASKS_HEADING = re.compile(r"^##\s+Tasks\b", re.MULTILINE | re.IGNORECASE)
+
+
+def classify_by_marker(path: str, text: str) -> str | None:
+    """Deterministic classification; None when ambiguous."""
+    fm = _FRONTMATTER_TYPE.search(text)
+    if fm:
+        type_match = _TYPE_LINE.search(fm.group(1))
+        if type_match:
+            return type_match.group(1)
+    normalized = path.replace("\\", "/")
+    if "/plans/" in normalized:
+        return "plan"
+    if "/specs/" in normalized:
+        return "spec"
+    if _TASKS_HEADING.search(text) and checklist_progress(text)[1] > 0:
+        return "plan"
+    return None
