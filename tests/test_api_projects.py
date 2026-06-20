@@ -88,6 +88,31 @@ async def test_delete_project(
 
 
 @pytest.mark.integration
+async def test_create_project_persists_agent_model(
+    client: AsyncClient,
+    db: Database,
+    auth_headers: dict[str, str],
+) -> None:
+    await seed_user(db)
+
+    r = await client.post(
+        "/api/projects",
+        headers=auth_headers,
+        json={
+            "name": "r",
+            "repo_url": "https://x/y",
+            "model_name": "qwen",
+            "agent_model": "claude-sonnet-4-6",
+            "agent_model_effort": "low",
+        },
+    )
+    assert r.status_code == 201
+    body = r.json()
+    assert body["agent_model"] == "claude-sonnet-4-6"
+    assert body["agent_model_effort"] == "low"
+
+
+@pytest.mark.integration
 async def test_project_not_found_and_unauthorized(
     client: AsyncClient,
     db: Database,
