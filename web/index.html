@@ -764,9 +764,29 @@
           '<div class="formrow"><label>Name</label><input id="pf-name" required autocomplete="off"></div>' +
           '<div class="formrow"><label>Repository URL</label><input id="pf-repo" required autocomplete="off" placeholder="https://github.com/user/repo"></div>' +
           '<div class="formrow"><label>Model</label><input id="pf-model" required autocomplete="off" value="deepseek-coder-v2"></div>' +
+          '<div class="formrow"><label>Agent model (reasoning)</label>' +
+            '<select id="pf-agent-model-preset" onchange="onAgentModelPreset(this.value)">' +
+              '<option value="">Global default</option>' +
+              '<option value="claude-opus-4-8|">Opus (claude-opus-4-8)</option>' +
+              '<option value="claude-opus-4-8|low">Opus — low effort</option>' +
+              '<option value="claude-sonnet-4-6|">Sonnet (claude-sonnet-4-6)</option>' +
+              '<option value="claude-haiku-4-5|">Haiku (claude-haiku-4-5)</option>' +
+              '<option value="custom">Custom…</option>' +
+            '</select>' +
+            '<input id="pf-agent-model" placeholder="custom model id" style="display:none;margin-top:6px;">' +
+          '</div>' +
           '<div class="form-actions"><button type="submit" class="btn btn-primary">Create</button>' +
           '<button type="button" class="btn" onclick="showingForm=false;renderProjectsView()">Cancel</button></div>' +
         '</form></div>';
+    }
+
+    function onAgentModelPreset(value) {
+      const custom = document.getElementById("pf-agent-model");
+      if (value === "custom") { custom.style.display = "block"; return; }
+      custom.style.display = "none";
+      const [model, effort] = value.split("|");
+      custom.dataset.model = model || "";
+      custom.dataset.effort = effort || "";
     }
 
     async function submitProject(event) {
@@ -774,7 +794,11 @@
       const project = await api("POST", "/api/projects", {
         name: document.getElementById("pf-name").value,
         repo_url: document.getElementById("pf-repo").value,
-        model_name: document.getElementById("pf-model").value
+        model_name: document.getElementById("pf-model").value,
+        agent_model: (document.getElementById("pf-agent-model").style.display === "block"
+          ? document.getElementById("pf-agent-model").value
+          : document.getElementById("pf-agent-model").dataset.model) || null,
+        agent_model_effort: document.getElementById("pf-agent-model").dataset.effort || null
       });
       selectedProjectId = project.id;
       showingForm = false;
