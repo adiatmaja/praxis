@@ -84,6 +84,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         github_token=settings.github_token,
     )
 
+    from orchestrator.core.context_sync import ContextSync
+
+    app.state.context_sync = ContextSync(
+        workspace_base=settings.brainstorm_workspace,
+        github_token=settings.github_token,
+        memory_md_path=settings.memory_md_path,
+    )
+
     from orchestrator.core.doc_indexer import DocIndexer
 
     app.state.doc_indexer = DocIndexer(
@@ -114,6 +122,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 app = FastAPI(title="AI Agent Orchestrator", version="0.1.0", lifespan=lifespan)
 
+from orchestrator.api.context import router as context_router  # noqa: E402
 from orchestrator.api.docs import router as docs_router  # noqa: E402
 from orchestrator.api.events import router as events_router  # noqa: E402
 from orchestrator.api.internal import router as internal_router  # noqa: E402
@@ -124,6 +133,7 @@ from orchestrator.api.system import router as system_router  # noqa: E402
 from orchestrator.api.tasks import router as tasks_router  # noqa: E402
 
 
+app.include_router(context_router)
 app.include_router(docs_router)
 app.include_router(specs_router)
 app.include_router(projects_router, prefix="/api")

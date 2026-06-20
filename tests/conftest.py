@@ -58,6 +58,7 @@ class FakeAgentManager:
 @pytest_asyncio.fixture
 async def client(db: Database, test_settings: Settings) -> AsyncClient:
     from orchestrator.core.brainstorm import BrainstormManager
+    from orchestrator.core.context_sync import ContextSync
 
     app.state.db = db
     app.state.settings = test_settings
@@ -69,6 +70,11 @@ async def client(db: Database, test_settings: Settings) -> AsyncClient:
         workspace_base="/tmp/praxis-brainstorm-test",
         event_bus=app.state.event_bus,
         github_token=test_settings.github_token,
+    )
+    app.state.context_sync = ContextSync(
+        workspace_base="/tmp/praxis-context-sync-test",
+        github_token=test_settings.github_token,
+        memory_md_path=test_settings.memory_md_path,
     )
     app.state.orchestrator = Orchestrator(
         task_queue=app.state.task_queue,
