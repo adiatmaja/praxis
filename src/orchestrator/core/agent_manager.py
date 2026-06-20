@@ -88,12 +88,12 @@ class AgentManager:
             "exit_code": container.attrs["State"]["ExitCode"],
         }
 
-    def get_container_logs(self, container_id: str, tail: int = 500) -> str:
+    def get_container_logs(self, container_id: str, tail: int | str = 500) -> str:
         try:
             container = self._client.containers.get(container_id)
         except docker.errors.NotFound:
             return ""
-        return str(container.logs(tail=tail).decode())
+        return str(container.logs(tail=tail).decode(errors="replace"))
 
     def stop_agent(self, container_id: str) -> None:
         try:

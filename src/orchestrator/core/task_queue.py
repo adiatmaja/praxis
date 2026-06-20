@@ -198,6 +198,27 @@ class TaskQueue:
             (task_id,),
         )
 
+    async def get_running_runs(self) -> list[dict[str, Any]]:
+        """Return every agent run still marked as running.
+
+        Used by reconciliation to find orphaned runs whose containers no
+        longer report completion (e.g. after an orchestrator restart).
+        """
+        return await self._db.fetch_all(
+            "SELECT * FROM agent_runs WHERE status = 'running' ORDER BY rowid"
+        )
+
+    async def update_agent_run_logs(self, run_id: str, logs: str) -> None:
+        """Persist in-progress logs for a running agent run.
+
+        Unlike ``complete_agent_run`` this leaves status and finished_at
+        untouched so live log streaming can checkpoint output incrementally.
+        """
+        await self._db.execute(
+            "UPDATE agent_runs SET logs = ? WHERE id = ?",
+            (logs, run_id),
+        )
+
     async def complete_agent_run(self, run_id: str, status: str, logs: str) -> None:
         now = datetime.now(UTC).isoformat()
         await self._db.execute(

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 from datetime import UTC, datetime
 from typing import Any, cast
@@ -40,6 +41,13 @@ class Orchestrator:
         self._bus = event_bus
         self._doc_indexer = doc_indexer
         self._context_sync = context_sync
+        # Background log-streaming monitors, keyed by agent-run id.
+        self._monitors: dict[str, asyncio.Task[None]] = {}
+        # Seconds to wait for an in-flight agent-done callback before a
+        # monitor concludes a container exited without reporting completion.
+        self._callback_grace: float = 5.0
+        # Seconds between live-log polls of a running container.
+        self._monitor_poll_interval: float = 2.0
 
     async def plan_and_activate(self, plan_id: str, project: dict[str, Any]) -> None:
         """Ask Opus to plan a pending spec and activate the resulting task graph."""
@@ -442,9 +450,151 @@ class Orchestrator:
                     activate=not bool(project["approval_gate"]),
                 )
 
+    def _safe_logs(self, container_id: str) -> str:
+        """Fetch full container logs, swallowing any backend errors."""
+        if self._agents is None:
+            return ""
+        try:
+            return str(self._agents.get_container_logs(container_id, tail="all"))
+        except Exception:  # noqa: BLE001 - log fetch is best-effort
+            return ""
+
+    async def reconcile_runs(self) -> None:
+        """Reconcile every running agent run with its container's real state.
+
+        Runs each orchestration pass (and therefore at startup). It:
+        - fails orphaned runs when the agent manager is unavailable or the
+          container has vanished/exited without a completion callback, and
+        - (re)attaches a live-log monitor to runs whose container is alive.
+
+        This is what lets a task that was ``in_progress`` when the
+        orchestrator died self-heal into a retryable ``failed`` state instead
+        of hanging forever.
+        """
+        running = await self._tq.get_running_runs()
+        if not running:
+            return
+
+        if self._agents is None:
+            for run in running:
+                await self._fail_orphan(run, "Agent manager unavailable")
+            return
+
+        for run in running:
+            monitor = self._monitors.get(run["id"])
+            if monitor is not None and not monitor.done():
+                continue
+            status = self._agents.get_container_status(run["container_id"])
+            if status is None:
+                await self._fail_orphan(run, "Agent container missing")
+                continue
+            if status["status"] in {"exited", "dead"}:
+                await self._reconcile_exited(run, status)
+                continue
+            self._start_monitor(run["id"], run["task_id"], run["container_id"])
+
+    def _start_monitor(self, run_id: str, task_id: str, container_id: str) -> None:
+        task = asyncio.create_task(self.monitor_run(run_id, task_id, container_id))
+        self._monitors[run_id] = task
+        task.add_done_callback(lambda _t: self._monitors.pop(run_id, None))
+
+    async def monitor_run(
+        self,
+        run_id: str,
+        task_id: str,
+        container_id: str,
+    ) -> None:
+        """Stream a running container's logs to the bus until it exits.
+
+        Publishes incremental ``agent_log`` events (the only producer of
+        them) and checkpoints the full log to the run row so the live-log
+        SSE endpoint has data even when Docker is later unavailable. On
+        container exit it hands off to ``_reconcile_exited``.
+        """
+        if self._agents is None:
+            return
+        sent = 0
+        last_status: dict[str, Any] | None = None
+        try:
+            while True:
+                logs = self._safe_logs(container_id)
+                if len(logs) > sent:
+                    chunk = logs[sent:]
+                    sent = len(logs)
+                    await self._tq.update_agent_run_logs(run_id, logs)
+                    self._bus.publish(
+                        {
+                            "type": "agent_log",
+                            "task_id": task_id,
+                            "run_id": run_id,
+                            "logs": chunk,
+                        }
+                    )
+                last_status = self._agents.get_container_status(container_id)
+                if last_status is None or last_status["status"] in {"exited", "dead"}:
+                    break
+                await asyncio.sleep(self._monitor_poll_interval)
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 - monitor must never crash the loop
+            logger.exception("Log monitor failed for run %s", run_id)
+            return
+        await self._reconcile_exited(
+            {"id": run_id, "task_id": task_id, "container_id": container_id},
+            last_status,
+        )
+
+    async def _reconcile_exited(
+        self,
+        run: dict[str, Any],
+        status: dict[str, Any] | None,
+    ) -> None:
+        """Fail a run whose container exited without a completion callback.
+
+        Waits a grace period first: the agent-done callback may still be in
+        flight, in which case the run is already past ``running`` and we do
+        nothing.
+        """
+        await asyncio.sleep(self._callback_grace)
+        current = await self._tq.get_agent_run(run["id"])
+        if current is None or current["status"] != "running":
+            return
+        exit_code = status.get("exit_code") if status else None
+        logs = self._safe_logs(run["container_id"]) or str(current["logs"] or "")
+        reason = (
+            f"Agent container exited (code {exit_code}) without a completion callback"
+        )
+        await self._tq.complete_agent_run(run["id"], "failed", logs or reason)
+        await self._tq.fail_task(run["task_id"], reason)
+        self._bus.publish(
+            {"type": "task_failed", "task_id": run["task_id"], "feedback": reason}
+        )
+        logger.warning("Reconciled exited run %s: %s", run["id"], reason)
+
+    async def _fail_orphan(self, run: dict[str, Any], reason: str) -> None:
+        """Mark an unmonitorable running run (and its task) as failed."""
+        logs = self._safe_logs(run["container_id"])
+        await self._tq.complete_agent_run(run["id"], "failed", logs or reason)
+        await self._tq.fail_task(run["task_id"], reason)
+        self._bus.publish(
+            {"type": "task_failed", "task_id": run["task_id"], "feedback": reason}
+        )
+        logger.warning("Reconciled orphaned run %s: %s", run["id"], reason)
+
+    async def shutdown(self) -> None:
+        """Cancel all in-flight log monitors."""
+        monitors = list(self._monitors.values())
+        for task in monitors:
+            task.cancel()
+        for task in monitors:
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await task
+        self._monitors.clear()
+
     async def run_once(self) -> None:
         """Run one orchestration pass over all pending and active plans."""
 
+        await self.reconcile_runs()
         for plan in await self._tq.get_runnable_plans():
             project = await self._tq.get_project(plan["project_id"])
             if project is None:

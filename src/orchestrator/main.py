@@ -122,6 +122,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     finally:
         app.state.orchestration_stop_event.set()
         await app.state.orchestration_task
+        await app.state.orchestrator.shutdown()
         await database.close()
         logger.info("Application shutdown complete")
 
