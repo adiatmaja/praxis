@@ -16,5 +16,6 @@ class Settings(BaseSettings):
     agent_model_effort: str | None = None
     host: str = "0.0.0.0"  # noqa: S104
     port: int = 8080
+    docs_root: str = "docs"
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
