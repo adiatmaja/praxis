@@ -31,3 +31,21 @@ def test_parse_result_marks_done():
 def test_parse_unknown_returns_none():
     assert parse_stream_line('{"type":"system"}') is None
     assert parse_stream_line("not json") is None
+
+
+async def test_run_turn_publishes_text(mocker):
+    from orchestrator.core.brainstorm import BrainstormSession
+
+    published = []
+    bus = mocker.MagicMock()
+    bus.publish = lambda e: published.append(e)
+    s = BrainstormSession(session_id="abc", workspace="/ws", event_bus=bus)
+
+    async def fake_lines():
+        yield '{"type":"assistant","message":{"content":[{"type":"text","text":"Q1?"}]}}'
+        yield '{"type":"result","session_id":"abc","is_error":false}'
+
+    mocker.patch.object(s, "_stream_lines", return_value=fake_lines())
+    await s.run_turn("hello", resume=False)
+    texts = [e for e in published if e.get("type") == "brainstorm_message"]
+    assert any(e["text"] == "Q1?" for e in texts)

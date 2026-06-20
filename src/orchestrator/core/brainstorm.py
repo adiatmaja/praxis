@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
+from collections.abc import AsyncIterator
 
 
 logger = logging.getLogger(__name__)
@@ -39,9 +41,12 @@ def parse_stream_line(line: str) -> dict | None:
 class BrainstormSession:
     """One interactive brainstorming conversation."""
 
-    def __init__(self, session_id: str, workspace: str) -> None:
+    def __init__(
+        self, session_id: str, workspace: str, event_bus: object = None
+    ) -> None:
         self.session_id = session_id
         self.workspace = workspace
+        self._bus = event_bus
 
     def _build_args(self, message: str, *, resume: bool) -> list[str]:
         args = [
@@ -55,3 +60,40 @@ class BrainstormSession:
         if resume:
             args += ["--resume", self.session_id]
         return args
+
+    async def _stream_lines(self, args: list[str]) -> AsyncIterator[str]:
+        proc = await asyncio.create_subprocess_exec(
+            *args,
+            cwd=self.workspace,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        assert proc.stdout is not None
+        async for raw in proc.stdout:
+            yield raw.decode().strip()
+        await proc.wait()
+
+    async def run_turn(self, message: str, *, resume: bool) -> None:
+        args = self._build_args(message, resume=resume)
+        async for line in self._stream_lines(args):
+            event = parse_stream_line(line)
+            if event is None:
+                continue
+            if event["kind"] == "text" and self._bus:
+                self._bus.publish(
+                    {
+                        "type": "brainstorm_message",
+                        "session_id": self.session_id,
+                        "text": event["text"],
+                    }
+                )
+            elif event["kind"] == "result":
+                if event.get("session_id"):
+                    self.session_id = event["session_id"]
+                if self._bus:
+                    self._bus.publish(
+                        {
+                            "type": "brainstorm_turn_done",
+                            "session_id": self.session_id,
+                        }
+                    )
