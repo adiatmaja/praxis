@@ -70,7 +70,7 @@ async def system_status(request: Request) -> dict[str, Any]:
         ),
         "total_agents": len(containers),
         "agent_model": {
-            "name": settings.agent_model_name,
+            "name": settings.agent_model,
             "connected": agent_connected,
         },
         "subagent_model": subagent_info,

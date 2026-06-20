@@ -1,0 +1,6 @@
+{
+  "name": "praxis-visual-checks",
+  "private": true,
+  "type": "module",
+  "dependencies": { "playwright": "1.60.0" }
+}

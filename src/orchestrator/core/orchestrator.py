@@ -8,6 +8,11 @@ from datetime import UTC, datetime
 from typing import Any, cast
 
 from orchestrator.core.event_bus import EventBus
+from orchestrator.core.git_ops import (
+    clone_with_token,
+    commit_and_push,
+    flip_checklist_item,
+)
 from orchestrator.core.task_queue import TaskQueue
 from orchestrator.models.schemas import PlanStatus, TaskStatus
 
@@ -25,12 +30,16 @@ class Orchestrator:
         opus_bridge: Any,
         git_ops: Any,
         event_bus: EventBus,
+        doc_indexer: Any = None,
+        context_sync: Any = None,
     ) -> None:
         self._tq = task_queue
         self._agents = agent_manager
         self._opus = opus_bridge
         self._git = git_ops
         self._bus = event_bus
+        self._doc_indexer = doc_indexer
+        self._context_sync = context_sync
 
     async def plan_and_activate(self, plan_id: str, project: dict[str, Any]) -> None:
         """Ask Opus to plan a pending spec and activate the resulting task graph."""
@@ -46,7 +55,12 @@ class Orchestrator:
             self._bus.publish({"type": "opus_queued", "action": "plan"})
             return
 
-        opus_plan = await self._opus.plan_spec(plan["spec"], project["repo_url"])
+        opus_plan = await self._opus.plan_spec(
+            plan["spec"],
+            project["repo_url"],
+            model=project.get("agent_model"),
+            effort=project.get("agent_model_effort"),
+        )
         today = datetime.now(UTC).date().isoformat()
         branch = f"plan/{today}-{opus_plan['plan_slug']}"
         await self._tq.activate_plan(plan_id, opus_plan, branch)
@@ -119,7 +133,10 @@ class Orchestrator:
         pr_number = await self._git.extract_pr_number(task["pr_url"])
         diff = await self._git.get_pr_diff(".", pr_number)
         review = await self._opus.review_diff(
-            diff, task["description"] or task["title"]
+            diff,
+            task["description"] or task["title"],
+            model=project.get("agent_model"),
+            effort=project.get("agent_model_effort"),
         )
         verdict = str(review["verdict"]).lower()
         feedback = str(review.get("feedback", ""))
@@ -127,6 +144,7 @@ class Orchestrator:
         if verdict == "pass":
             await self._git.merge_pr(".", pr_number)
             await self._tq.update_task_status(task_id, TaskStatus.MERGED)
+            await self._sync_plan_checkbox(task)
             self._bus.publish(
                 {
                     "type": "task_completed",
@@ -156,6 +174,136 @@ class Orchestrator:
                 }
             )
 
+    async def _sync_plan_checkbox(self, task: dict[str, Any]) -> None:
+        """Flip the task checkbox in the plan file inside the TARGET project repo.
+
+        Clones the target repo to a temp dir, finds the plan file by its
+        repo-relative path, flips the checkbox, commits, pushes, then removes
+        the temp dir.  Falls back to a safe no-op (with a warning) when:
+        - doc_indexer is unavailable, OR
+        - the GitHub token cannot be resolved.
+
+        All errors are caught so this never interrupts the main merge flow.
+        """
+        if self._doc_indexer is None:
+            return
+
+        # Resolve the GitHub token from the git_ops helper (set at startup).
+        # If unavailable (e.g. tests, stub objects), skip rather than corrupt
+        # the orchestrator's own docs tree.
+        github_token: str | None = getattr(self._git, "_github_token", None)
+        if not github_token:
+            logger.warning(
+                "_sync_plan_checkbox: GitHub token unavailable — "
+                "checkbox sync requires target-repo clone, skipped (follow-up: "
+                "ensure git_ops._github_token is set before orchestrator starts)"
+            )
+            return
+
+        try:
+            title = task.get("title", "")
+            if not title:
+                return
+
+            # Fetch plan → project to get repo_url.
+            plan_id = task.get("plan_id")
+            if plan_id is None:
+                return
+            plan = await self._tq.get_plan(plan_id)
+            if plan is None:
+                return
+            project = await self._tq.get_project(plan["project_id"])
+            if project is None:
+                return
+            repo_url: str = project["repo_url"]
+
+            # Find the plan file path (repo-relative) from doc_index.
+            rows = await self._tq._db.fetch_all(
+                "SELECT path FROM doc_index WHERE category = 'plan' ORDER BY updated_at DESC"
+            )
+            if not rows:
+                return
+
+            import tempfile
+            from pathlib import Path
+
+            with tempfile.TemporaryDirectory() as tmp_dir:
+                ws = tmp_dir
+                clone_with_token(repo_url, ws, github_token)
+
+                flipped = False
+                for row in rows:
+                    # row["path"] is relative to the orchestrator's docs tree;
+                    # use only the filename/tail to locate it inside the clone.
+                    rel_path = row["path"]
+                    candidate = Path(ws) / rel_path
+                    if not candidate.exists():
+                        # Try just the filename as a fallback.
+                        candidate = next(
+                            (
+                                p
+                                for p in Path(ws).rglob(Path(rel_path).name)
+                                if p.is_file()
+                            ),
+                            None,
+                        )
+                        if candidate is None:
+                            continue
+                    text = candidate.read_text(encoding="utf-8")
+                    updated = flip_checklist_item(text, title)
+                    if updated != text:
+                        candidate.write_text(updated, encoding="utf-8")
+                        # Path relative to clone root for git add.
+                        git_rel = str(candidate.relative_to(ws))
+                        commit_and_push(
+                            ws,
+                            github_token,
+                            f"docs: mark '{title}' complete",
+                            paths=[git_rel],
+                        )
+                        logger.info(
+                            "Flipped checkbox for '%s' in %s (target repo %s)",
+                            title,
+                            git_rel,
+                            repo_url,
+                        )
+                        flipped = True
+                        break
+
+                if not flipped:
+                    logger.debug(
+                        "_sync_plan_checkbox: no unchecked item '%s' found in plan files",
+                        title,
+                    )
+
+            await self._doc_indexer.scan()
+            self._bus.publish({"type": "docs_refreshed"})
+        except Exception as exc:  # noqa: BLE001 - non-fatal
+            logger.warning(
+                "_sync_plan_checkbox failed for task %s: %s", task.get("id"), exc
+            )
+
+    async def on_plan_completed(self, plan_id: str) -> None:
+        """Draft a context sync when all tasks in a plan have merged."""
+
+        if self._context_sync is None:
+            return
+        plan = await self._tq.get_plan(plan_id)
+        if plan is None:
+            return
+        project = await self._tq.get_project(plan["project_id"])
+        if project is None:
+            return
+        summary = f"Completed plan: {plan.get('plan_branch_name') or plan_id}"
+        draft = await self._context_sync.draft(project["repo_url"], summary)
+        self._bus.publish(
+            {
+                "type": "context_draft_ready",
+                "project_id": project["id"],
+                "draft_id": draft["draft_id"],
+            }
+        )
+
     async def check_improvements(
         self,
         plan_id: str,
@@ -183,7 +331,11 @@ class Orchestrator:
         )
         analysis = cast(
             dict[str, Any],
-            await self._opus.analyze_improvements(summary),
+            await self._opus.analyze_improvements(
+                summary,
+                model=project.get("agent_model"),
+                effort=project.get("agent_model_effort"),
+            ),
         )
         confidence = float(analysis["confidence"])
         if confidence < float(project["confidence_threshold"]):
@@ -277,6 +429,10 @@ class Orchestrator:
                 await self.review_task(task["id"], project)
         if await self._tq.all_tasks_done(plan_id):
             await self._tq.update_plan_status(plan_id, PlanStatus.COMPLETED)
+            try:
+                await self.on_plan_completed(plan_id)
+            except Exception as exc:  # noqa: BLE001 - non-fatal
+                logger.warning("on_plan_completed failed for plan %s: %s", plan_id, exc)
             analysis = await self.check_improvements(plan_id, project)
             if analysis is not None:
                 await self.create_improvement_plan(

@@ -89,16 +89,31 @@ Rules:
 class OpusBridge:
     """Interface to Claude Opus via the `claude -p` CLI."""
 
-    def __init__(self, db: Database) -> None:
+    def __init__(
+        self,
+        db: Database,
+        default_model: str | None = None,
+        default_effort: str | None = None,
+    ) -> None:
         self._db = db
+        self._default_model = default_model
+        self._default_effort = default_effort
 
-    async def _run_claude_raw(self, prompt: str) -> tuple[int, str, str]:
+    async def _run_claude_raw(
+        self,
+        prompt: str,
+        model: str | None = None,
+        effort: str | None = None,
+    ) -> tuple[int, str, str]:
+        resolved_model = model or self._default_model
+        resolved_effort = effort or self._default_effort
+        args = ["claude", "-p", prompt, "--output-format", "text"]
+        if resolved_model:
+            args += ["--model", resolved_model]
+        if resolved_effort:
+            args += ["--reasoning-effort", resolved_effort]
         proc = await asyncio.create_subprocess_exec(
-            "claude",
-            "-p",
-            prompt,
-            "--output-format",
-            "text",
+            *args,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
@@ -134,8 +149,13 @@ class OpusBridge:
         logger.warning("Opus rate limited. Will resume at %s", resume_at.isoformat())
         return True
 
-    async def _run_claude(self, prompt: str) -> str:
-        code, stdout, stderr = await self._run_claude_raw(prompt)
+    async def _run_claude(
+        self,
+        prompt: str,
+        model: str | None = None,
+        effort: str | None = None,
+    ) -> str:
+        code, stdout, stderr = await self._run_claude_raw(prompt, model, effort)
         if await self._check_and_handle_rate_limit(code, stdout, stderr):
             message = "Opus rate limited"
             raise RuntimeError(message)
@@ -156,20 +176,37 @@ class OpusBridge:
         message = f"Could not extract JSON from response: {raw[:200]}"
         raise ValueError(message)
 
-    async def plan_spec(self, spec: str, repo_url: str) -> dict[str, Any]:
+    async def plan_spec(
+        self,
+        spec: str,
+        repo_url: str,
+        model: str | None = None,
+        effort: str | None = None,
+    ) -> dict[str, Any]:
         prompt = PLAN_PROMPT_TEMPLATE.format(spec=spec, repo_url=repo_url)
-        return self._extract_json(await self._run_claude(prompt))
+        return self._extract_json(await self._run_claude(prompt, model, effort))
 
-    async def review_diff(self, diff: str, task_description: str) -> dict[str, Any]:
+    async def review_diff(
+        self,
+        diff: str,
+        task_description: str,
+        model: str | None = None,
+        effort: str | None = None,
+    ) -> dict[str, Any]:
         prompt = REVIEW_PROMPT_TEMPLATE.format(
             diff=diff,
             task_description=task_description,
         )
-        return self._extract_json(await self._run_claude(prompt))
+        return self._extract_json(await self._run_claude(prompt, model, effort))
 
-    async def analyze_improvements(self, project_summary: str) -> dict[str, Any]:
+    async def analyze_improvements(
+        self,
+        project_summary: str,
+        model: str | None = None,
+        effort: str | None = None,
+    ) -> dict[str, Any]:
         prompt = IMPROVEMENT_PROMPT_TEMPLATE.format(project_summary=project_summary)
-        return self._extract_json(await self._run_claude(prompt))
+        return self._extract_json(await self._run_claude(prompt, model, effort))
 
     async def get_opus_state(self) -> dict[str, Any]:
         state = await self._db.fetch_one("SELECT * FROM opus_state WHERE id = 1")
@@ -210,3 +247,28 @@ class OpusBridge:
         await self._db.execute(
             "UPDATE opus_state SET queued_actions = '[]' WHERE id = 1"
         )
+
+    CLASSIFY_PROMPT = (
+        "Classify this markdown document as exactly one word: 'spec', 'plan', or 'other'. "
+        "A spec describes WHAT to build; a plan is a step-by-step implementation checklist. "
+        "Reply with only the single word.\n\n---\n{text}"
+    )
+
+    async def classify_doc(self, text: str) -> str:
+        """Classify ambiguous markdown via Haiku; returns spec|plan|other."""
+        prompt = self.CLASSIFY_PROMPT.format(text=text[:4000])
+        raw = (await self._run_claude(prompt, model="claude-haiku-4-5")).strip().lower()
+        # 1. Exact match after stripping surrounding punctuation/whitespace.
+        cleaned = raw.strip(" '\".:!\n")
+        if cleaned in ("spec", "plan", "other"):
+            return cleaned
+        # 2. Word-boundary scan; if both appear, prefer the last-mentioned
+        #    (the model's conclusion tends to come last).
+        last_pos: dict[str, int] = {}
+        for category in ("spec", "plan"):
+            matches = list(re.finditer(rf"\b{category}\b", raw))
+            if matches:
+                last_pos[category] = matches[-1].start()
+        if last_pos:
+            return max(last_pos, key=lambda c: last_pos[c])
+        return "other"
