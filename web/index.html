@@ -499,6 +499,11 @@
       .lane-cards { flex-wrap: wrap; }
       .task-card { min-width: 140px; }
     }
+    .doc-bar { width: 120px; height: 6px; background: var(--border-subtle); border-radius: 3px; overflow: hidden; }
+    .doc-bar-fill { height: 100%; background: var(--badge-passed-text); }
+    .doc-bar-label { font-size: 11px; color: var(--text-faint); margin-left: 8px; }
+    .doc-tag { font-size: 10px; color: var(--text-faint); border: 1px solid var(--border); border-radius: 4px; padding: 0 4px; }
+    .list-header { display: flex; align-items: center; justify-content: space-between; padding: 16px 20px; border-bottom: 1px solid var(--border); }
   </style>
 </head>
 <body>
@@ -513,6 +518,8 @@
       <button class="nav-item" type="button" data-view="plans" onclick="switchView('plans')"><span class="nav-icon">S</span>Plans</button>
       <button class="nav-item" type="button" data-view="tasks" onclick="switchView('tasks')"><span class="nav-icon">T</span>Tasks</button>
       <button class="nav-item" type="button" data-view="logs" onclick="switchView('logs')"><span class="nav-icon">L</span>Live Logs</button>
+      <button class="nav-item" type="button" data-view="specs" onclick="switchView('specs')"><span class="nav-icon">F</span>Specs</button>
+      <button class="nav-item" type="button" data-view="docplans" onclick="switchView('docplans')"><span class="nav-icon">N</span>Plan Docs</button>
     </nav>
     <div class="sidebar-stats">
       <div class="section-label">Stats</div>
@@ -685,6 +692,12 @@
       } else if (name === "logs") {
         setTopbar("Live Logs", "Reconnect");
         renderLogs();
+      } else if (name === "specs") {
+        setTopbar("Specs", "Refresh");
+        await renderDocs("spec");
+      } else if (name === "docplans") {
+        setTopbar("Plan Docs", "Refresh");
+        await renderDocs("plan");
       }
     }
 
@@ -1024,6 +1037,36 @@
     function viewTaskLogs(taskId) {
       switchView("logs");
       setTimeout(() => connectTaskLogs(taskId), 100);
+    }
+
+    async function renderDocs(category) {
+      const docs = await api("GET", "/api/docs?category=" + category);
+      const rows = docs.map(d => {
+        const pct = d.total_count ? Math.round(100 * d.done_count / d.total_count) : 0;
+        const bar = category === "plan"
+          ? '<div class="doc-bar"><div class="doc-bar-fill" style="width:' + pct + '%"></div></div>'
+            + '<span class="doc-bar-label">' + d.done_count + '/' + d.total_count + '</span>'
+          : "";
+        const llm = d.classified_by === "haiku" ? ' <span class="doc-tag">haiku</span>' : "";
+        return '<div class="row" onclick="openDoc(\'' + esc(d.path) + '\')">' +
+          '<div class="row-main"><div class="row-name">' + esc(d.title || d.path) + '</div>' +
+          '<div class="row-sub">' + esc(d.path) + llm + '</div></div>' + bar + '</div>';
+      }).join("");
+      document.getElementById("view-container").innerHTML =
+        '<div class="list-header"><h2>' + (category === "spec" ? "Specs" : "Plan Docs") + '</h2>' +
+        '<button class="btn" type="button" onclick="refreshDocs()">Refresh</button></div>' +
+        '<div class="list">' + (rows || '<div class="empty">No ' + category + ' docs found</div>') + '</div>';
+    }
+
+    async function refreshDocs() {
+      await api("POST", "/api/docs/refresh");
+      const v = currentView === "specs" ? "spec" : "plan";
+      renderDocs(v);
+    }
+
+    async function openDoc(path) {
+      const doc = await api("GET", "/api/docs/raw?path=" + encodeURIComponent(path));
+      alert(doc.content.slice(0, 4000));
     }
 
     function renderLogs() {
