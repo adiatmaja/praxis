@@ -506,6 +506,11 @@
     .list-header { display: flex; align-items: center; justify-content: space-between; padding: 16px 20px; border-bottom: 1px solid var(--border); }
 
     /* Create-Spec chat panel */
+    .mem-pane { padding: 12px 20px; border-bottom: 1px solid var(--border); }
+    .mem-doc { background: var(--panel-alt); padding: 10px; border-radius: 6px; max-height: 320px; overflow: auto; white-space: pre-wrap; font-size: 12px; }
+    .mem-diff { background: var(--log-bg); color: var(--log-text); padding: 10px; border-radius: 6px; max-height: 320px; overflow: auto; white-space: pre-wrap; font-size: 12px; }
+
+    /* Create-Spec chat panel */
     .spec-chat-overlay {
       display: none;
       position: fixed;
@@ -637,6 +642,7 @@
       <button class="nav-item" type="button" data-view="logs" onclick="switchView('logs')"><span class="nav-icon">L</span>Live Logs</button>
       <button class="nav-item" type="button" data-view="specs" onclick="switchView('specs')"><span class="nav-icon">F</span>Specs</button>
       <button class="nav-item" type="button" data-view="docplans" onclick="switchView('docplans')"><span class="nav-icon">N</span>Plan Docs</button>
+      <button class="nav-item" type="button" data-view="memory" onclick="switchView('memory')"><span class="nav-icon">M</span>Memory</button>
     </nav>
     <div class="sidebar-stats">
       <div class="section-label">Stats</div>
@@ -836,6 +842,9 @@
       } else if (name === "docplans") {
         setTopbar("Plan Docs", "Refresh");
         await renderDocs("plan");
+      } else if (name === "memory") {
+        setTopbar("Memory", "");
+        await renderMemory();
       }
     }
 
@@ -1795,6 +1804,13 @@
           appendChatMessage("assistant", data.text);
         }
       });
+      source.addEventListener("context_draft_ready", event => {
+        let data;
+        try { data = JSON.parse(event.data); } catch (e) { return; }
+        if (data.type === "context_draft_ready" && currentView === "memory") {
+          showDraft({ draft_id: data.draft_id, diff: "" });
+        }
+      });
       source.addEventListener("brainstorm_turn_done", () => {
         // Finalize streaming bubble — remove streaming class
         if (specChatStreamingBubble) {
@@ -1806,6 +1822,43 @@
     }
 
     // ── End Create-Spec chat panel ───────────────────────────────────────────
+
+    // ── Memory page ──────────────────────────────────────────────────────────
+
+    function activeProjectId() {
+      return selectedProjectId;
+    }
+
+    async function renderMemory() {
+      const pid = activeProjectId();
+      const ctx = await api("GET", "/api/projects/" + pid + "/context");
+      document.getElementById("view-container").innerHTML =
+        '<div class="list-header"><h2>Memory</h2>' +
+        '<button class="btn" type="button" onclick="syncContext()">Sync now</button></div>' +
+        '<div class="mem-pane"><h3>CLAUDE.md</h3><pre class="mem-doc">' + esc(ctx.claude_md) + '</pre></div>' +
+        '<div class="mem-pane"><h3>MEMORY.md</h3><pre class="mem-doc">' + esc(ctx.memory_md) + '</pre></div>' +
+        '<div id="ctx-draft"></div>';
+    }
+
+    async function syncContext() {
+      const pid = activeProjectId();
+      const draft = await api("POST", "/api/projects/" + pid + "/context-sync", { summary: "manual sync" });
+      showDraft(draft);
+    }
+
+    function showDraft(draft) {
+      document.getElementById("ctx-draft").innerHTML =
+        '<div class="mem-pane"><h3>Proposed changes</h3><pre class="mem-diff">' + esc(draft.diff || "(no changes)") + '</pre>' +
+        (draft.draft_id ? '<button class="btn btn-primary" onclick="approveDraft(\'' + esc(draft.draft_id) + '\')">Approve &amp; commit</button>' : "") +
+        '</div>';
+    }
+
+    async function approveDraft(id) {
+      await api("POST", "/api/context-drafts/" + id + "/approve");
+      renderMemory();
+    }
+
+    // ── End Memory page ───────────────────────────────────────────────────────
 
     ensureToken();
     switchView("dashboard").catch(error => {
