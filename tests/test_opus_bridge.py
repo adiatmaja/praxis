@@ -1,4 +1,5 @@
 """Opus bridge tests."""
+
 # ruff: noqa: S101
 
 from __future__ import annotations
@@ -168,6 +169,27 @@ async def test_queue_action_round_trip() -> None:
     await bridge.queue_action({"type": "plan", "id": "p1"})
 
     bridge._db.execute.assert_awaited_once()
+
+
+async def test_run_claude_raw_passes_model(mocker) -> None:
+    bridge = OpusBridge(db=mocker.MagicMock(), default_model="claude-opus-4-8")
+    captured: dict = {}
+
+    async def fake_exec(*args, **kwargs):
+        captured["args"] = args
+        proc = mocker.MagicMock()
+
+        async def communicate():
+            return (b"ok", b"")
+
+        proc.communicate = communicate
+        proc.returncode = 0
+        return proc
+
+    mocker.patch("asyncio.create_subprocess_exec", side_effect=fake_exec)
+    await bridge._run_claude_raw("hi")
+    assert "--model" in captured["args"]
+    assert "claude-opus-4-8" in captured["args"]
 
 
 @pytest.mark.unit
