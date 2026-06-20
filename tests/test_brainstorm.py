@@ -49,3 +49,15 @@ async def test_run_turn_publishes_text(mocker):
     await s.run_turn("hello", resume=False)
     texts = [e for e in published if e.get("type") == "brainstorm_message"]
     assert any(e["text"] == "Q1?" for e in texts)
+
+
+def test_manager_starts_session(mocker, tmp_path):
+    from orchestrator.core.brainstorm import BrainstormManager
+
+    mgr = BrainstormManager(
+        workspace_base=str(tmp_path), event_bus=mocker.MagicMock(), github_token="t"
+    )
+    mocker.patch.object(mgr, "_clone_repo")
+    sid = mgr.create_session(repo_url="https://x/y")
+    assert sid in mgr._sessions
+    mgr._clone_repo.assert_called_once()

@@ -5,7 +5,10 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import subprocess
+import uuid
 from collections.abc import AsyncIterator
+from pathlib import Path
 
 
 logger = logging.getLogger(__name__)
@@ -97,3 +100,38 @@ class BrainstormSession:
                             "session_id": self.session_id,
                         }
                     )
+
+
+class BrainstormManager:
+    """Owns active brainstorming sessions and their cloned workspaces."""
+
+    def __init__(
+        self, workspace_base: str, event_bus: object, github_token: str
+    ) -> None:
+        self._base = workspace_base
+        self._bus = event_bus
+        self._token = github_token
+        self._sessions: dict[str, BrainstormSession] = {}
+        self._started: dict[str, bool] = {}
+
+    def _clone_repo(self, repo_url: str, dest: str) -> None:
+        authed = repo_url.replace("https://", f"https://x-access-token:{self._token}@")
+        subprocess.run(  # noqa: S603 S607
+            ["git", "clone", "--depth", "50", authed, dest], check=True
+        )
+
+    def create_session(self, repo_url: str) -> str:
+        session_id = uuid.uuid4().hex
+        workspace = str(Path(self._base) / session_id)
+        Path(workspace).mkdir(parents=True, exist_ok=True)
+        self._clone_repo(repo_url, workspace)
+        self._sessions[session_id] = BrainstormSession(session_id, workspace, self._bus)
+        self._started[session_id] = False
+        return session_id
+
+    async def send(self, session_id: str, message: str) -> None:
+        session = self._sessions[session_id]
+        first = not self._started[session_id]
+        payload = BRAINSTORM_BOOTSTRAP.format(request=message) if first else message
+        self._started[session_id] = True
+        await session.run_turn(payload, resume=not first)
