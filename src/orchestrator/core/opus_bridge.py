@@ -247,3 +247,18 @@ class OpusBridge:
         await self._db.execute(
             "UPDATE opus_state SET queued_actions = '[]' WHERE id = 1"
         )
+
+    CLASSIFY_PROMPT = (
+        "Classify this markdown document as exactly one word: 'spec', 'plan', or 'other'. "
+        "A spec describes WHAT to build; a plan is a step-by-step implementation checklist. "
+        "Reply with only the single word.\n\n---\n{text}"
+    )
+
+    async def classify_doc(self, text: str) -> str:
+        """Classify ambiguous markdown via Haiku; returns spec|plan|other."""
+        prompt = self.CLASSIFY_PROMPT.format(text=text[:4000])
+        raw = (await self._run_claude(prompt, model="claude-haiku-4-5")).strip().lower()
+        for category in ("spec", "plan", "other"):
+            if category in raw:
+                return category
+        return "other"

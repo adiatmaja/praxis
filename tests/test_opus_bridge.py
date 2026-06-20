@@ -206,3 +206,22 @@ async def test_is_available_resumes_after_resume_at() -> None:
 
     assert await bridge.is_available() is True
     bridge._db.execute.assert_awaited_once()
+
+
+@pytest.mark.unit
+async def test_classify_doc_uses_haiku(mocker: pytest.MonkeyPatch) -> None:
+    bridge = OpusBridge(db=mocker.MagicMock())
+    run = mocker.patch.object(bridge, "_run_claude", new=AsyncMock(return_value="plan"))
+    result = await bridge.classify_doc("some ambiguous markdown")
+    assert result == "plan"
+    assert run.call_args.kwargs.get("model") == "claude-haiku-4-5"
+
+
+@pytest.mark.unit
+async def test_classify_doc_normalizes_unexpected_to_other(
+    mocker: pytest.MonkeyPatch,
+) -> None:
+    bridge = OpusBridge(db=mocker.MagicMock())
+    mocker.patch.object(bridge, "_run_claude", new=AsyncMock(return_value="garbage"))
+    result = await bridge.classify_doc("x")
+    assert result == "other"
