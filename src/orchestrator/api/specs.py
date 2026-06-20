@@ -22,6 +22,18 @@ class SessionMessage(BaseModel):
     message: str
 
 
+class ModifySpec(BaseModel):
+    project_id: str
+    spec_path: str
+    content: str
+
+
+class GeneratePlan(BaseModel):
+    project_id: str
+    spec_path: str
+    notes: str = ""
+
+
 @router.post("/sessions")
 async def start_session(
     body: StartSession,
@@ -53,3 +65,41 @@ async def send_message(
     """Send a follow-up message to an existing brainstorming session."""
     asyncio.create_task(request.app.state.brainstorm.send(session_id, body.message))
     return {"status": "accepted"}
+
+
+@router.post("/modify")
+async def modify_spec(
+    body: ModifySpec,
+    request: Request,
+    _: None = Depends(verify_token),
+) -> dict:
+    """Write updated spec content to the repo and commit."""
+    project = await request.app.state.db.fetch_one(
+        "SELECT repo_url FROM projects WHERE id = ?", (body.project_id,)
+    )
+    if project is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Project not found"
+        )
+    return request.app.state.brainstorm.write_and_commit(
+        project["repo_url"], body.spec_path, body.content
+    )
+
+
+@router.post("/plan")
+async def generate_plan(
+    body: GeneratePlan,
+    request: Request,
+    _: None = Depends(verify_token),
+) -> dict:
+    """Invoke the writing-plans skill to produce a plan from a spec."""
+    project = await request.app.state.db.fetch_one(
+        "SELECT repo_url FROM projects WHERE id = ?", (body.project_id,)
+    )
+    if project is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Project not found"
+        )
+    return await request.app.state.brainstorm.generate_plan(
+        project["repo_url"], body.spec_path, body.notes
+    )

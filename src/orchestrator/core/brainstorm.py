@@ -13,6 +13,14 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
+PLAN_BOOTSTRAP = (
+    "Use the superpowers:writing-plans skill. Read the spec at {spec_path}. "
+    "Produce a fully self-contained implementation plan — every task executes in a fresh "
+    "container with zero prior context, so embed all needed file paths, background, and "
+    "acceptance criteria per task. Honor these extra notes: {notes}. "
+    "Write the plan to docs/superpowers/plans/ and commit it."
+)
+
 BRAINSTORM_BOOTSTRAP = (
     "Use the superpowers:brainstorming skill to design a spec interactively. "
     "Ask the user one question at a time. When the design is approved, write the spec to "
@@ -135,3 +143,32 @@ class BrainstormManager:
         payload = BRAINSTORM_BOOTSTRAP.format(request=message) if first else message
         self._started[session_id] = True
         await session.run_turn(payload, resume=not first)
+
+    async def generate_plan(self, repo_url: str, spec_path: str, notes: str) -> dict:
+        session_id = uuid.uuid4().hex
+        workspace = str(Path(self._base) / session_id)
+        Path(workspace).mkdir(parents=True, exist_ok=True)
+        self._clone_repo(repo_url, workspace)
+        session = BrainstormSession(session_id, workspace, self._bus)
+        prompt = PLAN_BOOTSTRAP.format(spec_path=spec_path, notes=notes or "none")
+        await session.run_turn(prompt, resume=False)
+        return {"status": "generated"}
+
+    def write_and_commit(self, repo_url: str, path: str, content: str) -> dict:
+        session_id = uuid.uuid4().hex
+        workspace = str(Path(self._base) / session_id)
+        Path(workspace).mkdir(parents=True, exist_ok=True)
+        self._clone_repo(repo_url, workspace)
+        target = Path(workspace) / path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(content, encoding="utf-8")
+        subprocess.run(  # noqa: S603 S607
+            ["git", "add", path], cwd=workspace, check=True
+        )
+        subprocess.run(  # noqa: S603 S607
+            ["git", "commit", "-m", "docs: update spec"], cwd=workspace, check=True
+        )
+        subprocess.run(  # noqa: S603 S607
+            ["git", "push"], cwd=workspace, check=True
+        )
+        return {"status": "committed", "path": path}

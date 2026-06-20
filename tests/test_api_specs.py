@@ -102,3 +102,25 @@ async def test_requires_auth(client: AsyncClient, seeded_project: str) -> None:
         json={"project_id": seeded_project, "message": "add login"},
     )
     assert r.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_generate_plan_invokes_writing_plans(
+    client, auth_headers, seeded_project, mocker
+):
+    gen = mocker.patch.object(
+        client.app.state.brainstorm,
+        "generate_plan",
+        new=mocker.AsyncMock(return_value={"plan_path": "docs/superpowers/plans/x.md"}),
+    )
+    r = await client.post(
+        "/api/specs/plan",
+        headers=auth_headers,
+        json={
+            "project_id": seeded_project,
+            "spec_path": "docs/superpowers/specs/x-design.md",
+            "notes": "reuse module Y",
+        },
+    )
+    assert r.status_code == 200
+    gen.assert_awaited()

@@ -1204,7 +1204,74 @@
 
     async function openDoc(path) {
       const doc = await api("GET", "/api/docs/raw?path=" + encodeURIComponent(path));
-      alert(doc.content.slice(0, 4000));
+      const isSpec = path.includes("/specs/");
+      const container = document.getElementById("view-container");
+      // Replace list area with a two-panel layout: list on left, editor on right
+      const existingList = container.querySelector(".list");
+      const existingHeader = container.querySelector(".list-header");
+      // Remove any prior detail pane
+      const prior = container.querySelector(".spec-detail-pane");
+      if (prior) prior.remove();
+      const pane = document.createElement("div");
+      pane.className = "spec-detail-pane";
+      pane.style.cssText = "flex:1;display:flex;flex-direction:column;overflow:hidden;background:var(--bg);border-left:1px solid var(--border-subtle);";
+      const escapedPath = esc(path);
+      pane.innerHTML =
+        '<div class="detail-header" style="display:flex;align-items:center;justify-content:space-between;gap:12px;">' +
+          '<div><div class="detail-title">' + escapedPath + '</div>' +
+          '<div class="detail-subtitle">' + (isSpec ? "Spec document" : "Plan document") + '</div></div>' +
+          '<button class="btn btn-compact" type="button" onclick="this.closest(\'.spec-detail-pane\').remove()">Close</button>' +
+        '</div>' +
+        '<div style="flex:1;overflow:auto;padding:12px 24px;">' +
+          '<textarea id="spec-editor-content" style="width:100%;height:220px;resize:vertical;font-family:var(--font-mono,monospace);font-size:13px;background:var(--panel);color:var(--text);border:1px solid var(--border-subtle);border-radius:6px;padding:10px;box-sizing:border-box;">' +
+            esc(doc.content) +
+          '</textarea>' +
+          (isSpec
+            ? '<div style="display:flex;gap:8px;margin-top:8px;">' +
+                '<button class="btn" type="button" onclick="saveSpec(\'' + escapedPath + '\')">Save</button>' +
+              '</div>' +
+              '<div style="margin-top:16px;border-top:1px solid var(--border-subtle);padding-top:12px;">' +
+                '<div class="detail-subtitle" style="margin-bottom:6px;">Generate Plan</div>' +
+                '<textarea id="spec-plan-notes" placeholder="Extra notes for the plan (optional)…" style="width:100%;height:72px;resize:vertical;font-family:var(--font-mono,monospace);font-size:13px;background:var(--panel);color:var(--text);border:1px solid var(--border-subtle);border-radius:6px;padding:8px;box-sizing:border-box;"></textarea>' +
+                '<div style="margin-top:8px;">' +
+                  '<button class="btn" type="button" onclick="createPlanFromSpec(\'' + escapedPath + '\')">Create Plan</button>' +
+                '</div>' +
+              '</div>'
+            : '') +
+        '</div>';
+      // Make container flex so pane sits beside the list
+      container.style.display = "flex";
+      container.style.overflow = "hidden";
+      container.style.flex = "1";
+      if (existingList) existingList.style.overflowY = "auto";
+      container.appendChild(pane);
+    }
+
+    async function saveSpec(specPath) {
+      const content = document.getElementById("spec-editor-content").value;
+      await api("POST", "/api/specs/modify", {
+        project_id: selectedProjectId,
+        spec_path: specPath,
+        content: content,
+      });
+    }
+
+    async function createPlanFromSpec(specPath) {
+      const notes = (document.getElementById("spec-plan-notes") || {value: ""}).value;
+      const btn = event.target;
+      btn.disabled = true;
+      btn.textContent = "Generating…";
+      try {
+        await api("POST", "/api/specs/plan", {
+          project_id: selectedProjectId,
+          spec_path: specPath,
+          notes: notes,
+        });
+        btn.textContent = "Plan queued";
+      } catch (e) {
+        btn.disabled = false;
+        btn.textContent = "Create Plan";
+      }
     }
 
     function renderLogs() {
