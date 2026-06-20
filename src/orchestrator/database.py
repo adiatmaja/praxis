@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import logging
 from typing import Any
 
@@ -34,6 +35,8 @@ MIGRATIONS: tuple[str, ...] = (
         max_improvement_cycles INTEGER NOT NULL DEFAULT 5,
         lm_studio_url TEXT NOT NULL DEFAULT 'http://host.docker.internal:1234',
         model_name TEXT NOT NULL DEFAULT '',
+        agent_model TEXT,
+        agent_model_effort TEXT,
         created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY (user_id) REFERENCES users (id)
     )
@@ -126,6 +129,12 @@ class Database:
 
         for migration in MIGRATIONS:
             await connection.execute(migration)
+
+        for column in ("agent_model", "agent_model_effort"):
+            with contextlib.suppress(Exception):
+                await connection.execute(
+                    f"ALTER TABLE projects ADD COLUMN {column} TEXT"  # noqa: S608
+                )
 
         await connection.execute(
             """
