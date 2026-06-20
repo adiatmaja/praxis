@@ -8,6 +8,7 @@ from datetime import UTC, datetime
 from typing import Any, cast
 
 from orchestrator.core.event_bus import EventBus
+from orchestrator.core.git_ops import flip_checklist_item
 from orchestrator.core.task_queue import TaskQueue
 from orchestrator.models.schemas import PlanStatus, TaskStatus
 
@@ -25,12 +26,14 @@ class Orchestrator:
         opus_bridge: Any,
         git_ops: Any,
         event_bus: EventBus,
+        doc_indexer: Any = None,
     ) -> None:
         self._tq = task_queue
         self._agents = agent_manager
         self._opus = opus_bridge
         self._git = git_ops
         self._bus = event_bus
+        self._doc_indexer = doc_indexer
 
     async def plan_and_activate(self, plan_id: str, project: dict[str, Any]) -> None:
         """Ask Opus to plan a pending spec and activate the resulting task graph."""
@@ -135,6 +138,7 @@ class Orchestrator:
         if verdict == "pass":
             await self._git.merge_pr(".", pr_number)
             await self._tq.update_task_status(task_id, TaskStatus.MERGED)
+            await self._sync_plan_checkbox(task)
             self._bus.publish(
                 {
                     "type": "task_completed",
@@ -162,6 +166,40 @@ class Orchestrator:
                     "task_id": task_id,
                     "feedback": feedback,
                 }
+            )
+
+    async def _sync_plan_checkbox(self, task: dict[str, Any]) -> None:
+        """Flip the task checkbox in the plan file and re-index docs.
+
+        No-op when doc_indexer is unavailable. All errors are logged as warnings
+        so a failure here never interrupts the main orchestration flow.
+        """
+        if self._doc_indexer is None:
+            return
+        try:
+            title = task.get("title", "")
+            if not title:
+                return
+            rows = await self._tq.db.fetch_all(
+                "SELECT path FROM doc_index WHERE category = 'plan' ORDER BY updated_at DESC"
+            )
+            for row in rows:
+                from pathlib import Path
+
+                plan_path = Path(row["path"])
+                if not plan_path.exists():
+                    continue
+                text = plan_path.read_text(encoding="utf-8")
+                updated = flip_checklist_item(text, title)
+                if updated != text:
+                    plan_path.write_text(updated, encoding="utf-8")
+                    logger.info("Flipped checkbox for '%s' in %s", title, plan_path)
+                    break
+            await self._doc_indexer.scan()
+            self._bus.publish({"type": "docs_refreshed"})
+        except Exception as exc:  # noqa: BLE001 - non-fatal
+            logger.warning(
+                "_sync_plan_checkbox failed for task %s: %s", task.get("id"), exc
             )
 
     async def check_improvements(

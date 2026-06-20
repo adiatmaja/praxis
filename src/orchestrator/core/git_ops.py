@@ -10,6 +10,21 @@ import os
 logger = logging.getLogger(__name__)
 
 
+def flip_checklist_item(markdown: str, item_text: str) -> str:
+    """Mark the matching ``- [ ]`` checklist line as done.
+
+    Args:
+        markdown: The full markdown text of a plan file.
+        item_text: The exact text after ``- [ ] `` to match.
+
+    Returns:
+        The markdown with the matching unchecked item replaced by ``- [x]``.
+    """
+    needle_unchecked = f"- [ ] {item_text}"
+    needle_checked = f"- [x] {item_text}"
+    return markdown.replace(needle_unchecked, needle_checked)
+
+
 class GitOps:
     """Git and GitHub CLI operations for branch and PR management."""
 

@@ -510,3 +510,12 @@ class TestOrchestrationLoop:
         assert completed is not None
         assert completed["status"] == PlanStatus.COMPLETED
         assert gated_plan["status"] == PlanStatus.PENDING
+
+
+def test_flip_checkbox_marks_task_done():
+    from orchestrator.core.git_ops import flip_checklist_item
+
+    md = "## Tasks\n- [ ] Task 1: do thing\n- [ ] Task 2: other"
+    out = flip_checklist_item(md, "Task 1: do thing")
+    assert "- [x] Task 1: do thing" in out
+    assert "- [ ] Task 2: other" in out
