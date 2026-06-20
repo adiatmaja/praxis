@@ -8,7 +8,11 @@ from datetime import UTC, datetime
 from typing import Any, cast
 
 from orchestrator.core.event_bus import EventBus
-from orchestrator.core.git_ops import flip_checklist_item
+from orchestrator.core.git_ops import (
+    clone_with_token,
+    commit_and_push,
+    flip_checklist_item,
+)
 from orchestrator.core.task_queue import TaskQueue
 from orchestrator.models.schemas import PlanStatus, TaskStatus
 
@@ -171,32 +175,107 @@ class Orchestrator:
             )
 
     async def _sync_plan_checkbox(self, task: dict[str, Any]) -> None:
-        """Flip the task checkbox in the plan file and re-index docs.
+        """Flip the task checkbox in the plan file inside the TARGET project repo.
 
-        No-op when doc_indexer is unavailable. All errors are logged as warnings
-        so a failure here never interrupts the main orchestration flow.
+        Clones the target repo to a temp dir, finds the plan file by its
+        repo-relative path, flips the checkbox, commits, pushes, then removes
+        the temp dir.  Falls back to a safe no-op (with a warning) when:
+        - doc_indexer is unavailable, OR
+        - the GitHub token cannot be resolved.
+
+        All errors are caught so this never interrupts the main merge flow.
         """
         if self._doc_indexer is None:
             return
+
+        # Resolve the GitHub token from the git_ops helper (set at startup).
+        # If unavailable (e.g. tests, stub objects), skip rather than corrupt
+        # the orchestrator's own docs tree.
+        github_token: str | None = getattr(self._git, "_github_token", None)
+        if not github_token:
+            logger.warning(
+                "_sync_plan_checkbox: GitHub token unavailable — "
+                "checkbox sync requires target-repo clone, skipped (follow-up: "
+                "ensure git_ops._github_token is set before orchestrator starts)"
+            )
+            return
+
         try:
             title = task.get("title", "")
             if not title:
                 return
+
+            # Fetch plan → project to get repo_url.
+            plan_id = task.get("plan_id")
+            if plan_id is None:
+                return
+            plan = await self._tq.get_plan(plan_id)
+            if plan is None:
+                return
+            project = await self._tq.get_project(plan["project_id"])
+            if project is None:
+                return
+            repo_url: str = project["repo_url"]
+
+            # Find the plan file path (repo-relative) from doc_index.
             rows = await self._tq._db.fetch_all(
                 "SELECT path FROM doc_index WHERE category = 'plan' ORDER BY updated_at DESC"
             )
-            for row in rows:
-                from pathlib import Path
+            if not rows:
+                return
 
-                plan_path = Path(row["path"])
-                if not plan_path.exists():
-                    continue
-                text = plan_path.read_text(encoding="utf-8")
-                updated = flip_checklist_item(text, title)
-                if updated != text:
-                    plan_path.write_text(updated, encoding="utf-8")
-                    logger.info("Flipped checkbox for '%s' in %s", title, plan_path)
-                    break
+            import tempfile
+            from pathlib import Path
+
+            with tempfile.TemporaryDirectory() as tmp_dir:
+                ws = tmp_dir
+                clone_with_token(repo_url, ws, github_token)
+
+                flipped = False
+                for row in rows:
+                    # row["path"] is relative to the orchestrator's docs tree;
+                    # use only the filename/tail to locate it inside the clone.
+                    rel_path = row["path"]
+                    candidate = Path(ws) / rel_path
+                    if not candidate.exists():
+                        # Try just the filename as a fallback.
+                        candidate = next(
+                            (
+                                p
+                                for p in Path(ws).rglob(Path(rel_path).name)
+                                if p.is_file()
+                            ),
+                            None,
+                        )
+                        if candidate is None:
+                            continue
+                    text = candidate.read_text(encoding="utf-8")
+                    updated = flip_checklist_item(text, title)
+                    if updated != text:
+                        candidate.write_text(updated, encoding="utf-8")
+                        # Path relative to clone root for git add.
+                        git_rel = str(candidate.relative_to(ws))
+                        commit_and_push(
+                            ws,
+                            github_token,
+                            f"docs: mark '{title}' complete",
+                            paths=[git_rel],
+                        )
+                        logger.info(
+                            "Flipped checkbox for '%s' in %s (target repo %s)",
+                            title,
+                            git_rel,
+                            repo_url,
+                        )
+                        flipped = True
+                        break
+
+                if not flipped:
+                    logger.debug(
+                        "_sync_plan_checkbox: no unchecked item '%s' found in plan files",
+                        title,
+                    )
+
             await self._doc_indexer.scan()
             self._bus.publish({"type": "docs_refreshed"})
         except Exception as exc:  # noqa: BLE001 - non-fatal
