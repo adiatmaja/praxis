@@ -42,7 +42,7 @@ async def test_status_includes_agent_model(
     assert response.status_code == 200
     data = response.json()
     assert "agent_model" in data
-    assert data["agent_model"]["name"] == "claude-opus-4-6"
+    assert data["agent_model"]["name"] == "claude-opus-4-8"
     assert isinstance(data["agent_model"]["connected"], bool)
 
 
