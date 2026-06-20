@@ -46,7 +46,12 @@ class Orchestrator:
             self._bus.publish({"type": "opus_queued", "action": "plan"})
             return
 
-        opus_plan = await self._opus.plan_spec(plan["spec"], project["repo_url"])
+        opus_plan = await self._opus.plan_spec(
+            plan["spec"],
+            project["repo_url"],
+            model=project.get("agent_model"),
+            effort=project.get("agent_model_effort"),
+        )
         today = datetime.now(UTC).date().isoformat()
         branch = f"plan/{today}-{opus_plan['plan_slug']}"
         await self._tq.activate_plan(plan_id, opus_plan, branch)
@@ -119,7 +124,10 @@ class Orchestrator:
         pr_number = await self._git.extract_pr_number(task["pr_url"])
         diff = await self._git.get_pr_diff(".", pr_number)
         review = await self._opus.review_diff(
-            diff, task["description"] or task["title"]
+            diff,
+            task["description"] or task["title"],
+            model=project.get("agent_model"),
+            effort=project.get("agent_model_effort"),
         )
         verdict = str(review["verdict"]).lower()
         feedback = str(review.get("feedback", ""))
@@ -183,7 +191,11 @@ class Orchestrator:
         )
         analysis = cast(
             dict[str, Any],
-            await self._opus.analyze_improvements(summary),
+            await self._opus.analyze_improvements(
+                summary,
+                model=project.get("agent_model"),
+                effort=project.get("agent_model_effort"),
+            ),
         )
         confidence = float(analysis["confidence"])
         if confidence < float(project["confidence_threshold"]):

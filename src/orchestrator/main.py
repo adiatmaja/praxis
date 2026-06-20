@@ -53,7 +53,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.db = database
     app.state.settings = settings
     app.state.task_queue = TaskQueue(database)
-    app.state.opus_bridge = OpusBridge(database)
+    app.state.opus_bridge = OpusBridge(
+        database,
+        default_model=settings.agent_model,
+        default_effort=settings.agent_model_effort,
+    )
     git_ops = GitOps(settings.github_token)
     app.state.git_ops = git_ops
     app.state.event_bus = EventBus()

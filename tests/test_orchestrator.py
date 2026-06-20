@@ -312,6 +312,129 @@ class TestImprovementLoop:
 
 
 @pytest.mark.integration
+class TestPerProjectAgentModel:
+    async def test_plan_uses_project_agent_model(self, db: Database) -> None:
+        """plan_and_activate forwards per-project agent_model to plan_spec."""
+        await db.execute(
+            "INSERT INTO users (id, name, token_hash) VALUES (?, ?, ?)",
+            ("u1", "User", "hash"),
+        )
+        await db.execute(
+            """INSERT INTO projects
+               (id, user_id, name, repo_url, model_name, agent_model)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (
+                "p1",
+                "u1",
+                "App",
+                "https://github.com/u/a",
+                "deepseek",
+                "claude-sonnet-4-6",
+            ),
+        )
+        task_queue = TaskQueue(db)
+        plan_id = await task_queue.create_plan("p1", "Build auth")
+        project = await db.fetch_one("SELECT * FROM projects WHERE id = 'p1'")
+        assert project is not None
+
+        mock_opus = AsyncMock()
+        mock_opus.is_available.return_value = True
+        mock_opus.plan_spec.return_value = {
+            "plan_summary": "Auth",
+            "plan_slug": "auth",
+            "tasks": [
+                {
+                    "title": "Login",
+                    "slug": "login",
+                    "description": "Build login",
+                    "depends_on": [],
+                }
+            ],
+        }
+        orch = Orchestrator(
+            task_queue=task_queue,
+            agent_manager=MagicMock(),
+            opus_bridge=mock_opus,
+            git_ops=AsyncMock(),
+            event_bus=EventBus(),
+        )
+        await orch.plan_and_activate(plan_id, project)
+
+        mock_opus.plan_spec.assert_called_once()
+        _, kwargs = mock_opus.plan_spec.call_args
+        assert kwargs.get("model") == "claude-sonnet-4-6"
+
+    async def test_review_uses_project_agent_model(self, db: Database) -> None:
+        """review_task forwards per-project agent_model to review_diff."""
+        await db.execute(
+            "INSERT INTO users (id, name, token_hash) VALUES (?, ?, ?)",
+            ("u1", "User", "hash"),
+        )
+        await db.execute(
+            """INSERT INTO projects
+               (id, user_id, name, repo_url, model_name, max_retries, agent_model)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (
+                "p1",
+                "u1",
+                "App",
+                "https://github.com/u/a",
+                "deepseek",
+                3,
+                "claude-sonnet-4-6",
+            ),
+        )
+        task_queue = TaskQueue(db)
+        plan_id = await task_queue.create_plan("p1", "Build auth")
+        await task_queue.activate_plan(
+            plan_id,
+            {
+                "plan_summary": "Auth",
+                "plan_slug": "auth",
+                "tasks": [
+                    {
+                        "title": "Login",
+                        "slug": "login",
+                        "description": "Build login",
+                        "depends_on": [],
+                    }
+                ],
+            },
+            "plan/2026-06-01-auth",
+        )
+        tasks = await task_queue.get_tasks_for_plan(plan_id)
+        task_id = str(tasks[0]["id"])
+        await task_queue.update_task_status(task_id, TaskStatus.REVIEWING)
+        await task_queue.set_task_pr_url(task_id, "https://github.com/u/a/pull/1")
+        project = await db.fetch_one("SELECT * FROM projects WHERE id = 'p1'")
+        assert project is not None
+
+        mock_opus = AsyncMock()
+        mock_opus.is_available.return_value = True
+        mock_opus.review_diff.return_value = {
+            "verdict": "pass",
+            "feedback": "OK",
+            "issues": [],
+        }
+        mock_git = AsyncMock()
+        mock_git.extract_pr_number.return_value = 1
+        mock_git.get_pr_diff.return_value = "diff content"
+
+        orch = Orchestrator(
+            task_queue=task_queue,
+            agent_manager=MagicMock(),
+            opus_bridge=mock_opus,
+            git_ops=mock_git,
+            event_bus=EventBus(),
+        )
+        await orch.review_task(task_id, project)
+
+        mock_opus.review_diff.assert_called_once()
+        _, kwargs = mock_opus.review_diff.call_args
+        assert kwargs.get("model") == "claude-sonnet-4-6"
+
+
+@pytest.mark.integration
 class TestOrchestrationLoop:
     async def test_run_once_activates_pending_plan(self, db: Database) -> None:
         await db.execute(
