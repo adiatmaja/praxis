@@ -93,6 +93,19 @@ MIGRATIONS: tuple[str, ...] = (
         queued_actions TEXT NOT NULL DEFAULT '[]'
     )
     """,
+    """
+    CREATE TABLE IF NOT EXISTS doc_index (
+        path TEXT PRIMARY KEY,
+        category TEXT NOT NULL,
+        title TEXT,
+        content_hash TEXT NOT NULL,
+        branch TEXT,
+        done_count INTEGER NOT NULL DEFAULT 0,
+        total_count INTEGER NOT NULL DEFAULT 0,
+        classified_by TEXT NOT NULL DEFAULT 'marker',
+        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )
+    """,
 )
 
 
