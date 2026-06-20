@@ -62,7 +62,16 @@ class DocIndexer:
             scanned += 1
         return {"scanned": scanned, "reused": reused}
 
-    async def _upsert(self, path, category, title, digest, done, total, by) -> None:
+    async def _upsert(
+        self,
+        path: str,
+        category: str,
+        title: str | None,
+        digest: str,
+        done: int,
+        total: int,
+        by: str,
+    ) -> None:
         await self._db.execute(
             """
             INSERT INTO doc_index (path, category, title, content_hash, done_count,

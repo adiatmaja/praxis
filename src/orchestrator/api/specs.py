@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from typing import Any, cast
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel
@@ -72,7 +73,7 @@ async def modify_spec(
     body: ModifySpec,
     request: Request,
     _: None = Depends(verify_token),
-) -> dict:
+) -> dict[str, Any]:
     """Write updated spec content to the repo and commit."""
     project = await request.app.state.db.fetch_one(
         "SELECT repo_url FROM projects WHERE id = ?", (body.project_id,)
@@ -81,8 +82,11 @@ async def modify_spec(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Project not found"
         )
-    return request.app.state.brainstorm.write_and_commit(
-        project["repo_url"], body.spec_path, body.content
+    return cast(
+        dict[str, Any],
+        request.app.state.brainstorm.write_and_commit(
+            project["repo_url"], body.spec_path, body.content
+        ),
     )
 
 
@@ -91,7 +95,7 @@ async def generate_plan(
     body: GeneratePlan,
     request: Request,
     _: None = Depends(verify_token),
-) -> dict:
+) -> dict[str, Any]:
     """Invoke the writing-plans skill to produce a plan from a spec."""
     project = await request.app.state.db.fetch_one(
         "SELECT repo_url FROM projects WHERE id = ?", (body.project_id,)
@@ -100,6 +104,9 @@ async def generate_plan(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Project not found"
         )
-    return await request.app.state.brainstorm.generate_plan(
-        project["repo_url"], body.spec_path, body.notes
+    return cast(
+        dict[str, Any],
+        await request.app.state.brainstorm.generate_plan(
+            project["repo_url"], body.spec_path, body.notes
+        ),
     )

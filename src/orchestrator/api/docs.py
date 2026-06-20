@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any, cast
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 
@@ -18,24 +19,30 @@ async def list_docs(
     request: Request,
     category: str | None = None,
     _: None = Depends(verify_token),
-) -> list[dict]:
+) -> list[dict[str, Any]]:
     """List all indexed docs, optionally filtered by category."""
     db = request.app.state.db
     if category:
-        return await db.fetch_all(
-            "SELECT * FROM doc_index WHERE category = ? ORDER BY updated_at DESC",
-            (category,),
+        return cast(
+            list[dict[str, Any]],
+            await db.fetch_all(
+                "SELECT * FROM doc_index WHERE category = ? ORDER BY updated_at DESC",
+                (category,),
+            ),
         )
-    return await db.fetch_all("SELECT * FROM doc_index ORDER BY updated_at DESC")
+    return cast(
+        list[dict[str, Any]],
+        await db.fetch_all("SELECT * FROM doc_index ORDER BY updated_at DESC"),
+    )
 
 
 @router.post("/refresh")
 async def refresh_docs(
     request: Request,
     _: None = Depends(verify_token),
-) -> dict:
+) -> dict[str, Any]:
     """Trigger a full rescan of the docs root."""
-    return await request.app.state.doc_indexer.scan()
+    return cast(dict[str, Any], await request.app.state.doc_indexer.scan())
 
 
 @router.get("/raw")
@@ -43,7 +50,7 @@ async def raw_doc(
     request: Request,
     path: str,
     _: None = Depends(verify_token),
-) -> dict:
+) -> dict[str, Any]:
     """Return raw markdown content for a doc by relative path."""
     settings = request.app.state.settings
     root = Path(settings.docs_root).parent

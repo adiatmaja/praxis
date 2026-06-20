@@ -9,6 +9,7 @@ import subprocess
 import uuid
 from collections.abc import AsyncIterator
 from pathlib import Path
+from typing import Any
 
 
 logger = logging.getLogger(__name__)
@@ -52,9 +53,7 @@ def parse_stream_line(line: str) -> dict | None:
 class BrainstormSession:
     """One interactive brainstorming conversation."""
 
-    def __init__(
-        self, session_id: str, workspace: str, event_bus: object = None
-    ) -> None:
+    def __init__(self, session_id: str, workspace: str, event_bus: Any = None) -> None:
         self.session_id = session_id
         self.workspace = workspace
         self._bus = event_bus

@@ -182,7 +182,7 @@ class Orchestrator:
             title = task.get("title", "")
             if not title:
                 return
-            rows = await self._tq.db.fetch_all(
+            rows = await self._tq._db.fetch_all(
                 "SELECT path FROM doc_index WHERE category = 'plan' ORDER BY updated_at DESC"
             )
             for row in rows:
