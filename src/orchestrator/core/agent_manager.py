@@ -8,11 +8,10 @@ from typing import Any
 import docker.errors
 
 import docker
+from orchestrator.core.harnesses import REGISTRY, default_harness_id
 
 
 logger = logging.getLogger(__name__)
-
-AGENT_IMAGE = "aider-agent:latest"
 
 
 class AgentManager:
@@ -32,20 +31,24 @@ class AgentManager:
         task_prompt: str,
         model_name: str,
         callback_url: str,
+        harness: str | None = None,
     ) -> str:
+        harness_id = harness or default_harness_id()
+        spec = REGISTRY[harness_id]
         environment = {
             "REPO_URL": repo_url,
             "BRANCH": branch,
             "BASE_BRANCH": base_branch,
             "TASK_PROMPT": task_prompt,
             "OPENAI_API_BASE": f"{self._lm_studio_url}/v1",
-            "AIDER_MODEL": f"openai/{model_name}",
+            "MODEL": model_name,
+            "HARNESS": harness_id,
             "GH_TOKEN": self._github_token,
             "CALLBACK_URL": callback_url,
             "TASK_ID": task_id,
         }
         container = self._client.containers.run(
-            image=AGENT_IMAGE,
+            image=spec.image,
             name=f"aider-agent-{task_id[:8]}",
             environment=environment,
             detach=True,
@@ -53,7 +56,8 @@ class AgentManager:
             network_mode="host",
         )
         logger.info(
-            "Spawned agent container %s for task %s on branch %s",
+            "Spawned %s container %s for task %s on branch %s",
+            harness_id,
             container.id[:12],
             task_id,
             branch,

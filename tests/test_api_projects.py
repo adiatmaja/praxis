@@ -125,3 +125,46 @@ async def test_project_not_found_and_unauthorized(
 
     assert missing.status_code == 404
     assert unauthorized.status_code == 401
+
+
+@pytest.mark.integration
+async def test_create_project_persists_harness(
+    client: AsyncClient,
+    db: Database,
+    auth_headers: dict[str, str],
+) -> None:
+    await seed_user(db)
+
+    resp = await client.post(
+        "/api/projects",
+        headers=auth_headers,
+        json={
+            "name": "harness-proj",
+            "repo_url": "https://github.com/u/r",
+            "model_name": "qwen3-32b",
+            "harness": "opencode",
+        },
+    )
+    assert resp.status_code == 201
+    assert resp.json()["harness"] == "opencode"
+
+
+@pytest.mark.integration
+async def test_create_project_defaults_harness_aider(
+    client: AsyncClient,
+    db: Database,
+    auth_headers: dict[str, str],
+) -> None:
+    await seed_user(db)
+
+    resp = await client.post(
+        "/api/projects",
+        headers=auth_headers,
+        json={
+            "name": "default-harness",
+            "repo_url": "https://github.com/u/r",
+            "model_name": "qwen3-32b",
+        },
+    )
+    assert resp.status_code == 201
+    assert resp.json()["harness"] == "aider"

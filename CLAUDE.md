@@ -56,6 +56,12 @@ praxis/
 │   ├── aider-agent/
 │   │   ├── Dockerfile
 │   │   └── entrypoint.sh
+│   ├── opencode-agent/
+│   │   ├── Dockerfile
+│   │   └── entrypoint.sh
+│   ├── openhands-agent/
+│   │   ├── Dockerfile
+│   │   └── entrypoint.sh
 │   └── caddy/Caddyfile
 ├── tests/                           # 101 tests, 88% coverage
 ├── docker-compose.yml               # Production compose
@@ -112,6 +118,12 @@ Tables: `users`, `projects`, `plans`, `tasks`, `agent_runs`, `opus_state`
 - **Rate limit handling** — detect 5h subscription limit, queue Opus calls, auto-resume
 - **Two-tier git branching** — `plan/{date}-{slug}` groups tasks, `agent/{task-slug}` per task
 - **Single static auth token** for v1 (data model supports multi-user for future)
+- **Pluggable harnesses** — `core/harnesses.py` is the registry (image + About
+  content) for Aider, OpenCode, OpenHands. Projects pick one via the `harness`
+  column (default `aider`). `AgentManager.spawn_agent` selects the image and
+  sets a harness-agnostic env contract (`HARNESS`, `MODEL`, `OPENAI_API_BASE`,
+  + repo/branch/callback vars). Each `docker/<harness>-agent/` image honors the
+  same entrypoint contract.
 
 ## Gotchas
 
@@ -152,6 +164,18 @@ Tables: `users`, `projects`, `plans`, `tasks`, `agent_runs`, `opus_state`
 - **Approve sets plan to ACTIVE immediately** — If the orchestration loop hasn't called
   Opus to break the spec into tasks yet, an ACTIVE plan with no `opus_plan` will trigger
   `plan_and_activate` on the next loop iteration
+- **Harness images are standalone** — build each directly, none are in
+  docker-compose:
+  `docker build -t opencode-agent:latest -f docker/opencode-agent/Dockerfile docker/opencode-agent/`
+  (same for `openhands-agent`).
+- **OpenCode/OpenHands don't auto-commit** — unlike Aider, their entrypoints run
+  `git add -A && git commit` after the agent. A run that produces no changes is
+  marked `failed`.
+- **OpenHands needs a sandbox runtime** — the image uses `RUNTIME=local` to avoid
+  Docker-in-Docker. If unsupported, mount `/var/run/docker.sock` when spawning.
+- **Generic MODEL env var** — all harness entrypoints consume `MODEL` (raw model
+  name); each adds its own provider prefix (Aider/OpenHands use `openai/`,
+  OpenCode uses an `lmstudio/` config provider).
 
 ## Documentation
 

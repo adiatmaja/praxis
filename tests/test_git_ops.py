@@ -23,7 +23,8 @@ def test_clone_with_token_keeps_token_in_env_not_url(mock_run: object) -> None:
     # Clean URL in argv, token never embedded
     assert "https://github.com/u/r" in argv
     assert not any("tok123" in part for part in argv)
-    assert "--depth" in argv and "20" in argv
+    assert "--depth" in argv
+    assert "20" in argv
     # Token supplied via env, and a credential helper is configured
     assert call.kwargs["env"]["GH_TOKEN"] == "tok123"
     assert "credential.helper=" in argv

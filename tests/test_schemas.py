@@ -347,3 +347,34 @@ def test_project_create_accepts_agent_model():
 def test_project_create_agent_model_optional():
     p = ProjectCreate(name="r", repo_url="u", model_name="m")
     assert p.agent_model is None
+
+
+@pytest.mark.unit
+def test_project_create_defaults_harness_to_aider() -> None:
+    p = ProjectCreate(name="p", repo_url="https://x/y", model_name="m")
+    assert p.harness == "aider"
+
+
+@pytest.mark.unit
+def test_project_create_accepts_valid_harness() -> None:
+    p = ProjectCreate(
+        name="p", repo_url="https://x/y", model_name="m", harness="opencode"
+    )
+    assert p.harness == "opencode"
+
+
+@pytest.mark.unit
+def test_project_create_rejects_unknown_harness() -> None:
+    with pytest.raises(ValidationError):
+        ProjectCreate(name="p", repo_url="https://x/y", model_name="m", harness="bogus")
+
+
+@pytest.mark.unit
+def test_project_update_rejects_unknown_harness() -> None:
+    with pytest.raises(ValidationError):
+        ProjectUpdate(harness="bogus")
+
+
+@pytest.mark.unit
+def test_project_update_allows_none_harness() -> None:
+    assert ProjectUpdate(harness=None).harness is None

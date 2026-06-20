@@ -8,6 +8,8 @@ from typing import TypedDict
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from orchestrator.core.harnesses import REGISTRY, default_harness_id
+
 
 if version_info < (3, 12):
     from typing_extensions import TypedDict
@@ -64,6 +66,16 @@ class ProjectCreate(BaseModel):
     lm_studio_url: str = "http://host.docker.internal:1234"
     agent_model: str | None = None
     agent_model_effort: str | None = None
+    harness: str = Field(default_factory=default_harness_id)
+
+    @field_validator("harness")
+    @classmethod
+    def validate_harness(cls, value: str) -> str:
+        if value not in REGISTRY:
+            allowed = ", ".join(sorted(REGISTRY))
+            msg = f"harness must be one of: {allowed}"
+            raise ValueError(msg)
+        return value
 
     @field_validator(
         "name",
@@ -95,6 +107,18 @@ class ProjectUpdate(BaseModel):
     lm_studio_url: str | None = None
     agent_model: str | None = None
     agent_model_effort: str | None = None
+    harness: str | None = None
+
+    @field_validator("harness")
+    @classmethod
+    def validate_optional_harness(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        if value not in REGISTRY:
+            allowed = ", ".join(sorted(REGISTRY))
+            msg = f"harness must be one of: {allowed}"
+            raise ValueError(msg)
+        return value
 
     @field_validator(
         "name",
@@ -143,6 +167,7 @@ class ProjectResponse(BaseModel):
     lm_studio_url: str
     agent_model: str | None = None
     agent_model_effort: str | None = None
+    harness: str = "aider"
     created_at: str
 
 

@@ -133,6 +133,54 @@ async def test_projects_have_agent_model_columns(db: Database) -> None:
     assert "agent_model_effort" in cols
 
 
+@pytest.mark.unit
+async def test_projects_table_has_harness_column(tmp_path) -> None:
+    db = Database(f"sqlite+aiosqlite:///{tmp_path / 'mig.db'}")
+    await db.initialize()
+    try:
+        await db.execute(
+            "INSERT INTO users (id, name, token_hash) VALUES (?, ?, ?)",
+            ("u1", "admin", "h"),
+        )
+        import uuid
+
+        pid = str(uuid.uuid4())
+        await db.execute(
+            "INSERT INTO projects (id, user_id, name, repo_url, model_name, "
+            "harness) VALUES (?, ?, ?, ?, ?, ?)",
+            (pid, "u1", "p", "https://x/y", "m", "opencode"),
+        )
+        row = await db.fetch_one("SELECT harness FROM projects WHERE id = ?", (pid,))
+        assert row is not None
+        assert row["harness"] == "opencode"
+    finally:
+        await db.close()
+
+
+@pytest.mark.unit
+async def test_harness_defaults_to_aider(tmp_path) -> None:
+    db = Database(f"sqlite+aiosqlite:///{tmp_path / 'mig2.db'}")
+    await db.initialize()
+    try:
+        await db.execute(
+            "INSERT INTO users (id, name, token_hash) VALUES (?, ?, ?)",
+            ("u1", "admin", "h"),
+        )
+        import uuid
+
+        pid = str(uuid.uuid4())
+        await db.execute(
+            "INSERT INTO projects (id, user_id, name, repo_url, model_name) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (pid, "u1", "p", "https://x/y", "m"),
+        )
+        row = await db.fetch_one("SELECT harness FROM projects WHERE id = ?", (pid,))
+        assert row is not None
+        assert row["harness"] == "aider"
+    finally:
+        await db.close()
+
+
 @pytest.mark.integration
 async def test_string_ids_work_across_related_tables(db: Database) -> None:
     await db.execute(
