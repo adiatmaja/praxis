@@ -21,7 +21,7 @@ PLAN_BOOTSTRAP = (
     "Produce a fully self-contained implementation plan — every task executes in a fresh "
     "container with zero prior context, so embed all needed file paths, background, and "
     "acceptance criteria per task. Honor these extra notes: {notes}. "
-    "Write the plan to docs/superpowers/plans/ and commit it."
+    "Write the plan to docs/superpowers/plans/, commit it, and push it."
 )
 
 BRAINSTORM_BOOTSTRAP = (
