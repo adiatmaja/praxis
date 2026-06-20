@@ -225,3 +225,39 @@ async def test_classify_doc_normalizes_unexpected_to_other(
     mocker.patch.object(bridge, "_run_claude", new=AsyncMock(return_value="garbage"))
     result = await bridge.classify_doc("x")
     assert result == "other"
+
+
+@pytest.mark.unit
+async def test_classify_doc_spec_exact(mocker: pytest.MonkeyPatch) -> None:
+    bridge = OpusBridge(db=mocker.MagicMock())
+    mocker.patch.object(bridge, "_run_claude", new=AsyncMock(return_value="spec"))
+    assert await bridge.classify_doc("x") == "spec"
+
+
+@pytest.mark.unit
+async def test_classify_doc_plan_exact(mocker: pytest.MonkeyPatch) -> None:
+    bridge = OpusBridge(db=mocker.MagicMock())
+    mocker.patch.object(bridge, "_run_claude", new=AsyncMock(return_value="plan"))
+    assert await bridge.classify_doc("x") == "plan"
+
+
+@pytest.mark.unit
+async def test_classify_doc_plan_with_trailing_period(
+    mocker: pytest.MonkeyPatch,
+) -> None:
+    """'Plan.' should be stripped to 'plan' and matched exactly."""
+    bridge = OpusBridge(db=mocker.MagicMock())
+    mocker.patch.object(bridge, "_run_claude", new=AsyncMock(return_value="Plan."))
+    assert await bridge.classify_doc("x") == "plan"
+
+
+@pytest.mark.unit
+async def test_classify_doc_prefers_last_mention(mocker: pytest.MonkeyPatch) -> None:
+    """'this is not a spec, it's a plan' -> 'plan' (last word-boundary match wins)."""
+    bridge = OpusBridge(db=mocker.MagicMock())
+    mocker.patch.object(
+        bridge,
+        "_run_claude",
+        new=AsyncMock(return_value="this is not a spec, it's a plan"),
+    )
+    assert await bridge.classify_doc("x") == "plan"

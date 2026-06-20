@@ -258,7 +258,17 @@ class OpusBridge:
         """Classify ambiguous markdown via Haiku; returns spec|plan|other."""
         prompt = self.CLASSIFY_PROMPT.format(text=text[:4000])
         raw = (await self._run_claude(prompt, model="claude-haiku-4-5")).strip().lower()
-        for category in ("spec", "plan", "other"):
-            if category in raw:
-                return category
+        # 1. Exact match after stripping surrounding punctuation/whitespace.
+        cleaned = raw.strip(" '\".:!\n")
+        if cleaned in ("spec", "plan", "other"):
+            return cleaned
+        # 2. Word-boundary scan; if both appear, prefer the last-mentioned
+        #    (the model's conclusion tends to come last).
+        last_pos: dict[str, int] = {}
+        for category in ("spec", "plan"):
+            matches = list(re.finditer(rf"\b{category}\b", raw))
+            if matches:
+                last_pos[category] = matches[-1].start()
+        if last_pos:
+            return max(last_pos, key=lambda c: last_pos[c])
         return "other"
