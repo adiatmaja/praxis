@@ -100,7 +100,7 @@ class Orchestrator:
                 base_branch=plan["plan_branch_name"] or project["default_branch"],
                 task_prompt=prompt,
                 model_name=project["model_name"],
-                harness=project["harness"],
+                harness=project.get("harness"),
                 callback_url="http://host.docker.internal:8080/api/internal/agent-done",
             )
             run_id = await self._tq.create_agent_run(task["id"], container_id)
