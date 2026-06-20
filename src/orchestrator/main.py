@@ -76,6 +76,18 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         git_ops=git_ops,
         event_bus=app.state.event_bus,
     )
+    from orchestrator.core.doc_indexer import DocIndexer
+
+    app.state.doc_indexer = DocIndexer(
+        db=database,
+        docs_root=settings.docs_root,
+        classify=app.state.opus_bridge.classify_doc,
+    )
+    try:
+        await app.state.doc_indexer.scan()
+    except Exception as exc:  # noqa: BLE001 - non-fatal at startup
+        logger.warning("Initial doc scan failed: %s", exc)
+
     app.state.orchestration_stop_event = asyncio.Event()
     app.state.orchestration_task = asyncio.create_task(
         app.state.orchestrator.run_loop(app.state.orchestration_stop_event)
