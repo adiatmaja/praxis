@@ -5,9 +5,78 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import subprocess
 
 
 logger = logging.getLogger(__name__)
+
+
+# A git credential helper that supplies the token from the GH_TOKEN env var at
+# call time. This keeps the token OUT of the persisted remote URL (.git/config)
+# and OUT of process argv — it lives only in the child process environment.
+_CREDENTIAL_HELPER = (
+    "!f() { echo username=x-access-token; echo password=$GH_TOKEN; }; f"
+)
+
+
+def _token_git_args() -> list[str]:
+    """Return ``git -c ...`` args that wire up token auth via GH_TOKEN."""
+    # The empty assignment first clears any inherited helper, then installs ours.
+    return ["-c", "credential.helper=", "-c", f"credential.helper={_CREDENTIAL_HELPER}"]
+
+
+def clone_with_token(repo_url: str, dest: str, token: str, depth: int = 50) -> None:
+    """Clone ``repo_url`` into ``dest`` using token auth without leaking the token.
+
+    The token is passed via the ``GH_TOKEN`` environment variable and consumed by
+    a git credential helper, so it is never written to the cloned repo's
+    ``.git/config`` and never appears in process arguments or error output.
+    """
+    env = {**os.environ, "GH_TOKEN": token}
+    cmd = [
+        "git",
+        *_token_git_args(),
+        "clone",
+        "--depth",
+        str(depth),
+        repo_url,
+        dest,
+    ]
+    subprocess.run(  # noqa: S603 - fixed argv, no shell
+        cmd, check=True, capture_output=True, text=True, env=env
+    )
+    logger.info("Cloned %s to %s", repo_url, dest)
+
+
+def commit_and_push(
+    workspace: str,
+    token: str,
+    message: str,
+    paths: list[str] | None = None,
+) -> None:
+    """Stage, commit, and push changes in ``workspace`` using token auth.
+
+    Stages ``paths`` (or everything when ``paths`` is None), commits with
+    ``message``, and pushes via the token-auth credential helper.
+    """
+    env = {**os.environ, "GH_TOKEN": token}
+    add_args = ["git", "-C", workspace, "add"]
+    add_args += paths if paths else ["-A"]
+    subprocess.run(add_args, check=True, capture_output=True, text=True)  # noqa: S603
+    subprocess.run(  # noqa: S603
+        ["git", "-C", workspace, "commit", "-m", message],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(  # noqa: S603
+        ["git", *_token_git_args(), "-C", workspace, "push"],
+        check=True,
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+    logger.info("Committed and pushed in %s", workspace)
 
 
 def flip_checklist_item(markdown: str, item_text: str) -> str:
