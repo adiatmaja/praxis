@@ -63,7 +63,7 @@ praxis/
 │   │   ├── Dockerfile
 │   │   └── entrypoint.sh
 │   └── caddy/Caddyfile
-├── tests/                           # 101 tests, 88% coverage
+├── tests/                           # 200 tests, 88% coverage
 ├── docker-compose.yml               # Production compose
 ├── docker-compose.local.yml         # Dev overrides (hot reload, mounted source)
 ├── pyproject.toml
@@ -146,6 +146,12 @@ Tables: `users`, `projects`, `plans`, `tasks`, `agent_runs`, `opus_state`
   The EventBus is in-memory only — events are lost if no subscribers are connected
 - **SQLite DB file** is created at `data/orchestrator.db` relative to CWD. The `data/`
   directory is auto-created by lifespan. Delete the file to reset all state
+- **Context Sync clones cross-platform** — `Settings.brainstorm_workspace` defaults to
+  `tempfile.gettempdir()/praxis-brainstorm` (not hardcoded `/tmp/...`), so the Memory
+  view works on Windows. `ContextSync.current()` clones the repo on every open and
+  cleans up its `read-{uuid}` dir in a `finally`. Clone/git failures surface as a
+  `502` from `GET /api/projects/{id}/context` (handled in `api/context.py`), not an
+  opaque 500. The Memory view re-clones on each open — no caching yet
 - **Aider agent image is standalone** — `aider-agent:latest` is not in docker-compose.
   Build it directly: `docker build -t aider-agent:latest -f docker/aider-agent/Dockerfile docker/aider-agent/`
 - **Agent container runs as non-root** — The `agent` user cannot write to `/`.
