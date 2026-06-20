@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, cast
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel
 
 from orchestrator.api.auth import verify_token
@@ -28,6 +28,10 @@ async def get_context(
     project = await db.fetch_one(
         "SELECT repo_url FROM projects WHERE id = ?", (project_id,)
     )
+    if project is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Project not found"
+        )
     return cast(
         dict[str, Any], request.app.state.context_sync.current(project["repo_url"])
     )
@@ -45,6 +49,10 @@ async def sync_context(
     project = await db.fetch_one(
         "SELECT repo_url FROM projects WHERE id = ?", (project_id,)
     )
+    if project is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Project not found"
+        )
     return cast(
         dict[str, Any],
         await request.app.state.context_sync.draft(project["repo_url"], body.summary),

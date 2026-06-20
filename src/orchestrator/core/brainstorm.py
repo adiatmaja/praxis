@@ -158,7 +158,11 @@ class BrainstormManager:
         workspace = str(Path(self._base) / session_id)
         Path(workspace).mkdir(parents=True, exist_ok=True)
         self._clone_repo(repo_url, workspace)
-        target = Path(workspace) / path
+        ws_root = Path(workspace).resolve()
+        target = (ws_root / path).resolve()
+        if not target.is_relative_to(ws_root):
+            msg = f"spec_path escapes workspace: {path}"
+            raise ValueError(msg)
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(content, encoding="utf-8")
         subprocess.run(  # noqa: S603 S607

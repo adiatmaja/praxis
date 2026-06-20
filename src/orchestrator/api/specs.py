@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from typing import Any, cast
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
@@ -11,7 +12,32 @@ from pydantic import BaseModel
 from orchestrator.api.auth import verify_token
 
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter(prefix="/api/specs", tags=["specs"])
+
+
+async def _run_turn_safely(
+    mgr: Any, event_bus: Any, session_id: str, message: str
+) -> None:
+    """Drive one brainstorm turn, publishing an error event if it fails.
+
+    The brainstorm turn is dispatched fire-and-forget so the request returns
+    immediately; without this wrapper any failure (subprocess/clone/unknown
+    session) would be silently swallowed by the orphaned task.
+    """
+    try:
+        await mgr.send(session_id, message)
+    except Exception as exc:  # noqa: BLE001 - surface to the UI instead of swallowing
+        logger.warning("Brainstorm turn failed for %s: %s", session_id, exc)
+        if event_bus is not None:
+            event_bus.publish(
+                {
+                    "type": "brainstorm_error",
+                    "session_id": session_id,
+                    "error": str(exc),
+                }
+            )
 
 
 class StartSession(BaseModel):
@@ -51,8 +77,9 @@ async def start_session(
             status_code=status.HTTP_404_NOT_FOUND, detail="Project not found"
         )
     mgr = request.app.state.brainstorm
+    event_bus = getattr(request.app.state, "event_bus", None)
     session_id = mgr.create_session(repo_url=project["repo_url"])
-    asyncio.create_task(mgr.send(session_id, body.message))
+    asyncio.create_task(_run_turn_safely(mgr, event_bus, session_id, body.message))
     return {"session_id": session_id}
 
 
@@ -64,7 +91,9 @@ async def send_message(
     _: None = Depends(verify_token),
 ) -> dict:
     """Send a follow-up message to an existing brainstorming session."""
-    asyncio.create_task(request.app.state.brainstorm.send(session_id, body.message))
+    mgr = request.app.state.brainstorm
+    event_bus = getattr(request.app.state, "event_bus", None)
+    asyncio.create_task(_run_turn_safely(mgr, event_bus, session_id, body.message))
     return {"status": "accepted"}
 
 

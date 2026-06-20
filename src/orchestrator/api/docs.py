@@ -53,8 +53,8 @@ async def raw_doc(
 ) -> dict[str, Any]:
     """Return raw markdown content for a doc by relative path."""
     settings = request.app.state.settings
-    root = Path(settings.docs_root).parent
+    root = Path(settings.docs_root).parent.resolve()
     target = (root / path).resolve()
-    if not str(target).startswith(str(root.resolve())) or not target.is_file():
+    if not target.is_relative_to(root) or not target.is_file():
         raise HTTPException(status_code=404, detail="doc not found")
     return {"path": path, "content": target.read_text(encoding="utf-8")}
