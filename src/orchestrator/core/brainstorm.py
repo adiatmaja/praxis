@@ -5,11 +5,13 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import subprocess
+import shutil
 import uuid
 from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
+
+from orchestrator.core.git_ops import clone_with_token, commit_and_push
 
 
 logger = logging.getLogger(__name__)
@@ -25,7 +27,7 @@ PLAN_BOOTSTRAP = (
 BRAINSTORM_BOOTSTRAP = (
     "Use the superpowers:brainstorming skill to design a spec interactively. "
     "Ask the user one question at a time. When the design is approved, write the spec to "
-    "docs/superpowers/specs/<date>-<slug>-design.md, commit it, and STOP — do NOT proceed to "
+    "docs/superpowers/specs/<date>-<slug>-design.md, commit it, push it, and STOP — do NOT proceed to "
     "writing-plans. The user's opening request follows:\n\n{request}"
 )
 
@@ -82,6 +84,13 @@ class BrainstormSession:
         async for raw in proc.stdout:
             yield raw.decode().strip()
         await proc.wait()
+        if proc.returncode != 0:
+            stderr_bytes = await proc.stderr.read() if proc.stderr else b""
+            logger.warning(
+                "claude process exited with code %d: %s",
+                proc.returncode,
+                stderr_bytes.decode(errors="replace").strip(),
+            )
 
     async def run_turn(self, message: str, *, resume: bool) -> None:
         args = self._build_args(message, resume=resume)
@@ -122,10 +131,7 @@ class BrainstormManager:
         self._started: dict[str, bool] = {}
 
     def _clone_repo(self, repo_url: str, dest: str) -> None:
-        authed = repo_url.replace("https://", f"https://x-access-token:{self._token}@")
-        subprocess.run(  # noqa: S603 S607
-            ["git", "clone", "--depth", "50", authed, dest], check=True
-        )
+        clone_with_token(repo_url, dest, self._token, depth=50)
 
     def create_session(self, repo_url: str) -> str:
         session_id = uuid.uuid4().hex
@@ -150,7 +156,10 @@ class BrainstormManager:
         self._clone_repo(repo_url, workspace)
         session = BrainstormSession(session_id, workspace, self._bus)
         prompt = PLAN_BOOTSTRAP.format(spec_path=spec_path, notes=notes or "none")
-        await session.run_turn(prompt, resume=False)
+        try:
+            await session.run_turn(prompt, resume=False)
+        finally:
+            shutil.rmtree(workspace, ignore_errors=True)
         return {"status": "generated"}
 
     def write_and_commit(self, repo_url: str, path: str, content: str) -> dict:
@@ -165,13 +174,8 @@ class BrainstormManager:
             raise ValueError(msg)
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(content, encoding="utf-8")
-        subprocess.run(  # noqa: S603 S607
-            ["git", "add", path], cwd=workspace, check=True
-        )
-        subprocess.run(  # noqa: S603 S607
-            ["git", "commit", "-m", "docs: update spec"], cwd=workspace, check=True
-        )
-        subprocess.run(  # noqa: S603 S607
-            ["git", "push"], cwd=workspace, check=True
-        )
+        try:
+            commit_and_push(workspace, self._token, "docs: update spec", paths=[path])
+        finally:
+            shutil.rmtree(workspace, ignore_errors=True)
         return {"status": "committed", "path": path}

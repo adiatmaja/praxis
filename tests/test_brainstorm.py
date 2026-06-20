@@ -61,3 +61,118 @@ def test_manager_starts_session(mocker, tmp_path):
     sid = mgr.create_session(repo_url="https://x/y")
     assert sid in mgr._sessions
     mgr._clone_repo.assert_called_once()
+
+
+def test_clone_repo_delegates_to_clone_with_token(mocker, tmp_path):
+    """_clone_repo must call clone_with_token with clean URL + token, not embed token in URL."""
+    from orchestrator.core.brainstorm import BrainstormManager
+
+    mock_cwt = mocker.patch("orchestrator.core.brainstorm.clone_with_token")
+    mgr = BrainstormManager(
+        workspace_base=str(tmp_path),
+        event_bus=mocker.MagicMock(),
+        github_token="secret-tok",
+    )
+    mgr._clone_repo("https://github.com/user/repo", "/some/dest")
+    mock_cwt.assert_called_once_with(
+        "https://github.com/user/repo", "/some/dest", "secret-tok", depth=50
+    )
+    # Token must NOT appear in the URL argument
+    url_arg = mock_cwt.call_args[0][0]
+    assert "secret-tok" not in url_arg
+
+
+def test_write_and_commit_uses_commit_and_push(mocker, tmp_path):
+    """write_and_commit must delegate push to commit_and_push, not raw git commands."""
+    from orchestrator.core.brainstorm import BrainstormManager
+
+    mock_cap = mocker.patch("orchestrator.core.brainstorm.commit_and_push")
+
+    mgr = BrainstormManager(
+        workspace_base=str(tmp_path), event_bus=mocker.MagicMock(), github_token="tok"
+    )
+    mocker.patch.object(mgr, "_clone_repo")
+
+    result = mgr.write_and_commit(
+        repo_url="https://github.com/user/repo",
+        path="docs/spec.md",
+        content="# spec",
+    )
+    assert result == {"status": "committed", "path": "docs/spec.md"}
+    mock_cap.assert_called_once()
+    call_kwargs = mock_cap.call_args
+    # token arg (2nd positional) must be the token
+    assert call_kwargs[0][1] == "tok"
+    # paths kwarg must include our path
+    assert (
+        call_kwargs[1].get("paths") == ["docs/spec.md"]
+        or "docs/spec.md" in call_kwargs[0]
+    )
+
+
+def test_write_and_commit_rejects_path_escape(mocker, tmp_path):
+    """write_and_commit must raise ValueError for paths that escape workspace."""
+    from orchestrator.core.brainstorm import BrainstormManager
+
+    mgr = BrainstormManager(
+        workspace_base=str(tmp_path), event_bus=mocker.MagicMock(), github_token="tok"
+    )
+    mocker.patch.object(mgr, "_clone_repo")
+    mocker.patch("orchestrator.core.brainstorm.commit_and_push")
+
+    import pytest
+
+    with pytest.raises(ValueError, match="escapes workspace"):
+        mgr.write_and_commit(
+            repo_url="https://github.com/user/repo",
+            path="../../etc/passwd",
+            content="bad",
+        )
+
+
+async def test_generate_plan_cleans_up_workspace(mocker, tmp_path):
+    """generate_plan must remove the temp workspace after run_turn completes."""
+    from orchestrator.core.brainstorm import BrainstormManager, BrainstormSession
+
+    mgr = BrainstormManager(
+        workspace_base=str(tmp_path), event_bus=mocker.MagicMock(), github_token="tok"
+    )
+    mocker.patch.object(mgr, "_clone_repo")
+
+    async def fake_run_turn(self, message, *, resume):
+        pass
+
+    mocker.patch.object(BrainstormSession, "run_turn", fake_run_turn)
+
+    await mgr.generate_plan("https://github.com/u/r", "docs/spec.md", "none")
+    # workspace directories should all be cleaned up
+    remaining = list(tmp_path.iterdir())
+    assert remaining == [], f"Expected cleanup but found: {remaining}"
+
+
+async def test_stream_lines_logs_nonzero_exit(mocker, tmp_path):
+    """_stream_lines must log a warning when the subprocess exits non-zero."""
+    from orchestrator.core.brainstorm import BrainstormSession
+
+    s = BrainstormSession(session_id="abc", workspace=str(tmp_path))
+
+    async def empty_aiter():
+        return
+        yield b""  # make it an async generator
+
+    mock_proc = mocker.MagicMock()
+    mock_proc.stdout = empty_aiter()
+    mock_proc.wait = mocker.AsyncMock()
+    mock_proc.returncode = 1
+    mock_proc.stderr = mocker.MagicMock()
+    mock_proc.stderr.read = mocker.AsyncMock(return_value=b"some error")
+
+    mocker.patch("asyncio.create_subprocess_exec", return_value=mock_proc)
+    mock_logger = mocker.patch("orchestrator.core.brainstorm.logger")
+
+    async for _ in s._stream_lines(["claude", "-p", "hi"]):
+        pass
+
+    mock_logger.warning.assert_called_once()
+    warning_msg = str(mock_logger.warning.call_args)
+    assert "1" in warning_msg or "some error" in warning_msg
