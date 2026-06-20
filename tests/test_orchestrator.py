@@ -649,9 +649,11 @@ class TestSyncPlanCheckbox:
         import os
         import tempfile
 
-        assert os.path.normcase(os.path.commonpath([cloned_path, tempfile.gettempdir()])) == os.path.normcase(
-            tempfile.gettempdir()
-        ), f"Clone happened outside tempdir: {cloned_path}"
+        assert os.path.normcase(
+            os.path.commonpath([cloned_path, tempfile.gettempdir()])
+        ) == os.path.normcase(tempfile.gettempdir()), (
+            f"Clone happened outside tempdir: {cloned_path}"
+        )
 
         # commit_and_push was called with the cloned workspace.
         assert len(push_calls) == 1
