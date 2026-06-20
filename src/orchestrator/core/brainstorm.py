@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 
 
@@ -13,6 +14,26 @@ BRAINSTORM_BOOTSTRAP = (
     "docs/superpowers/specs/<date>-<slug>-design.md, commit it, and STOP — do NOT proceed to "
     "writing-plans. The user's opening request follows:\n\n{request}"
 )
+
+
+def parse_stream_line(line: str) -> dict | None:
+    """Map one claude -p stream-json line to a chat event, or None to ignore.
+
+    NOTE: verify field names against the installed claude version's stream-json schema
+    during implementation; adjust the extraction below if the shape differs.
+    """
+    try:
+        obj = json.loads(line)
+    except (json.JSONDecodeError, ValueError):
+        return None
+    kind = obj.get("type")
+    if kind == "assistant":
+        parts = obj.get("message", {}).get("content", [])
+        text = "".join(p.get("text", "") for p in parts if p.get("type") == "text")
+        return {"kind": "text", "text": text} if text else None
+    if kind == "result":
+        return {"kind": "result", "session_id": obj.get("session_id")}
+    return None
 
 
 class BrainstormSession:
