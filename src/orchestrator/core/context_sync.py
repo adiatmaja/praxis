@@ -70,3 +70,26 @@ class ContextSync:
             "diff": diff,
         }
         return {"draft_id": draft_id, "diff": diff}
+
+    def approve(self, draft_id: str) -> dict:
+        draft = self._drafts.pop(draft_id)
+        ws = draft["workspace"]
+        subprocess.run(["git", "-C", ws, "add", "-A"], check=True)  # noqa: S603, S607
+        subprocess.run(  # noqa: S603, S607
+            ["git", "-C", ws, "commit", "-m", "docs: sync CLAUDE.md and MEMORY.md"],
+            check=True,
+        )
+        subprocess.run(["git", "-C", ws, "push"], check=True)  # noqa: S603, S607
+        return {"status": "committed", "draft_id": draft_id}
+
+    def current(self, repo_url: str) -> dict:
+        draft_id = uuid.uuid4().hex
+        ws = str(Path(self._base) / f"read-{draft_id}")
+        Path(ws).mkdir(parents=True, exist_ok=True)
+        self._clone_repo(repo_url, ws)
+
+        def _read(rel: str) -> str:
+            p = Path(ws) / rel
+            return p.read_text(encoding="utf-8") if p.is_file() else ""
+
+        return {"claude_md": _read("CLAUDE.md"), "memory_md": _read(self._memory_path)}
