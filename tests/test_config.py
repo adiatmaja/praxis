@@ -94,3 +94,8 @@ def test_settings_custom_values_override_defaults(
     assert settings.lm_studio_url == "http://127.0.0.1:1234"
     assert settings.host == "127.0.0.1"
     assert settings.port == 9001
+
+
+def test_memory_md_path_default():
+    s = Settings(auth_token="x", github_token="y", _env_file=None)
+    assert s.memory_md_path == "docs/MEMORY.md"

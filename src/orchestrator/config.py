@@ -18,5 +18,6 @@ class Settings(BaseSettings):
     port: int = 8080
     docs_root: str = "docs"
     brainstorm_workspace: str = "/tmp/praxis-brainstorm"
+    memory_md_path: str = "docs/MEMORY.md"
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
