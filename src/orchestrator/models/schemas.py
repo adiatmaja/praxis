@@ -245,3 +245,16 @@ class OpusImprovementPayload(BaseModel):
     confidence: float = Field(ge=0.0, le=1.0)
     reason: str
     proposed_tasks: list[OpusImprovementTaskItem]
+
+
+class DocResponse(BaseModel):
+    """Doc index entry response payload."""
+
+    path: str
+    category: str
+    title: str | None = None
+    branch: str | None = None
+    done_count: int = 0
+    total_count: int = 0
+    classified_by: str = "marker"
+    updated_at: str | None = None

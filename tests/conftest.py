@@ -87,3 +87,28 @@ async def seed_user(db: Database) -> str:
         ("test-user", "Test User", "hash"),
     )
     return "test-user"
+
+
+@pytest_asyncio.fixture
+async def db_with_docs(db: Database, client: AsyncClient) -> Database:
+    """Insert two doc_index rows (one spec, one plan) and attach a DocIndexer."""
+    from orchestrator.core.doc_indexer import DocIndexer
+
+    async def _noop_classify(text: str) -> str:  # noqa: ARG001
+        return "other"
+
+    app.state.doc_indexer = DocIndexer(db, "/nonexistent/docs", _noop_classify)
+
+    await db.execute(
+        """INSERT INTO doc_index (path, category, title, content_hash,
+               done_count, total_count, classified_by, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)""",
+        ("docs/specs/my-spec.md", "spec", "My Spec", "abc123", 0, 5, "marker"),
+    )
+    await db.execute(
+        """INSERT INTO doc_index (path, category, title, content_hash,
+               done_count, total_count, classified_by, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)""",
+        ("docs/plans/my-plan.md", "plan", "My Plan", "def456", 3, 10, "marker"),
+    )
+    return db
