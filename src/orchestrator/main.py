@@ -76,6 +76,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         git_ops=git_ops,
         event_bus=app.state.event_bus,
     )
+    from orchestrator.core.brainstorm import BrainstormManager
+
+    app.state.brainstorm = BrainstormManager(
+        workspace_base=settings.brainstorm_workspace,
+        event_bus=app.state.event_bus,
+        github_token=settings.github_token,
+    )
+
     from orchestrator.core.doc_indexer import DocIndexer
 
     app.state.doc_indexer = DocIndexer(
@@ -110,11 +118,13 @@ from orchestrator.api.events import router as events_router  # noqa: E402
 from orchestrator.api.internal import router as internal_router  # noqa: E402
 from orchestrator.api.plans import router as plans_router  # noqa: E402
 from orchestrator.api.projects import router as projects_router  # noqa: E402
+from orchestrator.api.specs import router as specs_router  # noqa: E402
 from orchestrator.api.system import router as system_router  # noqa: E402
 from orchestrator.api.tasks import router as tasks_router  # noqa: E402
 
 
 app.include_router(docs_router)
+app.include_router(specs_router)
 app.include_router(projects_router, prefix="/api")
 app.include_router(plans_router, prefix="/api")
 app.include_router(tasks_router, prefix="/api")
