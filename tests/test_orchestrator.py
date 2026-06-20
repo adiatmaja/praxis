@@ -82,6 +82,29 @@ class TestOrchestrationDispatch:
         )
         assert events.get_nowait()["type"] == "agent_dispatched"
 
+    async def test_dispatch_forwards_harness_to_spawn_agent(self, db: Database) -> None:
+        """dispatch_pending_tasks must pass the project's harness to spawn_agent."""
+        task_queue, plan_id, _ = await _setup(db)
+        # Override harness to something non-default so the assertion is unambiguous.
+        await db.execute("UPDATE projects SET harness = 'openhands' WHERE id = 'p1'")
+        mock_agent_manager = MagicMock()
+        mock_agent_manager.spawn_agent.return_value = "container-456"
+
+        orch = Orchestrator(
+            task_queue=task_queue,
+            agent_manager=mock_agent_manager,
+            opus_bridge=AsyncMock(),
+            git_ops=AsyncMock(),
+            event_bus=EventBus(),
+        )
+        project = await db.fetch_one("SELECT * FROM projects WHERE id = 'p1'")
+        assert project is not None
+        await orch.dispatch_pending_tasks(plan_id, project)
+
+        mock_agent_manager.spawn_agent.assert_called_once()
+        kwargs = mock_agent_manager.spawn_agent.call_args.kwargs
+        assert kwargs["harness"] == "openhands"
+
     async def test_dispatch_skips_non_pending(self, db: Database) -> None:
         task_queue, plan_id, task_id = await _setup(db)
         await task_queue.update_task_status(task_id, TaskStatus.IN_PROGRESS)
