@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import shutil
 import subprocess  # noqa: S404
 import uuid
 from pathlib import Path
+
+from orchestrator.core.git_ops import clone_with_token, commit_and_push
 
 
 logger = logging.getLogger(__name__)
@@ -30,10 +33,7 @@ class ContextSync:
         self._drafts: dict[str, dict] = {}
 
     def _clone_repo(self, repo_url: str, dest: str) -> None:
-        authed = repo_url.replace("https://", f"https://x-access-token:{self._token}@")
-        subprocess.run(  # noqa: S603, S607
-            ["git", "clone", "--depth", "20", authed, dest], check=True
-        )
+        clone_with_token(repo_url, dest, self._token, depth=20)
 
     async def _run_revise(self, workspace: str, summary: str) -> None:
         prompt = REVISE_PROMPT.format(memory_path=self._memory_path, summary=summary)
@@ -74,12 +74,8 @@ class ContextSync:
     def approve(self, draft_id: str) -> dict:
         draft = self._drafts.pop(draft_id)
         ws = draft["workspace"]
-        subprocess.run(["git", "-C", ws, "add", "-A"], check=True)  # noqa: S603, S607
-        subprocess.run(  # noqa: S603, S607
-            ["git", "-C", ws, "commit", "-m", "docs: sync CLAUDE.md and MEMORY.md"],
-            check=True,
-        )
-        subprocess.run(["git", "-C", ws, "push"], check=True)  # noqa: S603, S607
+        commit_and_push(ws, self._token, "docs: sync CLAUDE.md and MEMORY.md")
+        shutil.rmtree(ws, ignore_errors=True)
         return {"status": "committed", "draft_id": draft_id}
 
     def current(self, repo_url: str) -> dict:
@@ -92,4 +88,9 @@ class ContextSync:
             p = Path(ws) / rel
             return p.read_text(encoding="utf-8") if p.is_file() else ""
 
-        return {"claude_md": _read("CLAUDE.md"), "memory_md": _read(self._memory_path)}
+        result = {
+            "claude_md": _read("CLAUDE.md"),
+            "memory_md": _read(self._memory_path),
+        }
+        shutil.rmtree(ws, ignore_errors=True)
+        return result
