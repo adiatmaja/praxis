@@ -20,16 +20,21 @@ Each container is a single-use worker that clones, implements, pushes, and creat
 docker build -t aider-agent:latest -f docker/aider-agent/Dockerfile docker/aider-agent/
 ```
 
-**Agent container environment variables** (all required, set by AgentManager):
+> Other harnesses (`docker/opencode-agent/`, `docker/openhands-agent/`) build the same
+> way and honor the same entrypoint contract. AgentManager selects the image by the
+> project's `harness` column. All are standalone (not in docker-compose); build directly.
+
+**Agent container environment variables** (harness-agnostic contract, set by AgentManager):
 
 | Variable | Description |
 |----------|-------------|
+| `HARNESS` | Selected harness (`aider` / `opencode` / `openhands`) |
 | `REPO_URL` | GitHub repo clone URL |
 | `BRANCH` | Agent branch name (`agent/{task-slug}`) |
 | `BASE_BRANCH` | Plan branch to branch from and PR into |
 | `TASK_PROMPT` | Full implementation instructions |
-| `OPENAI_API_BASE` | LM Studio endpoint for Aider |
-| `AIDER_MODEL` | Model name for Aider (`--model` flag) |
+| `OPENAI_API_BASE` | LM Studio endpoint |
+| `MODEL` | Raw model name; each entrypoint adds its own provider prefix |
 | `GH_TOKEN` | GitHub token for push and PR creation |
 | `CALLBACK_URL` | Orchestrator callback (`/api/internal/agent-done`) |
 | `TASK_ID` | Task ID for the callback payload |
@@ -120,8 +125,28 @@ Interactive docs available at `/docs` (Swagger UI) when the server is running.
 | `POST` | `/api/projects/{id}/plans` | Submit a spec for planning |
 | `GET` | `/api/projects/{id}/plans` | List plans for a project |
 | `GET` | `/api/plans/{id}` | Get plan details |
+| `POST` | `/api/plans/promote` | Derive tasks from a `plan.md` and create + activate a run |
 | `POST` | `/api/plans/{id}/approve` | Approve an autonomous plan |
 | `POST` | `/api/plans/{id}/reject` | Reject an autonomous plan |
+
+### Lifecycle & Docs
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/api/projects/{id}/lifecycle` | One row per spec, joined to plan doc + DB run (Spec→Plan→Run) |
+| `GET` | `/api/projects/{id}/doc-raw?path=` | Raw markdown of a target-repo spec/plan doc |
+| `GET` | `/api/projects/{id}/context` | CLAUDE.md/MEMORY.md snapshot (Memory view) |
+| `POST` | `/api/specs` | Create-Spec chat + generate plan |
+| `GET` | `/api/docs`, `/api/docs/raw` | Orchestrator-local doc index / raw read |
+
+### Settings
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET`/`PUT` | `/api/settings` | Global/project settings overrides |
+| `GET`/`PUT` | `/api/settings/models` | Per-call-site model config (provider/model/effort) |
+| `POST` | `/api/settings/models/reset` | Reset one call-site or all to defaults |
+| `GET` | `/api/harnesses` | Harness catalog (image + About) |
 
 ### Tasks
 
@@ -153,6 +178,10 @@ Interactive docs available at `/docs` (Swagger UI) when the server is running.
 |------------|-------------|-------|
 | Python 3.11+ | Local dev | Via uv |
 | Docker | Agent spawning | Docker socket must be accessible |
-| LM Studio | Aider agents | Running on `localhost:1234` (or configured URL) |
-| Claude Code CLI | Planning/review | `claude -p` must be available in PATH |
+| LM Studio | Implementer agents + local brain calls (`derive_tasks`) | Running on `localhost:1234` (or configured URL) |
+| Claude Code CLI | Default brain call-sites (planning/review/classify) | `claude -p` must be available in PATH |
 | GitHub CLI (`gh`) | PR operations | Authenticated via `GITHUB_TOKEN` |
+| `agy` / `codex` (optional) | Alt brain providers (Gemini / GPT) | Only if configured in Settings → Models; verify one-shot flags |
+
+Global orchestrator settings load from `config/praxis.yaml` (overridable via `PRAXIS_*`
+env vars); secrets (`AUTH_TOKEN`, `GITHUB_TOKEN`) stay in env / `.env`.

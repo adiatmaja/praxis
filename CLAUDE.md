@@ -34,6 +34,11 @@ praxis/
 │   │   │   ├── projects.py          # /api/projects CRUD
 │   │   │   ├── plans.py             # /api/plans + approve/reject + /api/plans/promote
 │   │   │   ├── lifecycle.py         # /api/projects/{id}/lifecycle + /doc-raw (Spec→Plan→Run)
+│   │   │   ├── specs.py             # /api/specs Create-Spec chat + generate_plan
+│   │   │   ├── docs.py              # /api/docs doc index + raw read
+│   │   │   ├── context.py           # /api/projects/{id}/context (Memory view)
+│   │   │   ├── settings.py          # /api/settings global/project + /settings/models
+│   │   │   ├── harnesses.py         # /api/harnesses catalog
 │   │   │   ├── tasks.py             # /api/tasks + logs streaming
 │   │   │   ├── system.py            # /api/status, /api/opus/state
 │   │   │   ├── events.py            # /api/events SSE stream
@@ -43,9 +48,18 @@ praxis/
 │   │   │   ├── orchestrator.py      # Main loop: plan -> dispatch -> review -> improve
 │   │   │   ├── task_queue.py        # Task state machine + scheduling
 │   │   │   ├── opus_bridge.py       # claude -p invocation + rate limit handling
+│   │   │   ├── llm_router.py        # Per-call-site {provider,model,effort} routing (Spec 3)
+│   │   │   ├── effective_settings.py# override(project)→global→default resolution
+│   │   │   ├── settings_file.py     # config/praxis.yaml loader + env overrides (Spec 2)
 │   │   │   ├── agent_manager.py     # Docker container lifecycle
+│   │   │   ├── harnesses.py         # Harness registry (Aider/OpenCode/OpenHands)
 │   │   │   ├── git_ops.py           # Branch, PR, merge, conflict ops
+│   │   │   ├── brainstorm.py        # Clone repo, run claude -p, write/list/read docs
+│   │   │   ├── context_sync.py      # CLAUDE.md/MEMORY.md freshness (Memory view)
+│   │   │   ├── doc_indexer.py       # Index specs/ + plans/ markdown into doc_index
+│   │   │   ├── markdown_utils.py    # Pure markdown helpers (title, checklist, frontmatter)
 │   │   │   ├── plan_derive.py       # plan.md -> opus_plan (deterministic parse + LM Studio fallback)
+│   │   │   ├── backfill.py          # One-time legacy plans.spec -> repo doc (Spec 2)
 │   │   │   └── event_bus.py         # In-memory async pub/sub for SSE
 │   │   └── models/
 │   │       └── schemas.py           # Pydantic request/response + Opus JSON payloads
@@ -65,7 +79,9 @@ praxis/
 │   │   ├── Dockerfile
 │   │   └── entrypoint.sh
 │   └── caddy/Caddyfile
-├── tests/                           # 200 tests, 88% coverage
+├── config/
+│   └── praxis.yaml                  # Global orchestrator settings (env-overridable)
+├── tests/                           # 276 tests, 88% coverage
 ├── docker-compose.yml               # Production compose
 ├── docker-compose.local.yml         # Dev overrides (hot reload, mounted source)
 ├── pyproject.toml
