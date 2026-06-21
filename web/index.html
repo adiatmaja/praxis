@@ -1020,6 +1020,7 @@
       <div class="settings-tabs">
         <button class="settings-tab active" type="button" id="settings-tab-global" onclick="switchSettingsTab('global')">Global</button>
         <button class="settings-tab" type="button" id="settings-tab-project" onclick="switchSettingsTab('project')">Project</button>
+        <button class="settings-tab" type="button" id="settings-tab-models" onclick="switchSettingsTab('models')">Models</button>
       </div>
       <div class="settings-body">
         <!-- Global tab -->
@@ -1038,6 +1039,8 @@
           </div>
           <div id="settings-project-content"></div>
         </div>
+        <!-- Models tab -->
+        <div class="settings-tab-panel" id="settings-panel-models"></div>
       </div>
       <div class="settings-modal-footer">
         <span class="settings-feedback" id="settings-feedback"></span>
@@ -2406,7 +2409,49 @@
         loadGlobalSettings();
       } else if (tab === "project") {
         loadSettingsProjectList();
+      } else if (tab === "models") {
+        loadModelsPanel();
       }
+    }
+
+    async function loadModelsPanel() {
+      const data = await api("GET", "/api/settings/models");
+      const providers = ["claude", "agy", "codex", "local"];
+      const rows = Object.entries(data).map(([site, cfg]) => {
+        const opts = providers.map(p =>
+          '<option value="' + p + '"' + (cfg.provider === p ? ' selected' : '') + '>' + p + '</option>'
+        ).join("");
+        return '<div class="formrow">' +
+          '<label style="display:flex;align-items:center;gap:6px;color:var(--text-muted);font-size:12px;font-weight:500;margin-bottom:5px;">' +
+            esc(site) +
+            ' <span class="doc-tag">def: ' + esc(cfg.default.provider) + '/' + esc(cfg.default.model || '-') + '</span>' +
+          '</label>' +
+          '<div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;">' +
+            '<select id="m-prov-' + site + '" style="flex:0 0 auto;">' + opts + '</select>' +
+            '<input id="m-model-' + site + '" value="' + esc(cfg.model || '') + '" placeholder="model" style="flex:1;min-width:80px;">' +
+            '<input id="m-effort-' + site + '" value="' + esc(cfg.effort || '') + '" placeholder="effort" style="flex:0 0 80px;">' +
+            '<button class="btn btn-compact" type="button" onclick="saveModel(\'' + site + '\')">Save</button>' +
+            '<button class="btn btn-compact" type="button" onclick="resetModel(\'' + site + '\')">Reset</button>' +
+          '</div>' +
+        '</div>';
+      }).join("");
+      document.getElementById("settings-panel-models").innerHTML =
+        rows + '<div style="margin-top:8px;"><button class="btn" type="button" onclick="resetModel(null)">Reset all</button></div>';
+    }
+
+    async function saveModel(site) {
+      const config = {
+        provider: document.getElementById("m-prov-" + site).value,
+        model: document.getElementById("m-model-" + site).value || null,
+        effort: document.getElementById("m-effort-" + site).value || null,
+      };
+      await api("PUT", "/api/settings/models", { call_site: site, config });
+      await loadModelsPanel();
+    }
+
+    async function resetModel(site) {
+      await api("POST", "/api/settings/models/reset", { call_site: site });
+      await loadModelsPanel();
     }
 
     function clearSettingsFeedback() {
