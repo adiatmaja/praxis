@@ -153,3 +153,38 @@ async def test_put_settings_persists(
     data = get_response.json()
     assert data["editable"]["docs_root"]["value"] == "custom-docs"
     assert data["editable"]["docs_root"]["overridden"] is True
+
+
+@pytest.mark.integration
+async def test_models_get_returns_defaults(
+    client: AsyncClient,
+    auth_headers: dict[str, str],
+) -> None:
+    resp = await client.get("/api/settings/models", headers=auth_headers)
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["plan_spec"]["provider"] == "claude"
+
+
+@pytest.mark.integration
+async def test_models_put_and_reset(
+    client: AsyncClient,
+    auth_headers: dict[str, str],
+) -> None:
+    put = await client.put(
+        "/api/settings/models",
+        headers=auth_headers,
+        json={"call_site": "plan_spec",
+              "config": {"provider": "codex", "model": "gpt-5", "effort": None}},
+    )
+    assert put.status_code == 200
+    got = await client.get("/api/settings/models", headers=auth_headers)
+    assert got.json()["plan_spec"]["provider"] == "codex"
+    reset = await client.post(
+        "/api/settings/models/reset",
+        headers=auth_headers,
+        json={"call_site": "plan_spec"},
+    )
+    assert reset.status_code == 200
+    after = await client.get("/api/settings/models", headers=auth_headers)
+    assert after.json()["plan_spec"]["provider"] == "claude"
