@@ -185,3 +185,10 @@ Interactive docs available at `/docs` (Swagger UI) when the server is running.
 
 Global orchestrator settings load from `config/praxis.yaml` (overridable via `PRAXIS_*`
 env vars); secrets (`AUTH_TOKEN`, `GITHUB_TOKEN`) stay in env / `.env`.
+
+> **Callback URL ↔ `PORT`.** Agent containers POST completion to
+> `http://host.docker.internal:{PORT}/api/internal/agent-done`, derived from `PORT` by
+> `Settings.callback_url()`. If you run the orchestrator on a non-default port, set `PORT`
+> accordingly (or set `AGENT_CALLBACK_URL` explicitly) — otherwise every agent callback
+> 404s and tasks only finish via the reconcile backstop (and may be marked failed even
+> when the agent succeeded).
