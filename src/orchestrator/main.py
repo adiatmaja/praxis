@@ -134,6 +134,7 @@ from orchestrator.api.docs import router as docs_router  # noqa: E402
 from orchestrator.api.events import router as events_router  # noqa: E402
 from orchestrator.api.harnesses import router as harnesses_router  # noqa: E402
 from orchestrator.api.internal import router as internal_router  # noqa: E402
+from orchestrator.api.lifecycle import router as lifecycle_router  # noqa: E402
 from orchestrator.api.plans import router as plans_router  # noqa: E402
 from orchestrator.api.projects import router as projects_router  # noqa: E402
 from orchestrator.api.settings import router as settings_router  # noqa: E402
@@ -153,6 +154,7 @@ app.include_router(internal_router, prefix="/api/internal")
 app.include_router(events_router, prefix="/api")
 app.include_router(harnesses_router, prefix="/api")
 app.include_router(settings_router, prefix="/api")
+app.include_router(lifecycle_router, prefix="/api")
 
 
 @app.get("/health")
