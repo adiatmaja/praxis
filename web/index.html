@@ -1071,6 +1071,9 @@
     let expandedSpecs = new Set();
     let dashboardSseSource = null;
     let HARNESSES = [];
+    let lifecycleItems = [];
+    let selectedLifecycle = null;
+    let lifecycleSegment = "spec";
 
     initTheme();
 
@@ -2717,6 +2720,84 @@
     });
 
     // ── End Settings modal ────────────────────────────────────────────────────
+
+    // ── Unified Lifecycle View (Spec | Plan | Run) ────────────────────────────
+
+    async function loadLifecycle() {
+      if (!selectedProjectId) { lifecycleItems = []; renderLifecycleView(); return; }
+      lifecycleItems = await api("GET", "/api/projects/" + selectedProjectId + "/lifecycle");
+      if (!selectedLifecycle && lifecycleItems.length) selectedLifecycle = lifecycleItems[0].spec_path;
+      renderLifecycleView();
+    }
+
+    function renderLifecycleView() {
+      const c = document.getElementById("view-container");
+      const rows = lifecycleItems.map(it =>
+        '<button class="master-row' + (selectedLifecycle === it.spec_path ? ' selected' : '') +
+        '" type="button" onclick="selectLifecycle(\'' + esc(it.spec_path) + '\')">' +
+        '<div class="row-main"><div class="row-name">' + esc(it.title) + '</div>' +
+        '<div class="row-meta">' + esc(it.stage) + '</div></div>' + badge(it.stage) + '</button>'
+      ).join("") || '<div class="empty-list">No specs yet — use + Create Spec</div>';
+      const detail = selectedLifecycle
+        ? renderLifecycleDetail(lifecycleItems.find(i => i.spec_path === selectedLifecycle))
+        : '<div class="detail-empty">Select an item</div>';
+      c.innerHTML =
+        '<div class="master-panel"><div class="master-header">' +
+        '<div class="master-title">' + lifecycleItems.length + ' Plans</div>' +
+        '<button class="btn btn-compact" type="button" onclick="loadLifecycle()">Refresh</button></div>' +
+        '<div class="master-list">' + rows + '</div></div>' +
+        '<div class="detail-panel">' + detail + '</div>';
+    }
+
+    function selectLifecycle(specPath) { selectedLifecycle = specPath; lifecycleSegment = "spec"; renderLifecycleView(); loadLifecycleDoc(); }
+    function setLifecycleSegment(seg) { lifecycleSegment = seg; renderLifecycleView(); loadLifecycleDoc(); }
+
+    let lifecycleDocCache = {};
+
+    function renderLifecycleDetail(it) {
+      if (!it) return '<div class="detail-empty">Not found</div>';
+      const seg = (k, label, on) => '<button class="json-toggle-btn' + (lifecycleSegment === k ? ' active' : '') +
+        '"' + (on ? '' : ' disabled') + ' type="button" onclick="setLifecycleSegment(\'' + k + '\')">' + label + '</button>';
+      const segmented = '<div class="json-toggle">' + seg("spec", "Spec", true) +
+        seg("plan", "Plan", !!it.plan_path) + seg("run", "Run", !!it.run_id) + '</div>';
+      let body = "";
+      if (lifecycleSegment === "run") {
+        const run = plans.find(p => p.id === it.run_id);
+        body = run ? renderPlanDetail(run) : '<div class="detail-empty">Run not loaded — open Refresh</div>';
+      } else {
+        const path = lifecycleSegment === "spec" ? it.spec_path : it.plan_path;
+        const cached = lifecycleDocCache[path];
+        const promote = (lifecycleSegment === "plan" && it.plan_path && !it.run_id)
+          ? '<div class="detail-actions"><button class="btn btn-primary" type="button" onclick="promoteLifecycle(\'' + esc(it.plan_path) + '\')">Promote to Run</button></div>'
+          : "";
+        body = '<div class="detail-content"><div class="detail-card">' +
+          (cached === undefined ? "Loading…" : renderMarkdown(cached)) + '</div>' + promote + '</div>';
+      }
+      return '<div class="detail-header"><div class="detail-title">' + esc(it.title) + '</div>' +
+        '<div style="margin-top:8px;">' + segmented + '</div></div>' + body;
+    }
+
+    async function loadLifecycleDoc() {
+      const it = lifecycleItems.find(i => i.spec_path === selectedLifecycle);
+      if (!it || lifecycleSegment === "run") return;
+      const path = lifecycleSegment === "spec" ? it.spec_path : it.plan_path;
+      if (!path || lifecycleDocCache[path] !== undefined) { renderLifecycleView(); return; }
+      try {
+        const doc = await api("GET", "/api/projects/" + selectedProjectId + "/doc-raw?path=" + encodeURIComponent(path));
+        lifecycleDocCache[path] = doc.content;
+      } catch (e) { lifecycleDocCache[path] = "_Could not load " + path + "_"; }
+      renderLifecycleView();
+    }
+
+    async function promoteLifecycle(planPath) {
+      const btn = event.target; btn.disabled = true; btn.textContent = "Promoting…";
+      try {
+        await api("POST", "/api/plans/promote", { project_id: selectedProjectId, plan_path: planPath });
+        await loadPlans(); await loadLifecycle();
+      } catch (e) { btn.disabled = false; btn.textContent = "Promote to Run"; alert("Promote failed: " + e.message); }
+    }
+
+    // ── End Unified Lifecycle View ────────────────────────────────────────────
 
     ensureToken();
     switchView("dashboard").catch(error => {
