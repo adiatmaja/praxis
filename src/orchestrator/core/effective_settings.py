@@ -94,6 +94,27 @@ class EffectiveSettings:
             result[key] = {"value": value, "overridden": overridden}
         return result
 
+    async def call_site_config(
+        self, call_site: str, project_id: str | None
+    ) -> dict:
+        """Resolve a brain call-site to {provider, model, effort}.
+
+        Global settings_overrides (key ``models.<call_site>``) override the
+        built-in defaults. Per-project overrides can extend this later.
+        """
+        import json
+
+        from orchestrator.core.llm_router import CALL_SITE_DEFAULTS
+
+        default = dict(CALL_SITE_DEFAULTS[call_site])
+        row = await self._db.fetch_one(
+            "SELECT value FROM settings_overrides WHERE key = ?",
+            (f"models.{call_site}",),
+        )
+        if row and row["value"]:
+            default.update(json.loads(row["value"]))
+        return default
+
     async def set_override(self, key: str, value: str | None) -> None:
         """Upsert an override (value=None deletes the override row)."""
         if value is None:
