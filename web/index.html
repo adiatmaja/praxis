@@ -1118,6 +1118,34 @@
       }[c]));
     }
 
+    function renderMarkdown(src) {
+      const lines = (src || "").replace(/\r\n/g, "\n").split("\n");
+      let html = "", inCode = false, inList = false;
+      const inline = (s) => esc(s)
+        .replace(/`([^`]+)`/g, '<code>$1</code>')
+        .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+        .replace(/\*([^*]+)\*/g, '<em>$1</em>');
+      for (const raw of lines) {
+        if (raw.trim().startsWith("```")) {
+          if (!inCode) { if (inList) { html += "</ul>"; inList = false; } html += "<pre><code>"; inCode = true; }
+          else { html += "</code></pre>"; inCode = false; }
+          continue;
+        }
+        if (inCode) { html += esc(raw) + "\n"; continue; }
+        const cb = raw.match(/^\s*-\s\[( |x|X)\]\s+(.*)$/);
+        const li = raw.match(/^\s*-\s+(.*)$/);
+        const h = raw.match(/^(#{1,6})\s+(.*)$/);
+        if (h) { if (inList) { html += "</ul>"; inList = false; } html += "<h" + h[1].length + ">" + inline(h[2]) + "</h" + h[1].length + ">"; continue; }
+        if (cb) { if (!inList) { html += "<ul class='md-checks'>"; inList = true; } const done = cb[1] !== " "; html += "<li>" + (done ? "&#9745;" : "&#9744;") + " " + inline(cb[2]) + "</li>"; continue; }
+        if (li) { if (!inList) { html += "<ul>"; inList = true; } html += "<li>" + inline(li[1]) + "</li>"; continue; }
+        if (inList) { html += "</ul>"; inList = false; }
+        if (raw.trim()) html += "<p>" + inline(raw) + "</p>";
+      }
+      if (inList) html += "</ul>";
+      if (inCode) html += "</code></pre>";
+      return html;
+    }
+
     function jsArg(value) {
       return esc(JSON.stringify(String(value ?? "")));
     }
