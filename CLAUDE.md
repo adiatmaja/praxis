@@ -130,6 +130,20 @@ Tables: `users`, `projects`, `plans`, `tasks`, `agent_runs`, `opus_state`,
   beneath env vars, so precedence is **env > YAML > field default**. Keys map by uppercase
   field name (e.g. `loop_interval` ← `PRAXIS_LOOP_INTERVAL` in the YAML loader, `LOOP_INTERVAL`
   for the pydantic env layer). Project config stays DB-backed.
+- **Provider-agnostic LLM router (Spec 3)** — `core/llm_router.py` resolves each brain
+  call-site to `{provider, model, effort}` and executes it. `CALL_SITE_DEFAULTS` is the
+  model-tiering policy (e.g. `plan_spec`→opus/high, `review_diff_rereview`→haiku,
+  `derive_tasks`→local). CLI providers: `claude`, `agy` (Gemini), `codex` (GPT) via
+  `build_argv`; `local` routes through an LM Studio OpenAI call. `OpusBridge` takes an
+  optional `router` and routes `plan_spec`/`review_diff`(tier first|rereview)/
+  `analyze_improvements`/`classify_doc` through it (falls back to the legacy `_run_claude`
+  when no router, preserving rate-limit handling). **Brainstorm is NOT routed yet** — its
+  `stream-json` output is incompatible with the text-mode `build_argv`; deferred follow-up.
+  Per-call-site overrides live in `settings_overrides` (key `models.<call_site>`), resolved
+  by `EffectiveSettings.call_site_config` and managed via `GET/PUT /api/settings/models` +
+  `POST /api/settings/models/reset`, surfaced in the dashboard **Settings → Models** tab
+  (defaults + per-row/all Reset). Verify `agy`/`codex` one-shot flags against the installed
+  CLIs before relying on those providers.
 - **Single FastAPI monolith** — no microservices for v1
 - **Docker SDK** for spawning Aider containers programmatically
 - **`claude -p`** for all Opus interactions (planning, review, improvement analysis)
