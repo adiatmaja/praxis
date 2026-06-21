@@ -129,7 +129,9 @@ async def promote_plan(request: Request, body: PromoteRequest) -> dict[str, Any]
         (body.project_id,),
     )
     if project is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Project not found"
+        )
 
     # Idempotency: reuse an existing run for this plan_path.
     existing = await db.fetch_one(
@@ -140,9 +142,13 @@ async def promote_plan(request: Request, body: PromoteRequest) -> dict[str, Any]
         return cast(dict[str, Any], existing)
 
     try:
-        plan_md = request.app.state.brainstorm.read_doc(project["repo_url"], body.plan_path)
+        plan_md = request.app.state.brainstorm.read_doc(
+            project["repo_url"], body.plan_path
+        )
     except FileNotFoundError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)
+        ) from exc
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY, detail=f"repo read failed: {exc}"
@@ -153,14 +159,19 @@ async def promote_plan(request: Request, body: PromoteRequest) -> dict[str, Any]
             plan_md, lm_studio_url=project["lm_studio_url"] or ""
         )
     except PlanDeriveError as exc:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
+        ) from exc
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY, detail=f"task derivation failed: {exc}"
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"task derivation failed: {exc}",
         ) from exc
 
     spec_path = extract_frontmatter_field(plan_md, "spec_path")
-    plan_id = await queue.create_plan(body.project_id, opus_plan["plan_summary"], source="promoted")
+    plan_id = await queue.create_plan(
+        body.project_id, opus_plan["plan_summary"], source="promoted"
+    )
     await db.execute(
         "UPDATE plans SET spec_path = ?, plan_path = ? WHERE id = ?",
         (spec_path, body.plan_path, plan_id),

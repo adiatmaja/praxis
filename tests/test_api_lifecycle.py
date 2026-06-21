@@ -70,7 +70,9 @@ async def test_lifecycle_returns_404_for_unknown_project(
     assert resp.status_code == 404
 
 
-async def test_lifecycle_spec_only_no_plan(db, client, auth_headers, project_id, mocker):
+async def test_lifecycle_spec_only_no_plan(
+    db, client, auth_headers, project_id, mocker
+):
     docs = [
         {
             "path": "docs/superpowers/specs/y-design.md",
@@ -98,8 +100,9 @@ async def test_lifecycle_spec_only_no_plan(db, client, auth_headers, project_id,
 
 
 async def test_doc_raw_returns_content(db, client, auth_headers, project_id, mocker):
-    mocker.patch.object(client.app.state.brainstorm, "read_doc",
-                        return_value="# Hello\n\nbody")
+    mocker.patch.object(
+        client.app.state.brainstorm, "read_doc", return_value="# Hello\n\nbody"
+    )
     resp = await client.get(
         f"/api/projects/{project_id}/doc-raw",
         params={"path": "docs/superpowers/plans/x.md"},
@@ -109,9 +112,12 @@ async def test_doc_raw_returns_content(db, client, auth_headers, project_id, moc
     assert resp.json()["content"] == "# Hello\n\nbody"
 
 
-async def test_doc_raw_missing_returns_404(db, client, auth_headers, project_id, mocker):
-    mocker.patch.object(client.app.state.brainstorm, "read_doc",
-                        side_effect=FileNotFoundError("nope"))
+async def test_doc_raw_missing_returns_404(
+    db, client, auth_headers, project_id, mocker
+):
+    mocker.patch.object(
+        client.app.state.brainstorm, "read_doc", side_effect=FileNotFoundError("nope")
+    )
     resp = await client.get(
         f"/api/projects/{project_id}/doc-raw",
         params={"path": "docs/superpowers/plans/missing.md"},

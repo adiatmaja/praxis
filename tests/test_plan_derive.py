@@ -2,7 +2,12 @@ import json
 
 import pytest
 
-from orchestrator.core.plan_derive import PlanDeriveError, derive_opus_plan, parse_plan_tasks, slugify
+from orchestrator.core.plan_derive import (
+    PlanDeriveError,
+    derive_opus_plan,
+    parse_plan_tasks,
+    slugify,
+)
 
 
 def test_slugify():
@@ -41,17 +46,22 @@ async def test_derive_uses_deterministic_when_structured():
 async def test_derive_calls_lm_studio_when_unstructured(mocker):
     text = "# Plan\n\nUnstructured prose with no tasks."
     fake_tasks = {
-        "tasks": [{"title": "Inferred", "slug": "inferred",
-                   "description": "d", "depends_on": []}]
+        "tasks": [
+            {
+                "title": "Inferred",
+                "slug": "inferred",
+                "description": "d",
+                "depends_on": [],
+            }
+        ]
     }
-    payload = {
-        "choices": [{"message": {"content": json.dumps(fake_tasks)}}]
-    }
+    payload = {"choices": [{"message": {"content": json.dumps(fake_tasks)}}]}
     mock_resp = mocker.Mock()
     mock_resp.json.return_value = payload
     mock_resp.raise_for_status.return_value = None
-    post = mocker.patch("httpx.AsyncClient.post",
-                        new=mocker.AsyncMock(return_value=mock_resp))
+    post = mocker.patch(
+        "httpx.AsyncClient.post", new=mocker.AsyncMock(return_value=mock_resp)
+    )
     plan = await derive_opus_plan(text, lm_studio_url="http://lm:1234")
     assert plan["tasks"][0]["title"] == "Inferred"
     post.assert_awaited()
@@ -63,7 +73,6 @@ async def test_derive_raises_when_nothing_derivable(mocker):
     mock_resp = mocker.Mock()
     mock_resp.json.return_value = payload
     mock_resp.raise_for_status.return_value = None
-    mocker.patch("httpx.AsyncClient.post",
-                 new=mocker.AsyncMock(return_value=mock_resp))
+    mocker.patch("httpx.AsyncClient.post", new=mocker.AsyncMock(return_value=mock_resp))
     with pytest.raises(PlanDeriveError):
         await derive_opus_plan(text, lm_studio_url="http://lm:1234")

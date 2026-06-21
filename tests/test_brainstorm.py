@@ -1,4 +1,11 @@
-from orchestrator.core.brainstorm import BrainstormSession, parse_stream_line
+from pathlib import Path
+
+from orchestrator.core.brainstorm import (
+    PLAN_BOOTSTRAP,
+    BrainstormManager,
+    BrainstormSession,
+    parse_stream_line,
+)
 
 
 def test_session_has_id_and_workspace(tmp_path):
@@ -150,11 +157,6 @@ async def test_generate_plan_cleans_up_workspace(mocker, tmp_path):
     assert remaining == [], f"Expected cleanup but found: {remaining}"
 
 
-from pathlib import Path
-
-from orchestrator.core.brainstorm import BrainstormManager
-
-
 def _seed_repo(workspace: str) -> None:
     root = Path(workspace)
     (root / "docs" / "superpowers" / "specs").mkdir(parents=True)
@@ -173,7 +175,9 @@ def test_list_lifecycle_docs(tmp_path, mocker):
     mgr = BrainstormManager(
         workspace_base=str(tmp_path / "ws"), event_bus=None, github_token="t"
     )
-    mocker.patch.object(mgr, "_clone_repo", side_effect=lambda url, dest: _seed_repo(dest))
+    mocker.patch.object(
+        mgr, "_clone_repo", side_effect=lambda _url, dest: _seed_repo(dest)
+    )
     docs = mgr.list_lifecycle_docs("https://example.com/repo.git")
     specs = [d for d in docs if d["category"] == "spec"]
     plans = [d for d in docs if d["category"] == "plan"]
@@ -186,12 +190,13 @@ def test_read_doc(tmp_path, mocker):
     mgr = BrainstormManager(
         workspace_base=str(tmp_path / "ws"), event_bus=None, github_token="t"
     )
-    mocker.patch.object(mgr, "_clone_repo", side_effect=lambda url, dest: _seed_repo(dest))
-    content = mgr.read_doc("https://example.com/repo.git", "docs/superpowers/plans/x.md")
+    mocker.patch.object(
+        mgr, "_clone_repo", side_effect=lambda _url, dest: _seed_repo(dest)
+    )
+    content = mgr.read_doc(
+        "https://example.com/repo.git", "docs/superpowers/plans/x.md"
+    )
     assert "# X Plan" in content
-
-
-from orchestrator.core.brainstorm import PLAN_BOOTSTRAP
 
 
 def test_plan_bootstrap_requests_spec_path_frontmatter():

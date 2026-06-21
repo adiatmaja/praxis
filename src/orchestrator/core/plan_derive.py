@@ -17,9 +17,7 @@ import httpx
 
 logger = logging.getLogger(__name__)
 
-_TASK_HEADING = re.compile(
-    r"^#{2,4}\s+Task\s+\d+\s*[:.\-]\s*(.+?)\s*$", re.MULTILINE
-)
+_TASK_HEADING = re.compile(r"^#{2,4}\s+Task\s+\d+\s*[:.\-]\s*(.+?)\s*$", re.MULTILINE)
 _CHECKBOX_ITEM = re.compile(r"^\s*-\s\[(?: |x|X)\]\s+(.+?)\s*$", re.MULTILINE)
 
 
@@ -37,7 +35,9 @@ def parse_plan_tasks(text: str) -> list[dict[str, str | list[str]]]:
         for index, match in enumerate(headings):
             title = match.group(1).strip()
             start = match.end()
-            end = headings[index + 1].start() if index + 1 < len(headings) else len(text)
+            end = (
+                headings[index + 1].start() if index + 1 < len(headings) else len(text)
+            )
             description = text[start:end].strip() or title
             tasks.append(
                 {
@@ -107,7 +107,9 @@ def _finalize(tasks: list[dict], text: str) -> dict:
 async def _derive_via_lm_studio(text: str, lm_studio_url: str) -> list[dict]:
     url = lm_studio_url.rstrip("/") + "/v1/chat/completions"
     body = {
-        "messages": [{"role": "user", "content": _DERIVE_PROMPT.format(text=text[:8000])}],
+        "messages": [
+            {"role": "user", "content": _DERIVE_PROMPT.format(text=text[:8000])}
+        ],
         "response_format": {
             "type": "json_schema",
             "json_schema": {"name": "tasks", "schema": _TASK_SCHEMA},

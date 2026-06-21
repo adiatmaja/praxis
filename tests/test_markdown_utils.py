@@ -2,6 +2,7 @@ from orchestrator.core.markdown_utils import (
     checklist_progress,
     classify_by_marker,
     content_hash,
+    extract_frontmatter_field,
     extract_title,
 )
 
@@ -46,9 +47,6 @@ def test_classify_frontmatter_type():
 
 def test_classify_ambiguous_returns_none():
     assert classify_by_marker("docs/random.md", "just prose") is None
-
-
-from orchestrator.core.markdown_utils import extract_frontmatter_field
 
 
 def test_extract_frontmatter_field_present():
