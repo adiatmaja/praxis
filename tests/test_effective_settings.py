@@ -81,3 +81,25 @@ async def test_agent_model_effort_override(
 def test_editable_keys_excludes_secrets() -> None:
     assert "auth_token" not in EDITABLE_KEYS
     assert "github_token" not in EDITABLE_KEYS
+
+
+@pytest.mark.unit
+async def test_resolve_call_site_falls_back_to_default(
+    db: Database, test_settings: Settings
+) -> None:
+    es = EffectiveSettings(test_settings, db)
+    cfg = await es.call_site_config("plan_spec", None)
+    assert cfg == {"provider": "claude", "model": "claude-opus-4-8", "effort": "high"}
+
+
+@pytest.mark.unit
+async def test_resolve_call_site_global_override(
+    db: Database, test_settings: Settings
+) -> None:
+    await db.execute(
+        "INSERT INTO settings_overrides (key, value) VALUES (?, ?)",
+        ("models.plan_spec", '{"provider":"codex","model":"gpt-5","effort":null}'),
+    )
+    es = EffectiveSettings(test_settings, db)
+    cfg = await es.call_site_config("plan_spec", None)
+    assert cfg["provider"] == "codex"

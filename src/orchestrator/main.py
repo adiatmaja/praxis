@@ -16,6 +16,7 @@ from orchestrator.core.agent_manager import AgentManager
 from orchestrator.core.effective_settings import EffectiveSettings
 from orchestrator.core.event_bus import EventBus
 from orchestrator.core.git_ops import GitOps
+from orchestrator.core.llm_router import LLMRouter
 from orchestrator.core.opus_bridge import OpusBridge
 from orchestrator.core.orchestrator import Orchestrator
 from orchestrator.core.task_queue import TaskQueue
@@ -75,11 +76,17 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     effective_settings = EffectiveSettings(settings, database)
     app.state.effective_settings = effective_settings
     app.state.task_queue = TaskQueue(database)
+    router = LLMRouter(
+        resolve=effective_settings.call_site_config,
+        lm_studio_url=settings.lm_studio_url,
+    )
+    app.state.llm_router = router
     app.state.opus_bridge = OpusBridge(
         database,
         default_model=settings.agent_model,
         default_effort=settings.agent_model_effort,
         effective_settings=effective_settings,
+        router=router,
     )
     git_ops = GitOps(settings.github_token)
     app.state.git_ops = git_ops
