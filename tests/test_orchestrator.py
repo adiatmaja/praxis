@@ -143,6 +143,7 @@ class TestOrchestrationReview:
         mock_git = AsyncMock()
         mock_git.extract_pr_number.return_value = 1
         mock_git.get_pr_diff.return_value = "diff content"
+        mock_git.repo_slug = MagicMock(return_value="u/a")
 
         orch = Orchestrator(
             task_queue=task_queue,
@@ -156,7 +157,7 @@ class TestOrchestrationReview:
         task = await task_queue.get_task(task_id)
         assert task is not None
         assert task["status"] == TaskStatus.MERGED
-        mock_git.merge_pr.assert_called_once_with(".", 1)
+        mock_git.merge_pr.assert_called_once_with(".", 1, repo="u/a")
 
     async def test_review_fail_retries(self, db: Database) -> None:
         task_queue, _, task_id = await _setup(db)
@@ -172,6 +173,7 @@ class TestOrchestrationReview:
         mock_git = AsyncMock()
         mock_git.extract_pr_number.return_value = 1
         mock_git.get_pr_diff.return_value = "diff content"
+        mock_git.repo_slug = MagicMock(return_value="u/a")
 
         orch = Orchestrator(
             task_queue=task_queue,
@@ -186,7 +188,9 @@ class TestOrchestrationReview:
         assert task is not None
         assert task["status"] == TaskStatus.PENDING
         assert task["attempt"] == 2
-        mock_git.comment_on_pr.assert_called_once_with(".", 1, "Missing validation")
+        mock_git.comment_on_pr.assert_called_once_with(
+            ".", 1, "Missing validation", repo="u/a"
+        )
 
     async def test_review_fail_max_retries_exhausted(self, db: Database) -> None:
         task_queue, _, task_id = await _setup(db)
@@ -203,6 +207,7 @@ class TestOrchestrationReview:
         mock_git = AsyncMock()
         mock_git.extract_pr_number.return_value = 1
         mock_git.get_pr_diff.return_value = "diff content"
+        mock_git.repo_slug = MagicMock(return_value="u/a")
 
         orch = Orchestrator(
             task_queue=task_queue,
@@ -447,6 +452,7 @@ class TestPerProjectAgentModel:
         mock_git = AsyncMock()
         mock_git.extract_pr_number.return_value = 1
         mock_git.get_pr_diff.return_value = "diff content"
+        mock_git.repo_slug = MagicMock(return_value="u/a")
 
         orch = Orchestrator(
             task_queue=task_queue,

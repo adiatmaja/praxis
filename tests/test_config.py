@@ -38,6 +38,31 @@ def test_settings_uses_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.mark.unit
+def test_callback_url_derived_from_port(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("AUTH_TOKEN", "auth-secret")
+    monkeypatch.setenv("GITHUB_TOKEN", "gh-secret")
+    monkeypatch.setenv("PORT", "8090")
+    monkeypatch.delenv("AGENT_CALLBACK_URL", raising=False)
+
+    settings = Settings(_env_file=None)
+
+    assert settings.callback_url() == (
+        "http://host.docker.internal:8090/api/internal/agent-done"
+    )
+
+
+@pytest.mark.unit
+def test_callback_url_explicit_override(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("AUTH_TOKEN", "auth-secret")
+    monkeypatch.setenv("GITHUB_TOKEN", "gh-secret")
+    monkeypatch.setenv("AGENT_CALLBACK_URL", "http://example.test/cb")
+
+    settings = Settings(_env_file=None)
+
+    assert settings.callback_url() == "http://example.test/cb"
+
+
+@pytest.mark.unit
 def test_settings_agent_model_default(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("AUTH_TOKEN", "auth-secret")
     monkeypatch.setenv("GITHUB_TOKEN", "gh-secret")

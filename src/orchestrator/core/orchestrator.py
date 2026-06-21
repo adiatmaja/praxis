@@ -33,6 +33,7 @@ class Orchestrator:
         event_bus: EventBus,
         doc_indexer: Any = None,
         context_sync: Any = None,
+        callback_url: str = "http://host.docker.internal:8080/api/internal/agent-done",
     ) -> None:
         self._tq = task_queue
         self._agents = agent_manager
@@ -41,6 +42,9 @@ class Orchestrator:
         self._bus = event_bus
         self._doc_indexer = doc_indexer
         self._context_sync = context_sync
+        # Where agent containers POST completion; must match the orchestrator's
+        # listening port (a wrong port makes every callback 404 -> reconcile).
+        self._callback_url = callback_url
         # Background log-streaming monitors, keyed by agent-run id.
         self._monitors: dict[str, asyncio.Task[None]] = {}
         # Seconds to wait for an in-flight agent-done callback before a
@@ -109,7 +113,7 @@ class Orchestrator:
                 task_prompt=prompt,
                 model_name=project["model_name"],
                 harness=project.get("harness"),
-                callback_url="http://host.docker.internal:8080/api/internal/agent-done",
+                callback_url=self._callback_url,
             )
             run_id = await self._tq.create_agent_run(task["id"], container_id)
             await self._tq.update_task_status(task["id"], TaskStatus.IN_PROGRESS)
@@ -141,7 +145,12 @@ class Orchestrator:
             return
 
         pr_number = await self._git.extract_pr_number(task["pr_url"])
-        diff = await self._git.get_pr_diff(".", pr_number)
+        # Target the PR's own repo explicitly; otherwise gh resolves the PR
+        # against the orchestrator's own cwd and reviews the wrong diff.
+        repo = self._git.repo_slug(task["pr_url"]) or self._git.repo_slug(
+            project["repo_url"]
+        )
+        diff = await self._git.get_pr_diff(".", pr_number, repo=repo)
         review = await self._opus.review_diff(
             diff,
             task["description"] or task["title"],
@@ -152,7 +161,7 @@ class Orchestrator:
         feedback = str(review.get("feedback", ""))
 
         if verdict == "pass":
-            await self._git.merge_pr(".", pr_number)
+            await self._git.merge_pr(".", pr_number, repo=repo)
             await self._tq.update_task_status(task_id, TaskStatus.MERGED)
             await self._sync_plan_checkbox(task)
             self._bus.publish(
@@ -164,7 +173,7 @@ class Orchestrator:
             )
             return
 
-        await self._git.comment_on_pr(".", pr_number, feedback)
+        await self._git.comment_on_pr(".", pr_number, feedback, repo=repo)
         await self._tq.fail_task(task_id, feedback)
         if int(task["attempt"]) < int(project["max_retries"]):
             await self._tq.retry_task(task_id)

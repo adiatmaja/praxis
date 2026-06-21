@@ -33,6 +33,16 @@ class Settings(BaseSettings):
     memory_md_path: str = "docs/MEMORY.md"
     loop_interval: int = 30
     callback_grace: int = 5
+    # URL agent containers POST their completion callback to. Reachable from
+    # inside a container, so it uses host.docker.internal and must match the
+    # port the orchestrator actually listens on. None => derived from `port`.
+    agent_callback_url: str | None = None
+
+    def callback_url(self) -> str:
+        """Resolve the agent-done callback URL (port-derived when unset)."""
+        if self.agent_callback_url:
+            return self.agent_callback_url
+        return f"http://host.docker.internal:{self.port}/api/internal/agent-done"
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
 
