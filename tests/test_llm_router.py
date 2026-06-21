@@ -25,3 +25,35 @@ def test_build_argv_claude():
 def test_build_argv_unknown_provider():
     with pytest.raises(UnknownProviderError):
         build_argv("frobnicator", model="x", effort=None, prompt="hi")
+
+
+from orchestrator.core.llm_router import LLMRouter
+
+
+async def test_run_claude_provider(mocker):
+    resolver = mocker.AsyncMock(
+        return_value={"provider": "claude", "model": "claude-opus-4-8", "effort": "high"}
+    )
+    proc = mocker.AsyncMock()
+    proc.communicate = mocker.AsyncMock(return_value=(b"OUT", b""))
+    proc.returncode = 0
+    mocker.patch(
+        "asyncio.create_subprocess_exec", new=mocker.AsyncMock(return_value=proc)
+    )
+    router = LLMRouter(resolve=resolver)
+    out = await router.run("plan_spec", "prompt", project_id=None)
+    assert out == "OUT"
+    resolver.assert_awaited_once()
+
+
+async def test_run_local_provider(mocker):
+    resolver = mocker.AsyncMock(
+        return_value={"provider": "local", "model": "", "effort": None}
+    )
+    mocker.patch(
+        "orchestrator.core.llm_router.LLMRouter._run_local",
+        new=mocker.AsyncMock(return_value="LOCAL"),
+    )
+    router = LLMRouter(resolve=resolver, lm_studio_url="http://lm:1234")
+    out = await router.run("derive_tasks", "p", project_id=None)
+    assert out == "LOCAL"
