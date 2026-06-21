@@ -176,7 +176,6 @@ class PlanResponse(BaseModel):
 
     id: str
     project_id: str
-    spec: str
     opus_plan: str | None = None
     plan_branch_name: str | None = None
     source: str

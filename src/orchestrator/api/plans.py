@@ -36,7 +36,7 @@ async def create_plan(
             status_code=status.HTTP_404_NOT_FOUND, detail="Project not found"
         )
 
-    plan_id = await request.app.state.task_queue.create_plan(project_id, body.spec)
+    plan_id = await request.app.state.task_queue.create_plan(project_id)
     plan = await request.app.state.task_queue.get_plan(plan_id)
     if plan is None:
         raise HTTPException(status_code=500, detail="Plan creation failed")

@@ -286,7 +286,6 @@ def test_response_models_construct_successfully() -> None:
     plan_response = PlanResponse(
         id="plan-1",
         project_id="project-1",
-        spec="Build Plan 1 foundation",
         opus_plan=None,
         plan_branch_name="plan/2026-06-01-plan-1",
         source="user",

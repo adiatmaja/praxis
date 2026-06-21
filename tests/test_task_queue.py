@@ -55,12 +55,11 @@ async def _activate_test_plan(
 async def test_create_plan(db: Database) -> None:
     _, project_id = await _seed_user_and_project(db)
     queue = TaskQueue(db)
-    plan_id = await queue.create_plan(project_id, "Build login page")
+    plan_id = await queue.create_plan(project_id)
 
     plan = await queue.get_plan(plan_id)
 
     assert plan is not None
-    assert plan["spec"] == "Build login page"
     assert plan["status"] == PlanStatus.PENDING
     assert plan["source"] == "user"
 

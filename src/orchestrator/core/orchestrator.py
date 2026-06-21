@@ -64,7 +64,7 @@ class Orchestrator:
             return
 
         opus_plan = await self._opus.plan_spec(
-            plan["spec"],
+            plan.get("spec_path") or "",
             project["repo_url"],
             model=project.get("agent_model"),
             effort=project.get("agent_model_effort"),
@@ -336,7 +336,7 @@ class Orchestrator:
         summary = (
             f"Project: {project['name']}\n"
             f"Repo: {project['repo_url']}\n"
-            f"Completed plan: {plan['spec']}"
+            f"Completed plan: {plan.get('plan_path') or plan.get('spec_path') or 'unknown'}"
         )
         analysis = cast(
             dict[str, Any],
@@ -379,7 +379,6 @@ class Orchestrator:
 
         plan_id = await self._tq.create_plan(
             project_id,
-            spec=str(analysis["reason"]),
             source="autonomous",
             confidence=float(analysis["confidence"]),
             confidence_reason=str(analysis["reason"]),
