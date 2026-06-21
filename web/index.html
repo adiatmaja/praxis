@@ -1182,7 +1182,11 @@
 
     function setTopbar(title, actionLabel) {
       document.getElementById("topbar-title").textContent = title;
-      document.getElementById("primary-action").textContent = actionLabel;
+      const action = document.getElementById("primary-action");
+      action.textContent = actionLabel;
+      // Hide the per-view action when it has no label (Memory) or would just
+      // duplicate the persistent "+ Create Spec" button (Plans view).
+      action.style.display = actionLabel ? "" : "none";
     }
 
     function primaryAction() {
@@ -1217,7 +1221,7 @@
         setTopbar("Projects", "+ New Project");
         await loadProjects();
       } else if (name === "plans") {
-        setTopbar("Plans", "+ Create Spec");
+        setTopbar("Plans", "");
         await loadPlans();
         await loadLifecycle();
       } else if (name === "tasks") {
