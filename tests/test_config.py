@@ -99,3 +99,14 @@ def test_settings_custom_values_override_defaults(
 def test_memory_md_path_default():
     s = Settings(auth_token="x", github_token="y", _env_file=None)
     assert s.memory_md_path == "docs/MEMORY.md"
+
+
+def test_yaml_provides_defaults(tmp_path, monkeypatch):
+    cfg = tmp_path / "praxis.yaml"
+    cfg.write_text("loop_interval: 7\n", encoding="utf-8")
+    monkeypatch.setenv("AUTH_TOKEN", "x")
+    monkeypatch.setenv("GITHUB_TOKEN", "y")
+    monkeypatch.delenv("LOOP_INTERVAL", raising=False)
+    from orchestrator.config import Settings
+    s = Settings(_env_file=None, yaml_path=str(cfg))
+    assert s.loop_interval == 7
