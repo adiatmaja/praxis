@@ -94,9 +94,7 @@ class EffectiveSettings:
             result[key] = {"value": value, "overridden": overridden}
         return result
 
-    async def call_site_config(
-        self, call_site: str, project_id: str | None
-    ) -> dict:
+    async def call_site_config(self, call_site: str, project_id: str | None) -> dict:
         """Resolve a brain call-site to {provider, model, effort}.
 
         Global settings_overrides (key ``models.<call_site>``) override the

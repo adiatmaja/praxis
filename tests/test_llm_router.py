@@ -2,6 +2,7 @@ import pytest
 
 from orchestrator.core.llm_router import (
     CALL_SITE_DEFAULTS,
+    LLMRouter,
     UnknownProviderError,
     build_argv,
 )
@@ -9,9 +10,15 @@ from orchestrator.core.llm_router import (
 
 def test_defaults_cover_all_call_sites():
     expected = {
-        "plan_spec", "review_diff_first", "review_diff_rereview",
-        "analyze_improvements", "classify_doc", "brainstorm_run_turn",
-        "brainstorm_generate_plan", "context_sync", "derive_tasks",
+        "plan_spec",
+        "review_diff_first",
+        "review_diff_rereview",
+        "analyze_improvements",
+        "classify_doc",
+        "brainstorm_run_turn",
+        "brainstorm_generate_plan",
+        "context_sync",
+        "derive_tasks",
     }
     assert expected <= set(CALL_SITE_DEFAULTS)
 
@@ -27,12 +34,13 @@ def test_build_argv_unknown_provider():
         build_argv("frobnicator", model="x", effort=None, prompt="hi")
 
 
-from orchestrator.core.llm_router import LLMRouter
-
-
 async def test_run_claude_provider(mocker):
     resolver = mocker.AsyncMock(
-        return_value={"provider": "claude", "model": "claude-opus-4-8", "effort": "high"}
+        return_value={
+            "provider": "claude",
+            "model": "claude-opus-4-8",
+            "effort": "high",
+        }
     )
     proc = mocker.AsyncMock()
     proc.communicate = mocker.AsyncMock(return_value=(b"OUT", b""))

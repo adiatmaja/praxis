@@ -210,8 +210,9 @@ class OpusBridge:
         project_id: str | None = None,
     ) -> dict[str, Any]:
         prompt = PLAN_PROMPT_TEMPLATE.format(spec=spec, repo_url=repo_url)
-        if getattr(self, "_router", None) is not None:
-            raw = await self._router.run("plan_spec", prompt, project_id)
+        router: LLMRouter | None = getattr(self, "_router", None)
+        if router is not None:
+            raw = await router.run("plan_spec", prompt, project_id)
         else:
             raw = await self._run_claude(prompt, model, effort)
         return self._extract_json(raw)
@@ -229,9 +230,12 @@ class OpusBridge:
             diff=diff,
             task_description=task_description,
         )
-        if getattr(self, "_router", None) is not None:
-            call_site = "review_diff_rereview" if tier == "rereview" else "review_diff_first"
-            raw = await self._router.run(call_site, prompt, project_id)
+        router: LLMRouter | None = getattr(self, "_router", None)
+        if router is not None:
+            call_site = (
+                "review_diff_rereview" if tier == "rereview" else "review_diff_first"
+            )
+            raw = await router.run(call_site, prompt, project_id)
         else:
             raw = await self._run_claude(prompt, model, effort)
         return self._extract_json(raw)
@@ -244,8 +248,9 @@ class OpusBridge:
         project_id: str | None = None,
     ) -> dict[str, Any]:
         prompt = IMPROVEMENT_PROMPT_TEMPLATE.format(project_summary=project_summary)
-        if getattr(self, "_router", None) is not None:
-            raw = await self._router.run("analyze_improvements", prompt, project_id)
+        router: LLMRouter | None = getattr(self, "_router", None)
+        if router is not None:
+            raw = await router.run("analyze_improvements", prompt, project_id)
         else:
             raw = await self._run_claude(prompt, model, effort)
         return self._extract_json(raw)
@@ -299,10 +304,15 @@ class OpusBridge:
     async def classify_doc(self, text: str, project_id: str | None = None) -> str:
         """Classify ambiguous markdown via Haiku; returns spec|plan|other."""
         prompt = self.CLASSIFY_PROMPT.format(text=text[:4000])
-        if getattr(self, "_router", None) is not None:
-            raw = (await self._router.run("classify_doc", prompt, project_id)).strip().lower()
+        router: LLMRouter | None = getattr(self, "_router", None)
+        if router is not None:
+            raw = (await router.run("classify_doc", prompt, project_id)).strip().lower()
         else:
-            raw = (await self._run_claude(prompt, model="claude-haiku-4-5")).strip().lower()
+            raw = (
+                (await self._run_claude(prompt, model="claude-haiku-4-5"))
+                .strip()
+                .lower()
+            )
         # 1. Exact match after stripping surrounding punctuation/whitespace.
         cleaned = raw.strip(" '\".:!\n")
         if cleaned in ("spec", "plan", "other"):

@@ -13,12 +13,32 @@ class UnknownProviderError(Exception):
 # Default {provider, model, effort} per call-site (the model-tiering policy).
 CALL_SITE_DEFAULTS: dict[str, dict[str, str | None]] = {
     "plan_spec": {"provider": "claude", "model": "claude-opus-4-8", "effort": "high"},
-    "review_diff_first": {"provider": "claude", "model": "claude-sonnet-4-6", "effort": None},
-    "review_diff_rereview": {"provider": "claude", "model": "claude-haiku-4-5", "effort": None},
-    "analyze_improvements": {"provider": "claude", "model": "claude-opus-4-8", "effort": "high"},
+    "review_diff_first": {
+        "provider": "claude",
+        "model": "claude-sonnet-4-6",
+        "effort": None,
+    },
+    "review_diff_rereview": {
+        "provider": "claude",
+        "model": "claude-haiku-4-5",
+        "effort": None,
+    },
+    "analyze_improvements": {
+        "provider": "claude",
+        "model": "claude-opus-4-8",
+        "effort": "high",
+    },
     "classify_doc": {"provider": "claude", "model": "claude-haiku-4-5", "effort": None},
-    "brainstorm_run_turn": {"provider": "claude", "model": "claude-sonnet-4-6", "effort": None},
-    "brainstorm_generate_plan": {"provider": "claude", "model": "claude-sonnet-4-6", "effort": None},
+    "brainstorm_run_turn": {
+        "provider": "claude",
+        "model": "claude-sonnet-4-6",
+        "effort": None,
+    },
+    "brainstorm_generate_plan": {
+        "provider": "claude",
+        "model": "claude-sonnet-4-6",
+        "effort": None,
+    },
     "context_sync": {"provider": "claude", "model": "claude-haiku-4-5", "effort": None},
     "derive_tasks": {"provider": "local", "model": "", "effort": None},
 }
@@ -69,8 +89,7 @@ class LLMRouter:
         stdout, stderr = await proc.communicate()
         if proc.returncode:
             message = (
-                f"{provider} failed (exit {proc.returncode}): "
-                f"{stderr.decode().strip()}"
+                f"{provider} failed (exit {proc.returncode}): {stderr.decode().strip()}"
             )
             raise RuntimeError(message)
         return stdout.decode().strip()

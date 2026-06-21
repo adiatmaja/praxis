@@ -174,8 +174,10 @@ async def test_models_put_and_reset(
     put = await client.put(
         "/api/settings/models",
         headers=auth_headers,
-        json={"call_site": "plan_spec",
-              "config": {"provider": "codex", "model": "gpt-5", "effort": None}},
+        json={
+            "call_site": "plan_spec",
+            "config": {"provider": "codex", "model": "gpt-5", "effort": None},
+        },
     )
     assert put.status_code == 200
     got = await client.get("/api/settings/models", headers=auth_headers)
