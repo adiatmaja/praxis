@@ -95,3 +95,26 @@ async def test_lifecycle_spec_only_no_plan(db, client, auth_headers, project_id,
     assert len(items) == 1
     assert items[0]["stage"] == "spec"
     assert items[0]["plan_path"] is None
+
+
+async def test_doc_raw_returns_content(db, client, auth_headers, project_id, mocker):
+    mocker.patch.object(client.app.state.brainstorm, "read_doc",
+                        return_value="# Hello\n\nbody")
+    resp = await client.get(
+        f"/api/projects/{project_id}/doc-raw",
+        params={"path": "docs/superpowers/plans/x.md"},
+        headers=auth_headers,
+    )
+    assert resp.status_code == 200
+    assert resp.json()["content"] == "# Hello\n\nbody"
+
+
+async def test_doc_raw_missing_returns_404(db, client, auth_headers, project_id, mocker):
+    mocker.patch.object(client.app.state.brainstorm, "read_doc",
+                        side_effect=FileNotFoundError("nope"))
+    resp = await client.get(
+        f"/api/projects/{project_id}/doc-raw",
+        params={"path": "docs/superpowers/plans/missing.md"},
+        headers=auth_headers,
+    )
+    assert resp.status_code == 404
