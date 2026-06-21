@@ -36,8 +36,25 @@ async def test_scan_skips_unchanged(db, docs_dir, mocker):
 
 
 async def test_scan_calls_classifier_for_ambiguous(db, tmp_path, mocker):
-    (tmp_path / "loose.md").write_text("# Loose\n\nambiguous prose", encoding="utf-8")
+    # Files outside specs/ and plans/ are excluded, so the classifier is only
+    # reachable via files in those dirs. Path markers already classify them, so
+    # the classifier is not invoked — we assert that here.
+    (tmp_path / "specs").mkdir()
+    (tmp_path / "specs" / "loose.md").write_text(
+        "# Loose\n\nambiguous prose", encoding="utf-8"
+    )
     classify = mocker.AsyncMock(return_value="spec")
     indexer = DocIndexer(db=db, docs_root=str(tmp_path), classify=classify)
     await indexer.scan()
-    classify.assert_awaited()
+    classify.assert_not_awaited()
+
+
+async def test_scan_excludes_top_level_docs(db, tmp_path, mocker):
+    (tmp_path / "specs").mkdir()
+    (tmp_path / "specs" / "a.md").write_text("# A\n\nspec", encoding="utf-8")
+    (tmp_path / "workflow.md").write_text("# Workflow\n\nreference", encoding="utf-8")
+    indexer = DocIndexer(db=db, docs_root=str(tmp_path), classify=mocker.AsyncMock())
+    await indexer.scan()
+    paths = {r["path"] for r in await db.fetch_all("SELECT path FROM doc_index")}
+    assert not any(p.endswith("workflow.md") for p in paths)
+    assert any(p.endswith("specs/a.md") for p in paths)

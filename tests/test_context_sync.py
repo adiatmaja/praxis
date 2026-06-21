@@ -1,3 +1,8 @@
+import subprocess
+from pathlib import Path
+
+import pytest
+
 from orchestrator.core.context_sync import ContextSync
 
 
@@ -72,3 +77,32 @@ def test_current_cleans_up_workspace(mocker, tmp_path):
     mock_rmtree.assert_called_once()
     call_kwargs = mock_rmtree.call_args
     assert call_kwargs[1].get("ignore_errors") is True
+
+
+def test_current_cleans_up_workspace_on_clone_failure(mocker, tmp_path):
+    """Workspace directory must be removed even when _clone_repo raises."""
+    cs = ContextSync(str(tmp_path), "tok", "MEMORY.md")
+    error = subprocess.CalledProcessError(128, "git clone", stderr=b"not a git repo")
+    mocker.patch.object(cs, "_clone_repo", side_effect=error)
+    mock_rmtree = mocker.patch("orchestrator.core.context_sync.shutil.rmtree")
+
+    with pytest.raises(subprocess.CalledProcessError):
+        cs.current("https://x/y")
+
+    mock_rmtree.assert_called_once()
+    assert mock_rmtree.call_args[1].get("ignore_errors") is True
+
+
+def test_current_returns_files_read_before_cleanup(mocker, tmp_path):
+    """current() must return file contents even though rmtree is called."""
+    cs = ContextSync(str(tmp_path), "tok", "MEMORY.md")
+
+    def _fake_clone(repo_url: str, dest: str) -> None:
+        # dest is the workspace dir created by current(); write there
+        (Path(dest) / "CLAUDE.md").write_text("hello", encoding="utf-8")
+
+    mocker.patch.object(cs, "_clone_repo", side_effect=_fake_clone)
+
+    result = cs.current("https://x/y")
+    assert result["claude_md"] == "hello"
+    assert result["memory_md"] == ""

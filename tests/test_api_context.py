@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import subprocess
+
 import pytest
 import pytest_asyncio
 from httpx import AsyncClient
@@ -72,3 +74,69 @@ async def test_approve_endpoint(
     r = await client.post("/api/context-drafts/d1/approve", headers=auth_headers)
     assert r.status_code == 200
     assert r.json()["status"] == "committed"
+
+
+@pytest.mark.asyncio
+async def test_get_context_returns_502_on_clone_failure(
+    client: AsyncClient,
+    auth_headers: dict,
+    seeded_project: str,
+    mocker,
+) -> None:
+    """Clone failure must yield 502, not an unhandled 500."""
+    error = subprocess.CalledProcessError(128, "git clone", stderr=b"exit 128")
+    mocker.patch.object(
+        client.app.state.context_sync,
+        "current",
+        side_effect=error,
+    )
+    r = await client.get(
+        f"/api/projects/{seeded_project}/context",
+        headers=auth_headers,
+    )
+    assert r.status_code == 502
+    assert "Could not access repository" in r.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_get_context_returns_data_on_success(
+    client: AsyncClient,
+    auth_headers: dict,
+    seeded_project: str,
+    mocker,
+) -> None:
+    """Successful current() call returns claude_md and memory_md."""
+    mocker.patch.object(
+        client.app.state.context_sync,
+        "current",
+        return_value={"claude_md": "# Repo", "memory_md": "# Memory"},
+    )
+    r = await client.get(
+        f"/api/projects/{seeded_project}/context",
+        headers=auth_headers,
+    )
+    assert r.status_code == 200
+    assert r.json()["claude_md"] == "# Repo"
+
+
+@pytest.mark.asyncio
+async def test_sync_context_returns_502_on_clone_failure(
+    client: AsyncClient,
+    auth_headers: dict,
+    seeded_project: str,
+    mocker,
+) -> None:
+    """Clone failure in draft() must yield 502."""
+    error = subprocess.CalledProcessError(128, "git clone", stderr=b"fatal: not found")
+    mocker.patch.object(
+        client.app.state.context_sync,
+        "draft",
+        new=mocker.AsyncMock(side_effect=error),
+    )
+    r = await client.post(
+        f"/api/projects/{seeded_project}/context-sync",
+        headers=auth_headers,
+        json={"summary": "did stuff"},
+    )
+    assert r.status_code == 502
+    assert "Could not access repository" in r.json()["detail"]

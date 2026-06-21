@@ -6,7 +6,7 @@ set -euo pipefail
 : "${BASE_BRANCH:?BASE_BRANCH is required}"
 : "${TASK_PROMPT:?TASK_PROMPT is required}"
 : "${OPENAI_API_BASE:?OPENAI_API_BASE is required}"
-: "${AIDER_MODEL:?AIDER_MODEL is required}"
+: "${MODEL:?MODEL is required}"
 : "${GH_TOKEN:?GH_TOKEN is required}"
 : "${CALLBACK_URL:?CALLBACK_URL is required}"
 : "${TASK_ID:?TASK_ID is required}"
@@ -29,10 +29,24 @@ send_callback() {
         run_json=$(printf "%s" "${RUN_ID}" | json_escape)
     fi
 
-    curl -s -X POST "${CALLBACK_URL}" \
-        -H "Content-Type: application/json" \
-        -d "{\"task_id\":\"${TASK_ID}\",\"run_id\":${run_json},\"status\":\"${STATUS}\",\"pr_url\":${pr_json}}" \
-        || echo "WARNING: Failed to send callback"
+    local payload="{\"task_id\":\"${TASK_ID}\",\"run_id\":${run_json},\"status\":\"${STATUS}\",\"pr_url\":${pr_json}}"
+    local max_attempts="${CALLBACK_MAX_ATTEMPTS:-5}"
+    local attempt=1
+    while [ "${attempt}" -le "${max_attempts}" ]; do
+        local code
+        code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 \
+            -X POST "${CALLBACK_URL}" \
+            -H "Content-Type: application/json" \
+            -d "${payload}" || echo "000")
+        if [ "${code}" = "200" ]; then
+            echo "Callback delivered on attempt ${attempt}"
+            return 0
+        fi
+        echo "WARNING: callback attempt ${attempt}/${max_attempts} failed (HTTP ${code})"
+        attempt=$((attempt + 1))
+        sleep $((attempt * 2))
+    done
+    echo "ERROR: callback failed after ${max_attempts} attempts; orchestrator will reconcile"
 }
 
 cleanup() {
@@ -49,7 +63,7 @@ echo "=== Agent starting ==="
 echo "Repo: ${REPO_URL}"
 echo "Branch: ${BRANCH}"
 echo "Base: ${BASE_BRANCH}"
-echo "Model: ${AIDER_MODEL}"
+echo "Model: openai/${MODEL}"
 
 echo "--- Configuring git auth ---"
 git config --global credential.helper '!f() { echo "username=x-access-token"; echo "password=${GH_TOKEN}"; }; f'
@@ -79,7 +93,7 @@ echo "--- Running Aider ---"
 export OPENAI_API_KEY="${OPENAI_API_KEY:-not-needed}"
 aider \
     --message "${TASK_PROMPT}" \
-    --model "${AIDER_MODEL}" \
+    --model "openai/${MODEL}" \
     --auto-commits \
     --yes-always \
     --no-auto-lint \

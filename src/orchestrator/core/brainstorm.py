@@ -12,6 +12,11 @@ from pathlib import Path
 from typing import Any
 
 from orchestrator.core.git_ops import clone_with_token, commit_and_push
+from orchestrator.core.markdown_utils import (
+    checklist_progress,
+    extract_frontmatter_field,
+    extract_title,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -21,6 +26,8 @@ PLAN_BOOTSTRAP = (
     "Produce a fully self-contained implementation plan — every task executes in a fresh "
     "container with zero prior context, so embed all needed file paths, background, and "
     "acceptance criteria per task. Honor these extra notes: {notes}. "
+    "At the very top of the plan file, add YAML front-matter linking back to the spec, "
+    "exactly: ---\\nspec_path: {spec_path}\\ntype: plan\\n--- . "
     "Write the plan to docs/superpowers/plans/, commit it, and push it."
 )
 
@@ -161,6 +168,51 @@ class BrainstormManager:
         finally:
             shutil.rmtree(workspace, ignore_errors=True)
         return {"status": "generated"}
+
+    def read_doc(self, repo_url: str, path: str) -> str:
+        """Clone the repo and return one doc's raw markdown."""
+        session_id = uuid.uuid4().hex
+        workspace = str(Path(self._base) / session_id)
+        Path(workspace).mkdir(parents=True, exist_ok=True)
+        self._clone_repo(repo_url, workspace)
+        try:
+            ws_root = Path(workspace).resolve()
+            target = (ws_root / path).resolve()
+            if not target.is_relative_to(ws_root) or not target.is_file():
+                msg = f"doc not found: {path}"
+                raise FileNotFoundError(msg)
+            return target.read_text(encoding="utf-8")
+        finally:
+            shutil.rmtree(workspace, ignore_errors=True)
+
+    def list_lifecycle_docs(self, repo_url: str) -> list[dict]:
+        """Clone the repo and list spec/plan markdown with metadata."""
+        session_id = uuid.uuid4().hex
+        workspace = str(Path(self._base) / session_id)
+        Path(workspace).mkdir(parents=True, exist_ok=True)
+        self._clone_repo(repo_url, workspace)
+        try:
+            root = Path(workspace)
+            out: list[dict] = []
+            for category in ("spec", "plan"):
+                folder = f"{category}s"
+                for file in sorted(root.rglob(f"*/{folder}/*.md")):
+                    rel = str(file.relative_to(root)).replace("\\", "/")
+                    text = file.read_text(encoding="utf-8")
+                    done, total = checklist_progress(text)
+                    out.append(
+                        {
+                            "path": rel,
+                            "category": category,
+                            "title": extract_title(text) or rel,
+                            "done_count": done,
+                            "total_count": total,
+                            "spec_path": extract_frontmatter_field(text, "spec_path"),
+                        }
+                    )
+            return out
+        finally:
+            shutil.rmtree(workspace, ignore_errors=True)
 
     def write_and_commit(self, repo_url: str, path: str, content: str) -> dict:
         session_id = uuid.uuid4().hex

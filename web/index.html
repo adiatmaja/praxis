@@ -336,7 +336,9 @@
       .nav-item { width: auto; min-width: 104px; justify-content: center; }
       .sidebar-stats, .sidebar-connections { display: none; }
       .main { min-height: 720px; }
-      .topbar { padding: 0 14px; }
+      .topbar { height: auto; min-height: 52px; padding: 8px 14px; flex-wrap: wrap; gap: 8px; }
+      .topbar-actions { flex-wrap: wrap; gap: 6px; }
+      .topbar-title { width: 100%; }
       .master-detail { flex-direction: column; overflow: visible; }
       .master-panel { width: 100%; min-width: 0; max-height: 42vh; border-right: 0; border-bottom: 1px solid var(--border); }
       .detail-panel { min-height: 420px; }
@@ -626,6 +628,280 @@
       .spec-chat-panel { width: 100vw; margin: 0; border-radius: 10px 10px 0 0; height: 70vh; }
       .spec-chat-overlay.open { align-items: flex-end; justify-content: center; }
     }
+
+    /* Harness About modal */
+    .harness-overlay {
+      display: none;
+      position: fixed;
+      inset: 0;
+      z-index: 100;
+      background: rgba(0,0,0,0.35);
+      align-items: center;
+      justify-content: center;
+    }
+    .harness-overlay.open { display: flex; }
+    .harness-modal {
+      width: 680px;
+      max-width: calc(100vw - 32px);
+      max-height: calc(100vh - 64px);
+      display: flex;
+      flex-direction: column;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      box-shadow: 0 8px 32px rgba(0,0,0,0.22);
+      overflow: hidden;
+    }
+    .harness-modal-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      padding: 14px 20px;
+      border-bottom: 1px solid var(--border);
+      flex-shrink: 0;
+    }
+    .harness-modal-title { font-size: 15px; font-weight: 700; }
+    .harness-modal-close {
+      border: 0;
+      background: transparent;
+      color: var(--text-faint);
+      cursor: pointer;
+      font-size: 18px;
+      line-height: 1;
+      padding: 0 4px;
+    }
+    .harness-modal-close:hover { color: var(--text); }
+    .harness-modal-body { flex: 1; overflow-y: auto; padding: 16px 20px; display: flex; flex-direction: column; gap: 14px; }
+    .harness-card {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 14px 16px;
+    }
+    .harness-card h3 { font-size: 14px; font-weight: 700; margin-bottom: 6px; }
+    .harness-card h3 small { font-size: 11px; color: var(--text-faint); font-weight: 400; margin-left: 6px; }
+    .harness-card p { font-size: 13px; line-height: 1.55; color: var(--text-muted); margin-bottom: 6px; }
+    .harness-card p:last-child { margin-bottom: 0; }
+    .harness-cols { display: flex; gap: 16px; margin-top: 8px; }
+    .harness-cols > div { flex: 1; min-width: 0; }
+    .harness-cols strong { display: block; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; color: var(--text-faint); margin-bottom: 4px; }
+    .harness-cols ul { padding-left: 16px; font-size: 12px; color: var(--text-muted); line-height: 1.6; }
+    .harness-modal-footer { flex-shrink: 0; padding: 12px 20px; border-top: 1px solid var(--border); display: flex; justify-content: flex-end; }
+    @media (max-width: 768px) {
+      .harness-modal { width: 100vw; max-height: 85vh; border-radius: 10px 10px 0 0; }
+      .harness-overlay.open { align-items: flex-end; }
+      .harness-cols { flex-direction: column; gap: 8px; }
+    }
+
+    /* Global project filter (topbar) */
+    .global-project-select {
+      height: 32px;
+      width: auto;
+      min-width: 140px;
+      max-width: 220px;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      background: var(--bg);
+      color: var(--text);
+      padding: 0 8px;
+      font-size: 12px;
+      font-weight: 600;
+    }
+
+    /* Docs list views (Specs / Plan Docs) */
+    .docs-list-col { flex: 1; min-width: 0; display: flex; flex-direction: column; overflow: hidden; background: var(--panel); }
+    .list-header h2 { font-size: 15px; font-weight: 700; }
+    .list { flex: 1; overflow-y: auto; }
+    .row {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 12px 20px;
+      border-bottom: 1px solid var(--border-subtle);
+      cursor: pointer;
+    }
+    .row:hover { background: var(--hover-bg); }
+    .row-sub {
+      overflow: hidden;
+      margin-top: 2px;
+      color: var(--text-faint);
+      font-family: "Cascadia Mono", "SF Mono", Consolas, monospace;
+      font-size: 11px;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .empty { padding: 20px; color: var(--text-faint); font-size: 13px; }
+
+    /* Dashboard side panel internals */
+    .side-panel-title-wrap { min-width: 0; }
+    .side-panel-title { font-size: 14px; font-weight: 700; overflow-wrap: anywhere; }
+    .side-panel-branch {
+      margin-top: 2px;
+      color: var(--text-faint);
+      font-family: "Cascadia Mono", "SF Mono", Consolas, monospace;
+      font-size: 11px;
+      overflow-wrap: anywhere;
+    }
+    .side-panel-section { margin-bottom: 18px; }
+    .side-panel-section:last-child { margin-bottom: 0; }
+    .side-panel-section-title {
+      margin-bottom: 8px;
+      color: var(--text-faint);
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: .05em;
+      text-transform: uppercase;
+    }
+    .side-panel-field {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 6px 0;
+      border-bottom: 1px solid var(--border-subtle);
+      font-size: 12px;
+    }
+    .side-panel-field:last-child { border-bottom: 0; }
+    .side-panel-field > span:first-child { color: var(--text-muted); }
+    .side-panel-field > span:last-child { min-width: 0; text-align: right; font-weight: 600; overflow-wrap: anywhere; }
+    .side-panel-block {
+      background: var(--panel-alt);
+      border: 1px solid var(--border-subtle);
+      border-radius: 6px;
+      padding: 10px;
+      font-size: 12px;
+      line-height: 1.5;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+
+    /* Memory page headings */
+    .mem-pane h3 { margin-bottom: 8px; font-size: 13px; font-weight: 700; }
+    .list-header h2, .mem-pane h3 { color: var(--text); }
+
+    /* Settings modal */
+    .settings-overlay {
+      display: none;
+      position: fixed;
+      inset: 0;
+      z-index: 200;
+      background: rgba(0,0,0,0.35);
+      align-items: center;
+      justify-content: center;
+    }
+    .settings-overlay.open { display: flex; }
+    .settings-modal {
+      width: 620px;
+      max-width: calc(100vw - 32px);
+      max-height: calc(100vh - 64px);
+      display: flex;
+      flex-direction: column;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      box-shadow: 0 8px 32px rgba(0,0,0,0.22);
+      overflow: hidden;
+    }
+    .settings-modal-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      padding: 14px 20px;
+      border-bottom: 1px solid var(--border);
+      flex-shrink: 0;
+    }
+    .settings-modal-title { font-size: 15px; font-weight: 700; }
+    .settings-modal-close {
+      border: 0;
+      background: transparent;
+      color: var(--text-faint);
+      cursor: pointer;
+      font-size: 18px;
+      line-height: 1;
+      padding: 0 4px;
+    }
+    .settings-modal-close:hover { color: var(--text); }
+    .settings-tabs {
+      display: flex;
+      gap: 0;
+      border-bottom: 1px solid var(--border);
+      flex-shrink: 0;
+      padding: 0 20px;
+    }
+    .settings-tab {
+      height: 38px;
+      border: 0;
+      border-bottom: 2px solid transparent;
+      background: transparent;
+      color: var(--text-muted);
+      padding: 0 14px;
+      cursor: pointer;
+      font-size: 13px;
+      font-weight: 600;
+      margin-bottom: -1px;
+    }
+    .settings-tab:hover { color: var(--text); }
+    .settings-tab.active { color: var(--text); border-bottom-color: var(--selected-border); }
+    .settings-body { flex: 1; overflow-y: auto; padding: 18px 20px; display: flex; flex-direction: column; gap: 14px; }
+    .settings-tab-panel { display: none; }
+    .settings-tab-panel.active { display: block; }
+    .settings-field-row { margin-bottom: 14px; }
+    .settings-field-row label { display: flex; align-items: center; gap: 6px; margin-bottom: 5px; color: var(--text-muted); font-size: 12px; font-weight: 500; }
+    .settings-field-row input, .settings-field-row select {
+      width: 100%;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      background: var(--bg);
+      color: var(--text);
+      padding: 7px 10px;
+      font-size: 13px;
+    }
+    .settings-field-row input:disabled, .settings-field-row select:disabled {
+      opacity: 0.55;
+      cursor: not-allowed;
+    }
+    .settings-overridden-badge {
+      display: inline-block;
+      background: var(--badge-reviewing-bg);
+      color: var(--badge-reviewing-text);
+      border-radius: 4px;
+      padding: 0 5px;
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: .03em;
+      text-transform: uppercase;
+      vertical-align: middle;
+    }
+    .settings-field-actions { display: flex; gap: 6px; margin-top: 5px; align-items: center; }
+    .settings-note { color: var(--text-faint); font-size: 11px; margin-top: 4px; }
+    .settings-section-title {
+      margin: 0 0 12px;
+      color: var(--text-faint);
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: .05em;
+      text-transform: uppercase;
+    }
+    .settings-readonly-group { background: var(--panel-alt); border: 1px solid var(--border-subtle); border-radius: 8px; padding: 12px 14px; margin-bottom: 14px; }
+    .settings-modal-footer {
+      flex-shrink: 0;
+      padding: 12px 20px;
+      border-top: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+    }
+    .settings-feedback { font-size: 12px; font-weight: 600; }
+    .settings-feedback.success { color: #15803d; }
+    .settings-feedback.error { color: #dc2626; }
+    [data-theme="dark"] .settings-feedback.success { color: #86efac; }
+    [data-theme="dark"] .settings-feedback.error { color: #fca5a5; }
+    @media (max-width: 768px) {
+      .settings-modal { width: 100vw; max-height: 85vh; border-radius: 10px 10px 0 0; }
+      .settings-overlay.open { align-items: flex-end; }
+    }
   </style>
 </head>
 <body>
@@ -635,14 +911,12 @@
     </div>
     <nav class="sidebar-nav" aria-label="Views">
       <div class="nav-section">Workspace</div>
-      <button class="nav-item active" type="button" data-view="dashboard" onclick="switchView('dashboard')"><span class="nav-icon">D</span>Dashboard</button>
-      <button class="nav-item" type="button" data-view="projects" onclick="switchView('projects')"><span class="nav-icon">P</span>Projects</button>
-      <button class="nav-item" type="button" data-view="plans" onclick="switchView('plans')"><span class="nav-icon">S</span>Plans</button>
-      <button class="nav-item" type="button" data-view="tasks" onclick="switchView('tasks')"><span class="nav-icon">T</span>Tasks</button>
-      <button class="nav-item" type="button" data-view="logs" onclick="switchView('logs')"><span class="nav-icon">L</span>Live Logs</button>
-      <button class="nav-item" type="button" data-view="specs" onclick="switchView('specs')"><span class="nav-icon">F</span>Specs</button>
-      <button class="nav-item" type="button" data-view="docplans" onclick="switchView('docplans')"><span class="nav-icon">N</span>Plan Docs</button>
-      <button class="nav-item" type="button" data-view="memory" onclick="switchView('memory')"><span class="nav-icon">M</span>Memory</button>
+      <button class="nav-item active" type="button" data-view="dashboard" onclick="switchView('dashboard')"><span class="nav-icon"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="1" y="1" width="6" height="6" rx="1"/><rect x="9" y="1" width="6" height="6" rx="1"/><rect x="1" y="9" width="6" height="6" rx="1"/><rect x="9" y="9" width="6" height="6" rx="1"/></svg></span>Dashboard</button>
+      <button class="nav-item" type="button" data-view="projects" onclick="switchView('projects')"><span class="nav-icon"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M2 4h12v9a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V4z"/><path d="M1 4h14"/><path d="M5 4V2h6v2"/></svg></span>Projects</button>
+      <button class="nav-item" type="button" data-view="plans" onclick="switchView('plans')"><span class="nav-icon"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="1" width="12" height="14" rx="1"/><line x1="5" y1="5" x2="11" y2="5"/><line x1="5" y1="8" x2="11" y2="8"/><line x1="5" y1="11" x2="8" y2="11"/></svg></span>Plans</button>
+      <button class="nav-item" type="button" data-view="tasks" onclick="switchView('tasks')"><span class="nav-icon"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 4l2 2 3-3"/><line x1="8" y1="5" x2="13" y2="5"/><path d="M3 9l2 2 3-3"/><line x1="8" y1="10" x2="13" y2="10"/></svg></span>Tasks</button>
+      <button class="nav-item" type="button" data-view="logs" onclick="switchView('logs')"><span class="nav-icon"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="1" y="2" width="14" height="12" rx="1"/><line x1="4" y1="6" x2="12" y2="6"/><line x1="4" y1="9" x2="9" y2="9"/></svg></span>Live Logs</button>
+      <button class="nav-item" type="button" data-view="memory" onclick="switchView('memory')"><span class="nav-icon"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="8" cy="5" rx="6" ry="3"/><path d="M2 5v3c0 1.66 2.69 3 6 3s6-1.34 6-3V5"/><path d="M2 8v3c0 1.66 2.69 3 6 3s6-1.34 6-3V8"/></svg></span>Memory</button>
     </nav>
     <div class="sidebar-stats">
       <div class="section-label">Stats</div>
@@ -656,14 +930,14 @@
       <div class="connection-row">
         <span id="agent-dot" class="conn-dot disconnected"></span>
         <div class="conn-info">
-          <div class="conn-role">Agent</div>
+          <div class="conn-role">Planner / Reviewer</div>
           <div id="agent-model" class="conn-model">unknown</div>
         </div>
       </div>
       <div class="connection-row">
         <span id="subagent-dot" class="conn-dot disconnected"></span>
         <div class="conn-info">
-          <div class="conn-role">Subagent</div>
+          <div class="conn-role">Implementer</div>
           <div id="subagent-model" class="conn-model">unknown</div>
         </div>
       </div>
@@ -674,10 +948,29 @@
     <header class="topbar">
       <div id="topbar-title" class="topbar-title">Projects</div>
       <div class="topbar-actions">
+        <select id="global-project" class="global-project-select" onchange="onGlobalProjectChange()" title="Filter by project"><option value="all">All Projects</option></select>
         <button id="primary-action" class="btn btn-primary" type="button" onclick="primaryAction()">+ New Project</button>
         <button class="btn" type="button" onclick="openSpecChat()" title="Create a new spec via chat">+ Create Spec</button>
-        <button class="btn theme-btn" type="button" onclick="toggleTheme()" title="Toggle theme">T</button>
-        <button class="btn" type="button" onclick="resetToken()">Token</button>
+        <button class="btn theme-btn" type="button" onclick="toggleTheme()" title="Toggle theme">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <circle cx="8" cy="8" r="3"/>
+            <line x1="8" y1="1" x2="8" y2="2.5"/>
+            <line x1="8" y1="13.5" x2="8" y2="15"/>
+            <line x1="1" y1="8" x2="2.5" y2="8"/>
+            <line x1="13.5" y1="8" x2="15" y2="8"/>
+            <line x1="2.93" y1="2.93" x2="4.05" y2="4.05"/>
+            <line x1="11.95" y1="11.95" x2="13.07" y2="13.07"/>
+            <line x1="2.93" y1="13.07" x2="4.05" y2="11.95"/>
+            <line x1="11.95" y1="4.05" x2="13.07" y2="2.93"/>
+          </svg>
+        </button>
+        <button class="btn theme-btn" type="button" onclick="openSettings()" title="Settings">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <circle cx="8" cy="8" r="2.5"/>
+            <path d="M8 1.5v1M8 13.5v1M1.5 8h1M13.5 8h1M3.4 3.4l.7.7M11.9 11.9l.7.7M3.4 12.6l.7-.7M11.9 4.1l.7-.7"/>
+          </svg>
+        </button>
+        <button class="btn" type="button" onclick="resetToken()">API Token</button>
       </div>
     </header>
     <section id="view-container" class="master-detail"></section>
@@ -703,6 +996,59 @@
     </div>
   </div>
 
+  <!-- Harness About modal -->
+  <div id="harness-overlay" class="harness-overlay" onclick="onHarnessOverlayClick(event)">
+    <div class="harness-modal">
+      <div class="harness-modal-header">
+        <div class="harness-modal-title">About Harnesses</div>
+        <button class="harness-modal-close" type="button" id="harness-about-close">&#x2715;</button>
+      </div>
+      <div class="harness-modal-body" id="harness-about-body"></div>
+      <div class="harness-modal-footer">
+        <button class="btn" type="button" id="harness-about-close-footer">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Settings modal -->
+  <div id="settings-overlay" class="settings-overlay" onclick="onSettingsOverlayClick(event)">
+    <div class="settings-modal">
+      <div class="settings-modal-header">
+        <div class="settings-modal-title">Settings</div>
+        <button class="settings-modal-close" type="button" onclick="closeSettings()">&#x2715;</button>
+      </div>
+      <div class="settings-tabs">
+        <button class="settings-tab active" type="button" id="settings-tab-global" onclick="switchSettingsTab('global')">Global</button>
+        <button class="settings-tab" type="button" id="settings-tab-project" onclick="switchSettingsTab('project')">Project</button>
+      </div>
+      <div class="settings-body">
+        <!-- Global tab -->
+        <div class="settings-tab-panel active" id="settings-panel-global">
+          <div id="settings-global-content">
+            <div style="color:var(--text-faint);font-size:13px;">Loading…</div>
+          </div>
+        </div>
+        <!-- Project tab -->
+        <div class="settings-tab-panel" id="settings-panel-project">
+          <div class="settings-field-row">
+            <label for="settings-project-select">Project</label>
+            <select id="settings-project-select" onchange="onSettingsProjectChange()">
+              <option value="">— select a project —</option>
+            </select>
+          </div>
+          <div id="settings-project-content"></div>
+        </div>
+      </div>
+      <div class="settings-modal-footer">
+        <span class="settings-feedback" id="settings-feedback"></span>
+        <div style="display:flex;gap:8px;">
+          <button class="btn" type="button" onclick="closeSettings()">Close</button>
+          <button class="btn btn-primary" type="button" id="settings-save-btn" onclick="saveSettings()">Save</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <script>
     const API = window.location.origin;
     let token = localStorage.getItem("praxis_token") || "";
@@ -712,6 +1058,7 @@
     let plans = [];
     let currentTasks = [];
     let selectedProjectId = null;
+    let globalProjectFilter = localStorage.getItem("praxis_project_filter") || "all";
     let selectedPlanId = null;
     let selectedTaskId = null;
     let showingForm = false;
@@ -721,6 +1068,10 @@
     let expandedCompletedPlans = new Set();
     let expandedSpecs = new Set();
     let dashboardSseSource = null;
+    let HARNESSES = [];
+    let lifecycleItems = [];
+    let selectedLifecycle = null;
+    let lifecycleSegment = "spec";
 
     initTheme();
 
@@ -768,6 +1119,34 @@
       }[c]));
     }
 
+    function renderMarkdown(src) {
+      const lines = (src || "").replace(/\r\n/g, "\n").split("\n");
+      let html = "", inCode = false, inList = false;
+      const inline = (s) => esc(s)
+        .replace(/`([^`]+)`/g, '<code>$1</code>')
+        .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+        .replace(/\*([^*]+)\*/g, '<em>$1</em>');
+      for (const raw of lines) {
+        if (raw.trim().startsWith("```")) {
+          if (!inCode) { if (inList) { html += "</ul>"; inList = false; } html += "<pre><code>"; inCode = true; }
+          else { html += "</code></pre>"; inCode = false; }
+          continue;
+        }
+        if (inCode) { html += esc(raw) + "\n"; continue; }
+        const cb = raw.match(/^\s*-\s\[( |x|X)\]\s+(.*)$/);
+        const li = raw.match(/^\s*-\s+(.*)$/);
+        const h = raw.match(/^(#{1,6})\s+(.*)$/);
+        if (h) { if (inList) { html += "</ul>"; inList = false; } html += "<h" + h[1].length + ">" + inline(h[2]) + "</h" + h[1].length + ">"; continue; }
+        if (cb) { if (!inList) { html += "<ul class='md-checks'>"; inList = true; } const done = cb[1] !== " "; html += "<li>" + (done ? "&#9745;" : "&#9744;") + " " + inline(cb[2]) + "</li>"; continue; }
+        if (li) { if (!inList) { html += "<ul>"; inList = true; } html += "<li>" + inline(li[1]) + "</li>"; continue; }
+        if (inList) { html += "</ul>"; inList = false; }
+        if (raw.trim()) html += "<p>" + inline(raw) + "</p>";
+      }
+      if (inList) html += "</ul>";
+      if (inCode) html += "</code></pre>";
+      return html;
+    }
+
     function jsArg(value) {
       return esc(JSON.stringify(String(value ?? "")));
     }
@@ -798,14 +1177,11 @@
     function primaryAction() {
       if (currentView === "dashboard") {
         switchView("plans");
-        showingForm = true;
-        renderPlansView();
       } else if (currentView === "projects") {
         showingForm = true;
         renderProjectsView();
       } else if (currentView === "plans") {
-        showingForm = true;
-        renderPlansView();
+        openSpecChat();
       } else if (currentView === "tasks") {
         renderTasks();
       } else {
@@ -822,14 +1198,15 @@
         eventSource = null;
       }
       if (name === "dashboard") {
-        setTopbar("Dashboard", "+ Submit Spec");
+        setTopbar("Dashboard", "+ New Plan");
         await loadDashboard();
       } else if (name === "projects") {
         setTopbar("Projects", "+ New Project");
         await loadProjects();
       } else if (name === "plans") {
-        setTopbar("Plans", "+ Submit Spec");
+        setTopbar("Plans", "+ Create Spec");
         await loadPlans();
+        await loadLifecycle();
       } else if (name === "tasks") {
         setTopbar("Tasks", "Refresh");
         await renderTasks();
@@ -853,7 +1230,37 @@
       if (!selectedProjectId && projects.length) selectedProjectId = projects[0].id;
       if (!projects.some(project => project.id === selectedProjectId)) selectedProjectId = projects[0]?.id || null;
       document.getElementById("stat-projects").textContent = projects.length;
+      populateGlobalProjectSelect();
       if (currentView === "projects") renderProjectsView();
+    }
+
+    function populateGlobalProjectSelect() {
+      const sel = document.getElementById("global-project");
+      if (!sel) return;
+      if (globalProjectFilter !== "all" && !projects.some(p => p.id === globalProjectFilter)) {
+        globalProjectFilter = "all";
+        localStorage.setItem("praxis_project_filter", globalProjectFilter);
+      }
+      sel.innerHTML = ['<option value="all">All Projects</option>']
+        .concat(projects.map(p => '<option value="' + esc(p.id) + '">' + esc(p.name) + '</option>'))
+        .join("");
+      sel.value = globalProjectFilter;
+    }
+
+    function onGlobalProjectChange() {
+      globalProjectFilter = document.getElementById("global-project").value;
+      localStorage.setItem("praxis_project_filter", globalProjectFilter);
+      if (globalProjectFilter !== "all") selectedProjectId = globalProjectFilter;
+      selectedPlanId = null;
+      selectedTaskId = null;
+      selectedDashboardTaskId = null;
+      switchView(currentView);
+    }
+
+    function visiblePlans() {
+      return globalProjectFilter === "all"
+        ? plans
+        : plans.filter(plan => plan.project_id === globalProjectFilter);
     }
 
     async function loadPlans() {
@@ -863,8 +1270,9 @@
         const projectPlans = await api("GET", "/api/projects/" + project.id + "/plans");
         plans.push(...projectPlans.map(plan => ({ ...plan, projectName: project.name })));
       }
-      if (!selectedPlanId && plans.length) selectedPlanId = plans[0].id;
-      if (!plans.some(plan => plan.id === selectedPlanId)) selectedPlanId = plans[0]?.id || null;
+      const visible = visiblePlans();
+      if (!selectedPlanId && visible.length) selectedPlanId = visible[0].id;
+      if (!visible.some(plan => plan.id === selectedPlanId)) selectedPlanId = visible[0]?.id || null;
       document.getElementById("stat-plans").textContent = plans.length;
       if (currentView === "plans") renderPlansView();
     }
@@ -918,7 +1326,7 @@
     }
 
     function renderProjectForm() {
-      return '<div class="detail-header"><div class="detail-title">New Project</div>' +
+      const html = '<div class="detail-header"><div class="detail-title">New Project</div>' +
         '<div class="detail-subtitle">Add a repository for orchestration</div></div>' +
         '<div class="detail-content"><form onsubmit="submitProject(event)">' +
           '<div class="formrow"><label>Name</label><input id="pf-name" required autocomplete="off"></div>' +
@@ -935,9 +1343,18 @@
             '</select>' +
             '<input id="pf-agent-model" placeholder="custom model id" style="display:none;margin-top:6px;">' +
           '</div>' +
+          '<div class="formrow"><label for="project-harness">Harness</label>' +
+            '<div style="display:flex;gap:8px;align-items:center;">' +
+              '<select id="project-harness" name="harness" style="flex:1;"></select>' +
+              '<button type="button" class="btn btn-compact" onclick="renderHarnessAbout()">About harnesses</button>' +
+            '</div>' +
+          '</div>' +
           '<div class="form-actions"><button type="submit" class="btn btn-primary">Create</button>' +
           '<button type="button" class="btn" onclick="showingForm=false;renderProjectsView()">Cancel</button></div>' +
         '</form></div>';
+      // Populate harness dropdown after DOM update (async, next microtask)
+      setTimeout(loadHarnesses, 0);
+      return html;
     }
 
     function onAgentModelPreset(value) {
@@ -958,7 +1375,8 @@
         agent_model: (document.getElementById("pf-agent-model").style.display === "block"
           ? document.getElementById("pf-agent-model").value
           : document.getElementById("pf-agent-model").dataset.model) || null,
-        agent_model_effort: document.getElementById("pf-agent-model").dataset.effort || null
+        agent_model_effort: document.getElementById("pf-agent-model").dataset.effort || null,
+        harness: document.getElementById("project-harness")?.value || null
       });
       selectedProjectId = project.id;
       showingForm = false;
@@ -975,7 +1393,8 @@
 
     function renderPlansView() {
       const container = document.getElementById("view-container");
-      const masterRows = plans.map(plan =>
+      const visible = visiblePlans();
+      const masterRows = visible.map(plan =>
         '<button class="master-row' + (selectedPlanId === plan.id ? ' selected' : '') +
         '" type="button" onclick="selectPlan(\'' + esc(plan.id) + '\')">' +
           '<div class="row-main"><div class="row-name">' + esc(plan.spec).slice(0, 100) + '</div>' +
@@ -988,7 +1407,7 @@
 
       container.innerHTML =
         '<div class="master-panel">' +
-          '<div class="master-header"><div class="master-title">' + plans.length + ' Plans</div>' +
+          '<div class="master-header"><div class="master-title">' + visible.length + ' Plans</div>' +
           '<button class="btn btn-compact" type="button" onclick="loadPlans()">Refresh</button></div>' +
           '<div class="master-list">' + masterRows + '</div>' +
         '</div><div class="detail-panel">' + detail + '</div>';
@@ -1006,8 +1425,9 @@
         '<button class="btn btn-primary" type="button" onclick="approvePlan(\'' + esc(plan.id) + '\')">Approve</button>' +
         '<button class="btn btn-danger" type="button" onclick="rejectPlan(\'' + esc(plan.id) + '\')">Reject</button>' : "";
       return '<div class="detail-header"><div class="detail-title">' + esc(plan.projectName) + '</div>' +
-        '<div class="detail-subtitle">Source: ' + esc(plan.source) + ' &middot; Confidence: ' +
-        (plan.confidence != null ? Math.round(plan.confidence * 100) + "%" : "-") + '</div></div>' +
+        '<div class="detail-subtitle">Source: ' + esc(plan.source) +
+        (plan.confidence != null ? ' &middot; Confidence: ' + Math.round(plan.confidence * 100) + '%' : ' &middot; Confidence: n/a (pending review)') +
+        '</div></div>' +
         '<div class="detail-content">' +
           '<div class="detail-section"><div class="detail-section-title">Specification</div>' +
           '<div class="detail-card" style="white-space:pre-wrap;font-size:13px;line-height:1.6;">' + esc(plan.spec) + '</div></div>' +
@@ -1095,7 +1515,9 @@
     async function renderTasks() {
       if (!plans.length) await loadPlans();
       const container = document.getElementById("view-container");
-      const planOpts = plans.map(plan =>
+      const visible = visiblePlans();
+      if (!visible.some(plan => plan.id === selectedPlanId)) selectedPlanId = visible[0]?.id || null;
+      const planOpts = visible.map(plan =>
         '<option value="' + esc(plan.id) + '"' + (selectedPlanId === plan.id ? " selected" : "") + '>' +
         esc(plan.projectName) + ": " + esc(plan.spec).slice(0, 56) + '</option>'
       ).join("");
@@ -1109,7 +1531,7 @@
           '<div class="master-list" id="tasks-master-list"></div>' +
         '</div><div class="detail-panel" id="task-detail-panel"><div class="detail-empty">Select a task</div></div>';
 
-      const planId = selectedPlanId || plans[0]?.id;
+      const planId = selectedPlanId || visible[0]?.id;
       if (planId) {
         selectedPlanId = planId;
         await loadTasksForPlan(planId);
@@ -1199,10 +1621,14 @@
           '<div class="row-main"><div class="row-name">' + esc(d.title || d.path) + '</div>' +
           '<div class="row-sub">' + esc(d.path) + llm + '</div></div>' + bar + '</div>';
       }).join("");
-      document.getElementById("view-container").innerHTML =
+      const container = document.getElementById("view-container");
+      container.style.display = "";
+      container.innerHTML =
+        '<div class="docs-list-col">' +
         '<div class="list-header"><h2>' + (category === "spec" ? "Specs" : "Plan Docs") + '</h2>' +
         '<button class="btn" type="button" onclick="refreshDocs()">Refresh</button></div>' +
-        '<div class="list">' + (rows || '<div class="empty">No ' + category + ' docs found</div>') + '</div>';
+        '<div class="list">' + (rows || '<div class="empty">No ' + category + ' docs found</div>') + '</div>' +
+        '</div>';
     }
 
     async function refreshDocs() {
@@ -1353,9 +1779,10 @@
     async function loadDashboard(options = {}) {
       await loadProjects();
       await loadPlans();
-      const activePlans = plans.filter(plan => plan.status === "active");
-      const pendingPlans = plans.filter(plan => plan.status === "pending");
-      const completedPlans = plans.filter(plan => plan.status === "completed").slice(0, 5);
+      const scoped = visiblePlans();
+      const activePlans = scoped.filter(plan => plan.status === "active");
+      const pendingPlans = scoped.filter(plan => plan.status === "pending");
+      const completedPlans = scoped.filter(plan => plan.status === "completed").slice(0, 5);
       const plansToLoad = [...activePlans, ...pendingPlans, ...completedPlans];
       const currentPlanIds = new Set(plansToLoad.map(plan => String(plan.id)));
       for (const planId of Object.keys(dashboardTasks)) {
@@ -1375,9 +1802,10 @@
     }
 
     function renderDashboard() {
-      const activePendingPlans = plans.filter(plan => plan.status === "active" || plan.status === "pending");
-      const completedPlans = plans.filter(plan => plan.status === "completed").slice(0, 5);
-      const attentionCount = plans.filter(plan => plan.status === "pending").length +
+      const scoped = visiblePlans();
+      const activePendingPlans = scoped.filter(plan => plan.status === "active" || plan.status === "pending");
+      const completedPlans = scoped.filter(plan => plan.status === "completed").slice(0, 5);
+      const attentionCount = scoped.filter(plan => plan.status === "pending").length +
         Object.values(dashboardTasks).flat().filter(task => task.status === "failed").length;
       const lanesHtml = activePendingPlans.map(renderSwimLane).join("");
       const completedHtml = completedPlans.length ? completedPlans.map(renderCompletedLane).join("") : "";
@@ -1826,18 +2254,44 @@
     // ── Memory page ──────────────────────────────────────────────────────────
 
     function activeProjectId() {
-      return selectedProjectId;
+      return globalProjectFilter !== "all" ? globalProjectFilter : selectedProjectId;
     }
 
     async function renderMemory() {
+      if (!projects.length) await loadProjects();
+      const container = document.getElementById("view-container");
+      container.style.display = "";
       const pid = activeProjectId();
-      const ctx = await api("GET", "/api/projects/" + pid + "/context");
-      document.getElementById("view-container").innerHTML =
-        '<div class="list-header"><h2>Memory</h2>' +
+      if (!pid) {
+        container.innerHTML =
+          '<div class="detail-empty" style="padding:40px;text-align:center;">' +
+          'Select a specific project from the top-right dropdown to view its memory.</div>';
+        return;
+      }
+      const projectName = projects.find(p => p.id === pid)?.name || pid;
+      let ctx;
+      try {
+        ctx = await api("GET", "/api/projects/" + pid + "/context");
+      } catch (e) {
+        const errDetail = e.message && e.message !== "Internal Server Error"
+          ? e.message
+          : "The server returned an error. Check that the project exists and the API is reachable.";
+        container.innerHTML =
+          '<div class="detail-empty" style="padding:40px;text-align:center;">' +
+          '<div style="margin-bottom:8px;font-weight:700;">Could not load memory</div>' +
+          '<div style="color:var(--text-muted);font-size:12px;margin-bottom:16px;">' + esc(errDetail) + '</div>' +
+          '<button class="btn btn-primary" type="button" onclick="renderMemory()">Retry</button></div>';
+        return;
+      }
+      container.innerHTML =
+        '<div class="docs-list-col">' +
+        '<div class="list-header"><h2>Memory &middot; ' + esc(projectName) + '</h2>' +
         '<button class="btn" type="button" onclick="syncContext()">Sync now</button></div>' +
-        '<div class="mem-pane"><h3>CLAUDE.md</h3><pre class="mem-doc">' + esc(ctx.claude_md) + '</pre></div>' +
-        '<div class="mem-pane"><h3>MEMORY.md</h3><pre class="mem-doc">' + esc(ctx.memory_md) + '</pre></div>' +
-        '<div id="ctx-draft"></div>';
+        '<div style="flex:1;overflow-y:auto;">' +
+        '<div class="mem-pane"><h3>CLAUDE.md</h3><pre class="mem-doc">' + esc(ctx.claude_md || "(empty)") + '</pre></div>' +
+        '<div class="mem-pane"><h3>MEMORY.md</h3><pre class="mem-doc">' + esc(ctx.memory_md || "(empty)") + '</pre></div>' +
+        '<div id="ctx-draft"></div>' +
+        '</div></div>';
     }
 
     async function syncContext() {
@@ -1859,6 +2313,487 @@
     }
 
     // ── End Memory page ───────────────────────────────────────────────────────
+
+    // ── Harness dropdown + About panel ───────────────────────────────────────
+
+    async function loadHarnesses() {
+      try {
+        HARNESSES = await api("GET", "/api/harnesses");
+      } catch (e) {
+        HARNESSES = [];
+        return;
+      }
+      const sel = document.getElementById("project-harness");
+      if (!sel) return;
+      sel.innerHTML = "";
+      for (const h of HARNESSES) {
+        const opt = document.createElement("option");
+        opt.value = h.id;
+        opt.textContent = h.recommended ? h.display_name + " (recommended)" : h.display_name;
+        sel.appendChild(opt);
+      }
+    }
+
+    function renderHarnessAbout() {
+      const body = document.getElementById("harness-about-body");
+      if (!body) return;
+      if (!HARNESSES.length) {
+        body.innerHTML = '<p style="color:var(--text-faint);font-size:13px;padding:8px 0;">No harness data available.</p>';
+      } else {
+        body.innerHTML = HARNESSES.map(h =>
+          '<section class="harness-card">' +
+          '<h3>' + esc(h.display_name) + (h.recommended ? ' ⭐ recommended' : '') + '<small>(' + esc(h.maturity) + ')</small></h3>' +
+          '<p>' + esc(h.description) + '</p>' +
+          '<p><strong>What\'s unique:</strong> ' + esc(h.uniqueness) + '</p>' +
+          '<p><strong>When to pick:</strong> ' + esc(h.when_to_pick) + '</p>' +
+          '<div class="harness-cols">' +
+            '<div><strong>Pros</strong><ul>' + (h.pros || []).map(p => '<li>' + esc(p) + '</li>').join('') + '</ul></div>' +
+            '<div><strong>Cons</strong><ul>' + (h.cons || []).map(c => '<li>' + esc(c) + '</li>').join('') + '</ul></div>' +
+          '</div>' +
+          (h.notes && h.notes.length ? '<p style="margin-top:8px;font-size:12px;color:var(--text-faint);">Notes: ' + h.notes.map(n => esc(n)).join(' &middot; ') + '</p>' : '') +
+          '</section>'
+        ).join('');
+      }
+      document.getElementById("harness-overlay").classList.add("open");
+    }
+
+    function closeHarnessAbout() {
+      document.getElementById("harness-overlay").classList.remove("open");
+    }
+
+    function onHarnessOverlayClick(event) {
+      if (event.target === document.getElementById("harness-overlay")) closeHarnessAbout();
+    }
+
+    // ── End Harness dropdown + About panel ────────────────────────────────────
+
+    document.getElementById("harness-about-close").addEventListener("click", closeHarnessAbout);
+    document.getElementById("harness-about-close-footer").addEventListener("click", closeHarnessAbout);
+
+    // ── Settings modal ────────────────────────────────────────────────────────
+
+    let settingsCurrentTab = "global";
+    // Holds original fetched values for dirty-checking: { key: originalValue }
+    let settingsGlobalOriginal = {};
+    // Holds original project field values for dirty-checking
+    let settingsProjectOriginal = {};
+    let settingsSelectedProjectId = null;
+
+    function openSettings() {
+      document.getElementById("settings-overlay").classList.add("open");
+      clearSettingsFeedback();
+      switchSettingsTab(settingsCurrentTab);
+    }
+
+    function closeSettings() {
+      document.getElementById("settings-overlay").classList.remove("open");
+    }
+
+    function onSettingsOverlayClick(event) {
+      if (event.target === document.getElementById("settings-overlay")) closeSettings();
+    }
+
+    function switchSettingsTab(tab) {
+      settingsCurrentTab = tab;
+      document.querySelectorAll(".settings-tab").forEach(btn => {
+        btn.classList.toggle("active", btn.id === "settings-tab-" + tab);
+      });
+      document.querySelectorAll(".settings-tab-panel").forEach(panel => {
+        panel.classList.toggle("active", panel.id === "settings-panel-" + tab);
+      });
+      clearSettingsFeedback();
+      if (tab === "global") {
+        loadGlobalSettings();
+      } else if (tab === "project") {
+        loadSettingsProjectList();
+      }
+    }
+
+    function clearSettingsFeedback() {
+      const el = document.getElementById("settings-feedback");
+      if (el) { el.textContent = ""; el.className = "settings-feedback"; }
+    }
+
+    function showSettingsFeedback(msg, isError) {
+      const el = document.getElementById("settings-feedback");
+      if (!el) return;
+      el.textContent = msg;
+      el.className = "settings-feedback " + (isError ? "error" : "success");
+      if (!isError) setTimeout(() => { if (el.textContent === msg) { el.textContent = ""; } }, 3000);
+    }
+
+    // ── Global settings ───────────────────────────────────────────────────────
+
+    const SETTINGS_EDITABLE_META = {
+      lm_studio_url:         { label: "LM Studio URL",           type: "text" },
+      agent_model:           { label: "Agent Model",             type: "text" },
+      agent_model_effort:    { label: "Agent Model Effort",      type: "text", hint: "low | medium | high (empty = default)" },
+      docs_root:             { label: "Docs Root Path",          type: "text" },
+      memory_md_path:        { label: "MEMORY.md Path",          type: "text" },
+      brainstorm_workspace:  { label: "Brainstorm Workspace",    type: "text" },
+    };
+
+    async function loadGlobalSettings() {
+      const container = document.getElementById("settings-global-content");
+      container.innerHTML = '<div style="color:var(--text-faint);font-size:13px;">Loading…</div>';
+      try {
+        const data = await api("GET", "/api/settings");
+        settingsGlobalOriginal = {};
+        for (const key of Object.keys(SETTINGS_EDITABLE_META)) {
+          const entry = data.editable ? data.editable[key] : null;
+          settingsGlobalOriginal[key] = entry ? entry.value : null;
+        }
+        container.innerHTML = renderGlobalSettings(data);
+      } catch (e) {
+        const msg = e.message || "Unknown error";
+        const isAuth = msg.includes("401") || msg.toLowerCase().includes("unauthorized");
+        container.innerHTML =
+          '<div style="color:var(--btn-danger-text);font-size:13px;padding:8px 0;">' +
+          esc(isAuth ? "Authentication failed. Check your API token." : "Failed to load settings: " + msg) +
+          '</div>';
+      }
+    }
+
+    function renderGlobalSettings(data) {
+      const editable = data.editable || {};
+      const readonly = data.readonly || {};
+      let html = '<div class="settings-section-title">Editable Settings</div>';
+
+      for (const [key, meta] of Object.entries(SETTINGS_EDITABLE_META)) {
+        const entry = editable[key] || {};
+        const val = entry.value != null ? String(entry.value) : "";
+        const overridden = !!entry.overridden;
+        const escapedKey = esc(key);
+        const escapedVal = esc(val);
+        html += '<div class="settings-field-row">' +
+          '<label for="sg-' + escapedKey + '">' + esc(meta.label) +
+            (overridden ? ' <span class="settings-overridden-badge">overridden by env</span>' : '') +
+          '</label>' +
+          '<input id="sg-' + escapedKey + '" type="' + esc(meta.type || "text") + '" ' +
+            'data-settings-key="' + escapedKey + '" ' +
+            'value="' + escapedVal + '" ' +
+            'autocomplete="off">' +
+          (meta.hint ? '<div class="settings-note">' + esc(meta.hint) + '</div>' : '') +
+          '<div class="settings-field-actions">' +
+            '<button class="btn btn-compact" type="button" onclick="resetSettingsField(' + JSON.stringify(key) + ')">Reset to default</button>' +
+          '</div>' +
+        '</div>';
+      }
+
+      html += '<div class="settings-section-title" style="margin-top:18px;">Read-only (require restart)</div>';
+      html += '<div class="settings-readonly-group">';
+      for (const [key, val] of Object.entries(readonly)) {
+        html += '<div class="settings-field-row" style="margin-bottom:10px;">' +
+          '<label>' + esc(key) + '</label>' +
+          '<input type="text" value="' + esc(String(val != null ? val : "")) + '" disabled>' +
+        '</div>';
+      }
+      html += '<div class="settings-note">These values are set via environment variables and require a server restart to change.</div>';
+      html += '</div>';
+
+      return html;
+    }
+
+    async function resetSettingsField(key) {
+      clearSettingsFeedback();
+      try {
+        const data = await api("PUT", "/api/settings", { [key]: null });
+        showSettingsFeedback("'" + key + "' reset to default.", false);
+        // Re-render with fresh data
+        const container = document.getElementById("settings-global-content");
+        settingsGlobalOriginal[key] = null;
+        container.innerHTML = renderGlobalSettings({ editable: data, readonly: {} });
+        // Reload to get readonly section too
+        loadGlobalSettings();
+      } catch (e) {
+        const msg = e.message || "Unknown error";
+        showSettingsFeedback("Error: " + msg, true);
+      }
+    }
+
+    // ── Project settings ──────────────────────────────────────────────────────
+
+    const PROJECT_EDITABLE_FIELDS = [
+      { key: "name",                  label: "Name",                   type: "text" },
+      { key: "model_name",            label: "Model (implementer)",    type: "text" },
+      { key: "agent_model",           label: "Agent Model (planner)",  type: "text", hint: "Leave blank to use global default" },
+      { key: "agent_model_effort",    label: "Agent Model Effort",     type: "text", hint: "low | medium | high (empty = default)" },
+      { key: "lm_studio_url",         label: "LM Studio URL",          type: "text", hint: "Leave blank to use global default" },
+      { key: "default_branch",        label: "Default Branch",         type: "text" },
+      { key: "approval_gate",         label: "Approval Gate",          type: "checkbox" },
+      { key: "confidence_threshold",  label: "Confidence Threshold",   type: "number", hint: "0.0 – 1.0" },
+      { key: "max_retries",           label: "Max Retries",            type: "number" },
+      { key: "max_improvement_cycles",label: "Max Improvement Cycles", type: "number" },
+    ];
+
+    async function loadSettingsProjectList() {
+      if (!projects.length) {
+        try { await loadProjects(); } catch (e) { /* handled below */ }
+      }
+      const sel = document.getElementById("settings-project-select");
+      if (!sel) return;
+      sel.innerHTML = '<option value="">— select a project —</option>';
+      for (const p of projects) {
+        const opt = document.createElement("option");
+        opt.value = p.id;
+        opt.textContent = p.name;
+        if (p.id === settingsSelectedProjectId) opt.selected = true;
+        sel.appendChild(opt);
+      }
+      if (settingsSelectedProjectId) loadSettingsProject(settingsSelectedProjectId);
+    }
+
+    function onSettingsProjectChange() {
+      const sel = document.getElementById("settings-project-select");
+      settingsSelectedProjectId = sel ? sel.value : null;
+      clearSettingsFeedback();
+      if (settingsSelectedProjectId) {
+        loadSettingsProject(settingsSelectedProjectId);
+      } else {
+        document.getElementById("settings-project-content").innerHTML = "";
+      }
+    }
+
+    async function loadSettingsProject(id) {
+      const container = document.getElementById("settings-project-content");
+      container.innerHTML = '<div style="color:var(--text-faint);font-size:13px;padding:4px 0;">Loading…</div>';
+      try {
+        const proj = await api("GET", "/api/projects/" + id);
+        settingsProjectOriginal = {};
+        for (const f of PROJECT_EDITABLE_FIELDS) {
+          settingsProjectOriginal[f.key] = proj[f.key] != null ? proj[f.key] : null;
+        }
+        container.innerHTML = renderProjectSettingsForm(proj);
+      } catch (e) {
+        const msg = e.message || "Unknown error";
+        const isAuth = msg.includes("401") || msg.toLowerCase().includes("unauthorized");
+        container.innerHTML =
+          '<div style="color:var(--btn-danger-text);font-size:13px;padding:8px 0;">' +
+          esc(isAuth ? "Authentication failed. Check your API token." : "Failed to load project: " + msg) +
+          '</div>';
+      }
+    }
+
+    function renderProjectSettingsForm(proj) {
+      let html = '';
+      for (const f of PROJECT_EDITABLE_FIELDS) {
+        const val = proj[f.key] != null ? proj[f.key] : "";
+        const escapedKey = esc(f.key);
+        html += '<div class="settings-field-row">';
+        html += '<label for="sp-' + escapedKey + '">' + esc(f.label) + '</label>';
+        if (f.type === "checkbox") {
+          html += '<div style="display:flex;align-items:center;gap:8px;">' +
+            '<input id="sp-' + escapedKey + '" type="checkbox" ' +
+              'data-proj-key="' + escapedKey + '" ' +
+              (val ? 'checked' : '') +
+              ' style="width:auto;margin:0;">' +
+            '<span style="font-size:12px;color:var(--text-muted);">Enabled</span>' +
+          '</div>';
+        } else {
+          html += '<input id="sp-' + escapedKey + '" type="' + esc(f.type || "text") + '" ' +
+            'data-proj-key="' + escapedKey + '" ' +
+            'value="' + esc(String(val)) + '" ' +
+            'autocomplete="off"' +
+            (f.type === "number" ? ' step="any"' : '') +
+            '>';
+        }
+        if (f.hint) html += '<div class="settings-note">' + esc(f.hint) + '</div>';
+        html += '</div>';
+      }
+      return html;
+    }
+
+    // ── Save dispatcher ───────────────────────────────────────────────────────
+
+    async function saveSettings() {
+      clearSettingsFeedback();
+      if (settingsCurrentTab === "global") {
+        await saveGlobalSettings();
+      } else {
+        await saveProjectSettings();
+      }
+    }
+
+    async function saveGlobalSettings() {
+      const inputs = document.querySelectorAll("#settings-panel-global [data-settings-key]");
+      const changed = {};
+      inputs.forEach(input => {
+        const key = input.dataset.settingsKey;
+        const newVal = input.value.trim();
+        const origVal = settingsGlobalOriginal[key] != null ? String(settingsGlobalOriginal[key]) : "";
+        if (newVal !== origVal) {
+          changed[key] = newVal === "" ? null : newVal;
+        }
+      });
+
+      if (!Object.keys(changed).length) {
+        showSettingsFeedback("No changes to save.", false);
+        return;
+      }
+
+      const btn = document.getElementById("settings-save-btn");
+      btn.disabled = true;
+      try {
+        const data = await api("PUT", "/api/settings", changed);
+        showSettingsFeedback("Global settings saved.", false);
+        // Re-render with returned editable data
+        const container = document.getElementById("settings-global-content");
+        // Update originals
+        for (const [key, entry] of Object.entries(data)) {
+          settingsGlobalOriginal[key] = entry && entry.value != null ? entry.value : null;
+        }
+        container.innerHTML = renderGlobalSettings({ editable: data, readonly: {} });
+        // Full reload to get readonly back
+        loadGlobalSettings();
+      } catch (e) {
+        const msg = e.message || "Unknown error";
+        const isAuth = msg.includes("401") || msg.toLowerCase().includes("unauthorized");
+        showSettingsFeedback(isAuth ? "Authentication failed." : "Error: " + msg, true);
+      } finally {
+        btn.disabled = false;
+      }
+    }
+
+    async function saveProjectSettings() {
+      if (!settingsSelectedProjectId) {
+        showSettingsFeedback("Select a project first.", true);
+        return;
+      }
+      const inputs = document.querySelectorAll("#settings-panel-project [data-proj-key]");
+      const changed = {};
+      inputs.forEach(input => {
+        const key = input.dataset.projKey;
+        let newVal;
+        if (input.type === "checkbox") {
+          newVal = input.checked;
+        } else if (input.type === "number") {
+          newVal = input.value.trim() === "" ? null : Number(input.value);
+        } else {
+          newVal = input.value.trim() === "" ? null : input.value.trim();
+        }
+        const origVal = settingsProjectOriginal[key];
+        // Compare by string for most, direct for booleans/numbers
+        const origStr = origVal != null ? String(origVal) : "";
+        const newStr = newVal != null ? String(newVal) : "";
+        if (origStr !== newStr) {
+          changed[key] = newVal;
+        }
+      });
+
+      if (!Object.keys(changed).length) {
+        showSettingsFeedback("No changes to save.", false);
+        return;
+      }
+
+      const btn = document.getElementById("settings-save-btn");
+      btn.disabled = true;
+      try {
+        await api("PATCH", "/api/projects/" + settingsSelectedProjectId, changed);
+        showSettingsFeedback("Project settings saved.", false);
+        // Refresh local projects cache and re-render
+        await loadProjects();
+        // Reload project form with fresh data
+        await loadSettingsProject(settingsSelectedProjectId);
+      } catch (e) {
+        const msg = e.message || "Unknown error";
+        const isAuth = msg.includes("401") || msg.toLowerCase().includes("unauthorized");
+        showSettingsFeedback(isAuth ? "Authentication failed." : "Error: " + msg, true);
+      } finally {
+        btn.disabled = false;
+      }
+    }
+
+    // Esc key closes settings modal (and other modals if none open)
+    document.addEventListener("keydown", function(event) {
+      if (event.key !== "Escape") return;
+      if (document.getElementById("settings-overlay").classList.contains("open")) {
+        closeSettings();
+      } else if (document.getElementById("harness-overlay").classList.contains("open")) {
+        closeHarnessAbout();
+      } else if (document.getElementById("spec-chat-overlay").classList.contains("open")) {
+        closeSpecChat();
+      }
+    });
+
+    // ── End Settings modal ────────────────────────────────────────────────────
+
+    // ── Unified Lifecycle View (Spec | Plan | Run) ────────────────────────────
+
+    async function loadLifecycle() {
+      if (!selectedProjectId) { lifecycleItems = []; renderLifecycleView(); return; }
+      lifecycleItems = await api("GET", "/api/projects/" + selectedProjectId + "/lifecycle");
+      if (!selectedLifecycle && lifecycleItems.length) selectedLifecycle = lifecycleItems[0].spec_path;
+      renderLifecycleView();
+    }
+
+    function renderLifecycleView() {
+      const c = document.getElementById("view-container");
+      const rows = lifecycleItems.map(it =>
+        '<button class="master-row' + (selectedLifecycle === it.spec_path ? ' selected' : '') +
+        '" type="button" onclick="selectLifecycle(\'' + esc(it.spec_path) + '\')">' +
+        '<div class="row-main"><div class="row-name">' + esc(it.title) + '</div>' +
+        '<div class="row-meta">' + esc(it.stage) + '</div></div>' + badge(it.stage) + '</button>'
+      ).join("") || '<div class="empty-list">No specs yet — use + Create Spec</div>';
+      const detail = selectedLifecycle
+        ? renderLifecycleDetail(lifecycleItems.find(i => i.spec_path === selectedLifecycle))
+        : '<div class="detail-empty">Select an item</div>';
+      c.innerHTML =
+        '<div class="master-panel"><div class="master-header">' +
+        '<div class="master-title">' + lifecycleItems.length + ' Plans</div>' +
+        '<button class="btn btn-compact" type="button" onclick="loadLifecycle()">Refresh</button></div>' +
+        '<div class="master-list">' + rows + '</div></div>' +
+        '<div class="detail-panel">' + detail + '</div>';
+    }
+
+    function selectLifecycle(specPath) { selectedLifecycle = specPath; lifecycleSegment = "spec"; renderLifecycleView(); loadLifecycleDoc(); }
+    function setLifecycleSegment(seg) { lifecycleSegment = seg; renderLifecycleView(); loadLifecycleDoc(); }
+
+    let lifecycleDocCache = {};
+
+    function renderLifecycleDetail(it) {
+      if (!it) return '<div class="detail-empty">Not found</div>';
+      const seg = (k, label, on) => '<button class="json-toggle-btn' + (lifecycleSegment === k ? ' active' : '') +
+        '"' + (on ? '' : ' disabled') + ' type="button" onclick="setLifecycleSegment(\'' + k + '\')">' + label + '</button>';
+      const segmented = '<div class="json-toggle">' + seg("spec", "Spec", true) +
+        seg("plan", "Plan", !!it.plan_path) + seg("run", "Run", !!it.run_id) + '</div>';
+      let body = "";
+      if (lifecycleSegment === "run") {
+        const run = plans.find(p => p.id === it.run_id);
+        body = run ? renderPlanDetail(run) : '<div class="detail-empty">Run not loaded — open Refresh</div>';
+      } else {
+        const path = lifecycleSegment === "spec" ? it.spec_path : it.plan_path;
+        const cached = lifecycleDocCache[path];
+        const promote = (lifecycleSegment === "plan" && it.plan_path && !it.run_id)
+          ? '<div class="detail-actions"><button class="btn btn-primary" type="button" onclick="promoteLifecycle(\'' + esc(it.plan_path) + '\')">Promote to Run</button></div>'
+          : "";
+        body = '<div class="detail-content"><div class="detail-card">' +
+          (cached === undefined ? "Loading…" : renderMarkdown(cached)) + '</div>' + promote + '</div>';
+      }
+      return '<div class="detail-header"><div class="detail-title">' + esc(it.title) + '</div>' +
+        '<div style="margin-top:8px;">' + segmented + '</div></div>' + body;
+    }
+
+    async function loadLifecycleDoc() {
+      const it = lifecycleItems.find(i => i.spec_path === selectedLifecycle);
+      if (!it || lifecycleSegment === "run") return;
+      const path = lifecycleSegment === "spec" ? it.spec_path : it.plan_path;
+      if (!path || lifecycleDocCache[path] !== undefined) { renderLifecycleView(); return; }
+      try {
+        const doc = await api("GET", "/api/projects/" + selectedProjectId + "/doc-raw?path=" + encodeURIComponent(path));
+        lifecycleDocCache[path] = doc.content;
+      } catch (e) { lifecycleDocCache[path] = "_Could not load " + path + "_"; }
+      renderLifecycleView();
+    }
+
+    async function promoteLifecycle(planPath) {
+      const btn = event.target; btn.disabled = true; btn.textContent = "Promoting…";
+      try {
+        await api("POST", "/api/plans/promote", { project_id: selectedProjectId, plan_path: planPath });
+        await loadPlans(); await loadLifecycle();
+      } catch (e) { btn.disabled = false; btn.textContent = "Promote to Run"; alert("Promote failed: " + e.message); }
+    }
+
+    // ── End Unified Lifecycle View ────────────────────────────────────────────
 
     ensureToken();
     switchView("dashboard").catch(error => {

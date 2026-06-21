@@ -35,6 +35,7 @@ MIGRATIONS: tuple[str, ...] = (
         max_improvement_cycles INTEGER NOT NULL DEFAULT 5,
         lm_studio_url TEXT NOT NULL DEFAULT 'http://host.docker.internal:1234',
         model_name TEXT NOT NULL DEFAULT '',
+        harness TEXT NOT NULL DEFAULT 'aider',
         agent_model TEXT,
         agent_model_effort TEXT,
         created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -106,6 +107,13 @@ MIGRATIONS: tuple[str, ...] = (
         updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     )
     """,
+    """
+    CREATE TABLE IF NOT EXISTS settings_overrides (
+        key TEXT PRIMARY KEY,
+        value TEXT,
+        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )
+    """,
 )
 
 
@@ -143,11 +151,22 @@ class Database:
         for migration in MIGRATIONS:
             await connection.execute(migration)
 
-        for column in ("agent_model", "agent_model_effort"):
-            with contextlib.suppress(Exception):
-                await connection.execute(
-                    f"ALTER TABLE projects ADD COLUMN {column} TEXT"  # noqa: S608
-                )
+        for table, column_ddls in (
+            (
+                "projects",
+                (
+                    "agent_model TEXT",
+                    "agent_model_effort TEXT",
+                    "harness TEXT NOT NULL DEFAULT 'aider'",
+                ),
+            ),
+            ("plans", ("spec_path TEXT", "plan_path TEXT")),
+        ):
+            for ddl in column_ddls:
+                with contextlib.suppress(Exception):
+                    await connection.execute(
+                        f"ALTER TABLE {table} ADD COLUMN {ddl}"  # noqa: S608
+                    )
 
         await connection.execute(
             """

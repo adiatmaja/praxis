@@ -31,7 +31,7 @@ def _mock_container(
 
 @pytest.mark.unit
 @patch("orchestrator.core.agent_manager.docker")
-def test_spawn_agent(mock_docker: MagicMock) -> None:
+async def test_spawn_agent(mock_docker: MagicMock) -> None:
     mock_client = MagicMock()
     mock_docker.from_env.return_value = mock_client
     container = _mock_container()
@@ -41,7 +41,7 @@ def test_spawn_agent(mock_docker: MagicMock) -> None:
         lm_studio_url="http://host.docker.internal:1234",
         github_token="ghp_test",
     )
-    result = manager.spawn_agent(
+    result = await manager.spawn_agent(
         task_id="task-1",
         repo_url="https://github.com/user/repo.git",
         branch="agent/login",
@@ -49,10 +49,12 @@ def test_spawn_agent(mock_docker: MagicMock) -> None:
         task_prompt="Build login page",
         model_name="deepseek-coder-v2",
         callback_url="http://orchestrator:8080/api/internal/agent-done",
+        harness="aider",
     )
 
     assert result == container.id
     call_kwargs = mock_client.containers.run.call_args.kwargs
+    assert call_kwargs["image"] == "aider-agent:latest"
     assert call_kwargs["detach"] is True
     assert call_kwargs["auto_remove"] is False
     assert call_kwargs["environment"]["TASK_PROMPT"] == "Build login page"
@@ -60,7 +62,7 @@ def test_spawn_agent(mock_docker: MagicMock) -> None:
 
 @pytest.mark.unit
 @patch("orchestrator.core.agent_manager.docker")
-def test_spawn_agent_sets_correct_env(mock_docker: MagicMock) -> None:
+async def test_spawn_agent_sets_correct_env(mock_docker: MagicMock) -> None:
     mock_client = MagicMock()
     mock_docker.from_env.return_value = mock_client
     mock_client.containers.run.return_value = _mock_container()
@@ -68,7 +70,7 @@ def test_spawn_agent_sets_correct_env(mock_docker: MagicMock) -> None:
     manager = AgentManager(
         lm_studio_url="http://localhost:9999", github_token="ghp_abc"
     )
-    manager.spawn_agent(
+    await manager.spawn_agent(
         task_id="task-2",
         repo_url="git@github.com:user/repo.git",
         branch="agent/signup",
@@ -76,6 +78,7 @@ def test_spawn_agent_sets_correct_env(mock_docker: MagicMock) -> None:
         task_prompt="Build signup flow",
         model_name="qwen3-32b",
         callback_url="http://orchestrator:8080/api/internal/agent-done",
+        harness="opencode",
     )
 
     env = mock_client.containers.run.call_args.kwargs["environment"]
@@ -83,7 +86,31 @@ def test_spawn_agent_sets_correct_env(mock_docker: MagicMock) -> None:
     assert env["BRANCH"] == "agent/signup"
     assert env["BASE_BRANCH"] == "plan/2026-06-01-auth"
     assert env["OPENAI_API_BASE"] == "http://localhost:9999/v1"
-    assert env["AIDER_MODEL"] == "openai/qwen3-32b"
+    assert env["MODEL"] == "qwen3-32b"
+    assert env["HARNESS"] == "opencode"
+    assert (
+        mock_client.containers.run.call_args.kwargs["image"] == "opencode-agent:latest"
+    )
+
+
+@pytest.mark.unit
+@patch("orchestrator.core.agent_manager.docker")
+async def test_spawn_agent_defaults_to_aider(mock_docker: MagicMock) -> None:
+    mock_client = MagicMock()
+    mock_docker.from_env.return_value = mock_client
+    mock_client.containers.run.return_value = _mock_container()
+
+    manager = AgentManager(lm_studio_url="http://localhost:1234", github_token="ghp_x")
+    await manager.spawn_agent(
+        task_id="t3",
+        repo_url="https://github.com/u/r.git",
+        branch="agent/x",
+        base_branch="main",
+        task_prompt="do it",
+        model_name="m",
+        callback_url="http://o/cb",
+    )
+    assert mock_client.containers.run.call_args.kwargs["image"] == "aider-agent:latest"
 
 
 @pytest.mark.unit

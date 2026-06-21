@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import json
 from collections.abc import AsyncIterator
-from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -107,12 +106,11 @@ async def _stored_log_events(
     task_id: str,
 ) -> tuple[list[dict[str, str]], bool]:
     queue_service = request.app.state.task_queue
-    agent_manager = getattr(request.app.state, "agent_manager", None)
     events: list[dict[str, str]] = []
     has_running_run = False
     for run in await queue_service.get_runs_for_task(task_id):
         has_running_run = has_running_run or run["status"] == "running"
-        logs = _logs_for_run(agent_manager, run)
+        logs = str(run["logs"] or "")
         if logs:
             events.append(
                 {
@@ -128,9 +126,3 @@ async def _stored_log_events(
                 }
             )
     return events, has_running_run
-
-
-def _logs_for_run(agent_manager: Any, run: dict[str, Any]) -> str:
-    if run["status"] == "running" and agent_manager is not None:
-        return str(agent_manager.get_container_logs(run["container_id"]))
-    return str(run["logs"] or "")
