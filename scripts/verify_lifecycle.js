@@ -1,0 +1,21 @@
+const { chromium } = require("playwright");
+const BASE = "http://127.0.0.1:8099";
+const TOKEN = process.env.AUTH_TOKEN || "local-dev-token-praxis";
+(async () => {
+  const b = await chromium.launch();
+  const ctx = await b.newContext({ viewport: { width: 1440, height: 900 } });
+  await ctx.addInitScript(t => { localStorage.setItem("praxis_token", t); localStorage.setItem("praxis_theme", "light"); }, TOKEN);
+  const page = await ctx.newPage();
+  const errors = [];
+  page.on("pageerror", e => errors.push(e.message));
+  page.on("console", m => { if (m.type() === "error") errors.push(m.text()); });
+  await page.goto(BASE, { waitUntil: "domcontentloaded" });
+  await page.waitForTimeout(1500);
+  await page.evaluate(() => window.switchView("plans"));
+  await page.waitForTimeout(2000);
+  await page.screenshot({ path: "scripts/lifecycle.png" });
+  const navText = await page.$$eval(".nav-item", els => els.map(e => e.textContent.trim()));
+  console.log("NAV:", navText.join(" | "));
+  console.log("ERRORS:", errors.length, errors.slice(0, 10));
+  await b.close();
+})();

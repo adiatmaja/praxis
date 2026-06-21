@@ -7,10 +7,14 @@ import json
 import logging
 import re
 from datetime import UTC, datetime, timedelta
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
 from orchestrator.database import Database
 from orchestrator.models.schemas import OpusStatus
+
+
+if TYPE_CHECKING:
+    from orchestrator.core.effective_settings import EffectiveSettings
 
 
 logger = logging.getLogger(__name__)
@@ -94,10 +98,28 @@ class OpusBridge:
         db: Database,
         default_model: str | None = None,
         default_effort: str | None = None,
+        effective_settings: EffectiveSettings | None = None,
     ) -> None:
         self._db = db
         self._default_model = default_model
         self._default_effort = default_effort
+        self._effective_settings = effective_settings
+
+    async def _resolve_model(self, override: str | None) -> str | None:
+        """Return effective model: explicit override > effective_settings > default."""
+        if override:
+            return override
+        if self._effective_settings is not None:
+            return await self._effective_settings.agent_model()
+        return self._default_model
+
+    async def _resolve_effort(self, override: str | None) -> str | None:
+        """Return effective effort: explicit override > effective_settings > default."""
+        if override:
+            return override
+        if self._effective_settings is not None:
+            return await self._effective_settings.agent_model_effort()
+        return self._default_effort
 
     async def _run_claude_raw(
         self,
@@ -105,8 +127,8 @@ class OpusBridge:
         model: str | None = None,
         effort: str | None = None,
     ) -> tuple[int, str, str]:
-        resolved_model = model or self._default_model
-        resolved_effort = effort or self._default_effort
+        resolved_model = await self._resolve_model(model)
+        resolved_effort = await self._resolve_effort(effort)
         args = ["claude", "-p", prompt, "--output-format", "text"]
         if resolved_model:
             args += ["--model", resolved_model]

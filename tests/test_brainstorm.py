@@ -1,4 +1,11 @@
-from orchestrator.core.brainstorm import BrainstormSession, parse_stream_line
+from pathlib import Path
+
+from orchestrator.core.brainstorm import (
+    PLAN_BOOTSTRAP,
+    BrainstormManager,
+    BrainstormSession,
+    parse_stream_line,
+)
 
 
 def test_session_has_id_and_workspace(tmp_path):
@@ -148,6 +155,54 @@ async def test_generate_plan_cleans_up_workspace(mocker, tmp_path):
     # workspace directories should all be cleaned up
     remaining = list(tmp_path.iterdir())
     assert remaining == [], f"Expected cleanup but found: {remaining}"
+
+
+def _seed_repo(workspace: str) -> None:
+    root = Path(workspace)
+    (root / "docs" / "superpowers" / "specs").mkdir(parents=True)
+    (root / "docs" / "superpowers" / "plans").mkdir(parents=True)
+    (root / "docs" / "superpowers" / "specs" / "x-design.md").write_text(
+        "# X Design\n\nwhat to build", encoding="utf-8"
+    )
+    (root / "docs" / "superpowers" / "plans" / "x.md").write_text(
+        "---\nspec_path: docs/superpowers/specs/x-design.md\n---\n"
+        "# X Plan\n- [x] a\n- [ ] b\n",
+        encoding="utf-8",
+    )
+
+
+def test_list_lifecycle_docs(tmp_path, mocker):
+    mgr = BrainstormManager(
+        workspace_base=str(tmp_path / "ws"), event_bus=None, github_token="t"
+    )
+    mocker.patch.object(
+        mgr, "_clone_repo", side_effect=lambda _url, dest: _seed_repo(dest)
+    )
+    docs = mgr.list_lifecycle_docs("https://example.com/repo.git")
+    specs = [d for d in docs if d["category"] == "spec"]
+    plans = [d for d in docs if d["category"] == "plan"]
+    assert specs[0]["path"] == "docs/superpowers/specs/x-design.md"
+    assert plans[0]["spec_path"] == "docs/superpowers/specs/x-design.md"
+    assert (plans[0]["done_count"], plans[0]["total_count"]) == (1, 2)
+
+
+def test_read_doc(tmp_path, mocker):
+    mgr = BrainstormManager(
+        workspace_base=str(tmp_path / "ws"), event_bus=None, github_token="t"
+    )
+    mocker.patch.object(
+        mgr, "_clone_repo", side_effect=lambda _url, dest: _seed_repo(dest)
+    )
+    content = mgr.read_doc(
+        "https://example.com/repo.git", "docs/superpowers/plans/x.md"
+    )
+    assert "# X Plan" in content
+
+
+def test_plan_bootstrap_requests_spec_path_frontmatter():
+    prompt = PLAN_BOOTSTRAP.format(spec_path="docs/specs/x.md", notes="none")
+    assert "spec_path" in prompt
+    assert "front-matter" in prompt.lower() or "frontmatter" in prompt.lower()
 
 
 async def test_stream_lines_logs_nonzero_exit(mocker, tmp_path):

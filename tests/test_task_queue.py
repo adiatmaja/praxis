@@ -216,3 +216,32 @@ async def test_agent_run_lifecycle(db: Database) -> None:
     assert run["logs"] == "All done\nLog line 2"
     assert run["finished_at"] is not None
     assert len(runs) == 1
+
+
+@pytest.mark.integration
+async def test_get_running_runs(db: Database) -> None:
+    queue, plan_id = await _activate_test_plan(db)
+    task_id = (await queue.get_tasks_for_plan(plan_id))[0]["id"]
+
+    running_id = await queue.create_agent_run(task_id, "container_running")
+    done_id = await queue.create_agent_run(task_id, "container_done")
+    await queue.complete_agent_run(done_id, "completed", "ok")
+
+    running = await queue.get_running_runs()
+
+    assert [run["id"] for run in running] == [running_id]
+
+
+@pytest.mark.integration
+async def test_update_agent_run_logs_keeps_running(db: Database) -> None:
+    queue, plan_id = await _activate_test_plan(db)
+    task_id = (await queue.get_tasks_for_plan(plan_id))[0]["id"]
+    run_id = await queue.create_agent_run(task_id, "container_xyz")
+
+    await queue.update_agent_run_logs(run_id, "partial log output")
+    run = await queue.get_agent_run(run_id)
+
+    assert run is not None
+    assert run["logs"] == "partial log output"
+    assert run["status"] == "running"
+    assert run["finished_at"] is None

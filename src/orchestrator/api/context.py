@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+import subprocess  # noqa: S404
 from typing import Any, cast
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
@@ -10,6 +12,7 @@ from pydantic import BaseModel
 from orchestrator.api.auth import verify_token
 
 
+logger = logging.getLogger(__name__)
 router = APIRouter(tags=["context"])
 
 
@@ -32,9 +35,24 @@ async def get_context(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Project not found"
         )
-    return cast(
-        dict[str, Any], request.app.state.context_sync.current(project["repo_url"])
-    )
+    try:
+        return cast(
+            dict[str, Any],
+            request.app.state.context_sync.current(project["repo_url"]),
+        )
+    except subprocess.CalledProcessError as e:
+        reason = (e.stderr or b"").decode(errors="replace").strip() or str(e)
+        logger.warning("context clone failed for project %s: %s", project_id, reason)
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Could not access repository: {reason}",
+        ) from e
+    except Exception as e:
+        logger.warning("context read failed for project %s: %s", project_id, e)
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Could not access repository: {e}",
+        ) from e
 
 
 @router.post("/api/projects/{project_id}/context-sync")
@@ -53,10 +71,26 @@ async def sync_context(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Project not found"
         )
-    return cast(
-        dict[str, Any],
-        await request.app.state.context_sync.draft(project["repo_url"], body.summary),
-    )
+    try:
+        return cast(
+            dict[str, Any],
+            await request.app.state.context_sync.draft(
+                project["repo_url"], body.summary
+            ),
+        )
+    except subprocess.CalledProcessError as e:
+        reason = (e.stderr or b"").decode(errors="replace").strip() or str(e)
+        logger.warning("context draft failed for project %s: %s", project_id, reason)
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Could not access repository: {reason}",
+        ) from e
+    except Exception as e:
+        logger.warning("context draft failed for project %s: %s", project_id, e)
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Could not access repository: {e}",
+        ) from e
 
 
 @router.post("/api/context-drafts/{draft_id}/approve")

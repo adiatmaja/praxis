@@ -33,6 +33,22 @@ _TYPE_LINE = re.compile(r"^type:\s*(spec|plan)\s*$", re.MULTILINE)
 _TASKS_HEADING = re.compile(r"^##\s+Tasks\b", re.MULTILINE | re.IGNORECASE)
 
 
+def extract_frontmatter_field(text: str, field: str) -> str | None:
+    """Return a top-level YAML front-matter scalar field, or None.
+
+    Only parses the leading ``---``-delimited block. Strips surrounding
+    single or double quotes from the value.
+    """
+    fm = _FRONTMATTER_TYPE.search(text)
+    if not fm:
+        return None
+    pattern = re.compile(rf"^{re.escape(field)}:\s*(.+?)\s*$", re.MULTILINE)
+    match = pattern.search(fm.group(1))
+    if not match:
+        return None
+    return match.group(1).strip().strip("\"'")
+
+
 def classify_by_marker(path: str, text: str) -> str | None:
     """Deterministic classification; None when ambiguous."""
     fm = _FRONTMATTER_TYPE.search(text)

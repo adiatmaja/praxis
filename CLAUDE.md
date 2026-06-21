@@ -32,7 +32,8 @@ praxis/
 │   │   ├── database.py              # SQLite connection + inline migrations
 │   │   ├── api/
 │   │   │   ├── projects.py          # /api/projects CRUD
-│   │   │   ├── plans.py             # /api/plans + approve/reject
+│   │   │   ├── plans.py             # /api/plans + approve/reject + /api/plans/promote
+│   │   │   ├── lifecycle.py         # /api/projects/{id}/lifecycle + /doc-raw (Spec→Plan→Run)
 │   │   │   ├── tasks.py             # /api/tasks + logs streaming
 │   │   │   ├── system.py            # /api/status, /api/opus/state
 │   │   │   ├── events.py            # /api/events SSE stream
@@ -44,6 +45,7 @@ praxis/
 │   │   │   ├── opus_bridge.py       # claude -p invocation + rate limit handling
 │   │   │   ├── agent_manager.py     # Docker container lifecycle
 │   │   │   ├── git_ops.py           # Branch, PR, merge, conflict ops
+│   │   │   ├── plan_derive.py       # plan.md -> opus_plan (deterministic parse + LM Studio fallback)
 │   │   │   └── event_bus.py         # In-memory async pub/sub for SSE
 │   │   └── models/
 │   │       └── schemas.py           # Pydantic request/response + Opus JSON payloads
@@ -56,8 +58,14 @@ praxis/
 │   ├── aider-agent/
 │   │   ├── Dockerfile
 │   │   └── entrypoint.sh
+│   ├── opencode-agent/
+│   │   ├── Dockerfile
+│   │   └── entrypoint.sh
+│   ├── openhands-agent/
+│   │   ├── Dockerfile
+│   │   └── entrypoint.sh
 │   └── caddy/Caddyfile
-├── tests/                           # 101 tests, 88% coverage
+├── tests/                           # 200 tests, 88% coverage
 ├── docker-compose.yml               # Production compose
 ├── docker-compose.local.yml         # Dev overrides (hot reload, mounted source)
 ├── pyproject.toml
@@ -112,6 +120,12 @@ Tables: `users`, `projects`, `plans`, `tasks`, `agent_runs`, `opus_state`
 - **Rate limit handling** — detect 5h subscription limit, queue Opus calls, auto-resume
 - **Two-tier git branching** — `plan/{date}-{slug}` groups tasks, `agent/{task-slug}` per task
 - **Single static auth token** for v1 (data model supports multi-user for future)
+- **Pluggable harnesses** — `core/harnesses.py` is the registry (image + About
+  content) for Aider, OpenCode, OpenHands. Projects pick one via the `harness`
+  column (default `aider`). `AgentManager.spawn_agent` selects the image and
+  sets a harness-agnostic env contract (`HARNESS`, `MODEL`, `OPENAI_API_BASE`,
+  + repo/branch/callback vars). Each `docker/<harness>-agent/` image honors the
+  same entrypoint contract.
 
 ## Gotchas
 
@@ -134,6 +148,28 @@ Tables: `users`, `projects`, `plans`, `tasks`, `agent_runs`, `opus_state`
   The EventBus is in-memory only — events are lost if no subscribers are connected
 - **SQLite DB file** is created at `data/orchestrator.db` relative to CWD. The `data/`
   directory is auto-created by lifespan. Delete the file to reset all state
+- **Context Sync clones cross-platform** — `Settings.brainstorm_workspace` defaults to
+  `tempfile.gettempdir()/praxis-brainstorm` (not hardcoded `/tmp/...`), so the Memory
+  view works on Windows. `ContextSync.current()` clones the repo on every open and
+  cleans up its `read-{uuid}` dir in a `finally`. Clone/git failures surface as a
+  `502` from `GET /api/projects/{id}/context` (handled in `api/context.py`), not an
+  opaque 500. The Memory view re-clones on each open — no caching yet
+- **Agent runs are reconciled, not fire-and-forget** — `Orchestrator.reconcile_runs()`
+  runs every loop pass and at startup. It fails/retries any `running` agent run whose
+  container vanished or exited without an `agent-done` callback, and attaches a live-log
+  monitor (`monitor_run`) to still-running containers. This is what stops a lost callback
+  from wedging a task in `in_progress` forever. Reconciled runs auto-retry up to the
+  project's `max_retries` when Docker is available (gated so a broken Docker can't thrash),
+  else go terminal `failed`. `_reconcile_exited` waits `_callback_grace` (5s) and re-checks
+  status so it never races a real in-flight callback.
+- **`agent_log` events are produced by `monitor_run`** — the live-log SSE
+  (`/api/tasks/{id}/logs`) streams these and falls back to the run's persisted `logs`
+  column (checkpointed each poll), so the panel works even when Docker is down. There is
+  no other producer of `agent_log`.
+- **Agent callbacks retry with backoff** — each `docker/<harness>-agent/entrypoint.sh`
+  `send_callback` retries the POST to `/api/internal/agent-done` up to
+  `CALLBACK_MAX_ATTEMPTS` (default 5) until HTTP 200. The orchestrator's reconciliation
+  is the backstop if all attempts fail.
 - **Aider agent image is standalone** — `aider-agent:latest` is not in docker-compose.
   Build it directly: `docker build -t aider-agent:latest -f docker/aider-agent/Dockerfile docker/aider-agent/`
 - **Agent container runs as non-root** — The `agent` user cannot write to `/`.
@@ -152,6 +188,36 @@ Tables: `users`, `projects`, `plans`, `tasks`, `agent_runs`, `opus_state`
 - **Approve sets plan to ACTIVE immediately** — If the orchestration loop hasn't called
   Opus to break the spec into tasks yet, an ACTIVE plan with no `opus_plan` will trigger
   `plan_and_activate` on the next loop iteration
+- **Harness images are standalone** — build each directly, none are in
+  docker-compose:
+  `docker build -t opencode-agent:latest -f docker/opencode-agent/Dockerfile docker/opencode-agent/`
+  (same for `openhands-agent`).
+- **OpenCode/OpenHands don't auto-commit** — unlike Aider, their entrypoints run
+  `git add -A && git commit` after the agent. A run that produces no changes is
+  marked `failed`.
+- **OpenHands needs a sandbox runtime** — the image uses `RUNTIME=local` to avoid
+  Docker-in-Docker. If unsupported, mount `/var/run/docker.sock` when spawning.
+- **Generic MODEL env var** — all harness entrypoints consume `MODEL` (raw model
+  name); each adds its own provider prefix (Aider/OpenHands use `openai/`,
+  OpenCode uses an `lmstudio/` config provider).
+- **Unified Plans view = Spec → Plan → Run lifecycle** — the dashboard's single Plans
+  view (no separate Specs/Plan Docs nav items) lists one row per spec doc, joined to its
+  plan doc (via `spec_path:` front-matter) and any DB plan (via `plan_path`).
+  `GET /api/projects/{id}/lifecycle` aggregates these. Repo markdown is the source of
+  truth; lifecycle docs live in the **target repo**, not the orchestrator's local docs
+  root — the frontend reads them via `GET /api/projects/{id}/doc-raw?path=` (calls
+  `brainstorm.read_doc`), NOT `/api/docs/raw` (which reads the local root).
+- **Promote a plan.md into a run** — `POST /api/plans/promote {project_id, plan_path}`
+  reads the plan from the repo, derives tasks via `core/plan_derive.derive_opus_plan`
+  (deterministic `### Task N` / checkbox parser first; local **LM Studio** JSON-schema
+  fallback for unstructured plans — never Opus, extraction must stay free), then reuses
+  `TaskQueue.activate_plan` so the Run view is unchanged. Stores `spec_path`/`plan_path`
+  on the `plans` row. Idempotent per `plan_path`. Errors: 404 missing doc, 422 zero tasks,
+  502 local LLM/clone failure.
+- **DocIndexer only scans `specs/` and `plans/` dirs** — top-level `docs/*.md`
+  (workflow.md, architecture.md, deployment.md) are excluded to stop reference docs being
+  misclassified as plans. `PLAN_BOOTSTRAP` instructs generated plans to stamp
+  `spec_path:` front-matter so the Spec↔Plan link is explicit, not filename convention.
 
 ## Documentation
 

@@ -79,18 +79,33 @@ class ContextSync:
         return {"status": "committed", "draft_id": draft_id}
 
     def current(self, repo_url: str) -> dict:
+        """Return current CLAUDE.md and MEMORY.md content from the repo.
+
+        Clones the repo into a temporary directory, reads the files, then
+        removes the directory unconditionally (even on failure).
+
+        Args:
+            repo_url: HTTPS URL of the project repository.
+
+        Returns:
+            Dict with ``claude_md`` and ``memory_md`` string values.
+
+        Raises:
+            subprocess.CalledProcessError: If the git clone fails.
+        """
         draft_id = uuid.uuid4().hex
         ws = str(Path(self._base) / f"read-{draft_id}")
         Path(ws).mkdir(parents=True, exist_ok=True)
-        self._clone_repo(repo_url, ws)
+        try:
+            self._clone_repo(repo_url, ws)
 
-        def _read(rel: str) -> str:
-            p = Path(ws) / rel
-            return p.read_text(encoding="utf-8") if p.is_file() else ""
+            def _read(rel: str) -> str:
+                p = Path(ws) / rel
+                return p.read_text(encoding="utf-8") if p.is_file() else ""
 
-        result = {
-            "claude_md": _read("CLAUDE.md"),
-            "memory_md": _read(self._memory_path),
-        }
-        shutil.rmtree(ws, ignore_errors=True)
-        return result
+            return {
+                "claude_md": _read("CLAUDE.md"),
+                "memory_md": _read(self._memory_path),
+            }
+        finally:
+            shutil.rmtree(ws, ignore_errors=True)

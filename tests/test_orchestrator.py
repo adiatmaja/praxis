@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
@@ -60,7 +61,7 @@ class TestOrchestrationDispatch:
     async def test_dispatch_pending_tasks(self, db: Database) -> None:
         task_queue, plan_id, task_id = await _setup(db)
         mock_agent_manager = MagicMock()
-        mock_agent_manager.spawn_agent.return_value = "container-123"
+        mock_agent_manager.spawn_agent = AsyncMock(return_value="container-123")
         event_bus = EventBus()
         events = event_bus.subscribe()
 
@@ -81,6 +82,29 @@ class TestOrchestrationDispatch:
             "container-123"
         )
         assert events.get_nowait()["type"] == "agent_dispatched"
+
+    async def test_dispatch_forwards_harness_to_spawn_agent(self, db: Database) -> None:
+        """dispatch_pending_tasks must pass the project's harness to spawn_agent."""
+        task_queue, plan_id, _ = await _setup(db)
+        # Override harness to something non-default so the assertion is unambiguous.
+        await db.execute("UPDATE projects SET harness = 'openhands' WHERE id = 'p1'")
+        mock_agent_manager = MagicMock()
+        mock_agent_manager.spawn_agent = AsyncMock(return_value="container-456")
+
+        orch = Orchestrator(
+            task_queue=task_queue,
+            agent_manager=mock_agent_manager,
+            opus_bridge=AsyncMock(),
+            git_ops=AsyncMock(),
+            event_bus=EventBus(),
+        )
+        project = await db.fetch_one("SELECT * FROM projects WHERE id = 'p1'")
+        assert project is not None
+        await orch.dispatch_pending_tasks(plan_id, project)
+
+        mock_agent_manager.spawn_agent.assert_called_once()
+        kwargs = mock_agent_manager.spawn_agent.call_args.kwargs
+        assert kwargs["harness"] == "openhands"
 
     async def test_dispatch_skips_non_pending(self, db: Database) -> None:
         task_queue, plan_id, task_id = await _setup(db)
@@ -662,3 +686,184 @@ class TestSyncPlanCheckbox:
 
         # doc_indexer.scan() was called after the push.
         mock_doc_indexer.scan.assert_awaited_once()
+
+
+class FakeAgents:
+    """Configurable agent-manager double for reconciliation tests."""
+
+    def __init__(
+        self,
+        statuses: list[dict[str, Any] | None] | None = None,
+        logs: str = "",
+    ) -> None:
+        self._statuses = list(statuses or [])
+        self._logs = logs
+        self.log_calls = 0
+
+    def get_container_status(self, container_id: str) -> dict[str, Any] | None:
+        if self._statuses:
+            return self._statuses.pop(0)
+        return {"status": "exited", "exit_code": 1}
+
+    def get_container_logs(self, container_id: str, tail: int | str = 500) -> str:
+        self.log_calls += 1
+        return self._logs
+
+
+async def _orch_with_running_run(
+    db: Database,
+    agents: Any,
+    attempt: int = 1,
+) -> tuple[Orchestrator, TaskQueue, EventBus, str, str]:
+    task_queue, _plan_id, task_id = await _setup(db)
+    await task_queue.update_task_status(task_id, TaskStatus.IN_PROGRESS)
+    await db.execute("UPDATE tasks SET attempt = ? WHERE id = ?", (attempt, task_id))
+    run_id = await task_queue.create_agent_run(task_id, "container-xyz")
+    event_bus = EventBus()
+    orch = Orchestrator(
+        task_queue=task_queue,
+        agent_manager=agents,
+        opus_bridge=AsyncMock(),
+        git_ops=AsyncMock(),
+        event_bus=event_bus,
+    )
+    orch._callback_grace = 0.0
+    orch._monitor_poll_interval = 0.0
+    return orch, task_queue, event_bus, task_id, run_id
+
+
+@pytest.mark.integration
+class TestReconciliation:
+    async def test_orphan_failed_when_agent_unavailable(self, db: Database) -> None:
+        orch, tq, bus, task_id, run_id = await _orch_with_running_run(db, None)
+        events = bus.subscribe()
+
+        await orch.reconcile_runs()
+
+        run = await tq.get_agent_run(run_id)
+        task = await tq.get_task(task_id)
+        assert run is not None
+        assert run["status"] == "failed"
+        assert task is not None
+        assert task["status"] == TaskStatus.FAILED
+        assert events.get_nowait()["type"] == "task_failed"
+
+    async def test_missing_container_retries_when_attempts_remain(
+        self, db: Database
+    ) -> None:
+        agents = FakeAgents(statuses=[None])
+        orch, tq, bus, task_id, run_id = await _orch_with_running_run(db, agents)
+        events = bus.subscribe()
+
+        await orch.reconcile_runs()
+
+        run = await tq.get_agent_run(run_id)
+        task = await tq.get_task(task_id)
+        assert run is not None
+        assert run["status"] == "failed"
+        assert task is not None
+        assert task["status"] == TaskStatus.PENDING
+        assert task["attempt"] == 2
+        assert events.get_nowait()["type"] == "task_retry"
+
+    async def test_exited_without_callback_retries(self, db: Database) -> None:
+        agents = FakeAgents(statuses=[{"status": "exited", "exit_code": 1}])
+        orch, tq, _bus, task_id, run_id = await _orch_with_running_run(db, agents)
+
+        await orch.reconcile_runs()
+
+        run = await tq.get_agent_run(run_id)
+        task = await tq.get_task(task_id)
+        assert run is not None
+        assert run["status"] == "failed"
+        assert task is not None
+        assert task["status"] == TaskStatus.PENDING
+        assert task["attempt"] == 2
+
+    async def test_exited_at_max_retries_fails_terminally(self, db: Database) -> None:
+        # attempt already at max_retries (3) -> no retry left, terminal failure.
+        agents = FakeAgents(statuses=[{"status": "exited", "exit_code": 1}])
+        orch, tq, bus, task_id, run_id = await _orch_with_running_run(
+            db, agents, attempt=3
+        )
+        events = bus.subscribe()
+
+        await orch.reconcile_runs()
+
+        task = await tq.get_task(task_id)
+        assert task is not None
+        assert task["status"] == TaskStatus.FAILED
+        assert events.get_nowait()["type"] == "task_failed"
+
+    async def test_running_container_starts_monitor(self, db: Database) -> None:
+        agents = FakeAgents(statuses=[{"status": "running", "exit_code": 0}])
+        orch, _tq, _bus, task_id, run_id = await _orch_with_running_run(db, agents)
+        started: list[tuple[str, str, str]] = []
+        orch._start_monitor = lambda r, t, c: started.append((r, t, c))  # type: ignore[assignment, method-assign]
+
+        await orch.reconcile_runs()
+
+        assert started == [(run_id, task_id, "container-xyz")]
+
+    async def test_reconcile_skips_already_monitored_run(self, db: Database) -> None:
+        agents = FakeAgents(statuses=[{"status": "running", "exit_code": 0}])
+        orch, _tq, _bus, _task_id, run_id = await _orch_with_running_run(db, agents)
+        alive = asyncio.get_event_loop().create_future()
+        orch._monitors[run_id] = asyncio.ensure_future(alive)  # type: ignore[arg-type]
+        started: list[Any] = []
+        orch._start_monitor = lambda *a: started.append(a)  # type: ignore[assignment, method-assign]
+
+        await orch.reconcile_runs()
+
+        assert started == []
+        alive.set_result(None)
+        orch._monitors.pop(run_id, None)
+
+
+@pytest.mark.integration
+class TestLogMonitor:
+    async def test_monitor_streams_logs_and_reconciles_on_exit(
+        self, db: Database
+    ) -> None:
+        agents = FakeAgents(
+            statuses=[
+                {"status": "running", "exit_code": 1},
+                {"status": "exited", "exit_code": 1},
+            ],
+            logs="line one\nline two\n",
+        )
+        orch, tq, bus, task_id, run_id = await _orch_with_running_run(db, agents)
+        events = bus.subscribe()
+
+        await orch.monitor_run(run_id, task_id, "container-xyz")
+
+        kinds = []
+        while not events.empty():
+            kinds.append(events.get_nowait()["type"])
+        assert "agent_log" in kinds
+        # attempt 1 of max 3 -> exit without callback triggers a bounded retry.
+        assert "task_retry" in kinds
+        run = await tq.get_agent_run(run_id)
+        assert run is not None
+        assert "line one" in (run["logs"] or "")
+        assert run["status"] == "failed"
+        task = await tq.get_task(task_id)
+        assert task is not None
+        assert task["status"] == TaskStatus.PENDING
+
+    async def test_reconcile_exited_noop_when_callback_completed(
+        self, db: Database
+    ) -> None:
+        agents = FakeAgents()
+        orch, tq, _bus, _task_id, run_id = await _orch_with_running_run(db, agents)
+        # Simulate the agent-done callback already finishing the run.
+        await tq.complete_agent_run(run_id, "completed", "done")
+
+        await orch._reconcile_exited(
+            {"id": run_id, "task_id": _task_id, "container_id": "container-xyz"},
+            {"status": "exited", "exit_code": 0},
+        )
+
+        run = await tq.get_agent_run(run_id)
+        assert run is not None
+        assert run["status"] == "completed"

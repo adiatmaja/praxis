@@ -2,6 +2,7 @@ from orchestrator.core.markdown_utils import (
     checklist_progress,
     classify_by_marker,
     content_hash,
+    extract_frontmatter_field,
     extract_title,
 )
 
@@ -46,3 +47,17 @@ def test_classify_frontmatter_type():
 
 def test_classify_ambiguous_returns_none():
     assert classify_by_marker("docs/random.md", "just prose") is None
+
+
+def test_extract_frontmatter_field_present():
+    text = "---\nspec_path: docs/specs/x.md\ntype: plan\n---\n# Plan\nbody"
+    assert extract_frontmatter_field(text, "spec_path") == "docs/specs/x.md"
+
+
+def test_extract_frontmatter_field_absent():
+    assert extract_frontmatter_field("# No frontmatter\nbody", "spec_path") is None
+
+
+def test_extract_frontmatter_field_quoted():
+    text = '---\nspec_path: "docs/specs/y.md"\n---\nbody'
+    assert extract_frontmatter_field(text, "spec_path") == "docs/specs/y.md"

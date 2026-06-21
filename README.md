@@ -92,7 +92,7 @@ praxis/
 │   └── cli/main.py           # Typer CLI client
 ├── web/index.html            # Single-file dashboard
 ├── docker/                   # Dockerfiles + Caddyfile
-├── tests/                    # pytest (101 tests, 88% coverage)
+├── tests/                    # pytest (200 tests, 88% coverage)
 ├── docker-compose.yml
 └── pyproject.toml
 ```
