@@ -23,5 +23,6 @@ def test_malformed_yaml_raises(tmp_path):
     p = tmp_path / "bad.yaml"
     p.write_text("loop_interval: : :\n", encoding="utf-8")
     import pytest
-    with pytest.raises(ValueError):
+
+    with pytest.raises(ValueError, match="Invalid YAML"):
         load_yaml_settings(str(p), env={})

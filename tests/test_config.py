@@ -108,5 +108,6 @@ def test_yaml_provides_defaults(tmp_path, monkeypatch):
     monkeypatch.setenv("GITHUB_TOKEN", "y")
     monkeypatch.delenv("LOOP_INTERVAL", raising=False)
     from orchestrator.config import Settings
+
     s = Settings(_env_file=None, yaml_path=str(cfg))
     assert s.loop_interval == 7

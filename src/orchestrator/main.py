@@ -33,7 +33,7 @@ logger = logging.getLogger(__name__)
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Initialize and teardown shared application resources."""
 
-    settings = Settings()  # type: ignore[call-arg]
+    settings = Settings()
     database = Database(settings.database_url)
 
     db_path = Path(database.db_path)
@@ -43,8 +43,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # Construct BrainstormManager before db.initialize() so the before_drop
     # backfill closure can reference it.  BrainstormManager has no dependency
     # on the database, so this reorder is safe.
-    from orchestrator.core.brainstorm import BrainstormManager
     from orchestrator.core.backfill import backfill_legacy_specs
+    from orchestrator.core.brainstorm import BrainstormManager
 
     _brainstorm_pre = BrainstormManager(
         workspace_base=settings.brainstorm_workspace,

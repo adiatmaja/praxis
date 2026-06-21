@@ -247,5 +247,6 @@ async def test_plans_spec_column_dropped(db: Database) -> None:
     rows = await db.fetch_all("PRAGMA table_info(plans)")
     names = {r["name"] for r in rows}
     assert "spec" not in names
-    assert "spec_path" in names and "plan_path" in names
+    assert "spec_path" in names
+    assert "plan_path" in names
     assert "opus_plan" in names  # retained: runtime task graph
