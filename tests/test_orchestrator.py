@@ -72,15 +72,19 @@ class TestOrchestrationDispatch:
             git_ops=AsyncMock(),
             event_bus=event_bus,
         )
+        started: list[tuple[str, str, str]] = []
+        orch._start_monitor = lambda r, t, c: started.append((r, t, c))  # type: ignore[assignment, method-assign]
         await orch.dispatch_pending_tasks(plan_id, await _project(db))
 
         mock_agent_manager.spawn_agent.assert_called_once()
         task = await task_queue.get_task(task_id)
         assert task is not None
         assert task["status"] == TaskStatus.IN_PROGRESS
-        assert (await task_queue.get_runs_for_task(task_id))[0]["container_id"] == (
-            "container-123"
-        )
+        run = (await task_queue.get_runs_for_task(task_id))[0]
+        assert run["container_id"] == "container-123"
+        # Live-log monitor must attach at dispatch so short-lived containers
+        # still stream agent_log events (not only if reconcile catches them).
+        assert started == [(run["id"], task_id, "container-123")]
         assert events.get_nowait()["type"] == "agent_dispatched"
 
     async def test_dispatch_forwards_harness_to_spawn_agent(self, db: Database) -> None:

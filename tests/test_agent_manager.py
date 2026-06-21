@@ -115,6 +115,58 @@ async def test_spawn_agent_defaults_to_aider(mock_docker: MagicMock) -> None:
 
 @pytest.mark.unit
 @patch("orchestrator.core.agent_manager.docker")
+async def test_spawn_agent_removes_stale_container(mock_docker: MagicMock) -> None:
+    """A leftover container with the same name is force-removed before re-spawn."""
+    mock_client = MagicMock()
+    mock_docker.from_env.return_value = mock_client
+    mock_docker.errors = docker.errors
+    stale = _mock_container(container_id="task-1xx", status="exited")
+    mock_client.containers.get.return_value = stale
+    mock_client.containers.run.return_value = _mock_container()
+
+    manager = AgentManager(lm_studio_url="http://localhost:1234", github_token="ghp_x")
+    await manager.spawn_agent(
+        task_id="task-1xx",
+        repo_url="https://github.com/u/r.git",
+        branch="agent/x",
+        base_branch="main",
+        task_prompt="do it",
+        model_name="m",
+        callback_url="http://o/cb",
+    )
+
+    mock_client.containers.get.assert_called_once_with("aider-agent-task-1xx")
+    stale.remove.assert_called_once_with(force=True)
+    mock_client.containers.run.assert_called_once()
+
+
+@pytest.mark.unit
+@patch("orchestrator.core.agent_manager.docker")
+async def test_spawn_agent_no_stale_container(mock_docker: MagicMock) -> None:
+    """When no container with the name exists, spawn proceeds without error."""
+    mock_client = MagicMock()
+    mock_docker.from_env.return_value = mock_client
+    mock_docker.errors = docker.errors
+    mock_client.containers.get.side_effect = docker.errors.NotFound("gone")
+    mock_client.containers.run.return_value = _mock_container()
+
+    manager = AgentManager(lm_studio_url="http://localhost:1234", github_token="ghp_x")
+    result = await manager.spawn_agent(
+        task_id="task-zz",
+        repo_url="https://github.com/u/r.git",
+        branch="agent/x",
+        base_branch="main",
+        task_prompt="do it",
+        model_name="m",
+        callback_url="http://o/cb",
+    )
+
+    assert result == "abc123"
+    mock_client.containers.run.assert_called_once()
+
+
+@pytest.mark.unit
+@patch("orchestrator.core.agent_manager.docker")
 def test_get_container_status(mock_docker: MagicMock) -> None:
     mock_client = MagicMock()
     mock_docker.from_env.return_value = mock_client

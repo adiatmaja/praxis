@@ -113,6 +113,7 @@ class Orchestrator:
             )
             run_id = await self._tq.create_agent_run(task["id"], container_id)
             await self._tq.update_task_status(task["id"], TaskStatus.IN_PROGRESS)
+            self._start_monitor(run_id, task["id"], container_id)
             self._bus.publish(
                 {
                     "type": "agent_dispatched",
