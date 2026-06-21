@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import logging
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 import aiosqlite
@@ -139,7 +140,10 @@ class Database:
             raise ValueError(message)
         return database_url.removeprefix(SQLITE_URL_PREFIX)
 
-    async def initialize(self) -> None:
+    async def initialize(
+        self,
+        before_drop: Callable[[], Awaitable[None]] | None = None,
+    ) -> None:
         if self._connection is None:
             logger.info("Connecting to SQLite database at %s", self._db_path)
             self._connection = await aiosqlite.connect(self._db_path)
@@ -177,6 +181,9 @@ class Database:
                 await connection.execute("PRAGMA table_info(plans)")
             ).fetchall()
         }
+        if before_drop is not None:
+            await before_drop()
+
         if "spec" in plan_cols:
             await connection.executescript(
                 """
