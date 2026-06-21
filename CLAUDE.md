@@ -32,7 +32,8 @@ praxis/
 │   │   ├── database.py              # SQLite connection + inline migrations
 │   │   ├── api/
 │   │   │   ├── projects.py          # /api/projects CRUD
-│   │   │   ├── plans.py             # /api/plans + approve/reject
+│   │   │   ├── plans.py             # /api/plans + approve/reject + /api/plans/promote
+│   │   │   ├── lifecycle.py         # /api/projects/{id}/lifecycle + /doc-raw (Spec→Plan→Run)
 │   │   │   ├── tasks.py             # /api/tasks + logs streaming
 │   │   │   ├── system.py            # /api/status, /api/opus/state
 │   │   │   ├── events.py            # /api/events SSE stream
@@ -44,6 +45,7 @@ praxis/
 │   │   │   ├── opus_bridge.py       # claude -p invocation + rate limit handling
 │   │   │   ├── agent_manager.py     # Docker container lifecycle
 │   │   │   ├── git_ops.py           # Branch, PR, merge, conflict ops
+│   │   │   ├── plan_derive.py       # plan.md -> opus_plan (deterministic parse + LM Studio fallback)
 │   │   │   └── event_bus.py         # In-memory async pub/sub for SSE
 │   │   └── models/
 │   │       └── schemas.py           # Pydantic request/response + Opus JSON payloads
@@ -198,6 +200,24 @@ Tables: `users`, `projects`, `plans`, `tasks`, `agent_runs`, `opus_state`
 - **Generic MODEL env var** — all harness entrypoints consume `MODEL` (raw model
   name); each adds its own provider prefix (Aider/OpenHands use `openai/`,
   OpenCode uses an `lmstudio/` config provider).
+- **Unified Plans view = Spec → Plan → Run lifecycle** — the dashboard's single Plans
+  view (no separate Specs/Plan Docs nav items) lists one row per spec doc, joined to its
+  plan doc (via `spec_path:` front-matter) and any DB plan (via `plan_path`).
+  `GET /api/projects/{id}/lifecycle` aggregates these. Repo markdown is the source of
+  truth; lifecycle docs live in the **target repo**, not the orchestrator's local docs
+  root — the frontend reads them via `GET /api/projects/{id}/doc-raw?path=` (calls
+  `brainstorm.read_doc`), NOT `/api/docs/raw` (which reads the local root).
+- **Promote a plan.md into a run** — `POST /api/plans/promote {project_id, plan_path}`
+  reads the plan from the repo, derives tasks via `core/plan_derive.derive_opus_plan`
+  (deterministic `### Task N` / checkbox parser first; local **LM Studio** JSON-schema
+  fallback for unstructured plans — never Opus, extraction must stay free), then reuses
+  `TaskQueue.activate_plan` so the Run view is unchanged. Stores `spec_path`/`plan_path`
+  on the `plans` row. Idempotent per `plan_path`. Errors: 404 missing doc, 422 zero tasks,
+  502 local LLM/clone failure.
+- **DocIndexer only scans `specs/` and `plans/` dirs** — top-level `docs/*.md`
+  (workflow.md, architecture.md, deployment.md) are excluded to stop reference docs being
+  misclassified as plans. `PLAN_BOOTSTRAP` instructs generated plans to stamp
+  `spec_path:` front-matter so the Spec↔Plan link is explicit, not filename convention.
 
 ## Documentation
 
