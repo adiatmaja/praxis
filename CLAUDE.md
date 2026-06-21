@@ -106,14 +106,30 @@ PENDING -> IN_PROGRESS -> REVIEWING -> PASSED -> MERGED
 
 ## Data Model (SQLite)
 
-Tables: `users`, `projects`, `plans`, `tasks`, `agent_runs`, `opus_state`
+Tables: `users`, `projects`, `plans`, `tasks`, `agent_runs`, `opus_state`,
+`doc_index`, `settings_overrides`
 
 - A default `admin` user is auto-seeded on first startup (token_hash = AUTH_TOKEN)
 - `opus_state` is a singleton row tracking `available` / `rate_limited` / `resuming`
+- **`plans.spec` was dropped (Spec 2)** — markdown docs are the source of truth, so the
+  redundant free-text `spec` content column is gone. The DB is a thin execution ledger:
+  `plans` keeps `opus_plan` (the runtime task graph — `TaskQueue.get_dispatchable_tasks`
+  reads it to resolve `depends_on` ordering, so it is NOT redundant), `spec_path`,
+  `plan_path`, status, branch. `initialize()` drops legacy `spec` via the SQLite
+  table-rebuild pattern (CREATE new, INSERT…SELECT, DROP, RENAME), guarded by a
+  `PRAGMA table_info` check so it only runs on pre-Spec-2 DBs. A `before_drop` callback
+  (wired in `main.py` lifespan to `core/backfill.backfill_legacy_specs`) runs first,
+  writing any orphaned legacy spec text to a `*-legacy.md` spec doc and setting
+  `spec_path`, so no content is lost. Backfill is skipped when no `GITHUB_TOKEN`.
 
 ## Key Design Decisions
 
 - **No ORM** — raw SQL via aiosqlite, migrations as inline CREATE TABLE IF NOT EXISTS
+- **Global settings layer (Spec 2)** — git-trackable defaults live in `config/praxis.yaml`
+  (loaded by `core/settings_file.load_yaml_settings`); `Settings.__init__` overlays them
+  beneath env vars, so precedence is **env > YAML > field default**. Keys map by uppercase
+  field name (e.g. `loop_interval` ← `PRAXIS_LOOP_INTERVAL` in the YAML loader, `LOOP_INTERVAL`
+  for the pydantic env layer). Project config stays DB-backed.
 - **Single FastAPI monolith** — no microservices for v1
 - **Docker SDK** for spawning Aider containers programmatically
 - **`claude -p`** for all Opus interactions (planning, review, improvement analysis)
