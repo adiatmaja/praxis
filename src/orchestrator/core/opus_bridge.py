@@ -15,6 +15,7 @@ from orchestrator.models.schemas import OpusStatus
 
 if TYPE_CHECKING:
     from orchestrator.core.effective_settings import EffectiveSettings
+    from orchestrator.core.llm_router import LLMRouter
 
 
 logger = logging.getLogger(__name__)
@@ -99,11 +100,13 @@ class OpusBridge:
         default_model: str | None = None,
         default_effort: str | None = None,
         effective_settings: EffectiveSettings | None = None,
+        router: LLMRouter | None = None,
     ) -> None:
         self._db = db
         self._default_model = default_model
         self._default_effort = default_effort
         self._effective_settings = effective_settings
+        self._router = router
 
     async def _resolve_model(self, override: str | None) -> str | None:
         """Return effective model: explicit override > effective_settings > default."""
@@ -204,9 +207,14 @@ class OpusBridge:
         repo_url: str,
         model: str | None = None,
         effort: str | None = None,
+        project_id: str | None = None,
     ) -> dict[str, Any]:
         prompt = PLAN_PROMPT_TEMPLATE.format(spec=spec, repo_url=repo_url)
-        return self._extract_json(await self._run_claude(prompt, model, effort))
+        if getattr(self, "_router", None) is not None:
+            raw = await self._router.run("plan_spec", prompt, project_id)
+        else:
+            raw = await self._run_claude(prompt, model, effort)
+        return self._extract_json(raw)
 
     async def review_diff(
         self,
@@ -214,21 +222,33 @@ class OpusBridge:
         task_description: str,
         model: str | None = None,
         effort: str | None = None,
+        project_id: str | None = None,
+        tier: str = "first",
     ) -> dict[str, Any]:
         prompt = REVIEW_PROMPT_TEMPLATE.format(
             diff=diff,
             task_description=task_description,
         )
-        return self._extract_json(await self._run_claude(prompt, model, effort))
+        if getattr(self, "_router", None) is not None:
+            call_site = "review_diff_rereview" if tier == "rereview" else "review_diff_first"
+            raw = await self._router.run(call_site, prompt, project_id)
+        else:
+            raw = await self._run_claude(prompt, model, effort)
+        return self._extract_json(raw)
 
     async def analyze_improvements(
         self,
         project_summary: str,
         model: str | None = None,
         effort: str | None = None,
+        project_id: str | None = None,
     ) -> dict[str, Any]:
         prompt = IMPROVEMENT_PROMPT_TEMPLATE.format(project_summary=project_summary)
-        return self._extract_json(await self._run_claude(prompt, model, effort))
+        if getattr(self, "_router", None) is not None:
+            raw = await self._router.run("analyze_improvements", prompt, project_id)
+        else:
+            raw = await self._run_claude(prompt, model, effort)
+        return self._extract_json(raw)
 
     async def get_opus_state(self) -> dict[str, Any]:
         state = await self._db.fetch_one("SELECT * FROM opus_state WHERE id = 1")
@@ -276,10 +296,13 @@ class OpusBridge:
         "Reply with only the single word.\n\n---\n{text}"
     )
 
-    async def classify_doc(self, text: str) -> str:
+    async def classify_doc(self, text: str, project_id: str | None = None) -> str:
         """Classify ambiguous markdown via Haiku; returns spec|plan|other."""
         prompt = self.CLASSIFY_PROMPT.format(text=text[:4000])
-        raw = (await self._run_claude(prompt, model="claude-haiku-4-5")).strip().lower()
+        if getattr(self, "_router", None) is not None:
+            raw = (await self._router.run("classify_doc", prompt, project_id)).strip().lower()
+        else:
+            raw = (await self._run_claude(prompt, model="claude-haiku-4-5")).strip().lower()
         # 1. Exact match after stripping surrounding punctuation/whitespace.
         cleaned = raw.strip(" '\".:!\n")
         if cleaned in ("spec", "plan", "other"):
