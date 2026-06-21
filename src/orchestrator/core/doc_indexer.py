@@ -40,6 +40,8 @@ class DocIndexer:
             return {"scanned": 0, "reused": 0}
         for file in sorted(self._root.rglob("*.md")):
             rel = str(file.relative_to(self._root.parent)).replace("\\", "/")
+            if "/specs/" not in f"/{rel}" and "/plans/" not in f"/{rel}":
+                continue
             text = file.read_text(encoding="utf-8")
             digest = content_hash(text)
             if existing.get(rel) == digest:
