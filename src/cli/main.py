@@ -136,7 +136,8 @@ def plans(project_id: str = typer.Argument(..., help="Project ID")) -> None:
     table.add_column("Source")
     table.add_column("Status")
     for plan in data:
-        table.add_row(plan["id"][:8], plan["spec"][:40], plan["source"], plan["status"])
+        spec_display = (plan.get("spec_path") or "")[:40]
+        table.add_row(plan["id"][:8], spec_display, plan["source"], plan["status"])
     console.print(table)
 
 

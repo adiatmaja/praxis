@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+import os
 import tempfile
 from pathlib import Path
+from typing import Any
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+from orchestrator.core.settings_file import load_yaml_settings
 
 
 def _default_brainstorm_workspace() -> str:
@@ -27,5 +31,21 @@ class Settings(BaseSettings):
     docs_root: str = "docs"
     brainstorm_workspace: str = _default_brainstorm_workspace()
     memory_md_path: str = "docs/MEMORY.md"
+    loop_interval: int = 30
+    callback_grace: int = 5
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
+
+    def __init__(
+        self, *args: Any, yaml_path: str = "config/praxis.yaml", **kwargs: Any
+    ) -> None:
+        """Overlay YAML defaults beneath explicit kwargs; env vars still win."""
+        yaml_defaults = load_yaml_settings(yaml_path)
+        # Only inject YAML values for keys not already set via environment variables.
+        # pydantic-settings uses uppercase env var names (no prefix configured).
+        filtered = {
+            k: v for k, v in yaml_defaults.items() if k.upper() not in os.environ
+        }
+        # Explicit kwargs passed by caller override YAML defaults.
+        merged = {**filtered, **kwargs}
+        super().__init__(*args, **merged)

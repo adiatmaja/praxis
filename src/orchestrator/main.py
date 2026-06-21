@@ -33,14 +33,33 @@ logger = logging.getLogger(__name__)
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Initialize and teardown shared application resources."""
 
-    settings = Settings()  # type: ignore[call-arg]
+    settings = Settings()
     database = Database(settings.database_url)
 
     db_path = Path(database.db_path)
     if database.db_path != ":memory:":
         db_path.parent.mkdir(parents=True, exist_ok=True)
 
-    await database.initialize()
+    # Construct BrainstormManager before db.initialize() so the before_drop
+    # backfill closure can reference it.  BrainstormManager has no dependency
+    # on the database, so this reorder is safe.
+    from orchestrator.core.backfill import backfill_legacy_specs
+    from orchestrator.core.brainstorm import BrainstormManager
+
+    _brainstorm_pre = BrainstormManager(
+        workspace_base=settings.brainstorm_workspace,
+        event_bus=None,  # EventBus not yet created; backfill doesn't need events
+        github_token=settings.github_token,
+    )
+
+    async def _before_drop() -> None:
+        await backfill_legacy_specs(database, _brainstorm_pre)
+
+    # Only backfill when a GitHub token is available (brainstorm needs it to
+    # write+commit spec docs to the target repo).
+    _before_drop_cb = _before_drop if settings.github_token else None
+
+    await database.initialize(before_drop=_before_drop_cb)
 
     # Seed default user for single-token auth (v1)
     existing = await database.fetch_one("SELECT id FROM users LIMIT 1")
@@ -81,8 +100,6 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         git_ops=git_ops,
         event_bus=app.state.event_bus,
     )
-    from orchestrator.core.brainstorm import BrainstormManager
-
     app.state.brainstorm = BrainstormManager(
         workspace_base=settings.brainstorm_workspace,
         event_bus=app.state.event_bus,

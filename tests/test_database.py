@@ -203,10 +203,10 @@ async def test_string_ids_work_across_related_tables(db: Database) -> None:
     )
     await db.execute(
         """
-        INSERT INTO plans (id, project_id, spec)
-        VALUES (?, ?, ?)
+        INSERT INTO plans (id, project_id)
+        VALUES (?, ?)
         """,
-        ("plan-1", "project-1", "Build plan"),
+        ("plan-1", "project-1"),
     )
     await db.execute(
         """
@@ -240,3 +240,13 @@ async def test_plans_has_path_columns(db: Database) -> None:
     names = {r["name"] for r in rows}
     assert "spec_path" in names
     assert "plan_path" in names
+
+
+@pytest.mark.integration
+async def test_plans_spec_column_dropped(db: Database) -> None:
+    rows = await db.fetch_all("PRAGMA table_info(plans)")
+    names = {r["name"] for r in rows}
+    assert "spec" not in names
+    assert "spec_path" in names
+    assert "plan_path" in names
+    assert "opus_plan" in names  # retained: runtime task graph
