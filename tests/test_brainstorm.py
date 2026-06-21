@@ -150,6 +150,15 @@ async def test_generate_plan_cleans_up_workspace(mocker, tmp_path):
     assert remaining == [], f"Expected cleanup but found: {remaining}"
 
 
+from orchestrator.core.brainstorm import PLAN_BOOTSTRAP
+
+
+def test_plan_bootstrap_requests_spec_path_frontmatter():
+    prompt = PLAN_BOOTSTRAP.format(spec_path="docs/specs/x.md", notes="none")
+    assert "spec_path" in prompt
+    assert "front-matter" in prompt.lower() or "frontmatter" in prompt.lower()
+
+
 async def test_stream_lines_logs_nonzero_exit(mocker, tmp_path):
     """_stream_lines must log a warning when the subprocess exits non-zero."""
     from orchestrator.core.brainstorm import BrainstormSession

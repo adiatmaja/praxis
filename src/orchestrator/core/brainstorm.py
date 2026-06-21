@@ -21,6 +21,8 @@ PLAN_BOOTSTRAP = (
     "Produce a fully self-contained implementation plan — every task executes in a fresh "
     "container with zero prior context, so embed all needed file paths, background, and "
     "acceptance criteria per task. Honor these extra notes: {notes}. "
+    "At the very top of the plan file, add YAML front-matter linking back to the spec, "
+    "exactly: ---\\nspec_path: {spec_path}\\ntype: plan\\n--- . "
     "Write the plan to docs/superpowers/plans/, commit it, and push it."
 )
 
