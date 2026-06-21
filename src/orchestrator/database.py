@@ -151,15 +151,22 @@ class Database:
         for migration in MIGRATIONS:
             await connection.execute(migration)
 
-        for _column, ddl in (
-            ("agent_model", "agent_model TEXT"),
-            ("agent_model_effort", "agent_model_effort TEXT"),
-            ("harness", "harness TEXT NOT NULL DEFAULT 'aider'"),
+        for table, column_ddls in (
+            (
+                "projects",
+                (
+                    "agent_model TEXT",
+                    "agent_model_effort TEXT",
+                    "harness TEXT NOT NULL DEFAULT 'aider'",
+                ),
+            ),
+            ("plans", ("spec_path TEXT", "plan_path TEXT")),
         ):
-            with contextlib.suppress(Exception):
-                await connection.execute(
-                    f"ALTER TABLE projects ADD COLUMN {ddl}"  # noqa: S608
-                )
+            for ddl in column_ddls:
+                with contextlib.suppress(Exception):
+                    await connection.execute(
+                        f"ALTER TABLE {table} ADD COLUMN {ddl}"  # noqa: S608
+                    )
 
         await connection.execute(
             """

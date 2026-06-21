@@ -232,3 +232,11 @@ async def test_string_ids_work_across_related_tables(db: Database) -> None:
     assert row["id"] == "run-1"
     assert row["task_id"] == "task-1"
     assert row["container_id"] == "container-1"
+
+
+@pytest.mark.integration
+async def test_plans_has_path_columns(db: Database) -> None:
+    rows = await db.fetch_all("PRAGMA table_info(plans)")
+    names = {r["name"] for r in rows}
+    assert "spec_path" in names
+    assert "plan_path" in names
