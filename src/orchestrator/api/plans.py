@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Any, cast
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
+from pydantic import BaseModel
 
 from orchestrator.api.auth import verify_token
+from orchestrator.core.markdown_utils import extract_frontmatter_field
+from orchestrator.core.plan_derive import PlanDeriveError, derive_opus_plan
 from orchestrator.models.schemas import PlanCreate, PlanResponse, PlanStatus
 
 
@@ -101,3 +105,71 @@ async def reject_plan(request: Request, plan_id: str) -> dict[str, Any]:
     if updated is None:
         raise HTTPException(status_code=500, detail="Plan rejection failed")
     return cast(dict[str, Any], updated)
+
+
+class PromoteRequest(BaseModel):
+    """Request body for the promote-to-run endpoint."""
+
+    project_id: str
+    plan_path: str
+
+
+@router.post(
+    "/plans/promote",
+    status_code=status.HTTP_201_CREATED,
+    response_model=PlanResponse,
+)
+async def promote_plan(request: Request, body: PromoteRequest) -> dict[str, Any]:
+    """Derive tasks from a plan.md and create + activate a runnable plan."""
+
+    db = request.app.state.db
+    queue = request.app.state.task_queue
+    project = await db.fetch_one(
+        "SELECT repo_url, lm_studio_url FROM projects WHERE id = ?",
+        (body.project_id,),
+    )
+    if project is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
+
+    # Idempotency: reuse an existing run for this plan_path.
+    existing = await db.fetch_one(
+        "SELECT * FROM plans WHERE project_id = ? AND plan_path = ?",
+        (body.project_id, body.plan_path),
+    )
+    if existing is not None:
+        return cast(dict[str, Any], existing)
+
+    try:
+        plan_md = request.app.state.brainstorm.read_doc(project["repo_url"], body.plan_path)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY, detail=f"repo read failed: {exc}"
+        ) from exc
+
+    try:
+        opus_plan = await derive_opus_plan(
+            plan_md, lm_studio_url=project["lm_studio_url"] or ""
+        )
+    except PlanDeriveError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY, detail=f"task derivation failed: {exc}"
+        ) from exc
+
+    spec_path = extract_frontmatter_field(plan_md, "spec_path")
+    plan_id = await queue.create_plan(body.project_id, opus_plan["plan_summary"], source="promoted")
+    await db.execute(
+        "UPDATE plans SET spec_path = ?, plan_path = ? WHERE id = ?",
+        (spec_path, body.plan_path, plan_id),
+    )
+    today = datetime.now(UTC).strftime("%Y-%m-%d")
+    branch = f"plan/{today}-{opus_plan['plan_slug']}"
+    await queue.activate_plan(plan_id, opus_plan, branch)
+
+    plan = await queue.get_plan(plan_id)
+    if plan is None:
+        raise HTTPException(status_code=500, detail="promotion failed")
+    return cast(dict[str, Any], plan)

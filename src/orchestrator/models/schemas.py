@@ -183,6 +183,8 @@ class PlanResponse(BaseModel):
     confidence: float | None = None
     confidence_reason: str | None = None
     status: PlanStatus
+    spec_path: str | None = None
+    plan_path: str | None = None
     created_at: str
 
 
