@@ -1,0 +1,3 @@
+# Global Praxis orchestrator settings. PRAXIS_<KEY> env vars override these.
+loop_interval: 30      # seconds between orchestration loop passes
+callback_grace: 5      # seconds to wait before reconciling a missing callback
