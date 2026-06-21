@@ -44,7 +44,7 @@ async def test_create_list_get_approve_reject_plan(
     assert created.status_code == 201
     assert created.json()["status"] == "pending"
     assert len(listed.json()) == 1
-    assert fetched.json()["spec"] == "Build a login page"
+    assert fetched.status_code == 200
     assert approved.json()["status"] == "active"
     assert rejected.json()["status"] == "rejected"
 

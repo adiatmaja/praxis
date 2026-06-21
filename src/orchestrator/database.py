@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import logging
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 import aiosqlite
@@ -46,7 +47,6 @@ MIGRATIONS: tuple[str, ...] = (
     CREATE TABLE IF NOT EXISTS plans (
         id TEXT PRIMARY KEY,
         project_id TEXT NOT NULL,
-        spec TEXT NOT NULL,
         opus_plan TEXT,
         plan_branch_name TEXT,
         source TEXT NOT NULL DEFAULT 'user',
@@ -54,6 +54,8 @@ MIGRATIONS: tuple[str, ...] = (
         confidence_reason TEXT,
         status TEXT NOT NULL DEFAULT 'pending',
         created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        spec_path TEXT,
+        plan_path TEXT,
         FOREIGN KEY (project_id) REFERENCES projects (id)
     )
     """,
@@ -138,7 +140,10 @@ class Database:
             raise ValueError(message)
         return database_url.removeprefix(SQLITE_URL_PREFIX)
 
-    async def initialize(self) -> None:
+    async def initialize(
+        self,
+        before_drop: Callable[[], Awaitable[None]] | None = None,
+    ) -> None:
         if self._connection is None:
             logger.info("Connecting to SQLite database at %s", self._db_path)
             self._connection = await aiosqlite.connect(self._db_path)
@@ -167,6 +172,50 @@ class Database:
                     await connection.execute(
                         f"ALTER TABLE {table} ADD COLUMN {ddl}"  # noqa: S608
                     )
+
+        # Drop redundant plans.spec column for pre-existing databases.
+        # SQLite has no DROP COLUMN, so rebuild the table without it.
+        plan_cols = {
+            row["name"]
+            for row in await (
+                await connection.execute("PRAGMA table_info(plans)")
+            ).fetchall()
+        }
+        if before_drop is not None:
+            await before_drop()
+
+        if "spec" in plan_cols:
+            await connection.executescript(
+                """
+                PRAGMA foreign_keys=OFF;
+                DROP TABLE IF EXISTS plans_new;
+                CREATE TABLE plans_new (
+                    id TEXT PRIMARY KEY,
+                    project_id TEXT NOT NULL,
+                    opus_plan TEXT,
+                    plan_branch_name TEXT,
+                    source TEXT NOT NULL DEFAULT 'user',
+                    confidence REAL,
+                    confidence_reason TEXT,
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    spec_path TEXT,
+                    plan_path TEXT,
+                    FOREIGN KEY (project_id) REFERENCES projects (id)
+                );
+                INSERT INTO plans_new
+                    (id, project_id, opus_plan, plan_branch_name, source,
+                     confidence, confidence_reason, status, created_at,
+                     spec_path, plan_path)
+                SELECT id, project_id, opus_plan, plan_branch_name, source,
+                       confidence, confidence_reason, status, created_at,
+                       spec_path, plan_path
+                FROM plans;
+                DROP TABLE plans;
+                ALTER TABLE plans_new RENAME TO plans;
+                PRAGMA foreign_keys=ON;
+                """
+            )
 
         await connection.execute(
             """
