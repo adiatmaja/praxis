@@ -261,3 +261,63 @@ async def test_classify_doc_prefers_last_mention(mocker: pytest.MonkeyPatch) -> 
         new=AsyncMock(return_value="this is not a spec, it's a plan"),
     )
     assert await bridge.classify_doc("x") == "plan"
+
+
+@pytest.mark.unit
+async def test_plan_spec_uses_router(mocker) -> None:
+    router = mocker.Mock()
+    router.run = AsyncMock(
+        return_value='{"plan_summary":"s","plan_slug":"s","tasks":[]}'
+    )
+    bridge = OpusBridge(db=mocker.MagicMock(), router=router)
+    out = await bridge.plan_spec("spec", "https://r")
+    router.run.assert_awaited_once()
+    assert out["plan_slug"] == "s"
+
+
+@pytest.mark.unit
+async def test_review_diff_uses_router(mocker) -> None:
+    router = mocker.Mock()
+    router.run = AsyncMock(
+        return_value='{"verdict":"pass","feedback":"ok","issues":[]}'
+    )
+    bridge = OpusBridge(db=mocker.MagicMock(), router=router)
+    out = await bridge.review_diff("diff", "task desc")
+    router.run.assert_awaited_once()
+    assert out["verdict"] == "pass"
+
+
+@pytest.mark.unit
+async def test_analyze_improvements_uses_router(mocker) -> None:
+    router = mocker.Mock()
+    router.run = AsyncMock(
+        return_value='{"confidence":0.9,"reason":"r","proposed_tasks":[]}'
+    )
+    bridge = OpusBridge(db=mocker.MagicMock(), router=router)
+    out = await bridge.analyze_improvements("summary")
+    router.run.assert_awaited_once()
+    assert out["confidence"] == 0.9
+
+
+@pytest.mark.unit
+async def test_classify_doc_uses_router(mocker) -> None:
+    router = mocker.Mock()
+    router.run = AsyncMock(return_value="spec")
+    bridge = OpusBridge(db=mocker.MagicMock(), router=router)
+    out = await bridge.classify_doc("some markdown")
+    router.run.assert_awaited_once()
+    assert out == "spec"
+
+
+@pytest.mark.unit
+async def test_fallback_to_legacy_without_router(mocker) -> None:
+    """When no router is provided, the legacy _run_claude path is used."""
+    bridge = OpusBridge(db=mocker.MagicMock())
+    run = mocker.patch.object(
+        bridge,
+        "_run_claude",
+        new=AsyncMock(return_value='{"plan_summary":"x","plan_slug":"x","tasks":[]}'),
+    )
+    out = await bridge.plan_spec("spec", "https://r")
+    run.assert_awaited_once()
+    assert out["plan_slug"] == "x"
