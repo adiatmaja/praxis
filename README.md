@@ -1,6 +1,6 @@
 # Praxis
 
-**Run an autonomous coding-agent loop on your AI subscription — not the metered API.**
+**Autonomous coding-agent loop powered by your AI subscription, with a local LLM handling implementation.**
 
 Praxis drives the Claude / Gemini / GPT CLI you already pay for to plan and review, and offloads
 implementation to a local LLM to save tokens.
