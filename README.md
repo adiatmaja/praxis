@@ -1,24 +1,35 @@
 # Praxis
 
-> Provider-agnostic AI agent orchestrator — a "planner brain" plans and reviews,
-> coding agents implement on isolated branches, and the system iterates until quality meets the bar.
+> AI agent orchestrator that runs on your **flat-rate AI subscription** (Claude / Gemini / GPT),
+> not the expensive pay-per-token API — and offloads implementation to a **local LLM** to save tokens.
 
 ## Overview
 
-Praxis turns a written spec into reviewed, merged code automatically. You bring the models —
-Claude, Gemini, GPT, or a local LLM — and it runs the **plan → implement → review → merge** loop
-for you.
+Praxis turns a written spec into reviewed, merged code automatically — and it's built to be
+*cheap to run*. A "planner brain" (your existing Claude/Gemini/GPT subscription) plans and
+reviews; a local LLM does the heavy implementation work for free. It runs the
+**plan → implement → review → merge** loop for you.
 
 Under the hood: submit a spec, a **planner brain** breaks it into tasks, **coding agents**
 implement them on isolated branches, the planner reviews each PR, and the system iterates until
 quality meets the bar. An optional autonomous improvement loop drives continuous codebase
 enhancement.
 
-**You choose the models.** Praxis is not locked to any single vendor. A provider-agnostic LLM
-router maps each step to the provider you pick — `claude`, `gemini` (`agy`), `gpt` (`codex`),
-or a `local` model via LM Studio — configurable from **Settings → Models**. Coding agents are
-pluggable too: **Aider**, **OpenCode**, or **OpenHands** per project. Pair a strong planner with
-a cheap local implementer, or mix however you like.
+### Why Praxis is cheap to run
+
+**Use your flat-rate subscription, not the pay-per-token API.** The planner brain runs through
+the *CLI* of whichever assistant you already pay for — Claude (`claude -p`), Gemini (`agy`), or
+GPT (`codex`) — so planning and code review bill against your existing **$20/month plan**
+instead of metered API credits that balloon on every large diff. For many projects a single
+entry-level subscription is enough to run the whole loop.
+
+**Offload the heavy lifting to a local LLM.** Implementation is the token-hungry part, so Praxis
+hands it to a coding agent (**Aider**, **OpenCode**, or **OpenHands**) driven by a **local model
+via LM Studio** — zero tokens, zero cost. Your paid subscription is spent only where judgment
+matters (planning, review); the grunt work runs on your own hardware.
+
+Every brain call-site is configurable per provider/model from **Settings → Models**, so you can
+mix and match — e.g. Claude to plan, a local model to implement, Gemini to review.
 
 ## Architecture
 
