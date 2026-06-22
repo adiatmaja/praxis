@@ -286,6 +286,11 @@
     .detail-card p { margin: 8px 0; line-height: 1.6; }
     .detail-card h1, .detail-card h2, .detail-card h3 { margin: 16px 0 6px; line-height: 1.3; }
     .detail-card pre { margin: 8px 0; padding: 10px 12px; background: var(--bg); border: 1px solid var(--border-subtle); border-radius: 6px; overflow-x: auto; }
+    .detail-card pre code { background: none; padding: 0; font-size: 12.5px; white-space: pre; }
+    .detail-card code { background: var(--bg); border: 1px solid var(--border-subtle); border-radius: 4px; padding: 1px 4px; font-size: 12.5px; }
+    .detail-card blockquote { margin: 8px 0; padding: 2px 12px; border-left: 3px solid var(--border); color: var(--text-muted); }
+    .detail-card hr { border: none; border-top: 1px solid var(--border-subtle); margin: 14px 0; }
+    .detail-card a { color: #3b82f6; text-decoration: underline; }
     .detail-field { display: flex; justify-content: space-between; gap: 16px; padding: 8px 0; border-bottom: 1px solid var(--border-subtle); }
     .detail-field:last-child { border-bottom: 0; }
     .field-label { color: var(--text-muted); font-size: 12px; }
@@ -1273,29 +1278,46 @@
     }
 
     function renderMarkdown(src) {
-      const lines = (src || "").replace(/\r\n/g, "\n").split("\n");
-      let html = "", inCode = false, inList = false;
+      // Strip a leading YAML frontmatter block (--- ... ---) so spec_path/type
+      // metadata isn't shown as literal text.
+      const text = (src || "").replace(/\r\n/g, "\n").replace(/^\s*---\n[\s\S]*?\n---\n?/, "");
+      const lines = text.split("\n");
+      let html = "", inCode = false, listType = null;
+      const closeList = () => { if (listType) { html += listType === "ol" ? "</ol>" : "</ul>"; listType = null; } };
       const inline = (s) => esc(s)
         .replace(/`([^`]+)`/g, '<code>$1</code>')
         .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
-        .replace(/\*([^*]+)\*/g, '<em>$1</em>');
+        .replace(/\*([^*]+)\*/g, '<em>$1</em>')
+        // Links: [text](url) — only http(s) or relative paths, never javascript:
+        .replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+|[^):\s]+)\)/g,
+          '<a href="$2" target="_blank" rel="noopener">$1</a>');
       for (const raw of lines) {
-        if (raw.trim().startsWith("```")) {
-          if (!inCode) { if (inList) { html += "</ul>"; inList = false; } html += "<pre><code>"; inCode = true; }
-          else { html += "</code></pre>"; inCode = false; }
+        // A fence line is ```[info]. An OPEN fence may carry an info string
+        // (```bash); per CommonMark a fence only CLOSES on a bare ``` with no
+        // info string — otherwise nested ```lang blocks leak their content.
+        const fence = raw.trim().match(/^(`{3,})(.*)$/);
+        if (fence) {
+          if (!inCode) { closeList(); html += "<pre><code>"; inCode = true; }
+          else if (fence[2].trim() === "") { html += "</code></pre>"; inCode = false; }
+          else { html += esc(raw) + "\n"; }
           continue;
         }
         if (inCode) { html += esc(raw) + "\n"; continue; }
-        const cb = raw.match(/^\s*-\s\[( |x|X)\]\s+(.*)$/);
-        const li = raw.match(/^\s*-\s+(.*)$/);
+        if (/^\s*(-{3,}|\*{3,}|_{3,})\s*$/.test(raw)) { closeList(); html += "<hr>"; continue; }
         const h = raw.match(/^(#{1,6})\s+(.*)$/);
-        if (h) { if (inList) { html += "</ul>"; inList = false; } html += "<h" + h[1].length + ">" + inline(h[2]) + "</h" + h[1].length + ">"; continue; }
-        if (cb) { if (!inList) { html += "<ul class='md-checks'>"; inList = true; } const done = cb[1] !== " "; html += "<li>" + (done ? "&#9745;" : "&#9744;") + " " + inline(cb[2]) + "</li>"; continue; }
-        if (li) { if (!inList) { html += "<ul>"; inList = true; } html += "<li>" + inline(li[1]) + "</li>"; continue; }
-        if (inList) { html += "</ul>"; inList = false; }
+        const cb = raw.match(/^\s*-\s\[( |x|X)\]\s+(.*)$/);
+        const li = raw.match(/^\s*[-*]\s+(.*)$/);
+        const ol = raw.match(/^\s*(\d+)\.\s+(.*)$/);
+        const bq = raw.match(/^\s*>\s?(.*)$/);
+        if (h) { closeList(); html += "<h" + h[1].length + ">" + inline(h[2]) + "</h" + h[1].length + ">"; continue; }
+        if (cb) { if (listType !== "check") { closeList(); html += "<ul class='md-checks'>"; listType = "check"; } const done = cb[1] !== " "; html += "<li>" + (done ? "&#9745;" : "&#9744;") + " " + inline(cb[2]) + "</li>"; continue; }
+        if (li) { if (listType !== "ul") { closeList(); html += "<ul>"; listType = "ul"; } html += "<li>" + inline(li[1]) + "</li>"; continue; }
+        if (ol) { if (listType !== "ol") { closeList(); html += "<ol>"; listType = "ol"; } html += "<li>" + inline(ol[2]) + "</li>"; continue; }
+        if (bq) { closeList(); html += "<blockquote>" + inline(bq[1]) + "</blockquote>"; continue; }
+        closeList();
         if (raw.trim()) html += "<p>" + inline(raw) + "</p>";
       }
-      if (inList) html += "</ul>";
+      closeList();
       if (inCode) html += "</code></pre>";
       return html;
     }
