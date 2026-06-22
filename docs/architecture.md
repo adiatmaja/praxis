@@ -58,7 +58,7 @@
 | `orchestrator.py` | Main loop: plan -> dispatch -> review -> improve |
 | `task_queue.py` | Plan/task CRUD, state machine, dependency-aware dispatch |
 | `opus_bridge.py` | Brain calls (via `llm_router`, or legacy `claude -p`), JSON parsing, rate limit tracking |
-| `llm_router.py` | Per-call-site `{provider, model, effort}` routing — CLI (`claude`/`agy`/`codex`) or LM Studio `local` |
+| `llm_router.py` | Per-call-site `{provider, model, effort}` routing — CLI (`claude`/`agy`/`codex`) or LM Studio `local`. Raises `ProviderAuthError` on a dead CLI session (stderr auth-scan catches codex's exit-0/401); resolves Windows `.CMD`/`.EXE` shims via `shutil.which` |
 | `effective_settings.py` | override(project) → global → default resolution, incl. `call_site_config` |
 | `settings_file.py` | Load `config/praxis.yaml`, overlay env (`PRAXIS_*`) |
 | `plan_derive.py` | `plan.md` → `opus_plan` (deterministic parse + local LM Studio fallback) |

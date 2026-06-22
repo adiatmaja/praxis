@@ -158,8 +158,11 @@ Tables: `users`, `projects`, `plans`, `tasks`, `agent_runs`, `opus_state`,
   Per-call-site overrides live in `settings_overrides` (key `models.<call_site>`), resolved
   by `EffectiveSettings.call_site_config` and managed via `GET/PUT /api/settings/models` +
   `POST /api/settings/models/reset`, surfaced in the dashboard **Settings → Models** tab
-  (defaults + per-row/all Reset). Verify `agy`/`codex` one-shot flags against the installed
-  CLIs before relying on those providers.
+  (defaults + per-row/all Reset). **Provider status (verified 2026-06-23):** `claude`
+  and `local` work; `codex` is wired correctly but needs `codex login` (revoked sessions
+  surface as `ProviderAuthError`); `agy` is **unusable** as a brain — its `--print` only
+  renders to an interactive TTY and yields no capturable stdout non-interactively (see the
+  provider-auth gotcha below).
 - **Single FastAPI monolith** — no microservices for v1
 - **Docker SDK** for spawning Aider containers programmatically
 - **`claude -p`** for all Opus interactions (planning, review, improvement analysis)
@@ -302,6 +305,27 @@ Tables: `users`, `projects`, `plans`, `tasks`, `agent_runs`, `opus_state`,
   re-opens it (`connectDashboardSse`) when `!eventSource`, else the chat hangs silently.
   Failed turns surface via the `brainstorm_error` event (published by `api/specs.py`
   `_run_turn_safely`); the frontend renders them as red error bubbles.
+- **Provider auth is detected, never automated** — login (`codex login`, etc.) is an
+  interactive flow the orchestrator can't run; it only detects and surfaces. `llm_router`
+  raises `ProviderAuthError` when a CLI is installed but its session is dead. Key traps it
+  closes: (1) **codex exits 0 while printing a 401** to stderr on a revoked-but-cached
+  token — `LLMRouter.run` scans stderr for auth signatures BEFORE the returncode check, so
+  a failed-auth call never passes through as success; (2) **Windows shims** — `codex`/`agy`
+  are `.CMD`/`.EXE` npm/installer shims that bare `create_subprocess_exec` can't launch
+  (`WinError 2`), so both `llm_router.run` and `api/system._probe_provider` resolve argv[0]
+  via `shutil.which`; (3) **agy `--print` needs the prompt as a positional argv value**, not
+  stdin, and yields zero capturable stdout when not on a TTY → `ProviderOutputError` (agy is
+  effectively unusable as a brain). `run_loop` catches `ProviderAuthError` and publishes a
+  `provider_auth_required` SSE event instead of retrying-to-fail (the plan stays put, not
+  marked failed).
+- **Dashboard login banner is SSE-driven, not just poll-driven** — `/api/status` adds a
+  `providers` block (`_probe_provider`: cli_available + best-effort authenticated +
+  login_hint), but **`codex login status` lies** ("Logged in" even on a revoked token), so
+  the poll alone can't catch a dead codex session. The banner in `web/index.html` therefore
+  ALSO reacts to the `provider_auth_required` SSE event; a runtime 401 outranks the optimistic
+  poll and stays flagged until the user dismisses it (the poll must NOT clear a runtime
+  failure, or the banner flickers). Net: the codex banner only appears once a real
+  codex-routed brain call hits the 401 — not on page load.
 
 ## Documentation
 

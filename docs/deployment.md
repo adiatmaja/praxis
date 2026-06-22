@@ -161,7 +161,7 @@ Interactive docs available at `/docs` (Swagger UI) when the server is running.
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `GET` | `/api/status` | Orchestrator status (Opus state + agent counts; Planner `available` is gated on a real `claude --version` probe; returns `agent_model.cli_available` and effective `lm_studio_url`) |
+| `GET` | `/api/status` | Orchestrator status (Opus state + agent counts; Planner `available` is gated on a real `claude --version` probe; returns `agent_model.cli_available`, effective `lm_studio_url`, and a `providers` list — per brain provider `{cli_available, authenticated, login_hint}`) |
 | `GET` | `/api/lm-models` | List models loaded in LM Studio (`/v1/models` proxy) for the New-Project model dropdown |
 | `GET` | `/api/opus/state` | Opus availability and queue |
 | `GET` | `/api/events` | SSE event stream (long-lived) |
@@ -182,7 +182,8 @@ Interactive docs available at `/docs` (Swagger UI) when the server is running.
 | LM Studio | Implementer agents + local brain calls (`derive_tasks`) | Running on `localhost:1234` (or configured URL) |
 | Claude Code CLI | Default brain call-sites (planning/review/classify) | `claude -p` must be available in PATH |
 | GitHub CLI (`gh`) | PR operations | Authenticated via `GITHUB_TOKEN` |
-| `agy` / `codex` (optional) | Alt brain providers (Gemini / GPT) | Only if configured in Settings → Models; verify one-shot flags |
+| `codex` (optional) | Alt brain provider (GPT) | Only if routed in Settings → Models. Requires `codex login`; a dead session raises `ProviderAuthError` and shows a dashboard login banner. Verified working 2026-06-23. |
+| `agy` (not usable) | Alt brain provider (Gemini) | Detected/launchable, but `--print` only renders to an interactive TTY → no capturable output non-interactively. Not usable as a brain until that's resolved. |
 
 Global orchestrator settings load from `config/praxis.yaml` (overridable via `PRAXIS_*`
 env vars); secrets (`AUTH_TOKEN`, `GITHUB_TOKEN`) stay in env / `.env`.
