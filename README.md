@@ -1,13 +1,24 @@
 # Praxis
 
-> AI agent orchestrator — Claude Opus plans and reviews, local LLM implements via Aider.
+> Provider-agnostic AI agent orchestrator — a "planner brain" plans and reviews,
+> coding agents implement on isolated branches, and the system iterates until quality meets the bar.
 
 ## Overview
 
-Praxis automates the code-ship cycle: submit a spec, Claude Opus breaks it into tasks,
-Aider agents implement on isolated branches, Opus reviews PRs, and the system iterates
-until quality meets the bar. Optional autonomous improvement loop for continuous codebase
+Praxis turns a written spec into reviewed, merged code automatically. You bring the models —
+Claude, Gemini, GPT, or a local LLM — and it runs the **plan → implement → review → merge** loop
+for you.
+
+Under the hood: submit a spec, a **planner brain** breaks it into tasks, **coding agents**
+implement them on isolated branches, the planner reviews each PR, and the system iterates until
+quality meets the bar. An optional autonomous improvement loop drives continuous codebase
 enhancement.
+
+**You choose the models.** Praxis is not locked to any single vendor. A provider-agnostic LLM
+router maps each step to the provider you pick — `claude`, `gemini` (`agy`), `gpt` (`codex`),
+or a `local` model via LM Studio — configurable from **Settings → Models**. Coding agents are
+pluggable too: **Aider**, **OpenCode**, or **OpenHands** per project. Pair a strong planner with
+a cheap local implementer, or mix however you like.
 
 ## Architecture
 
@@ -15,7 +26,7 @@ enhancement.
   ┌─────────────────────────────────────────────────────────────────┐
   │  CLIENTS                                                        │
   │  ┌──────────┐   ┌──────────┐   ┌───────────────────────────┐   │
-  │  │  Web UI  │   │ Typer CLI│   │ Claude Code (claude -p)   │   │
+  │  │  Web UI  │   │ Typer CLI│   │  REST API (Bearer auth)   │   │
   │  └────┬─────┘   └────┬─────┘   └─────────────┬─────────────┘   │
   └───────┼──────────────┼────────────────────────┼─────────────────┘
           └──────────────┼────────────────────────┘
@@ -25,20 +36,19 @@ enhancement.
   │  ORCHESTRATOR  (FastAPI + SQLite)                                │
   │                                                                  │
   │  ┌───────────┐  ┌───────────┐  ┌───────────┐  ┌────────────┐   │
-  │  │ API Router│  │Task Queue │  │  Agent    │  │   Opus     │   │
-  │  │ REST + SSE│  │ (SQLite)  │  │  Manager  │  │   Bridge   │   │
+  │  │ API Router│  │Task Queue │  │  Agent    │  │ LLM Router │   │
+  │  │ REST + SSE│  │ (SQLite)  │  │  Manager  │  │ (per-site) │   │
   │  └───────────┘  └───────────┘  └─────┬─────┘  └─────┬──────┘   │
   └──────────────────────────────────────┼───────────────┼──────────┘
-                                         │               │
-                          ┌──────────────┼──────┐        │
-                          ▼              ▼      ▼        │
-                    aider-agent    aider-agent  ...    claude -p
-                    (Docker)       (Docker)           (subscription)
+                          CODING AGENTS  │               │  PLANNER BRAIN
+                          ┌──────────────┼──────┐   ┌─────┴──────────────┐
+                          ▼              ▼      ▼   ▼      ▼      ▼      ▼
+                       aider         opencode  ... claude gemini  gpt  local
+                      (Docker)       (Docker)      (-p)   (agy) (codex)(LMStudio)
                           │              │
                           └──────┬───────┘
                                  ▼
-                            LM Studio
-                          localhost:1234
+                       LM Studio / chosen model backend
 ```
 
 ## Quick Start
@@ -77,53 +87,23 @@ docker compose up --build
 DOMAIN=praxis.example.com docker compose --profile hosted up --build
 ```
 
-## Project Structure
-
-```
-praxis/
-├── src/
-│   ├── orchestrator/         # FastAPI backend
-│   │   ├── main.py           #   App entrypoint + lifespan
-│   │   ├── config.py         #   Settings (pydantic-settings)
-│   │   ├── database.py       #   SQLite async wrapper
-│   │   ├── api/              #   REST + SSE endpoints
-│   │   ├── core/             #   Business logic
-│   │   └── models/           #   Pydantic schemas
-│   └── cli/main.py           # Typer CLI client
-├── web/index.html            # Single-file dashboard
-├── docker/                   # Dockerfiles + Caddyfile
-├── tests/                    # pytest (200 tests, 88% coverage)
-├── docker-compose.yml
-└── pyproject.toml
-```
-
-## Development
-
-```bash
-# Tests
-uv run pytest --cov=orchestrator --cov-report=term-missing -v
-
-# Lint + format
-uv run ruff format src/ tests/
-uv run ruff check --fix src/ tests/
-
-# Type check
-uv run mypy src/orchestrator/ --ignore-missing-imports
-```
-
 ## How It Works
 
-1. User submits spec via Web UI, CLI, or API
-2. Opus breaks spec into tasks with dependency graph
-3. Orchestrator creates `plan/{date}-{slug}` branch
-4. Aider agents implement tasks on `agent/{task-slug}` branches
-5. Opus reviews PR diffs — pass: squash merge, fail: retry (max 3)
+1. User submits a spec via Web UI, CLI, or API
+2. The planner brain breaks the spec into tasks with a dependency graph
+3. Orchestrator creates a `plan/{date}-{slug}` branch
+4. Coding agents implement tasks on `agent/{task-slug}` branches
+5. The planner reviews each PR diff — pass: squash merge, fail: retry (max 3)
 6. All tasks merged -> integration PR to main
-7. Optional: Opus proposes improvements if confidence >= threshold
+7. Optional: the planner proposes improvements if confidence >= threshold
 
 See [docs/architecture.md](docs/architecture.md), [docs/workflow.md](docs/workflow.md),
 and [docs/deployment.md](docs/deployment.md) for detailed documentation.
 
+## Contributing
+
+Setup, project layout, and conventions are in [CONTRIBUTING.md](CONTRIBUTING.md).
+
 ## License
 
-Private project.
+Licensed under the [Apache License 2.0](LICENSE).
