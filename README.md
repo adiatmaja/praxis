@@ -17,11 +17,12 @@ enhancement.
 
 ### Why Praxis is cheap to run
 
-**Use your flat-rate subscription, not the pay-per-token API.** The planner brain runs through
-the *CLI* of whichever assistant you already pay for — Claude (`claude -p`), Gemini (`agy`), or
-GPT (`codex`) — so planning and code review bill against your existing **$20/month plan**
-instead of metered API credits that balloon on every large diff. For many projects a single
-entry-level subscription is enough to run the whole loop.
+**Use your flat-rate subscription, not the pay-per-token API.** Most AI agent orchestrators only
+talk to models over the **API**, so every run is metered and a few large diffs can cost more than
+a month of normal usage. Praxis instead drives the assistant's own **CLI** — Claude (`claude -p`),
+Gemini (`agy`), or GPT (`codex`) — so planning and code review bill against the **$20/month
+subscription you already pay for**, not API credits. For many projects a single entry-level plan
+is enough to run the whole loop.
 
 **Offload the heavy lifting to a local LLM.** Implementation is the token-hungry part, so Praxis
 hands it to a coding agent (**Aider**, **OpenCode**, or **OpenHands**) driven by a **local model
