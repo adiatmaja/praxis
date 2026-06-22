@@ -28,6 +28,11 @@ PLAN_BOOTSTRAP = (
     "acceptance criteria per task. Honor these extra notes: {notes}. "
     "At the very top of the plan file, add YAML front-matter linking back to the spec, "
     "exactly: ---\\nspec_path: {spec_path}\\ntype: plan\\n--- . "
+    "CRITICAL markdown rule: when a task embeds file content that itself contains a "
+    "fenced code block (e.g. ```bash, ```python, ```yaml), wrap that file content in a "
+    "FOUR-backtick (````) outer fence so the inner three-backtick fence is preserved. "
+    "Never wrap content that contains ``` in a three-backtick fence — it produces "
+    "malformed markdown that renders incorrectly even on GitHub. "
     "Write the plan to docs/superpowers/plans/, commit it, and push it."
 )
 

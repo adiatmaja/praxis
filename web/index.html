@@ -618,6 +618,17 @@
       border-bottom-left-radius: 2px;
     }
     .spec-chat-bubble.assistant.streaming { border-color: var(--selected-border); }
+    .spec-chat-bubble.spec-chat-err {
+      color: var(--badge-failed-text, #e06c75);
+      border-color: var(--badge-failed-text, #e06c75);
+      background: transparent;
+    }
+    .thinking-dots span {
+      animation: thinking-blink 1.2s infinite both;
+    }
+    .thinking-dots span:nth-child(2) { animation-delay: 0.2s; }
+    .thinking-dots span:nth-child(3) { animation-delay: 0.4s; }
+    @keyframes thinking-blink { 0%, 80%, 100% { opacity: 0.2; } 40% { opacity: 1; } }
     .spec-chat-footer {
       display: flex;
       gap: 8px;
@@ -1155,6 +1166,7 @@
     let dashboardSseSource = null;
     let HARNESSES = [];
     let lifecycleItems = [];
+    let effectiveLmStudioUrl = null;  // global effective LM Studio URL (from /api/status)
     let selectedLifecycle = null;
     let lifecycleSegment = "spec";
 
@@ -1355,7 +1367,7 @@
 
     function primaryAction() {
       if (currentView === "dashboard") {
-        openSpecChat();
+        switchView("projects").then(() => { showingForm = true; renderProjectsView(); });
       } else if (currentView === "projects") {
         showingForm = true;
         renderProjectsView();
@@ -1379,7 +1391,7 @@
         eventSource = null;
       }
       if (name === "dashboard") {
-        setTopbar("Dashboard", "+ Create Spec");
+        setTopbar("Dashboard", "+ New Project");
         await loadDashboard();
       } else if (name === "projects") {
         setTopbar("Projects", "+ New Project");
@@ -1498,7 +1510,8 @@
           '<div class="detail-field"><span class="field-label">Approval Gate</span><span class="field-value">' + (project.approval_gate ? "On" : "Off") + '</span></div>' +
           '<div class="detail-field"><span class="field-label">Max Retries</span><span class="field-value">' + esc(project.max_retries) + '</span></div>' +
           '<div class="detail-field"><span class="field-label">Confidence Threshold</span><span class="field-value">' + Math.round((project.confidence_threshold || 0) * 100) + '%</span></div>' +
-          '<div class="detail-field"><span class="field-label">LM Studio</span><span class="field-value">' + mono(project.lm_studio_url) + '</span></div>' +
+          '<div class="detail-field"><span class="field-label">LM Studio</span><span class="field-value">' + mono(effectiveLmStudioUrl || project.lm_studio_url) +
+            (effectiveLmStudioUrl && effectiveLmStudioUrl !== project.lm_studio_url ? '<span style="color:var(--text-faint);font-size:11px;margin-left:6px;">(effective — global override)</span>' : '') + '</span></div>' +
         '</div></div>' +
       '</div><div class="detail-actions">' +
         '<button class="btn btn-primary" type="button" onclick="switchView(\'plans\')">View Plans</button>' +
@@ -1512,7 +1525,9 @@
         '<div class="detail-content"><form onsubmit="submitProject(event)">' +
           '<div class="formrow"><label>Name</label><input id="pf-name" required autocomplete="off"></div>' +
           '<div class="formrow"><label>Repository URL</label><input id="pf-repo" required autocomplete="off" placeholder="https://github.com/user/repo"></div>' +
-          '<div class="formrow"><label>Model</label><input id="pf-model" required autocomplete="off" value="deepseek-coder-v2"></div>' +
+          '<div class="formrow"><label>Model (implementer)</label>' +
+            '<select id="pf-model-select" onchange="onModelPreset(this.value)"><option value="">Loading models…</option></select>' +
+            '<input id="pf-model" required autocomplete="off" placeholder="model id" style="margin-top:6px;display:none;"></div>' +
           '<div class="formrow"><label>Agent model (reasoning)</label>' +
             '<select id="pf-agent-model-preset" onchange="onAgentModelPreset(this.value)">' +
               '<option value="">Global default</option>' +
@@ -1533,9 +1548,42 @@
           '<div class="form-actions"><button type="submit" class="btn btn-primary">Create</button>' +
           '<button type="button" class="btn" onclick="showingForm=false;renderProjectsView()">Cancel</button></div>' +
         '</form></div>';
-      // Populate harness dropdown after DOM update (async, next microtask)
+      // Populate harness + model dropdowns after DOM update (async, next microtask)
       setTimeout(loadHarnesses, 0);
+      setTimeout(loadLmModels, 0);
       return html;
+    }
+
+    function onModelPreset(value) {
+      const custom = document.getElementById("pf-model");
+      if (value === "__custom__") {
+        custom.style.display = "block";
+        custom.value = "";
+        custom.focus();
+      } else {
+        custom.style.display = "none";
+        custom.value = value;
+      }
+    }
+
+    async function loadLmModels() {
+      const select = document.getElementById("pf-model-select");
+      const custom = document.getElementById("pf-model");
+      if (!select) return;
+      let models = [];
+      try {
+        const data = await api("GET", "/api/lm-models");
+        models = data.models || [];
+      } catch (e) { /* fall through to manual entry */ }
+      if (models.length) {
+        select.innerHTML = models.map(m => '<option value="' + esc(m) + '">' + esc(m) + '</option>').join("") +
+          '<option value="__custom__">Custom…</option>';
+        if (custom) { custom.style.display = "none"; custom.value = models[0]; }
+      } else {
+        // LM Studio unreachable — fall back to a free-text field
+        select.style.display = "none";
+        if (custom) { custom.style.display = "block"; custom.placeholder = "model id (LM Studio unreachable)"; }
+      }
     }
 
     function onAgentModelPreset(value) {
@@ -2305,6 +2353,7 @@
       if (!token) return;
       try {
         const status = await api("GET", "/api/status");
+        if (status.lm_studio_url) effectiveLmStudioUrl = status.lm_studio_url;
         document.getElementById("stat-agents").textContent = status.active_agents;
         document.getElementById("stat-queue").textContent = status.opus_state.queued_count;
         setConnection("agent", status.agent_model, status.opus_state.status);
@@ -2331,6 +2380,9 @@
     function openSpecChat() {
       const overlay = document.getElementById("spec-chat-overlay");
       overlay.classList.add("open");
+      // Brainstorm replies arrive over the /api/events SSE; ensure it is live even
+      // when opened from a view (Projects/Plans) that had closed the stream.
+      if (!eventSource) connectDashboardSse();
       const label = document.getElementById("spec-chat-project-label");
       const project = projects.find(p => p.id === selectedProjectId);
       label.textContent = project ? project.name : (projects.length ? projects[0].name : "No project selected");
@@ -2386,6 +2438,35 @@
       if (enabled && input) input.focus();
     }
 
+    function showSpecThinking() {
+      const messages = document.getElementById("spec-chat-messages");
+      if (!messages || document.getElementById("spec-chat-thinking")) return;
+      const empty = messages.querySelector(".spec-chat-empty");
+      if (empty) empty.remove();
+      const bubble = document.createElement("div");
+      bubble.id = "spec-chat-thinking";
+      bubble.className = "spec-chat-bubble assistant";
+      bubble.innerHTML = 'Claude is thinking<span class="thinking-dots"><span>.</span><span>.</span><span>.</span></span>';
+      messages.appendChild(bubble);
+      messages.scrollTop = messages.scrollHeight;
+    }
+
+    function hideSpecThinking() {
+      const bubble = document.getElementById("spec-chat-thinking");
+      if (bubble) bubble.remove();
+    }
+
+    function appendSpecChatError(text) {
+      hideSpecThinking();
+      const messages = document.getElementById("spec-chat-messages");
+      if (!messages) return;
+      const bubble = document.createElement("div");
+      bubble.className = "spec-chat-bubble assistant spec-chat-err";
+      bubble.textContent = "⚠ " + text;
+      messages.appendChild(bubble);
+      messages.scrollTop = messages.scrollHeight;
+    }
+
     async function sendSpecChatMessage() {
       const input = document.getElementById("spec-chat-input");
       if (!input) return;
@@ -2402,6 +2483,7 @@
       setChatInputEnabled(false);
       appendChatMessage("user", text);
       specChatStreamingBubble = null;
+      showSpecThinking();
 
       try {
         if (!specChatSessionId) {
@@ -2411,7 +2493,7 @@
           await api("POST", "/api/specs/sessions/" + specChatSessionId + "/message", { message: text });
         }
       } catch (error) {
-        appendChatMessage("assistant", "Error: " + error.message);
+        appendSpecChatError(error.message);
         setChatInputEnabled(true);
       }
     }
@@ -2422,8 +2504,16 @@
         let data;
         try { data = JSON.parse(event.data); } catch (e) { return; }
         if (data.type === "brainstorm_message") {
+          hideSpecThinking();
           appendChatMessage("assistant", data.text);
         }
+      });
+      source.addEventListener("brainstorm_error", event => {
+        let data;
+        try { data = JSON.parse(event.data); } catch (e) { return; }
+        appendSpecChatError(data.error || "Brainstorm turn failed.");
+        specChatStreamingBubble = null;
+        setChatInputEnabled(true);
       });
       source.addEventListener("context_draft_ready", event => {
         let data;
@@ -2434,6 +2524,7 @@
       });
       source.addEventListener("brainstorm_turn_done", () => {
         // Finalize streaming bubble — remove streaming class
+        hideSpecThinking();
         if (specChatStreamingBubble) {
           specChatStreamingBubble.classList.remove("streaming");
           specChatStreamingBubble = null;
@@ -3001,9 +3092,12 @@
       } else {
         const path = lifecycleSegment === "spec" ? it.spec_path : it.plan_path;
         const cached = lifecycleDocCache[path];
-        const promote = (lifecycleSegment === "plan" && it.plan_path && !it.run_id)
-          ? '<div class="detail-actions"><button class="btn btn-primary" type="button" onclick="promoteLifecycle(\'' + esc(it.plan_path) + '\')">Promote to Run</button></div>'
-          : "";
+        let promote = "";
+        if (lifecycleSegment === "plan" && it.plan_path && !it.run_id) {
+          promote = '<div class="detail-actions"><button class="btn btn-primary" type="button" onclick="promoteLifecycle(\'' + esc(it.plan_path) + '\')">Promote to Run</button></div>';
+        } else if (lifecycleSegment === "spec" && it.spec_path && !it.plan_path) {
+          promote = '<div class="detail-actions"><button class="btn btn-primary" type="button" onclick="generatePlanForLifecycle(\'' + esc(it.spec_path) + '\')">Generate Plan</button></div>';
+        }
         let cardBody;
         if (!path) {
           cardBody = '<div class="detail-empty">No ' + (lifecycleSegment === "spec" ? "specification" : "plan") +
@@ -3033,6 +3127,15 @@
         lifecycleDocCache[path] = doc.content;
       } catch (e) { lifecycleDocCache[path] = "_Could not load " + path + "_"; }
       renderLifecycleView();
+    }
+
+    async function generatePlanForLifecycle(specPath) {
+      const btn = event.target; btn.disabled = true; btn.textContent = "Generating…";
+      try {
+        await api("POST", "/api/specs/plan", { project_id: selectedProjectId, spec_path: specPath, notes: "" });
+        btn.textContent = "Plan generated — refreshing…";
+        await loadLifecycle();
+      } catch (e) { btn.disabled = false; btn.textContent = "Generate Plan"; alert("Generate plan failed: " + e.message); }
     }
 
     async function promoteLifecycle(planPath) {
