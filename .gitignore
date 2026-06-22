@@ -15,6 +15,10 @@ venv/
 .idea/
 CLAUDE.local.md
 
+# Local Claude Code / MCP config
+.claude/settings.local.json
+.mcp.json
+
 htmlcov/
 .coverage
 .pytest_cache/
