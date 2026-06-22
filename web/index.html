@@ -637,6 +637,46 @@
       .spec-chat-overlay.open { align-items: flex-end; justify-content: center; }
     }
 
+    /* API Token modal */
+    .token-overlay {
+      display: none;
+      position: fixed;
+      inset: 0;
+      z-index: 120;
+      background: rgba(0,0,0,0.35);
+      align-items: center;
+      justify-content: center;
+    }
+    .token-overlay.open { display: flex; }
+    .token-modal {
+      width: 380px;
+      max-width: calc(100vw - 32px);
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      box-shadow: 0 8px 32px rgba(0,0,0,0.18);
+      overflow: hidden;
+    }
+    .token-modal-header { padding: 16px 18px; font-weight: 700; border-bottom: 1px solid var(--border); }
+    .token-modal-body { padding: 18px; }
+    .token-label { display: block; font-size: 12px; color: var(--text-muted); margin-bottom: 8px; }
+    .token-input-row { display: flex; gap: 8px; }
+    .token-input {
+      flex: 1;
+      padding: 8px 10px;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      background: var(--bg);
+      color: var(--text);
+      font-family: Cascadia Mono, SF Mono, Consolas, monospace;
+      font-size: 13px;
+    }
+    .token-input:focus { outline: none; border-color: var(--text-muted); }
+    .token-feedback { min-height: 16px; margin-top: 10px; font-size: 12px; color: var(--text-faint); }
+    .token-feedback.error { color: #c0392b; }
+    .token-feedback.ok { color: #2e7d32; }
+    .token-modal-footer { display: flex; gap: 8px; align-items: center; padding: 14px 18px; border-top: 1px solid var(--border); }
+
     /* Harness About modal */
     .harness-overlay {
       display: none;
@@ -1018,6 +1058,27 @@
     </div>
   </div>
 
+  <!-- API Token modal -->
+  <div id="token-overlay" class="token-overlay" onclick="onTokenOverlayClick(event)">
+    <div class="token-modal">
+      <div class="token-modal-header">API Token</div>
+      <div class="token-modal-body">
+        <label class="token-label" for="token-input">Bearer token for this Praxis instance</label>
+        <div class="token-input-row">
+          <input id="token-input" class="token-input" type="password" autocomplete="off" spellcheck="false" placeholder="Paste your token" onkeydown="onTokenKey(event)" />
+          <button class="btn btn-compact" type="button" id="token-eye" onclick="toggleTokenVisibility()">Show</button>
+        </div>
+        <div id="token-feedback" class="token-feedback"></div>
+      </div>
+      <div class="token-modal-footer">
+        <button class="btn" type="button" onclick="clearToken()">Clear</button>
+        <span style="flex:1;"></span>
+        <button class="btn" type="button" onclick="closeTokenModal()">Cancel</button>
+        <button class="btn btn-primary" type="button" id="token-save" onclick="saveToken()">Save &amp; verify</button>
+      </div>
+    </div>
+  </div>
+
   <!-- Settings modal -->
   <div id="settings-overlay" class="settings-overlay" onclick="onSettingsOverlayClick(event)">
     <div class="settings-modal">
@@ -1103,9 +1164,82 @@
     }
 
     function resetToken() {
-      token = window.prompt("API token", token) || "";
+      openTokenModal();
+    }
+
+    function openTokenModal() {
+      const overlay = document.getElementById("token-overlay");
+      overlay.classList.add("open");
+      const input = document.getElementById("token-input");
+      input.value = token || "";
+      input.type = "password";
+      document.getElementById("token-eye").textContent = "Show";
+      setTokenFeedback("", "");
+      input.focus();
+    }
+
+    function closeTokenModal() {
+      document.getElementById("token-overlay").classList.remove("open");
+    }
+
+    function onTokenOverlayClick(event) {
+      if (event.target === document.getElementById("token-overlay")) closeTokenModal();
+    }
+
+    function onTokenKey(event) {
+      if (event.key === "Enter") { event.preventDefault(); saveToken(); }
+      else if (event.key === "Escape") closeTokenModal();
+    }
+
+    function toggleTokenVisibility() {
+      const input = document.getElementById("token-input");
+      const eye = document.getElementById("token-eye");
+      const show = input.type === "password";
+      input.type = show ? "text" : "password";
+      eye.textContent = show ? "Hide" : "Show";
+    }
+
+    function setTokenFeedback(msg, kind) {
+      const el = document.getElementById("token-feedback");
+      el.textContent = msg;
+      el.className = "token-feedback" + (kind ? " " + kind : "");
+    }
+
+    function clearToken() {
+      token = "";
+      localStorage.removeItem("praxis_token");
+      document.getElementById("token-input").value = "";
+      setTokenFeedback("Token cleared.", "");
+    }
+
+    async function saveToken() {
+      const candidate = document.getElementById("token-input").value.trim();
+      if (!candidate) { setTokenFeedback("Enter a token.", "error"); return; }
+      const saveBtn = document.getElementById("token-save");
+      saveBtn.disabled = true;
+      setTokenFeedback("Verifying…", "");
+      let verified = false;
+      try {
+        const res = await fetch(API + "/api/status", {
+          headers: { "Authorization": "Bearer " + candidate, "Content-Type": "application/json" }
+        });
+        if (res.status === 401 || res.status === 403) {
+          setTokenFeedback("Invalid token — the server rejected it.", "error");
+          saveBtn.disabled = false;
+          return;
+        }
+        verified = res.ok;
+        setTokenFeedback(res.ok ? "Token verified." : "Server error (" + res.status + "). Token saved anyway.", res.ok ? "ok" : "error");
+      } catch (error) {
+        setTokenFeedback("Could not reach the server. Token saved — check the connection.", "error");
+      }
+      token = candidate;
       localStorage.setItem("praxis_token", token);
+      saveBtn.disabled = false;
       pollStatus();
+      if (verified) {
+        setTimeout(() => { closeTokenModal(); switchView(currentView); }, 500);
+      }
     }
 
     function headers() {
@@ -1191,7 +1325,7 @@
 
     function primaryAction() {
       if (currentView === "dashboard") {
-        switchView("plans");
+        openSpecChat();
       } else if (currentView === "projects") {
         showingForm = true;
         renderProjectsView();
@@ -1215,7 +1349,7 @@
         eventSource = null;
       }
       if (name === "dashboard") {
-        setTopbar("Dashboard", "+ New Plan");
+        setTopbar("Dashboard", "+ Create Spec");
         await loadDashboard();
       } else if (name === "projects") {
         setTopbar("Projects", "+ New Project");
@@ -1819,6 +1953,18 @@
     }
 
     function renderDashboard() {
+      if (!projects.length) {
+        document.getElementById("view-container").innerHTML =
+          '<div class="detail-empty" style="max-width:480px;margin:64px auto;text-align:center;padding:32px;">' +
+          '<div style="font-weight:700;font-size:16px;margin-bottom:8px;">Welcome to Praxis</div>' +
+          '<div style="color:var(--text-muted);font-size:13px;line-height:1.6;margin-bottom:20px;">' +
+          'Praxis turns ideas into shipped code: write a <strong>Spec</strong>, Claude breaks it into a ' +
+          '<strong>Plan</strong>, then agents implement it in a <strong>Run</strong> — reviewed and merged automatically.' +
+          '<br><br>Start by connecting a repository as a project.</div>' +
+          '<button class="btn btn-primary" type="button" onclick="switchView(\'projects\')">+ Create Project</button>' +
+          '</div>';
+        return;
+      }
       const scoped = visiblePlans();
       const activePendingPlans = scoped.filter(plan => plan.status === "active" || plan.status === "pending");
       const completedPlans = scoped.filter(plan => plan.status === "completed").slice(0, 5);
@@ -2286,6 +2432,9 @@
         return;
       }
       const projectName = projects.find(p => p.id === pid)?.name || pid;
+      container.innerHTML =
+        '<div class="view-loader"><div class="spinner"></div>' +
+        '<span>Cloning repository… this can take a few seconds.</span></div>';
       let ctx;
       try {
         ctx = await api("GET", "/api/projects/" + pid + "/context");
@@ -2825,8 +2974,20 @@
         const promote = (lifecycleSegment === "plan" && it.plan_path && !it.run_id)
           ? '<div class="detail-actions"><button class="btn btn-primary" type="button" onclick="promoteLifecycle(\'' + esc(it.plan_path) + '\')">Promote to Run</button></div>'
           : "";
+        let cardBody;
+        if (!path) {
+          cardBody = '<div class="detail-empty">No ' + (lifecycleSegment === "spec" ? "specification" : "plan") +
+            ' document linked. For legacy plans, the spec lives in the repo&rsquo;s docs/ directory.</div>';
+        } else if (cached === undefined) {
+          cardBody = "Loading…";
+        } else if (!cached.trim()) {
+          cardBody = '<div class="detail-empty">This ' + (lifecycleSegment === "spec" ? "specification" : "plan") +
+            ' document is empty. For legacy plans, the original spec content lives in the repo&rsquo;s docs/ directory.</div>';
+        } else {
+          cardBody = renderMarkdown(cached);
+        }
         body = '<div class="detail-content"><div class="detail-card">' +
-          (cached === undefined ? "Loading…" : renderMarkdown(cached)) + '</div>' + promote + '</div>';
+          cardBody + '</div>' + promote + '</div>';
       }
       return '<div class="detail-header"><div class="detail-title">' + esc(it.title) + '</div>' +
         '<div style="margin-top:8px;">' + segmented + '</div></div>' + body;
