@@ -2423,11 +2423,11 @@
       // Defensive: older backends may omit the key
       const pollList = Array.isArray(providers) ? providers : [];
       _lastProviders = pollList;
-      // A poll that reports a provider authenticated clears its runtime flag
-      // (the user logged back in).
-      pollList.forEach(p => {
-        if (p.authenticated) _runtimeAuthFailures.delete(p.name);
-      });
+      // NOTE: a runtime auth failure is NOT cleared by the poll reporting the
+      // provider authenticated — some CLIs (codex) lie to the status check on a
+      // revoked-but-cached token. Runtime evidence (an actual 401) outranks the
+      // poll; the flag clears only when the user dismisses the banner (after
+      // running the login command).
       // Union: installed-but-unauthenticated from the poll, plus runtime failures
       // (which override the poll's optimistic "authenticated" for that provider).
       const actionableMap = new Map();
@@ -2470,6 +2470,10 @@
       const names = Array.from(banner.querySelectorAll(".provider-login-banner-row strong"))
         .map(el => el.textContent).sort().join(",");
       _bannerDismissedFor = names;
+      // Clear runtime-flagged failures on dismiss: the user has acknowledged
+      // (and presumably run the login command). A subsequent real auth failure
+      // re-flags the provider via the SSE event.
+      _runtimeAuthFailures.clear();
       banner.classList.remove("visible");
     }
 
