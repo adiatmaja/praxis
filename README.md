@@ -1,7 +1,9 @@
 # Praxis
 
-> AI agent orchestrator that runs on your **flat-rate AI subscription** (Claude / Gemini / GPT),
-> not the expensive pay-per-token API — and offloads implementation to a **local LLM** to save tokens.
+**Run an autonomous coding-agent loop on your AI subscription — not the metered API.**
+
+Praxis drives the Claude / Gemini / GPT CLI you already pay for to plan and review, and offloads
+implementation to a local LLM to save tokens.
 
 ## Overview
 
