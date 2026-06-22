@@ -9,9 +9,19 @@ from httpx import AsyncClient
 from orchestrator.database import Database
 from tests.conftest import seed_user
 
+
 # ---------------------------------------------------------------------------
 # Helpers for provider-probe mocking
 # ---------------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def _stub_which(mocker: pytest.MonkeyPatch) -> None:
+    """Resolve provider shims to their own name so probe tests don't depend on
+    the real CLIs being installed (the probe now calls shutil.which)."""
+    mocker.patch(
+        "orchestrator.api.system.shutil.which", side_effect=lambda name: name
+    )
 
 
 def _make_proc(mocker: pytest.MonkeyPatch, returncode: int) -> object:

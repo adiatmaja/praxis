@@ -2337,6 +2337,18 @@
           document.getElementById("stat-queue").textContent = String(data.queued_count);
         }
       });
+
+      // A brain call hit a dead provider session — authoritative login signal
+      // (the status poll can falsely report some CLIs as authenticated).
+      source.addEventListener("provider_auth_required", event => {
+        let data;
+        try {
+          data = JSON.parse(event.data);
+        } catch (error) {
+          return;
+        }
+        if (data?.provider) flagRuntimeAuthFailure(data.provider, data.login_hint);
+      });
     }
 
     function toggleSpec(planId) {
@@ -2391,17 +2403,38 @@
     // Reset whenever the set of actionable providers changes so a newly broken
     // provider always surfaces again.
     let _bannerDismissedFor = "";
+    // Last providers array from /api/status, so the SSE handler can re-render.
+    let _lastProviders = [];
+    // Providers flagged by a RUNTIME brain-call auth failure (provider_auth_required
+    // SSE event). This is the authoritative signal: some CLIs (codex) report
+    // "logged in" to the status poll even when the session is actually revoked,
+    // so the poll alone can't be trusted. name -> login_hint.
+    const _runtimeAuthFailures = new Map();
+
+    function flagRuntimeAuthFailure(provider, loginHint) {
+      if (!provider) return;
+      _runtimeAuthFailures.set(provider, loginHint || (provider + " login"));
+      updateProviderLoginBanner(_lastProviders);
+    }
 
     function updateProviderLoginBanner(providers) {
       const banner = document.getElementById("provider-login-banner");
       if (!banner) return;
       // Defensive: older backends may omit the key
-      if (!Array.isArray(providers)) {
-        banner.classList.remove("visible");
-        return;
-      }
-      // Collect providers that are installed but not authenticated
-      const actionable = providers.filter(p => p.cli_available && !p.authenticated);
+      const pollList = Array.isArray(providers) ? providers : [];
+      _lastProviders = pollList;
+      // A poll that reports a provider authenticated clears its runtime flag
+      // (the user logged back in).
+      pollList.forEach(p => {
+        if (p.authenticated) _runtimeAuthFailures.delete(p.name);
+      });
+      // Union: installed-but-unauthenticated from the poll, plus runtime failures
+      // (which override the poll's optimistic "authenticated" for that provider).
+      const actionableMap = new Map();
+      pollList.filter(p => p.cli_available && !p.authenticated)
+        .forEach(p => actionableMap.set(p.name, p.login_hint || (p.name + " login")));
+      _runtimeAuthFailures.forEach((hint, name) => actionableMap.set(name, hint));
+      const actionable = Array.from(actionableMap, ([name, login_hint]) => ({ name, login_hint }));
       // Build a stable key so we can detect when the set changes (e.g. user logs in)
       const key = actionable.map(p => p.name).sort().join(",");
       if (key !== _bannerDismissedFor) {

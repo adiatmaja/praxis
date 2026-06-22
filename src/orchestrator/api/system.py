@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import shutil
 import time
 from typing import Any
 
@@ -70,9 +71,16 @@ async def _probe_provider(name: str) -> dict[str, Any]:
     version_cmd, auth_cmd = _PROVIDER_CMDS.get(name, ([], None))
 
     async def _run(cmd: list[str]) -> bool:
+        # Resolve argv[0] to its full path: on Windows these CLIs are .CMD/.EXE
+        # npm/installer shims that bare create_subprocess_exec can't launch
+        # (WinError 2). Mirrors the resolution in core/llm_router.run.
+        resolved = shutil.which(cmd[0])
+        if resolved is None:
+            return False
         try:
             proc = await asyncio.create_subprocess_exec(
-                *cmd,
+                resolved,
+                *cmd[1:],
                 stdout=asyncio.subprocess.DEVNULL,
                 stderr=asyncio.subprocess.DEVNULL,
             )
