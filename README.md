@@ -89,7 +89,7 @@ DOMAIN=praxis.example.com docker compose --profile hosted up --build
 
 ## How It Works
 
-1. User submits a spec via Web UI, CLI, or API
+1. User provides a spec — write your own, or generate one with the built-in Create-Spec chat (Web UI, CLI, or API)
 2. The planner brain breaks the spec into tasks with a dependency graph
 3. Orchestrator creates a `plan/{date}-{slug}` branch
 4. Coding agents implement tasks on `agent/{task-slug}` branches
