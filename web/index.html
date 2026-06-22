@@ -162,6 +162,24 @@
     .conn-role { color: var(--text); font-weight: 700; }
     .conn-model { overflow: hidden; color: var(--text-faint); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
 
+    /* Provider login banner — amber warning strip between topbar and view */
+    .provider-login-banner {
+      flex-shrink: 0;
+      display: none;
+      flex-direction: column;
+      gap: 4px;
+      padding: 8px 24px;
+      background: var(--badge-reviewing-bg);
+      border-bottom: 1px solid var(--border);
+      font-size: 12px;
+      color: var(--badge-reviewing-text);
+    }
+    .provider-login-banner.visible { display: flex; }
+    .provider-login-banner-row { display: flex; align-items: baseline; gap: 6px; }
+    .provider-login-banner-hint { font-family: ui-monospace, "Cascadia Code", "Fira Mono", monospace; background: color-mix(in srgb, var(--badge-reviewing-bg) 60%, transparent); border: 1px solid color-mix(in srgb, var(--badge-reviewing-text) 25%, transparent); border-radius: 4px; padding: 0 5px; font-size: 11px; }
+    .provider-login-banner-dismiss { margin-left: auto; cursor: pointer; background: none; border: none; color: var(--badge-reviewing-text); font-size: 14px; line-height: 1; padding: 0 2px; opacity: .7; flex-shrink: 0; align-self: flex-start; }
+    .provider-login-banner-dismiss:hover { opacity: 1; }
+
     .main { min-width: 0; flex: 1; display: flex; flex-direction: column; }
     .topbar {
       height: 52px;
@@ -1045,6 +1063,10 @@
         <button class="btn" type="button" onclick="resetToken()">API Token</button>
       </div>
     </header>
+    <!-- Provider login banner: shown when a CLI is installed but not authenticated -->
+    <div id="provider-login-banner" class="provider-login-banner" role="alert" aria-live="polite">
+      <button class="provider-login-banner-dismiss" type="button" onclick="dismissProviderBanner()" title="Dismiss">✕</button>
+    </div>
     <section id="view-container" class="master-detail"></section>
   </main>
 
@@ -2358,10 +2380,72 @@
         document.getElementById("stat-queue").textContent = status.opus_state.queued_count;
         setConnection("agent", status.agent_model, status.opus_state.status);
         setConnection("subagent", status.subagent_model, status.subagent_model.connected ? "connected" : "disconnected");
+        updateProviderLoginBanner(status.providers);
       } catch (error) {
         setConnection("agent", { name: "offline", connected: false }, "disconnected");
         setConnection("subagent", { name: "offline", connected: false }, "disconnected");
       }
+    }
+
+    // Track whether the user has manually dismissed the banner this session.
+    // Reset whenever the set of actionable providers changes so a newly broken
+    // provider always surfaces again.
+    let _bannerDismissedFor = "";
+
+    function updateProviderLoginBanner(providers) {
+      const banner = document.getElementById("provider-login-banner");
+      if (!banner) return;
+      // Defensive: older backends may omit the key
+      if (!Array.isArray(providers)) {
+        banner.classList.remove("visible");
+        return;
+      }
+      // Collect providers that are installed but not authenticated
+      const actionable = providers.filter(p => p.cli_available && !p.authenticated);
+      // Build a stable key so we can detect when the set changes (e.g. user logs in)
+      const key = actionable.map(p => p.name).sort().join(",");
+      if (key !== _bannerDismissedFor) {
+        // Set changed — lift any previous dismiss so the new state shows
+        _bannerDismissedFor = "";
+      }
+      if (actionable.length === 0 || _bannerDismissedFor === key) {
+        banner.classList.remove("visible");
+        return;
+      }
+      // Rebuild rows (preserve dismiss button which is always the first child)
+      const dismiss = banner.querySelector(".provider-login-banner-dismiss");
+      // Remove old rows
+      Array.from(banner.querySelectorAll(".provider-login-banner-row")).forEach(el => el.remove());
+      actionable.forEach(p => {
+        const row = document.createElement("div");
+        row.className = "provider-login-banner-row";
+        const hint = p.login_hint || (p.name + " login");
+        row.innerHTML =
+          "⚠ <strong>" + escapeHtml(p.name) + "</strong> needs login — run " +
+          "<span class=\"provider-login-banner-hint\">" + escapeHtml(hint) + "</span>" +
+          " in your terminal, then retry.";
+        // Insert before dismiss button
+        banner.insertBefore(row, dismiss);
+      });
+      banner.classList.add("visible");
+    }
+
+    function dismissProviderBanner() {
+      const banner = document.getElementById("provider-login-banner");
+      if (!banner) return;
+      // Record the current set of provider names shown so we only re-show if the set changes
+      const names = Array.from(banner.querySelectorAll(".provider-login-banner-row strong"))
+        .map(el => el.textContent).sort().join(",");
+      _bannerDismissedFor = names;
+      banner.classList.remove("visible");
+    }
+
+    function escapeHtml(str) {
+      return String(str)
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;");
     }
 
     function setConnection(prefix, info, status) {

@@ -3,11 +3,59 @@
 from __future__ import annotations
 
 import asyncio
+import shutil
 from collections.abc import Awaitable, Callable
 
 
 class UnknownProviderError(Exception):
     """Raised when a call-site config names a provider with no builder."""
+
+
+class ProviderAuthError(Exception):
+    """Raised when a provider CLI is installed but not (validly) authenticated.
+
+    Distinct from a transient failure so the orchestration loop can pause and
+    surface a login instruction instead of retrying the task to exhaustion.
+    """
+
+    def __init__(self, provider: str, login_hint: str) -> None:
+        self.provider = provider
+        self.login_hint = login_hint
+        super().__init__(f"{provider} is not authenticated. Run: {login_hint}")
+
+
+class ProviderOutputError(RuntimeError):
+    """Raised when a provider exits cleanly but yields no usable output."""
+
+
+# Per-provider command the human must run to (re)authenticate. Surfaced in
+# ProviderAuthError and the dashboard so login stays an explicit manual step.
+LOGIN_HINTS: dict[str, str] = {
+    "claude": "claude login",
+    "codex": "codex login",
+    "agy": "agy (run interactively to sign in)",
+}
+
+# Substrings that mean "the CLI ran but the session is dead". Critical for
+# `codex`, which exits 0 while printing a 401 to stderr — returncode alone
+# would let a failed-auth call pass through as success.
+_AUTH_FAIL_SIGNATURES: tuple[str, ...] = (
+    "refresh token was revoked",
+    "please log out and sign in",
+    "401 unauthorized",
+    "not authenticated",
+    "please sign in",
+    "no credentials",
+)
+
+# agy takes the prompt as a positional argv value (not stdin); guard against
+# the OS command-line length limit (Windows WinError 206 above ~32K chars).
+_AGY_ARGV_LIMIT = 30000
+
+
+def _looks_like_auth_failure(stderr: str) -> bool:
+    low = stderr.lower()
+    return any(sig in low for sig in _AUTH_FAIL_SIGNATURES)
 
 
 # Default {provider, model, effort} per call-site (the model-tiering policy).
@@ -61,12 +109,17 @@ def build_argv(
         if effort:
             argv += ["--reasoning-effort", effort]
         return argv
-    if provider == "agy":  # Gemini CLI — verify one-shot flag during impl
-        argv = ["agy", "-p"]
+    if provider == "agy":
+        # Gemini CLI: `--print` takes the prompt as its argument value, NOT
+        # stdin (piping yields "flag needs an argument: -p"). The prompt is
+        # therefore embedded in argv here; LLMRouter.run guards its length.
+        argv = ["agy", "--print", prompt]
         if model:
             argv += ["--model", model]
         return argv
-    if provider == "codex":  # GPT CLI — verify one-shot flag during impl
+    if provider == "codex":
+        # GPT CLI: `codex exec` reads the prompt from stdin when no positional
+        # is given (LLMRouter.run pipes it), matching the claude path.
         argv = ["codex", "exec"]
         if model:
             argv += ["--model", model]
@@ -90,20 +143,58 @@ class LLMRouter:
         provider = cfg["provider"]
         if provider == "local":
             return await self._run_local(prompt, cfg.get("model") or "")
-        argv = build_argv(provider, cfg.get("model") or "", cfg.get("effort"))
+        # agy receives the prompt as a positional argv value; every other CLI
+        # provider receives it on stdin (avoids the argv length limit).
+        prompt_in_argv = provider == "agy"
+        if prompt_in_argv and len(prompt) > _AGY_ARGV_LIMIT:
+            message = (
+                f"prompt too large for agy argv ({len(prompt)} chars); agy cannot "
+                "accept large prompts on this provider"
+            )
+            raise ProviderOutputError(message)
+        argv = build_argv(provider, cfg.get("model") or "", cfg.get("effort"), prompt)
+        # Resolve argv[0] to its full path: on Windows these CLIs are .CMD/.EXE
+        # npm/installer shims that create_subprocess_exec cannot find by bare
+        # name (raises WinError 2). shutil.which honors PATHEXT.
+        resolved = shutil.which(argv[0])
+        if resolved is None:
+            raise ProviderAuthError(
+                provider, LOGIN_HINTS.get(provider, f"install {provider}")
+            )
+        argv[0] = resolved
         proc = await asyncio.create_subprocess_exec(
             *argv,
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-        stdout, stderr = await proc.communicate(input=prompt.encode())
-        if proc.returncode:
-            message = (
-                f"{provider} failed (exit {proc.returncode}): {stderr.decode().strip()}"
+        stdin_input = None if prompt_in_argv else prompt.encode()
+        stdout, stderr = await proc.communicate(input=stdin_input)
+        err = stderr.decode()
+        # Auth check first: codex exits 0 while printing a 401 to stderr, so a
+        # returncode-only check would silently accept a failed-auth response.
+        if _looks_like_auth_failure(err):
+            raise ProviderAuthError(
+                provider, LOGIN_HINTS.get(provider, f"re-authenticate {provider}")
             )
+        if proc.returncode:
+            message = f"{provider} failed (exit {proc.returncode}): {err.strip()}"
             raise RuntimeError(message)
-        return stdout.decode().strip()
+        out = stdout.decode().strip()
+        if not out:
+            # agy's --print renders only to an interactive TTY and yields no
+            # capturable stdout when run non-interactively (exit 0, empty out).
+            message = (
+                f"{provider} returned empty output (exit 0)."
+                + (
+                    " agy --print writes only to an interactive terminal and "
+                    "cannot be captured non-interactively."
+                    if provider == "agy"
+                    else ""
+                )
+            )
+            raise ProviderOutputError(message)
+        return out
 
     async def _run_local(self, prompt: str, model: str) -> str:
         import httpx

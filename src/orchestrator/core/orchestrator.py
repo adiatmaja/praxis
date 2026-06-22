@@ -14,6 +14,7 @@ from orchestrator.core.git_ops import (
     commit_and_push,
     flip_checklist_item,
 )
+from orchestrator.core.llm_router import ProviderAuthError
 from orchestrator.core.task_queue import TaskQueue
 from orchestrator.models.schemas import PlanStatus, TaskStatus
 
@@ -680,6 +681,20 @@ class Orchestrator:
         while not stop_event.is_set():
             try:
                 await self.run_once()
+            except ProviderAuthError as exc:
+                # A provider session is dead — pause and tell the user to log
+                # in rather than spamming a traceback every interval. The task
+                # is left in place; the next pass resumes once auth is fixed.
+                logger.warning(
+                    "Provider %s needs login: %s", exc.provider, exc.login_hint
+                )
+                self._bus.publish(
+                    {
+                        "type": "provider_auth_required",
+                        "provider": exc.provider,
+                        "login_hint": exc.login_hint,
+                    }
+                )
             except Exception:
                 logger.exception("Orchestration loop iteration failed")
             try:

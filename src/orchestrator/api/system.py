@@ -12,6 +12,7 @@ import httpx
 from fastapi import APIRouter, Depends, Request
 
 from orchestrator.api.auth import verify_token
+from orchestrator.core.llm_router import LOGIN_HINTS
 from orchestrator.models.schemas import OpusStateResponse
 
 
@@ -34,6 +35,70 @@ def _opus_state_response(state: dict[str, Any]) -> dict[str, Any]:
 # subprocess on every request. (monotonic_ts, available) or None.
 _claude_probe_cache: tuple[float, bool] | None = None
 _CLAUDE_PROBE_TTL = 60.0
+
+# Per-provider probe cache: name -> (monotonic_ts, result_dict)
+_provider_probe_cache: dict[str, tuple[float, dict[str, Any]]] = {}
+
+# Commands used to check if a provider CLI is available and authenticated.
+# Each entry: (version_cmd, auth_cmd | None)
+# version_cmd exit 0 → cli_available; auth_cmd exit 0 → authenticated.
+# None auth_cmd means: authenticated iff cli_available (best-effort).
+_PROVIDER_CMDS: dict[str, tuple[list[str], list[str] | None]] = {
+    "claude": (["claude", "--version"], None),
+    "codex": (["codex", "--version"], ["codex", "login", "status"]),
+    "agy": (["agy", "help"], None),
+}
+
+
+async def _probe_provider(name: str) -> dict[str, Any]:
+    """Probe a single brain provider CLI for availability and auth status.
+
+    Results are cached for 60 s to avoid spawning subprocesses on every poll.
+
+    Args:
+        name: Provider name ("claude", "codex", "agy").
+
+    Returns:
+        Dict with keys: name, cli_available, authenticated, login_hint.
+    """
+    now = time.monotonic()
+    cached = _provider_probe_cache.get(name)
+    if cached is not None and now - cached[0] < _CLAUDE_PROBE_TTL:
+        return cached[1]
+
+    login_hint = LOGIN_HINTS.get(name, f"re-authenticate {name}")
+    version_cmd, auth_cmd = _PROVIDER_CMDS.get(name, ([], None))
+
+    async def _run(cmd: list[str]) -> bool:
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+            await asyncio.wait_for(proc.wait(), timeout=10.0)
+            return proc.returncode == 0
+        except (TimeoutError, OSError) as exc:
+            logger.debug("%s probe %s failed: %s", name, cmd[0], exc)
+            return False
+
+    cli_available = await _run(version_cmd) if version_cmd else False
+    if not cli_available:
+        authenticated = False
+    elif auth_cmd is None:
+        # Best-effort: assume authenticated when CLI is present
+        authenticated = True
+    else:
+        authenticated = await _run(auth_cmd)
+
+    result: dict[str, Any] = {
+        "name": name,
+        "cli_available": cli_available,
+        "authenticated": authenticated,
+        "login_hint": login_hint,
+    }
+    _provider_probe_cache[name] = (now, result)
+    return result
 
 
 async def _probe_claude_cli() -> bool:
@@ -116,6 +181,9 @@ async def system_status(request: Request) -> dict[str, Any]:
         effective_lm_studio_url = settings.lm_studio_url
         effective_agent_model = settings.agent_model
     subagent_info = await _probe_subagent(effective_lm_studio_url)
+    providers = [
+        await _probe_provider(name) for name in ("claude", "codex", "agy")
+    ]
 
     return {
         "opus_state": _opus_state_response(opus_state),
@@ -130,6 +198,7 @@ async def system_status(request: Request) -> dict[str, Any]:
         },
         "subagent_model": subagent_info,
         "lm_studio_url": effective_lm_studio_url,
+        "providers": providers,
     }
 
 
