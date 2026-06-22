@@ -337,14 +337,17 @@ def test_response_models_construct_successfully() -> None:
 
 def test_project_create_accepts_agent_model():
     p = ProjectCreate(
-        name="r", repo_url="u", model_name="m", agent_model="claude-sonnet-4-6"
+        name="r",
+        repo_url="https://github.com/u/r",
+        model_name="m",
+        agent_model="claude-sonnet-4-6",
     )
     assert p.agent_model == "claude-sonnet-4-6"
     assert p.agent_model_effort is None
 
 
 def test_project_create_agent_model_optional():
-    p = ProjectCreate(name="r", repo_url="u", model_name="m")
+    p = ProjectCreate(name="r", repo_url="https://github.com/u/r", model_name="m")
     assert p.agent_model is None
 
 

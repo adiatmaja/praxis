@@ -34,9 +34,16 @@ send_callback() {
     local attempt=1
     while [ "${attempt}" -le "${max_attempts}" ]; do
         local code
+        # CALLBACK_TOKEN is the shared secret set by the orchestrator.
+        # The header is omitted when unset so local dev without a token still works.
+        local token_header=()
+        if [ -n "${CALLBACK_TOKEN:-}" ]; then
+            token_header=(-H "X-Praxis-Callback-Token: ${CALLBACK_TOKEN}")
+        fi
         code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 \
             -X POST "${CALLBACK_URL}" \
             -H "Content-Type: application/json" \
+            "${token_header[@]}" \
             -d "${payload}" || echo "000")
         if [ "${code}" = "200" ]; then
             echo "Callback delivered on attempt ${attempt}"

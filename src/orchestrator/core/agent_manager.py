@@ -42,6 +42,7 @@ class AgentManager:
         model_name: str,
         callback_url: str,
         harness: str | None = None,
+        callback_token: str | None = None,
     ) -> str:
         harness_id = harness or default_harness_id()
         spec = REGISTRY[harness_id]
@@ -61,6 +62,8 @@ class AgentManager:
             "CALLBACK_URL": callback_url,
             "TASK_ID": task_id,
         }
+        if callback_token is not None:
+            environment["CALLBACK_TOKEN"] = callback_token
         container_name = f"aider-agent-{task_id[:8]}"
         self._remove_existing_container(container_name)
         container = self._client.containers.run(

@@ -34,6 +34,7 @@ class Orchestrator:
         doc_indexer: Any = None,
         context_sync: Any = None,
         callback_url: str = "http://host.docker.internal:8080/api/internal/agent-done",
+        callback_token: str | None = None,
     ) -> None:
         self._tq = task_queue
         self._agents = agent_manager
@@ -45,6 +46,9 @@ class Orchestrator:
         # Where agent containers POST completion; must match the orchestrator's
         # listening port (a wrong port makes every callback 404 -> reconcile).
         self._callback_url = callback_url
+        # Shared secret passed to containers so the /api/internal/agent-done
+        # endpoint can reject forged callbacks.
+        self._callback_token = callback_token
         # Background log-streaming monitors, keyed by agent-run id.
         self._monitors: dict[str, asyncio.Task[None]] = {}
         # Seconds to wait for an in-flight agent-done callback before a
@@ -114,6 +118,7 @@ class Orchestrator:
                 model_name=project["model_name"],
                 harness=project.get("harness"),
                 callback_url=self._callback_url,
+                callback_token=self._callback_token,
             )
             run_id = await self._tq.create_agent_run(task["id"], container_id)
             await self._tq.update_task_status(task["id"], TaskStatus.IN_PROGRESS)

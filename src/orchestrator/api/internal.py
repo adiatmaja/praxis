@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import secrets
 
 from fastapi import APIRouter, HTTPException, Request, status
 from pydantic import BaseModel
@@ -12,6 +13,9 @@ from orchestrator.models.schemas import TaskStatus
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["internal"])
+
+# Header name agents must include with the callback token.
+_CALLBACK_TOKEN_HEADER = "x-praxis-callback-token"
 
 
 class AgentDonePayload(BaseModel):
@@ -23,9 +27,34 @@ class AgentDonePayload(BaseModel):
     pr_url: str | None = None
 
 
+def _verify_callback_token(request: Request) -> None:
+    """Reject the request if the callback token header is missing or wrong.
+
+    The expected secret is taken from ``app.state.internal_callback_secret``,
+    which is set during application startup (see ``main.py`` lifespan).
+    When the secret is ``None`` (not yet initialised), the check is skipped
+    with a warning so that in-process tests that bypass the full lifespan
+    still work.  In production the lifespan always sets the secret.
+    """
+    expected: str | None = getattr(request.app.state, "internal_callback_secret", None)
+    if expected is None:
+        logger.warning(
+            "internal_callback_secret not configured; skipping callback auth "
+            "(set INTERNAL_CALLBACK_SECRET or AUTH_TOKEN to enable)"
+        )
+        return
+    provided = request.headers.get(_CALLBACK_TOKEN_HEADER, "")
+    if not secrets.compare_digest(provided.encode(), expected.encode()):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or missing callback token",
+        )
+
+
 @router.post("/agent-done")
 async def agent_done(request: Request, body: AgentDonePayload) -> dict[str, str]:
     """Handle completion callback from an Aider agent container."""
+    _verify_callback_token(request)
 
     queue = request.app.state.task_queue
     task = await queue.get_task(body.task_id)

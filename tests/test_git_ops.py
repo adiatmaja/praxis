@@ -144,7 +144,10 @@ async def test_get_pr_diff_targets_repo(mock_run: AsyncMock) -> None:
 @pytest.mark.parametrize(
     ("url", "expected"),
     [
-        ("https://github.com/adiatmaja/openclaw-telegram/pull/2", "adiatmaja/openclaw-telegram"),
+        (
+            "https://github.com/adiatmaja/openclaw-telegram/pull/2",
+            "adiatmaja/openclaw-telegram",
+        ),
         ("https://github.com/u/a", "u/a"),
         ("https://github.com/u/a.git", "u/a"),
         ("git@github.com:u/a.git", "u/a"),

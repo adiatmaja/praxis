@@ -193,3 +193,81 @@ env vars); secrets (`AUTH_TOKEN`, `GITHUB_TOKEN`) stay in env / `.env`.
 > accordingly (or set `AGENT_CALLBACK_URL` explicitly) — otherwise every agent callback
 > 404s and tasks only finish via the reconcile backstop (and may be marked failed even
 > when the agent succeeded).
+
+---
+
+## Security / Trust Model
+
+Praxis is designed to run as a **trusted single-operator tool**, not a multi-tenant
+service.  Several architectural choices reflect this; understand them before exposing
+Praxis to a broader network.
+
+### Internal callback authentication
+
+Agent containers POST `POST /api/internal/agent-done` when they finish.  This endpoint
+is protected by a shared secret sent in the `X-Praxis-Callback-Token` header.
+
+By default the secret is derived from `AUTH_TOKEN` so existing deployments work without
+configuration.  To use a dedicated secret set `INTERNAL_CALLBACK_SECRET` in `.env`:
+
+```
+INTERNAL_CALLBACK_SECRET=<random-string>
+```
+
+The orchestrator passes this secret to agent containers as `CALLBACK_TOKEN` via the
+Docker environment.  The comparison uses `secrets.compare_digest` to prevent timing
+attacks.
+
+### Docker socket exposure
+
+`docker-compose.yml` mounts `/var/run/docker.sock` into the orchestrator container.
+This is functionally equivalent to giving the container **root access to the host**,
+because it can spawn arbitrary containers with any volume or network configuration.
+Acceptable for a single-operator workstation; not for a multi-tenant or
+internet-facing deployment without additional isolation (e.g. Docker-in-Docker
+with resource limits, or socket proxies like `tecnativa/docker-socket-proxy`).
+
+### Mounted host credentials
+
+Two host credential directories are mounted into the orchestrator container:
+
+| Mount | Purpose | Privilege level |
+|-------|---------|----------------|
+| `~/.ssh` (`:ro`) | git clone over SSH | All host SSH private keys |
+| `~/.claude` (`:rw`) | `claude -p` subscription auth | Claude Code credentials |
+
+`~/.ssh` is read-only; `~/.claude` is read-write because `claude config set` writes
+during first-run setup.  If claude is already configured you may add `:ro` to the
+`~/.claude` mount.
+
+To reduce exposure, override `SSH_KEY_PATH` to point at a single deploy key instead
+of the full `~/.ssh` directory:
+
+```
+SSH_KEY_PATH=~/.ssh/id_praxis_deploy
+```
+
+### Agent containers and `network_mode: host`
+
+Agent containers run with `network_mode: host` so they can reach LM Studio on
+`localhost:1234`.  This gives each agent container full access to all host network
+interfaces and services, with no port-level isolation.
+
+### Auto-merge and approval gate
+
+When `approval_gate` is **enabled** (the default), every Opus-reviewed PR requires a
+human approval before merging.  Disabling the approval gate (`approval_gate: false` per
+project) allows the orchestrator to merge LLM-written code autonomously.
+
+**This is a deliberate supply-chain trust decision.**  Only disable it for repositories
+where you are comfortable with fully automated merges of AI-generated code.
+
+### Prompt injection via PR diffs
+
+When reviewing a PR, the orchestrator feeds the full diff to the reviewing LLM.
+A malicious contributor could embed adversarial instructions in a code comment or
+commit message, attempting to influence the LLM verdict (prompt-injection).
+
+Mitigation: keep `approval_gate` enabled so a human sees the diff before any merge
+occurs.  Do not point Praxis at repositories with untrusted external contributors
+unless you review diffs independently of the LLM verdict.

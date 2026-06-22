@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import secrets
 from functools import lru_cache
 
 from fastapi import Depends, HTTPException
@@ -24,8 +25,17 @@ async def verify_token(
     credentials: HTTPAuthorizationCredentials = Depends(security),
     settings: Settings = Depends(get_settings),
 ) -> str:
-    """Validate bearer token against configured auth token."""
+    """Validate bearer token against configured auth token.
 
-    if credentials.credentials != settings.auth_token:
+    Uses ``secrets.compare_digest`` to prevent timing-oracle attacks.
+
+    Note: the ``token_hash`` column in the ``users`` table stores the raw
+    token string for v1 single-token auth (not a real cryptographic hash).
+    The column name is a legacy artifact; do not rely on it being hashed.
+    """
+    # encode() so compare_digest works on identical types (bytes vs bytes)
+    if not secrets.compare_digest(
+        credentials.credentials.encode(), settings.auth_token.encode()
+    ):
         raise HTTPException(status_code=401, detail="Invalid authentication token")
     return credentials.credentials

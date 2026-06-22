@@ -77,6 +77,44 @@ class ProjectCreate(BaseModel):
             raise ValueError(msg)
         return value
 
+    @field_validator("repo_url")
+    @classmethod
+    def validate_repo_url(cls, value: str) -> str:
+        """Reject dangerous git transports; allow only HTTPS or scp-style SSH.
+
+        Allowed forms:
+          - https://host/owner/repo[.git]
+          - git@host:owner/repo[.git]
+
+        Rejected (non-exhaustive):
+          - ext::, file://, ssh://, git:// schemes
+          - anything containing --upload-pack or --config (git option injection)
+        """
+        stripped = value.strip()
+        dangerous_fragments = ("--upload-pack", "--config")
+        for fragment in dangerous_fragments:
+            if fragment in stripped:
+                msg = f"repo_url must not contain '{fragment}'"
+                raise ValueError(msg)
+        # scp-style SSH: git@host:path
+        if stripped.startswith("git@"):
+            if ":" not in stripped.split("@", 1)[1]:
+                msg = "invalid scp-style repo_url: expected git@host:path"
+                raise ValueError(msg)
+            return stripped
+        # HTTPS only
+        if stripped.startswith("https://"):
+            rest = stripped[len("https://") :]
+            if not rest or "/" not in rest:
+                msg = "repo_url must be a valid https:// URL with a path"
+                raise ValueError(msg)
+            return stripped
+        msg = (
+            "repo_url must start with 'https://' or 'git@host:path'; "
+            "other schemes (file://, ext::, ssh://, git://) are not allowed"
+        )
+        raise ValueError(msg)
+
     @field_validator(
         "name",
         "repo_url",

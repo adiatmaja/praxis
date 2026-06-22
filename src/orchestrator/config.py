@@ -37,6 +37,12 @@ class Settings(BaseSettings):
     # inside a container, so it uses host.docker.internal and must match the
     # port the orchestrator actually listens on. None => derived from `port`.
     agent_callback_url: str | None = None
+    # Shared secret sent by agent containers in the X-Praxis-Callback-Token
+    # header.  When unset, the orchestrator derives the secret from auth_token
+    # at startup so existing single-node deployments work without configuration.
+    # Set explicitly (e.g. via INTERNAL_CALLBACK_SECRET env var) to use a
+    # dedicated secret instead.
+    internal_callback_secret: str | None = None
 
     def callback_url(self) -> str:
         """Resolve the agent-done callback URL (port-derived when unset)."""

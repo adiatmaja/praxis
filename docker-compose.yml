@@ -9,10 +9,18 @@ services:
     volumes:
       - ./data:/app/data
       - /var/run/docker.sock:/var/run/docker.sock
+      # SSH keys for git clone over SSH.  Override SSH_KEY_PATH in .env to
+      # mount only the specific key file instead of the full ~/.ssh directory.
+      # Trust model: the orchestrator container runs as root; mounting ~/.ssh
+      # gives it access to all host SSH keys.  Use a dedicated deploy key when
+      # possible.
       - ${SSH_KEY_PATH:-~/.ssh}:/root/.ssh:ro
       # claude -p (planning/review/brainstorm) runs inside this container and
       # needs the host's subscription credentials. Without this mount every
       # Opus call fails even though /api/status reports "available".
+      # NOTE: mounted read-write because `claude config set` writes to ~/.claude
+      # during first-run setup.  If you are certain claude is already configured
+      # you may add :ro here.  See docs/deployment.md "Security / Trust Model".
       - ${CLAUDE_CONFIG_PATH:-~/.claude}:/root/.claude
     environment:
       - AUTH_TOKEN=${AUTH_TOKEN}

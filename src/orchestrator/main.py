@@ -73,6 +73,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     app.state.db = database
     app.state.settings = settings
+    # Resolve the internal callback secret once at startup.
+    # Precedence: explicit INTERNAL_CALLBACK_SECRET env var > derived from AUTH_TOKEN.
+    app.state.internal_callback_secret = (
+        settings.internal_callback_secret or settings.auth_token
+    )
     effective_settings = EffectiveSettings(settings, database)
     app.state.effective_settings = effective_settings
     app.state.task_queue = TaskQueue(database)
@@ -107,6 +112,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         git_ops=git_ops,
         event_bus=app.state.event_bus,
         callback_url=settings.callback_url(),
+        callback_token=app.state.internal_callback_secret,
     )
     app.state.brainstorm = BrainstormManager(
         workspace_base=settings.brainstorm_workspace,
