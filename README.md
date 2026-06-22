@@ -2,8 +2,29 @@
 
 **Autonomous coding-agent loop powered by your AI subscription, with a local LLM handling implementation.**
 
+<p align="center">
+  <a href="LICENSE"><img alt="License: Apache 2.0" src="https://img.shields.io/badge/License-Apache_2.0-blue.svg"></a>
+  <img alt="Python 3.11+" src="https://img.shields.io/badge/python-3.11+-blue.svg">
+  <img alt="Tests" src="https://img.shields.io/badge/tests-286_passing-brightgreen.svg">
+  <img alt="Coverage" src="https://img.shields.io/badge/coverage-88%25-brightgreen.svg">
+  <a href="https://github.com/adiatmaja/praxis/stargazers"><img alt="Stars" src="https://img.shields.io/github/stars/adiatmaja/praxis?style=social"></a>
+</p>
+
 Praxis drives the Claude / Gemini / GPT CLI you already pay for to plan and review, and offloads
-implementation to a local LLM to save tokens.
+implementation to a local LLM to save tokens — so the full **plan → implement → review → merge**
+loop runs on a flat-rate subscription instead of metered API credits.
+
+## Demo
+
+<!-- TODO: replace with a real screen recording of the dashboard running the loop end-to-end.
+     A GIF here is the single highest-converting element of the README — record spec → plan →
+     implement → review → merge, export to GIF (≤10 MB), drop it in docs/assets/, and link below. -->
+
+<p align="center">
+  <img src="docs/assets/demo.gif" alt="Praxis dashboard: spec to merged PR" width="800">
+</p>
+
+> _Recording coming soon — see the [dashboard walkthrough](docs/workflow.md) in the meantime._
 
 ## Overview
 
