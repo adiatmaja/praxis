@@ -118,6 +118,13 @@ and [docs/deployment.md](docs/deployment.md) for detailed documentation.
 ## Contributing
 
 Setup, project layout, and conventions are in [CONTRIBUTING.md](CONTRIBUTING.md).
+Please also read our [Code of Conduct](CODE_OF_CONDUCT.md).
+
+## Security
+
+Found a vulnerability? Please report it privately — see [SECURITY.md](SECURITY.md).
+Never commit real `AUTH_TOKEN` or `GITHUB_TOKEN` values; `.env` is gitignored and
+`.env.example` ships placeholders only.
 
 ## License
 

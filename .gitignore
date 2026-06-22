@@ -29,6 +29,7 @@ data/*.db-wal
 
 .superpowers/
 .worktrees/
+.playwright-mcp/
 
 Thumbs.db
 .DS_Store
