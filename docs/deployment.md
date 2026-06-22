@@ -161,7 +161,8 @@ Interactive docs available at `/docs` (Swagger UI) when the server is running.
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `GET` | `/api/status` | Orchestrator status (Opus state + agent counts) |
+| `GET` | `/api/status` | Orchestrator status (Opus state + agent counts; Planner `available` is gated on a real `claude --version` probe; returns `agent_model.cli_available` and effective `lm_studio_url`) |
+| `GET` | `/api/lm-models` | List models loaded in LM Studio (`/v1/models` proxy) for the New-Project model dropdown |
 | `GET` | `/api/opus/state` | Opus availability and queue |
 | `GET` | `/api/events` | SSE event stream (long-lived) |
 | `GET` | `/health` | Health check (no auth) |
@@ -185,3 +186,10 @@ Interactive docs available at `/docs` (Swagger UI) when the server is running.
 
 Global orchestrator settings load from `config/praxis.yaml` (overridable via `PRAXIS_*`
 env vars); secrets (`AUTH_TOKEN`, `GITHUB_TOKEN`) stay in env / `.env`.
+
+> **Callback URL ↔ `PORT`.** Agent containers POST completion to
+> `http://host.docker.internal:{PORT}/api/internal/agent-done`, derived from `PORT` by
+> `Settings.callback_url()`. If you run the orchestrator on a non-default port, set `PORT`
+> accordingly (or set `AGENT_CALLBACK_URL` explicitly) — otherwise every agent callback
+> 404s and tasks only finish via the reconcile backstop (and may be marked failed even
+> when the agent succeeded).

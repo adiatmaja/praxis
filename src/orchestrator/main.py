@@ -106,6 +106,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         opus_bridge=app.state.opus_bridge,
         git_ops=git_ops,
         event_bus=app.state.event_bus,
+        callback_url=settings.callback_url(),
     )
     app.state.brainstorm = BrainstormManager(
         workspace_base=settings.brainstorm_workspace,

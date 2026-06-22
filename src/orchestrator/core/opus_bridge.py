@@ -132,17 +132,21 @@ class OpusBridge:
     ) -> tuple[int, str, str]:
         resolved_model = await self._resolve_model(model)
         resolved_effort = await self._resolve_effort(effort)
-        args = ["claude", "-p", prompt, "--output-format", "text"]
+        # Pass the prompt via stdin, not as an argv element: a large prompt
+        # (e.g. a full PR diff) overflows the OS command-line length limit
+        # (Windows raises WinError 206 above ~32K chars).
+        args = ["claude", "-p", "--output-format", "text"]
         if resolved_model:
             args += ["--model", resolved_model]
         if resolved_effort:
             args += ["--reasoning-effort", resolved_effort]
         proc = await asyncio.create_subprocess_exec(
             *args,
+            stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-        stdout, stderr = await proc.communicate()
+        stdout, stderr = await proc.communicate(input=prompt.encode())
         return (
             proc.returncode or 0,
             stdout.decode().strip(),

@@ -179,7 +179,8 @@ async def test_run_claude_raw_passes_model(mocker) -> None:
         captured["args"] = args
         proc = mocker.MagicMock()
 
-        async def communicate():
+        async def communicate(input=None):  # noqa: A002 - matches asyncio API
+            captured["input"] = input
             return (b"ok", b"")
 
         proc.communicate = communicate
@@ -190,6 +191,9 @@ async def test_run_claude_raw_passes_model(mocker) -> None:
     await bridge._run_claude_raw("hi")
     assert "--model" in captured["args"]
     assert "claude-opus-4-8" in captured["args"]
+    # Prompt is piped via stdin, never embedded in argv (OS arg-length limit).
+    assert "hi" not in captured["args"]
+    assert captured["input"] == b"hi"
 
 
 @pytest.mark.unit

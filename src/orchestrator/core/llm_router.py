@@ -44,22 +44,30 @@ CALL_SITE_DEFAULTS: dict[str, dict[str, str | None]] = {
 }
 
 
-def build_argv(provider: str, model: str, effort: str | None, prompt: str) -> list[str]:
-    """Build the subprocess argv for a CLI provider. 'local' is not a CLI."""
+def build_argv(
+    provider: str, model: str, effort: str | None, prompt: str = ""
+) -> list[str]:
+    """Build the subprocess argv for a CLI provider. 'local' is not a CLI.
+
+    The prompt is fed to the process via stdin (see ``LLMRouter.run``), never
+    embedded in argv: a large prompt (e.g. a full PR diff) overflows the OS
+    command-line length limit (Windows raises WinError 206 above ~32K chars).
+    The ``prompt`` parameter is retained for backward compatibility only.
+    """
     if provider == "claude":
-        argv = ["claude", "-p", prompt, "--output-format", "text"]
+        argv = ["claude", "-p", "--output-format", "text"]
         if model:
             argv += ["--model", model]
         if effort:
             argv += ["--reasoning-effort", effort]
         return argv
     if provider == "agy":  # Gemini CLI — verify one-shot flag during impl
-        argv = ["agy", "-p", prompt]
+        argv = ["agy", "-p"]
         if model:
             argv += ["--model", model]
         return argv
     if provider == "codex":  # GPT CLI — verify one-shot flag during impl
-        argv = ["codex", "exec", prompt]
+        argv = ["codex", "exec"]
         if model:
             argv += ["--model", model]
         return argv
@@ -82,11 +90,14 @@ class LLMRouter:
         provider = cfg["provider"]
         if provider == "local":
             return await self._run_local(prompt, cfg.get("model") or "")
-        argv = build_argv(provider, cfg.get("model") or "", cfg.get("effort"), prompt)
+        argv = build_argv(provider, cfg.get("model") or "", cfg.get("effort"))
         proc = await asyncio.create_subprocess_exec(
-            *argv, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+            *argv,
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
         )
-        stdout, stderr = await proc.communicate()
+        stdout, stderr = await proc.communicate(input=prompt.encode())
         if proc.returncode:
             message = (
                 f"{provider} failed (exit {proc.returncode}): {stderr.decode().strip()}"

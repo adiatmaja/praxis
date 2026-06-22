@@ -278,12 +278,33 @@
       text-transform: uppercase;
     }
     .detail-card { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 14px 16px; }
+    /* Rendered markdown (lifecycle Spec/Plan docs) — the global '* { padding:0 }'
+       reset strips list indentation, so restore it and add basic vertical rhythm. */
+    .detail-card ul, .detail-card ol { padding-left: 22px; margin: 6px 0; }
+    .detail-card ul.md-checks { list-style: none; padding-left: 4px; }
+    .detail-card li { margin: 3px 0; line-height: 1.55; }
+    .detail-card p { margin: 8px 0; line-height: 1.6; }
+    .detail-card h1, .detail-card h2, .detail-card h3 { margin: 16px 0 6px; line-height: 1.3; }
+    .detail-card pre { margin: 8px 0; padding: 10px 12px; background: var(--bg); border: 1px solid var(--border-subtle); border-radius: 6px; overflow-x: auto; }
+    .detail-card pre code { background: none; padding: 0; font-size: 12.5px; white-space: pre; }
+    .detail-card code { background: var(--bg); border: 1px solid var(--border-subtle); border-radius: 4px; padding: 1px 4px; font-size: 12.5px; }
+    .detail-card blockquote { margin: 8px 0; padding: 2px 12px; border-left: 3px solid var(--border); color: var(--text-muted); }
+    .detail-card hr { border: none; border-top: 1px solid var(--border-subtle); margin: 14px 0; }
+    .detail-card a { color: #3b82f6; text-decoration: underline; }
     .detail-field { display: flex; justify-content: space-between; gap: 16px; padding: 8px 0; border-bottom: 1px solid var(--border-subtle); }
     .detail-field:last-child { border-bottom: 0; }
     .field-label { color: var(--text-muted); font-size: 12px; }
     .field-value { min-width: 0; color: var(--text); font-size: 12px; font-weight: 600; overflow-wrap: anywhere; text-align: right; }
     .detail-actions { flex-shrink: 0; display: flex; gap: 8px; padding: 14px 24px; background: var(--panel); border-top: 1px solid var(--border); }
     .detail-empty { margin: auto; color: var(--text-faint); font-size: 13px; }
+    .view-loader { margin: auto; display: flex; flex-direction: column; align-items: center; gap: 12px; color: var(--text-faint); font-size: 13px; }
+    .view-loader .spinner {
+      width: 24px; height: 24px; border-radius: 50%;
+      border: 2.5px solid var(--border);
+      border-top-color: var(--text-muted);
+      animation: view-spin 0.7s linear infinite;
+    }
+    @keyframes view-spin { to { transform: rotate(360deg); } }
     .formrow { margin-bottom: 12px; }
     .form-actions { display: flex; gap: 8px; margin-top: 16px; flex-wrap: wrap; }
     .log {
@@ -597,6 +618,17 @@
       border-bottom-left-radius: 2px;
     }
     .spec-chat-bubble.assistant.streaming { border-color: var(--selected-border); }
+    .spec-chat-bubble.spec-chat-err {
+      color: var(--badge-failed-text, #e06c75);
+      border-color: var(--badge-failed-text, #e06c75);
+      background: transparent;
+    }
+    .thinking-dots span {
+      animation: thinking-blink 1.2s infinite both;
+    }
+    .thinking-dots span:nth-child(2) { animation-delay: 0.2s; }
+    .thinking-dots span:nth-child(3) { animation-delay: 0.4s; }
+    @keyframes thinking-blink { 0%, 80%, 100% { opacity: 0.2; } 40% { opacity: 1; } }
     .spec-chat-footer {
       display: flex;
       gap: 8px;
@@ -628,6 +660,46 @@
       .spec-chat-panel { width: 100vw; margin: 0; border-radius: 10px 10px 0 0; height: 70vh; }
       .spec-chat-overlay.open { align-items: flex-end; justify-content: center; }
     }
+
+    /* API Token modal */
+    .token-overlay {
+      display: none;
+      position: fixed;
+      inset: 0;
+      z-index: 120;
+      background: rgba(0,0,0,0.35);
+      align-items: center;
+      justify-content: center;
+    }
+    .token-overlay.open { display: flex; }
+    .token-modal {
+      width: 380px;
+      max-width: calc(100vw - 32px);
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      box-shadow: 0 8px 32px rgba(0,0,0,0.18);
+      overflow: hidden;
+    }
+    .token-modal-header { padding: 16px 18px; font-weight: 700; border-bottom: 1px solid var(--border); }
+    .token-modal-body { padding: 18px; }
+    .token-label { display: block; font-size: 12px; color: var(--text-muted); margin-bottom: 8px; }
+    .token-input-row { display: flex; gap: 8px; }
+    .token-input {
+      flex: 1;
+      padding: 8px 10px;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      background: var(--bg);
+      color: var(--text);
+      font-family: Cascadia Mono, SF Mono, Consolas, monospace;
+      font-size: 13px;
+    }
+    .token-input:focus { outline: none; border-color: var(--text-muted); }
+    .token-feedback { min-height: 16px; margin-top: 10px; font-size: 12px; color: var(--text-faint); }
+    .token-feedback.error { color: #c0392b; }
+    .token-feedback.ok { color: #2e7d32; }
+    .token-modal-footer { display: flex; gap: 8px; align-items: center; padding: 14px 18px; border-top: 1px solid var(--border); }
 
     /* Harness About modal */
     .harness-overlay {
@@ -966,8 +1038,8 @@
         </button>
         <button class="btn theme-btn" type="button" onclick="openSettings()" title="Settings">
           <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <circle cx="8" cy="8" r="2.5"/>
-            <path d="M8 1.5v1M8 13.5v1M1.5 8h1M13.5 8h1M3.4 3.4l.7.7M11.9 11.9l.7.7M3.4 12.6l.7-.7M11.9 4.1l.7-.7"/>
+            <circle cx="8" cy="8" r="2.25"/>
+            <path d="M8 1.2l.85 1.55a5.8 5.8 0 0 1 1.62.67l1.7-.42.95 1.64-1.15 1.32c.13.55.13 1.13 0 1.68l1.15 1.32-.95 1.64-1.7-.42a5.8 5.8 0 0 1-1.62.67L8 14.8l-.85-1.55a5.8 5.8 0 0 1-1.62-.67l-1.7.42-.95-1.64 1.15-1.32a5.8 5.8 0 0 1 0-1.68L2.88 6.04l.95-1.64 1.7.42a5.8 5.8 0 0 1 1.62-.67L8 1.2z"/>
           </svg>
         </button>
         <button class="btn" type="button" onclick="resetToken()">API Token</button>
@@ -1006,6 +1078,27 @@
       <div class="harness-modal-body" id="harness-about-body"></div>
       <div class="harness-modal-footer">
         <button class="btn" type="button" id="harness-about-close-footer">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- API Token modal -->
+  <div id="token-overlay" class="token-overlay" onclick="onTokenOverlayClick(event)">
+    <div class="token-modal">
+      <div class="token-modal-header">API Token</div>
+      <div class="token-modal-body">
+        <label class="token-label" for="token-input">Bearer token for this Praxis instance</label>
+        <div class="token-input-row">
+          <input id="token-input" class="token-input" type="password" autocomplete="off" spellcheck="false" placeholder="Paste your token" onkeydown="onTokenKey(event)" />
+          <button class="btn btn-compact" type="button" id="token-eye" onclick="toggleTokenVisibility()">Show</button>
+        </div>
+        <div id="token-feedback" class="token-feedback"></div>
+      </div>
+      <div class="token-modal-footer">
+        <button class="btn" type="button" onclick="clearToken()">Clear</button>
+        <span style="flex:1;"></span>
+        <button class="btn" type="button" onclick="closeTokenModal()">Cancel</button>
+        <button class="btn btn-primary" type="button" id="token-save" onclick="saveToken()">Save &amp; verify</button>
       </div>
     </div>
   </div>
@@ -1073,6 +1166,7 @@
     let dashboardSseSource = null;
     let HARNESSES = [];
     let lifecycleItems = [];
+    let effectiveLmStudioUrl = null;  // global effective LM Studio URL (from /api/status)
     let selectedLifecycle = null;
     let lifecycleSegment = "spec";
 
@@ -1095,9 +1189,82 @@
     }
 
     function resetToken() {
-      token = window.prompt("API token", token) || "";
+      openTokenModal();
+    }
+
+    function openTokenModal() {
+      const overlay = document.getElementById("token-overlay");
+      overlay.classList.add("open");
+      const input = document.getElementById("token-input");
+      input.value = token || "";
+      input.type = "password";
+      document.getElementById("token-eye").textContent = "Show";
+      setTokenFeedback("", "");
+      input.focus();
+    }
+
+    function closeTokenModal() {
+      document.getElementById("token-overlay").classList.remove("open");
+    }
+
+    function onTokenOverlayClick(event) {
+      if (event.target === document.getElementById("token-overlay")) closeTokenModal();
+    }
+
+    function onTokenKey(event) {
+      if (event.key === "Enter") { event.preventDefault(); saveToken(); }
+      else if (event.key === "Escape") closeTokenModal();
+    }
+
+    function toggleTokenVisibility() {
+      const input = document.getElementById("token-input");
+      const eye = document.getElementById("token-eye");
+      const show = input.type === "password";
+      input.type = show ? "text" : "password";
+      eye.textContent = show ? "Hide" : "Show";
+    }
+
+    function setTokenFeedback(msg, kind) {
+      const el = document.getElementById("token-feedback");
+      el.textContent = msg;
+      el.className = "token-feedback" + (kind ? " " + kind : "");
+    }
+
+    function clearToken() {
+      token = "";
+      localStorage.removeItem("praxis_token");
+      document.getElementById("token-input").value = "";
+      setTokenFeedback("Token cleared.", "");
+    }
+
+    async function saveToken() {
+      const candidate = document.getElementById("token-input").value.trim();
+      if (!candidate) { setTokenFeedback("Enter a token.", "error"); return; }
+      const saveBtn = document.getElementById("token-save");
+      saveBtn.disabled = true;
+      setTokenFeedback("Verifying…", "");
+      let verified = false;
+      try {
+        const res = await fetch(API + "/api/status", {
+          headers: { "Authorization": "Bearer " + candidate, "Content-Type": "application/json" }
+        });
+        if (res.status === 401 || res.status === 403) {
+          setTokenFeedback("Invalid token — the server rejected it.", "error");
+          saveBtn.disabled = false;
+          return;
+        }
+        verified = res.ok;
+        setTokenFeedback(res.ok ? "Token verified." : "Server error (" + res.status + "). Token saved anyway.", res.ok ? "ok" : "error");
+      } catch (error) {
+        setTokenFeedback("Could not reach the server. Token saved — check the connection.", "error");
+      }
+      token = candidate;
       localStorage.setItem("praxis_token", token);
+      saveBtn.disabled = false;
       pollStatus();
+      if (verified) {
+        setTimeout(() => { closeTokenModal(); switchView(currentView); }, 500);
+      }
     }
 
     function headers() {
@@ -1123,29 +1290,46 @@
     }
 
     function renderMarkdown(src) {
-      const lines = (src || "").replace(/\r\n/g, "\n").split("\n");
-      let html = "", inCode = false, inList = false;
+      // Strip a leading YAML frontmatter block (--- ... ---) so spec_path/type
+      // metadata isn't shown as literal text.
+      const text = (src || "").replace(/\r\n/g, "\n").replace(/^\s*---\n[\s\S]*?\n---\n?/, "");
+      const lines = text.split("\n");
+      let html = "", inCode = false, listType = null;
+      const closeList = () => { if (listType) { html += listType === "ol" ? "</ol>" : "</ul>"; listType = null; } };
       const inline = (s) => esc(s)
         .replace(/`([^`]+)`/g, '<code>$1</code>')
         .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
-        .replace(/\*([^*]+)\*/g, '<em>$1</em>');
+        .replace(/\*([^*]+)\*/g, '<em>$1</em>')
+        // Links: [text](url) — only http(s) or relative paths, never javascript:
+        .replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+|[^):\s]+)\)/g,
+          '<a href="$2" target="_blank" rel="noopener">$1</a>');
       for (const raw of lines) {
-        if (raw.trim().startsWith("```")) {
-          if (!inCode) { if (inList) { html += "</ul>"; inList = false; } html += "<pre><code>"; inCode = true; }
-          else { html += "</code></pre>"; inCode = false; }
+        // A fence line is ```[info]. An OPEN fence may carry an info string
+        // (```bash); per CommonMark a fence only CLOSES on a bare ``` with no
+        // info string — otherwise nested ```lang blocks leak their content.
+        const fence = raw.trim().match(/^(`{3,})(.*)$/);
+        if (fence) {
+          if (!inCode) { closeList(); html += "<pre><code>"; inCode = true; }
+          else if (fence[2].trim() === "") { html += "</code></pre>"; inCode = false; }
+          else { html += esc(raw) + "\n"; }
           continue;
         }
         if (inCode) { html += esc(raw) + "\n"; continue; }
-        const cb = raw.match(/^\s*-\s\[( |x|X)\]\s+(.*)$/);
-        const li = raw.match(/^\s*-\s+(.*)$/);
+        if (/^\s*(-{3,}|\*{3,}|_{3,})\s*$/.test(raw)) { closeList(); html += "<hr>"; continue; }
         const h = raw.match(/^(#{1,6})\s+(.*)$/);
-        if (h) { if (inList) { html += "</ul>"; inList = false; } html += "<h" + h[1].length + ">" + inline(h[2]) + "</h" + h[1].length + ">"; continue; }
-        if (cb) { if (!inList) { html += "<ul class='md-checks'>"; inList = true; } const done = cb[1] !== " "; html += "<li>" + (done ? "&#9745;" : "&#9744;") + " " + inline(cb[2]) + "</li>"; continue; }
-        if (li) { if (!inList) { html += "<ul>"; inList = true; } html += "<li>" + inline(li[1]) + "</li>"; continue; }
-        if (inList) { html += "</ul>"; inList = false; }
+        const cb = raw.match(/^\s*-\s\[( |x|X)\]\s+(.*)$/);
+        const li = raw.match(/^\s*[-*]\s+(.*)$/);
+        const ol = raw.match(/^\s*(\d+)\.\s+(.*)$/);
+        const bq = raw.match(/^\s*>\s?(.*)$/);
+        if (h) { closeList(); html += "<h" + h[1].length + ">" + inline(h[2]) + "</h" + h[1].length + ">"; continue; }
+        if (cb) { if (listType !== "check") { closeList(); html += "<ul class='md-checks'>"; listType = "check"; } const done = cb[1] !== " "; html += "<li>" + (done ? "&#9745;" : "&#9744;") + " " + inline(cb[2]) + "</li>"; continue; }
+        if (li) { if (listType !== "ul") { closeList(); html += "<ul>"; listType = "ul"; } html += "<li>" + inline(li[1]) + "</li>"; continue; }
+        if (ol) { if (listType !== "ol") { closeList(); html += "<ol>"; listType = "ol"; } html += "<li>" + inline(ol[2]) + "</li>"; continue; }
+        if (bq) { closeList(); html += "<blockquote>" + inline(bq[1]) + "</blockquote>"; continue; }
+        closeList();
         if (raw.trim()) html += "<p>" + inline(raw) + "</p>";
       }
-      if (inList) html += "</ul>";
+      closeList();
       if (inCode) html += "</code></pre>";
       return html;
     }
@@ -1174,12 +1358,16 @@
 
     function setTopbar(title, actionLabel) {
       document.getElementById("topbar-title").textContent = title;
-      document.getElementById("primary-action").textContent = actionLabel;
+      const action = document.getElementById("primary-action");
+      action.textContent = actionLabel;
+      // Hide the per-view action when it has no label (Memory) or would just
+      // duplicate the persistent "+ Create Spec" button (Plans view).
+      action.style.display = actionLabel ? "" : "none";
     }
 
     function primaryAction() {
       if (currentView === "dashboard") {
-        switchView("plans");
+        switchView("projects").then(() => { showingForm = true; renderProjectsView(); });
       } else if (currentView === "projects") {
         showingForm = true;
         renderProjectsView();
@@ -1196,18 +1384,20 @@
       currentView = name;
       showingForm = false;
       document.querySelectorAll(".nav-item").forEach(el => el.classList.toggle("active", el.dataset.view === name));
+      const viewContainer = document.getElementById("view-container");
+      if (viewContainer) viewContainer.innerHTML = '<div class="view-loader"><div class="spinner"></div><span>Loading…</span></div>';
       if (eventSource && name !== "logs" && name !== "dashboard") {
         eventSource.close();
         eventSource = null;
       }
       if (name === "dashboard") {
-        setTopbar("Dashboard", "+ New Plan");
+        setTopbar("Dashboard", "+ New Project");
         await loadDashboard();
       } else if (name === "projects") {
         setTopbar("Projects", "+ New Project");
         await loadProjects();
       } else if (name === "plans") {
-        setTopbar("Plans", "+ Create Spec");
+        setTopbar("Plans", "");
         await loadPlans();
         await loadLifecycle();
       } else if (name === "tasks") {
@@ -1320,7 +1510,8 @@
           '<div class="detail-field"><span class="field-label">Approval Gate</span><span class="field-value">' + (project.approval_gate ? "On" : "Off") + '</span></div>' +
           '<div class="detail-field"><span class="field-label">Max Retries</span><span class="field-value">' + esc(project.max_retries) + '</span></div>' +
           '<div class="detail-field"><span class="field-label">Confidence Threshold</span><span class="field-value">' + Math.round((project.confidence_threshold || 0) * 100) + '%</span></div>' +
-          '<div class="detail-field"><span class="field-label">LM Studio</span><span class="field-value">' + mono(project.lm_studio_url) + '</span></div>' +
+          '<div class="detail-field"><span class="field-label">LM Studio</span><span class="field-value">' + mono(effectiveLmStudioUrl || project.lm_studio_url) +
+            (effectiveLmStudioUrl && effectiveLmStudioUrl !== project.lm_studio_url ? '<span style="color:var(--text-faint);font-size:11px;margin-left:6px;">(effective — global override)</span>' : '') + '</span></div>' +
         '</div></div>' +
       '</div><div class="detail-actions">' +
         '<button class="btn btn-primary" type="button" onclick="switchView(\'plans\')">View Plans</button>' +
@@ -1334,7 +1525,9 @@
         '<div class="detail-content"><form onsubmit="submitProject(event)">' +
           '<div class="formrow"><label>Name</label><input id="pf-name" required autocomplete="off"></div>' +
           '<div class="formrow"><label>Repository URL</label><input id="pf-repo" required autocomplete="off" placeholder="https://github.com/user/repo"></div>' +
-          '<div class="formrow"><label>Model</label><input id="pf-model" required autocomplete="off" value="deepseek-coder-v2"></div>' +
+          '<div class="formrow"><label>Model (implementer)</label>' +
+            '<select id="pf-model-select" onchange="onModelPreset(this.value)"><option value="">Loading models…</option></select>' +
+            '<input id="pf-model" required autocomplete="off" placeholder="model id" style="margin-top:6px;display:none;"></div>' +
           '<div class="formrow"><label>Agent model (reasoning)</label>' +
             '<select id="pf-agent-model-preset" onchange="onAgentModelPreset(this.value)">' +
               '<option value="">Global default</option>' +
@@ -1355,9 +1548,42 @@
           '<div class="form-actions"><button type="submit" class="btn btn-primary">Create</button>' +
           '<button type="button" class="btn" onclick="showingForm=false;renderProjectsView()">Cancel</button></div>' +
         '</form></div>';
-      // Populate harness dropdown after DOM update (async, next microtask)
+      // Populate harness + model dropdowns after DOM update (async, next microtask)
       setTimeout(loadHarnesses, 0);
+      setTimeout(loadLmModels, 0);
       return html;
+    }
+
+    function onModelPreset(value) {
+      const custom = document.getElementById("pf-model");
+      if (value === "__custom__") {
+        custom.style.display = "block";
+        custom.value = "";
+        custom.focus();
+      } else {
+        custom.style.display = "none";
+        custom.value = value;
+      }
+    }
+
+    async function loadLmModels() {
+      const select = document.getElementById("pf-model-select");
+      const custom = document.getElementById("pf-model");
+      if (!select) return;
+      let models = [];
+      try {
+        const data = await api("GET", "/api/lm-models");
+        models = data.models || [];
+      } catch (e) { /* fall through to manual entry */ }
+      if (models.length) {
+        select.innerHTML = models.map(m => '<option value="' + esc(m) + '">' + esc(m) + '</option>').join("") +
+          '<option value="__custom__">Custom…</option>';
+        if (custom) { custom.style.display = "none"; custom.value = models[0]; }
+      } else {
+        // LM Studio unreachable — fall back to a free-text field
+        select.style.display = "none";
+        if (custom) { custom.style.display = "block"; custom.placeholder = "model id (LM Studio unreachable)"; }
+      }
     }
 
     function onAgentModelPreset(value) {
@@ -1805,6 +2031,18 @@
     }
 
     function renderDashboard() {
+      if (!projects.length) {
+        document.getElementById("view-container").innerHTML =
+          '<div class="detail-empty" style="max-width:480px;margin:64px auto;text-align:center;padding:32px;">' +
+          '<div style="font-weight:700;font-size:16px;margin-bottom:8px;">Welcome to Praxis</div>' +
+          '<div style="color:var(--text-muted);font-size:13px;line-height:1.6;margin-bottom:20px;">' +
+          'Praxis turns ideas into shipped code: write a <strong>Spec</strong>, Claude breaks it into a ' +
+          '<strong>Plan</strong>, then agents implement it in a <strong>Run</strong> — reviewed and merged automatically.' +
+          '<br><br>Start by connecting a repository as a project.</div>' +
+          '<button class="btn btn-primary" type="button" onclick="switchView(\'projects\')">+ Create Project</button>' +
+          '</div>';
+        return;
+      }
       const scoped = visiblePlans();
       const activePendingPlans = scoped.filter(plan => plan.status === "active" || plan.status === "pending");
       const completedPlans = scoped.filter(plan => plan.status === "completed").slice(0, 5);
@@ -2115,6 +2353,7 @@
       if (!token) return;
       try {
         const status = await api("GET", "/api/status");
+        if (status.lm_studio_url) effectiveLmStudioUrl = status.lm_studio_url;
         document.getElementById("stat-agents").textContent = status.active_agents;
         document.getElementById("stat-queue").textContent = status.opus_state.queued_count;
         setConnection("agent", status.agent_model, status.opus_state.status);
@@ -2141,6 +2380,9 @@
     function openSpecChat() {
       const overlay = document.getElementById("spec-chat-overlay");
       overlay.classList.add("open");
+      // Brainstorm replies arrive over the /api/events SSE; ensure it is live even
+      // when opened from a view (Projects/Plans) that had closed the stream.
+      if (!eventSource) connectDashboardSse();
       const label = document.getElementById("spec-chat-project-label");
       const project = projects.find(p => p.id === selectedProjectId);
       label.textContent = project ? project.name : (projects.length ? projects[0].name : "No project selected");
@@ -2196,6 +2438,35 @@
       if (enabled && input) input.focus();
     }
 
+    function showSpecThinking() {
+      const messages = document.getElementById("spec-chat-messages");
+      if (!messages || document.getElementById("spec-chat-thinking")) return;
+      const empty = messages.querySelector(".spec-chat-empty");
+      if (empty) empty.remove();
+      const bubble = document.createElement("div");
+      bubble.id = "spec-chat-thinking";
+      bubble.className = "spec-chat-bubble assistant";
+      bubble.innerHTML = 'Claude is thinking<span class="thinking-dots"><span>.</span><span>.</span><span>.</span></span>';
+      messages.appendChild(bubble);
+      messages.scrollTop = messages.scrollHeight;
+    }
+
+    function hideSpecThinking() {
+      const bubble = document.getElementById("spec-chat-thinking");
+      if (bubble) bubble.remove();
+    }
+
+    function appendSpecChatError(text) {
+      hideSpecThinking();
+      const messages = document.getElementById("spec-chat-messages");
+      if (!messages) return;
+      const bubble = document.createElement("div");
+      bubble.className = "spec-chat-bubble assistant spec-chat-err";
+      bubble.textContent = "⚠ " + text;
+      messages.appendChild(bubble);
+      messages.scrollTop = messages.scrollHeight;
+    }
+
     async function sendSpecChatMessage() {
       const input = document.getElementById("spec-chat-input");
       if (!input) return;
@@ -2212,6 +2483,7 @@
       setChatInputEnabled(false);
       appendChatMessage("user", text);
       specChatStreamingBubble = null;
+      showSpecThinking();
 
       try {
         if (!specChatSessionId) {
@@ -2221,7 +2493,7 @@
           await api("POST", "/api/specs/sessions/" + specChatSessionId + "/message", { message: text });
         }
       } catch (error) {
-        appendChatMessage("assistant", "Error: " + error.message);
+        appendSpecChatError(error.message);
         setChatInputEnabled(true);
       }
     }
@@ -2232,8 +2504,16 @@
         let data;
         try { data = JSON.parse(event.data); } catch (e) { return; }
         if (data.type === "brainstorm_message") {
+          hideSpecThinking();
           appendChatMessage("assistant", data.text);
         }
+      });
+      source.addEventListener("brainstorm_error", event => {
+        let data;
+        try { data = JSON.parse(event.data); } catch (e) { return; }
+        appendSpecChatError(data.error || "Brainstorm turn failed.");
+        specChatStreamingBubble = null;
+        setChatInputEnabled(true);
       });
       source.addEventListener("context_draft_ready", event => {
         let data;
@@ -2244,6 +2524,7 @@
       });
       source.addEventListener("brainstorm_turn_done", () => {
         // Finalize streaming bubble — remove streaming class
+        hideSpecThinking();
         if (specChatStreamingBubble) {
           specChatStreamingBubble.classList.remove("streaming");
           specChatStreamingBubble = null;
@@ -2272,6 +2553,9 @@
         return;
       }
       const projectName = projects.find(p => p.id === pid)?.name || pid;
+      container.innerHTML =
+        '<div class="view-loader"><div class="spinner"></div>' +
+        '<span>Cloning repository… this can take a few seconds.</span></div>';
       let ctx;
       try {
         ctx = await api("GET", "/api/projects/" + pid + "/context");
@@ -2808,11 +3092,26 @@
       } else {
         const path = lifecycleSegment === "spec" ? it.spec_path : it.plan_path;
         const cached = lifecycleDocCache[path];
-        const promote = (lifecycleSegment === "plan" && it.plan_path && !it.run_id)
-          ? '<div class="detail-actions"><button class="btn btn-primary" type="button" onclick="promoteLifecycle(\'' + esc(it.plan_path) + '\')">Promote to Run</button></div>'
-          : "";
+        let promote = "";
+        if (lifecycleSegment === "plan" && it.plan_path && !it.run_id) {
+          promote = '<div class="detail-actions"><button class="btn btn-primary" type="button" onclick="promoteLifecycle(\'' + esc(it.plan_path) + '\')">Promote to Run</button></div>';
+        } else if (lifecycleSegment === "spec" && it.spec_path && !it.plan_path) {
+          promote = '<div class="detail-actions"><button class="btn btn-primary" type="button" onclick="generatePlanForLifecycle(\'' + esc(it.spec_path) + '\')">Generate Plan</button></div>';
+        }
+        let cardBody;
+        if (!path) {
+          cardBody = '<div class="detail-empty">No ' + (lifecycleSegment === "spec" ? "specification" : "plan") +
+            ' document linked. For legacy plans, the spec lives in the repo&rsquo;s docs/ directory.</div>';
+        } else if (cached === undefined) {
+          cardBody = "Loading…";
+        } else if (!cached.trim()) {
+          cardBody = '<div class="detail-empty">This ' + (lifecycleSegment === "spec" ? "specification" : "plan") +
+            ' document is empty. For legacy plans, the original spec content lives in the repo&rsquo;s docs/ directory.</div>';
+        } else {
+          cardBody = renderMarkdown(cached);
+        }
         body = '<div class="detail-content"><div class="detail-card">' +
-          (cached === undefined ? "Loading…" : renderMarkdown(cached)) + '</div>' + promote + '</div>';
+          cardBody + '</div>' + promote + '</div>';
       }
       return '<div class="detail-header"><div class="detail-title">' + esc(it.title) + '</div>' +
         '<div style="margin-top:8px;">' + segmented + '</div></div>' + body;
@@ -2828,6 +3127,15 @@
         lifecycleDocCache[path] = doc.content;
       } catch (e) { lifecycleDocCache[path] = "_Could not load " + path + "_"; }
       renderLifecycleView();
+    }
+
+    async function generatePlanForLifecycle(specPath) {
+      const btn = event.target; btn.disabled = true; btn.textContent = "Generating…";
+      try {
+        await api("POST", "/api/specs/plan", { project_id: selectedProjectId, spec_path: specPath, notes: "" });
+        btn.textContent = "Plan generated — refreshing…";
+        await loadLifecycle();
+      } catch (e) { btn.disabled = false; btn.textContent = "Generate Plan"; alert("Generate plan failed: " + e.message); }
     }
 
     async function promoteLifecycle(planPath) {

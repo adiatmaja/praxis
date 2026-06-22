@@ -72,15 +72,19 @@ class TestOrchestrationDispatch:
             git_ops=AsyncMock(),
             event_bus=event_bus,
         )
+        started: list[tuple[str, str, str]] = []
+        orch._start_monitor = lambda r, t, c: started.append((r, t, c))  # type: ignore[assignment, method-assign]
         await orch.dispatch_pending_tasks(plan_id, await _project(db))
 
         mock_agent_manager.spawn_agent.assert_called_once()
         task = await task_queue.get_task(task_id)
         assert task is not None
         assert task["status"] == TaskStatus.IN_PROGRESS
-        assert (await task_queue.get_runs_for_task(task_id))[0]["container_id"] == (
-            "container-123"
-        )
+        run = (await task_queue.get_runs_for_task(task_id))[0]
+        assert run["container_id"] == "container-123"
+        # Live-log monitor must attach at dispatch so short-lived containers
+        # still stream agent_log events (not only if reconcile catches them).
+        assert started == [(run["id"], task_id, "container-123")]
         assert events.get_nowait()["type"] == "agent_dispatched"
 
     async def test_dispatch_forwards_harness_to_spawn_agent(self, db: Database) -> None:
@@ -139,6 +143,7 @@ class TestOrchestrationReview:
         mock_git = AsyncMock()
         mock_git.extract_pr_number.return_value = 1
         mock_git.get_pr_diff.return_value = "diff content"
+        mock_git.repo_slug = MagicMock(return_value="u/a")
 
         orch = Orchestrator(
             task_queue=task_queue,
@@ -152,7 +157,7 @@ class TestOrchestrationReview:
         task = await task_queue.get_task(task_id)
         assert task is not None
         assert task["status"] == TaskStatus.MERGED
-        mock_git.merge_pr.assert_called_once_with(".", 1)
+        mock_git.merge_pr.assert_called_once_with(".", 1, repo="u/a")
 
     async def test_review_fail_retries(self, db: Database) -> None:
         task_queue, _, task_id = await _setup(db)
@@ -168,6 +173,7 @@ class TestOrchestrationReview:
         mock_git = AsyncMock()
         mock_git.extract_pr_number.return_value = 1
         mock_git.get_pr_diff.return_value = "diff content"
+        mock_git.repo_slug = MagicMock(return_value="u/a")
 
         orch = Orchestrator(
             task_queue=task_queue,
@@ -182,7 +188,9 @@ class TestOrchestrationReview:
         assert task is not None
         assert task["status"] == TaskStatus.PENDING
         assert task["attempt"] == 2
-        mock_git.comment_on_pr.assert_called_once_with(".", 1, "Missing validation")
+        mock_git.comment_on_pr.assert_called_once_with(
+            ".", 1, "Missing validation", repo="u/a"
+        )
 
     async def test_review_fail_max_retries_exhausted(self, db: Database) -> None:
         task_queue, _, task_id = await _setup(db)
@@ -199,6 +207,7 @@ class TestOrchestrationReview:
         mock_git = AsyncMock()
         mock_git.extract_pr_number.return_value = 1
         mock_git.get_pr_diff.return_value = "diff content"
+        mock_git.repo_slug = MagicMock(return_value="u/a")
 
         orch = Orchestrator(
             task_queue=task_queue,
@@ -443,6 +452,7 @@ class TestPerProjectAgentModel:
         mock_git = AsyncMock()
         mock_git.extract_pr_number.return_value = 1
         mock_git.get_pr_diff.return_value = "diff content"
+        mock_git.repo_slug = MagicMock(return_value="u/a")
 
         orch = Orchestrator(
             task_queue=task_queue,

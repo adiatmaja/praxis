@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
 import subprocess
 
 
@@ -174,7 +175,9 @@ class GitOps:
         logger.info("Created PR: %s", stdout)
         return stdout.strip()
 
-    async def merge_pr(self, workspace: str, pr_number: int) -> None:
+    async def merge_pr(
+        self, workspace: str, pr_number: int, repo: str | None = None
+    ) -> None:
         await self._run_checked(
             [
                 "gh",
@@ -183,23 +186,46 @@ class GitOps:
                 str(pr_number),
                 "--squash",
                 "--delete-branch",
+                *(["--repo", repo] if repo else []),
             ],
             cwd=workspace,
         )
         logger.info("Merged PR #%d", pr_number)
 
-    async def comment_on_pr(self, workspace: str, pr_number: int, comment: str) -> None:
+    async def comment_on_pr(
+        self,
+        workspace: str,
+        pr_number: int,
+        comment: str,
+        repo: str | None = None,
+    ) -> None:
         await self._run_checked(
-            ["gh", "pr", "comment", str(pr_number), "--body", comment],
+            [
+                "gh",
+                "pr",
+                "comment",
+                str(pr_number),
+                "--body",
+                comment,
+                *(["--repo", repo] if repo else []),
+            ],
             cwd=workspace,
         )
         logger.info("Commented on PR #%d", pr_number)
 
-    async def get_pr_diff(self, workspace: str, pr_number: int) -> str:
+    async def get_pr_diff(
+        self, workspace: str, pr_number: int, repo: str | None = None
+    ) -> str:
         return await self._run_checked(
-            ["gh", "pr", "diff", str(pr_number)],
+            ["gh", "pr", "diff", str(pr_number), *(["--repo", repo] if repo else [])],
             cwd=workspace,
         )
+
+    @staticmethod
+    def repo_slug(repo_url: str) -> str | None:
+        """Extract an ``owner/name`` slug from a GitHub repo or PR URL."""
+        match = re.search(r"github\.com[/:]([^/]+/[^/]+?)(?:\.git)?(?:/|$)", repo_url)
+        return match.group(1) if match else None
 
     async def get_changed_files(
         self,

@@ -61,9 +61,11 @@ class AgentManager:
             "CALLBACK_URL": callback_url,
             "TASK_ID": task_id,
         }
+        container_name = f"aider-agent-{task_id[:8]}"
+        self._remove_existing_container(container_name)
         container = self._client.containers.run(
             image=spec.image,
-            name=f"aider-agent-{task_id[:8]}",
+            name=container_name,
             environment=environment,
             detach=True,
             auto_remove=False,
@@ -77,6 +79,24 @@ class AgentManager:
             branch,
         )
         return str(container.id)
+
+    def _remove_existing_container(self, name: str) -> None:
+        """Remove a leftover container with the given name, if any.
+
+        Container names are derived from the task id, so a retried or
+        re-dispatched task collides with the exited container from its previous
+        run. Without removing it, ``containers.run`` raises a 409 Conflict and
+        the agent never starts. Missing containers are ignored.
+        """
+        try:
+            existing = self._client.containers.get(name)
+        except docker.errors.NotFound:
+            return
+        try:
+            existing.remove(force=True)
+            logger.info("Removed stale container %s before re-spawning", name)
+        except docker.errors.APIError as exc:
+            logger.warning("Could not remove stale container %s: %s", name, exc)
 
     def get_container_status(self, container_id: str) -> dict[str, Any] | None:
         try:

@@ -40,7 +40,7 @@ praxis/
 │   │   │   ├── settings.py          # /api/settings global/project + /settings/models
 │   │   │   ├── harnesses.py         # /api/harnesses catalog
 │   │   │   ├── tasks.py             # /api/tasks + logs streaming
-│   │   │   ├── system.py            # /api/status, /api/opus/state
+│   │   │   ├── system.py            # /api/status (CLI-probed), /api/lm-models, /api/opus/state
 │   │   │   ├── events.py            # /api/events SSE stream
 │   │   │   ├── internal.py          # /api/internal/agent-done callback
 │   │   │   └── auth.py              # Bearer token validation
@@ -81,7 +81,7 @@ praxis/
 │   └── caddy/Caddyfile
 ├── config/
 │   └── praxis.yaml                  # Global orchestrator settings (env-overridable)
-├── tests/                           # 276 tests, 88% coverage
+├── tests/                           # 286 tests, 88% coverage
 ├── docker-compose.yml               # Production compose
 ├── docker-compose.local.yml         # Dev overrides (hot reload, mounted source)
 ├── pyproject.toml
@@ -211,7 +211,27 @@ Tables: `users`, `projects`, `plans`, `tasks`, `agent_runs`, `opus_state`,
 - **`agent_log` events are produced by `monitor_run`** — the live-log SSE
   (`/api/tasks/{id}/logs`) streams these and falls back to the run's persisted `logs`
   column (checkpointed each poll), so the panel works even when Docker is down. There is
-  no other producer of `agent_log`.
+  no other producer of `agent_log`. **`dispatch_pending_tasks` attaches the monitor at
+  spawn** (`_start_monitor`), not just `reconcile_runs` — otherwise a container that
+  finished within one loop interval streamed zero `agent_log` events and the dashboard
+  Live Log stayed empty.
+- **Agent container names are reused, so spawn force-removes stale ones** —
+  `spawn_agent` names containers `aider-agent-{task_id[:8]}` with `auto_remove=False`.
+  Retrying/re-dispatching a task collides with the exited container from its prior run
+  (Docker 409 Conflict → agent never starts → empty Live Log). `_remove_existing_container`
+  deletes any same-named container first.
+- **Agent callback URL is port-derived, not hardcoded** — `Settings.callback_url()`
+  builds `http://host.docker.internal:{PORT}/api/internal/agent-done` (override with
+  `AGENT_CALLBACK_URL`) and is passed to `Orchestrator(callback_url=...)`. Running the
+  orchestrator on a non-8080 port without this makes every agent callback 404, so tasks
+  only ever finish via reconcile (and get marked failed even on success).
+- **Brain prompts go to the CLI via stdin, never argv** — `OpusBridge._run_claude_raw`
+  and `LLMRouter.run` pipe the prompt through stdin (`communicate(input=...)`); a full
+  PR diff as an argv element overflows the OS command-line limit (Windows `WinError 206`
+  above ~32K chars). `build_argv` deliberately omits the prompt.
+- **Review targets the PR's own repo** — `review_task` runs `gh pr diff/merge/comment`
+  with `--repo <owner/name>` (from `GitOps.repo_slug(pr_url)`); without it `gh` resolves
+  the PR against the orchestrator's own cwd (the praxis repo) and reviews the wrong diff.
 - **Agent callbacks retry with backoff** — each `docker/<harness>-agent/entrypoint.sh`
   `send_callback` retries the POST to `/api/internal/agent-done` up to
   `CALLBACK_MAX_ATTEMPTS` (default 5) until HTTP 200. The orchestrator's reconciliation
@@ -264,6 +284,24 @@ Tables: `users`, `projects`, `plans`, `tasks`, `agent_runs`, `opus_state`,
   (workflow.md, architecture.md, deployment.md) are excluded to stop reference docs being
   misclassified as plans. `PLAN_BOOTSTRAP` instructs generated plans to stamp
   `spec_path:` front-matter so the Spec↔Plan link is explicit, not filename convention.
+  It also requires a **4-backtick outer fence** around any embedded file content that
+  itself contains a ` ```lang ` block — a 3-backtick outer fence renders malformed (even
+  on GitHub). The renderer only repairs single fences; this is the source-side fix.
+- **`/api/status` Planner availability is CLI-probed, not DB-only** — `api/system.py`
+  `_probe_claude_cli` runs `claude --version` (cached 60s) and gates `agent_model.connected`
+  on it, so a missing `claude` binary no longer reports "available" off the `opus_state` row
+  alone. The response also carries `agent_model.cli_available` and the effective `lm_studio_url`.
+- **LM Studio URL shown in the dashboard is the effective (global) one** — the agent uses
+  `EffectiveSettings.lm_studio_url()` (global override → env default), NOT the per-project
+  `projects.lm_studio_url` column. The project config panel reads `lm_studio_url` from
+  `/api/status` so it doesn't mislead. The New-Project model field is a dropdown fed by
+  `GET /api/lm-models` (proxies LM Studio `/v1/models`), falling back to free-text when
+  LM Studio is unreachable — avoids the old hardcoded, unreachable `deepseek-coder-v2` default.
+- **Create-Spec chat needs the SSE stream open** — brainstorm replies/errors arrive over
+  `/api/events`; `switchView` closes that stream on non-dashboard views, so `openSpecChat`
+  re-opens it (`connectDashboardSse`) when `!eventSource`, else the chat hangs silently.
+  Failed turns surface via the `brainstorm_error` event (published by `api/specs.py`
+  `_run_turn_safely`); the frontend renders them as red error bubbles.
 
 ## Documentation
 

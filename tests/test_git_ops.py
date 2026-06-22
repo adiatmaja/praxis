@@ -129,6 +129,34 @@ async def test_get_pr_diff(mock_run: AsyncMock) -> None:
 
 @pytest.mark.unit
 @patch("orchestrator.core.git_ops.GitOps._run_command")
+async def test_get_pr_diff_targets_repo(mock_run: AsyncMock) -> None:
+    mock_run.return_value = (0, "diff", "")
+    git = GitOps(github_token="ghp_test")
+
+    await git.get_pr_diff("/tmp/workspace", 2, repo="owner/name")
+
+    cmd = mock_run.call_args.args[0]
+    assert "--repo" in cmd
+    assert "owner/name" in cmd
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("url", "expected"),
+    [
+        ("https://github.com/adiatmaja/openclaw-telegram/pull/2", "adiatmaja/openclaw-telegram"),
+        ("https://github.com/u/a", "u/a"),
+        ("https://github.com/u/a.git", "u/a"),
+        ("git@github.com:u/a.git", "u/a"),
+        ("https://example.com/u/a", None),
+    ],
+)
+def test_repo_slug(url: str, expected: str | None) -> None:
+    assert GitOps.repo_slug(url) == expected
+
+
+@pytest.mark.unit
+@patch("orchestrator.core.git_ops.GitOps._run_command")
 async def test_get_changed_files(mock_run: AsyncMock) -> None:
     mock_run.return_value = (0, "a.py\nb.py\n", "")
     git = GitOps(github_token="ghp_test")
