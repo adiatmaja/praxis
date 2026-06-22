@@ -28,3 +28,6 @@ data/*.db-wal
 
 Thumbs.db
 .DS_Store
+
+# Playwright MCP screenshot artifacts
+.playwright-mcp/
