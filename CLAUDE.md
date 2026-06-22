@@ -40,7 +40,7 @@ praxis/
 │   │   │   ├── settings.py          # /api/settings global/project + /settings/models
 │   │   │   ├── harnesses.py         # /api/harnesses catalog
 │   │   │   ├── tasks.py             # /api/tasks + logs streaming
-│   │   │   ├── system.py            # /api/status, /api/opus/state
+│   │   │   ├── system.py            # /api/status (CLI-probed), /api/lm-models, /api/opus/state
 │   │   │   ├── events.py            # /api/events SSE stream
 │   │   │   ├── internal.py          # /api/internal/agent-done callback
 │   │   │   └── auth.py              # Bearer token validation
@@ -284,6 +284,24 @@ Tables: `users`, `projects`, `plans`, `tasks`, `agent_runs`, `opus_state`,
   (workflow.md, architecture.md, deployment.md) are excluded to stop reference docs being
   misclassified as plans. `PLAN_BOOTSTRAP` instructs generated plans to stamp
   `spec_path:` front-matter so the Spec↔Plan link is explicit, not filename convention.
+  It also requires a **4-backtick outer fence** around any embedded file content that
+  itself contains a ` ```lang ` block — a 3-backtick outer fence renders malformed (even
+  on GitHub). The renderer only repairs single fences; this is the source-side fix.
+- **`/api/status` Planner availability is CLI-probed, not DB-only** — `api/system.py`
+  `_probe_claude_cli` runs `claude --version` (cached 60s) and gates `agent_model.connected`
+  on it, so a missing `claude` binary no longer reports "available" off the `opus_state` row
+  alone. The response also carries `agent_model.cli_available` and the effective `lm_studio_url`.
+- **LM Studio URL shown in the dashboard is the effective (global) one** — the agent uses
+  `EffectiveSettings.lm_studio_url()` (global override → env default), NOT the per-project
+  `projects.lm_studio_url` column. The project config panel reads `lm_studio_url` from
+  `/api/status` so it doesn't mislead. The New-Project model field is a dropdown fed by
+  `GET /api/lm-models` (proxies LM Studio `/v1/models`), falling back to free-text when
+  LM Studio is unreachable — avoids the old hardcoded, unreachable `deepseek-coder-v2` default.
+- **Create-Spec chat needs the SSE stream open** — brainstorm replies/errors arrive over
+  `/api/events`; `switchView` closes that stream on non-dashboard views, so `openSpecChat`
+  re-opens it (`connectDashboardSse`) when `!eventSource`, else the chat hangs silently.
+  Failed turns surface via the `brainstorm_error` event (published by `api/specs.py`
+  `_run_turn_safely`); the frontend renders them as red error bubbles.
 
 ## Documentation
 
