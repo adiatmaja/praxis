@@ -74,6 +74,7 @@ uv run uvicorn orchestrator.main:app --port 8080
 | `GITHUB_TOKEN` | Yes | — | GitHub PAT (`repo` scope) |
 | `DATABASE_URL` | No | `sqlite+aiosqlite:///data/orchestrator.db` | SQLite path |
 | `LM_STUDIO_URL` | No | `http://host.docker.internal:1234` | LM Studio endpoint |
+| `AGENT_MODEL` | No | `claude-opus-4-8` | Default planner model (per-call-site overrides live in **Settings → Models**) |
 | `HOST` | No | `0.0.0.0` | Bind address |
 | `PORT` | No | `8080` | Server port |
 
