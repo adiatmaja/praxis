@@ -74,6 +74,9 @@ class BrainstormSession:
             message,
             "--output-format",
             "stream-json",
+            # claude >= 2.x requires --verbose when combining --print (-p) with
+            # --output-format=stream-json; without it the process exits 1.
+            "--verbose",
             "--dangerously-skip-permissions",
         ]
         if resume:

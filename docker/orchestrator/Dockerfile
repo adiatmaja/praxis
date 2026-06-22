@@ -16,16 +16,30 @@ RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
 
 RUN pip install --no-cache-dir uv
 
+# Node.js is required for the Claude CLI (claude -p is used by opus_bridge.py
+# for planning/review). The slim base has no node/npm, so install it first —
+# otherwise the claude-code install below silently no-ops and every Opus call
+# fails at runtime with FileNotFoundError.
+RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
+    && apt-get install -y --no-install-recommends nodejs \
+    && rm -rf /var/lib/apt/lists/*
+
 # Install Claude CLI (claude -p is used by opus_bridge.py for planning/review).
-# The npm install method works for most Linux base images; verify the exact
-# package name/version against the Claude CLI release in use.
-RUN npm install -g @anthropic-ai/claude-code 2>/dev/null || \
-    echo "Claude CLI npm install skipped (npm not available)"
+RUN npm install -g @anthropic-ai/claude-code
 
 # Install superpowers skills for in-product brainstorming/writing-plans.
 # NOTE: 'claude plugin install' subcommand is version-sensitive — verify it
 # matches the installed CLI version before relying on this in production.
 RUN claude plugin install superpowers || echo "superpowers install deferred to runtime"
+
+# Configure a global git credential helper so any `git push` made inside the
+# container — including pushes claude performs from a brainstorm workspace —
+# authenticates with the runtime GITHUB_TOKEN without baking it into the image.
+# Also set a default identity so claude's commits don't fail on a fresh repo.
+RUN git config --global credential.helper \
+    '!f() { echo username=x-access-token; echo password=$GITHUB_TOKEN; }; f' \
+    && git config --global user.email "praxis@orchestrator.local" \
+    && git config --global user.name "Praxis Orchestrator"
 
 WORKDIR /app
 

@@ -278,6 +278,14 @@
       text-transform: uppercase;
     }
     .detail-card { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 14px 16px; }
+    /* Rendered markdown (lifecycle Spec/Plan docs) — the global '* { padding:0 }'
+       reset strips list indentation, so restore it and add basic vertical rhythm. */
+    .detail-card ul, .detail-card ol { padding-left: 22px; margin: 6px 0; }
+    .detail-card ul.md-checks { list-style: none; padding-left: 4px; }
+    .detail-card li { margin: 3px 0; line-height: 1.55; }
+    .detail-card p { margin: 8px 0; line-height: 1.6; }
+    .detail-card h1, .detail-card h2, .detail-card h3 { margin: 16px 0 6px; line-height: 1.3; }
+    .detail-card pre { margin: 8px 0; padding: 10px 12px; background: var(--bg); border: 1px solid var(--border-subtle); border-radius: 6px; overflow-x: auto; }
     .detail-field { display: flex; justify-content: space-between; gap: 16px; padding: 8px 0; border-bottom: 1px solid var(--border-subtle); }
     .detail-field:last-child { border-bottom: 0; }
     .field-label { color: var(--text-muted); font-size: 12px; }

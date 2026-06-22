@@ -10,6 +10,10 @@ services:
       - ./data:/app/data
       - /var/run/docker.sock:/var/run/docker.sock
       - ${SSH_KEY_PATH:-~/.ssh}:/root/.ssh:ro
+      # claude -p (planning/review/brainstorm) runs inside this container and
+      # needs the host's subscription credentials. Without this mount every
+      # Opus call fails even though /api/status reports "available".
+      - ${CLAUDE_CONFIG_PATH:-~/.claude}:/root/.claude
     environment:
       - AUTH_TOKEN=${AUTH_TOKEN}
       - GITHUB_TOKEN=${GITHUB_TOKEN}
@@ -17,6 +21,11 @@ services:
       - LM_STUDIO_URL=${LM_STUDIO_URL:-http://host.docker.internal:1234}
       - HOST=0.0.0.0
       - PORT=8080
+      # claude refuses --dangerously-skip-permissions as root (the container's
+      # default user) unless it believes it runs in a sandbox. Brainstorm/plan/
+      # review all pass that flag, so without this they exit 1 and silently fail.
+      - IS_SANDBOX=1
+      - AGENT_CALLBACK_URL=${AGENT_CALLBACK_URL:-http://host.docker.internal:8080/api/internal/agent-done}
     restart: unless-stopped
     extra_hosts:
       - "host.docker.internal:host-gateway"
