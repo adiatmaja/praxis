@@ -1,6 +1,6 @@
 # Praxis
 
-**An MCP server for autonomous coding: dispatch implementation work to a local LLM, with planning and review run on your AI subscription.**
+**An MCP server that dispatches autonomous coding work to a local LLM, with planning and review run on your AI subscription.**
 
 <p align="center">
   <a href="LICENSE"><img alt="License: Apache 2.0" src="https://img.shields.io/badge/License-Apache_2.0-blue.svg"></a>
