@@ -31,9 +31,7 @@ async def test_dispatch_creates_project_plan_and_task(
     assert data["status"] == "queued"
     assert data["dashboard_url"].startswith("http")
 
-    task_resp = await client.get(
-        f"/api/tasks/{data['task_id']}", headers=auth_headers
-    )
+    task_resp = await client.get(f"/api/tasks/{data['task_id']}", headers=auth_headers)
     assert task_resp.status_code == 200
     assert task_resp.json()["task"]["status"] == "pending"
 
@@ -53,9 +51,7 @@ async def test_dispatch_reuses_project_and_updates_model(
     second = await client.post("/api/dispatch", json=body2, headers=auth_headers)
     assert second.json()["project_id"] == project_id
 
-    proj = await client.get(
-        f"/api/projects/{project_id}", headers=auth_headers
-    )
+    proj = await client.get(f"/api/projects/{project_id}", headers=auth_headers)
     assert proj.json()["model_name"] == "deepseek-coder-v2"
 
 

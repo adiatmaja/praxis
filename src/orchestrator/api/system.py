@@ -189,9 +189,7 @@ async def system_status(request: Request) -> dict[str, Any]:
         effective_lm_studio_url = settings.lm_studio_url
         effective_agent_model = settings.agent_model
     subagent_info = await _probe_subagent(effective_lm_studio_url)
-    providers = [
-        await _probe_provider(name) for name in ("claude", "codex", "agy")
-    ]
+    providers = [await _probe_provider(name) for name in ("claude", "codex", "agy")]
 
     return {
         "opus_state": _opus_state_response(opus_state),
