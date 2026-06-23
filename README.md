@@ -41,33 +41,35 @@ See [MCP Control Surface](#mcp-control-surface) for the primary interface.
 ## Architecture
 
 ```
-  ┌─────────────────────────────────────────────────────────────────┐
-  │  CLIENTS                                                        │
-  │  ┌────────┐  ┌─────────┐  ┌──────────────┐  ┌───────────────┐  │
-  │  │ Web UI │  │Typer CLI│  │  MCP server  │  │ REST API      │  │
-  │  │        │  │         │  │ (praxis-mcp) │  │ (Bearer auth) │  │
-  │  └───┬────┘  └────┬────┘  └──────┬───────┘  └───────┬───────┘  │
-  └──────┼────────────┼──────────────┼──────────────────┼──────────┘
-         └────────────┴──────┬───────┴──────────────────┘
-                    REST API + SSE
-                         │
-  ┌──────────────────────▼──────────────────────────────────────────┐
-  │  ORCHESTRATOR  (FastAPI + SQLite)                                │
-  │                                                                  │
-  │  ┌───────────┐  ┌───────────┐  ┌───────────┐  ┌────────────┐   │
-  │  │ API Router│  │Task Queue │  │  Agent    │  │ LLM Router │   │
-  │  │ REST + SSE│  │ (SQLite)  │  │  Manager  │  │ (per-site) │   │
-  │  └───────────┘  └───────────┘  └─────┬─────┘  └─────┬──────┘   │
-  └──────────────────────────────────────┼───────────────┼──────────┘
-                          CODING AGENTS  │               │  PLANNER BRAIN
-                          ┌──────────────┼──────┐   ┌─────┴──────────────┐
-                          ▼              ▼      ▼   ▼      ▼      ▼      ▼
-                       aider         opencode  ... claude gemini  gpt  local
-                      (Docker)       (Docker)      (-p)   (agy) (codex)(LMStudio)
-                          │              │
-                          └──────┬───────┘
-                                 ▼
-                       LM Studio / chosen model backend
+  CLIENTS  ·  any one drives the engine; the MCP client acts as the brain
+  ┌──────────────┐      ┌──────────────┐      ┌──────────────┐
+  │  MCP client  │      │  Dashboard   │      │  Typer CLI   │
+  │ (e.g. Claude │      │   (web UI)   │      │              │
+  │     Code)    │      │              │      │              │
+  └──────┬───────┘      └──────┬───────┘      └──────┬───────┘
+         └─────────────────────┼─────────────────────┘
+                  REST API + SSE  (single source of truth, Bearer auth)
+                                 │
+  ┌──────────────────────────────▼─────────────────────────────────────┐
+  │  ORCHESTRATOR  ·  FastAPI + SQLite                                  │
+  │  ┌───────────┐  ┌───────────┐  ┌───────────┐  ┌────────────┐       │
+  │  │ API Router│  │Task Queue │  │  Agent    │  │ LLM Router │       │
+  │  │ REST + SSE│  │ (SQLite)  │  │  Manager  │  │ (per-site) │       │
+  │  └───────────┘  └───────────┘  └─────┬─────┘  └─────┬──────┘       │
+  └──────────────────────────────────────┼──────────────┼──────────────┘
+        implement                         │              │       plan + review
+   token-heavy → local & free  ◀──────────┘              └──────▶  judgment → subscription
+            │                                                            │
+  ┌─────────▼──────────────────────────────┐      ┌────────────────────▼─────────────────┐
+  │  CODING AGENTS (Docker, per task)       │      │  PLANNER BRAIN (provider CLI / local) │
+  │  ┌───────┐  ┌─────────┐  ┌──────────┐   │      │ ┌────────┬────────┬────────┬────────┐ │
+  │  │ aider │  │ opencode│  │ openhands│   │      │ │ claude │ gemini │  gpt   │ local  │ │
+  │  └───┬───┘  └────┬────┘  └────┬─────┘   │      │ │  (-p)  │ (agy)  │(codex) │LMStudio│ │
+  └──────┼───────────┼───────────┼──────────┘      │ └────────┴────────┴────────┴────────┘ │
+         └───────────┴─────┬─────┘                 └───────────────────────────────────────┘
+            OpenAI-compatible │
+                             ▼
+                  LM Studio / chosen model backend
 ```
 
 ## Quick Start
@@ -92,8 +94,15 @@ docker compose up --build                                    # local mode
 DOMAIN=praxis.example.com docker compose --profile hosted up --build   # hosted (Caddy auto-HTTPS)
 ```
 
+Build the coding-agent image once (it is not built by `docker compose`):
+
+```bash
+docker build -t aider-agent:latest -f docker/aider-agent/Dockerfile docker/aider-agent/
+```
+
 With the server running, connect an MCP client to drive it
-(see [MCP Control Surface](#mcp-control-surface)), or open the dashboard at `http://localhost:8080`.
+(see [MCP Control Surface](#mcp-control-surface) for a full first-dispatch walkthrough), or open
+the dashboard at `http://localhost:8080`.
 
 ## Configuration
 
@@ -152,6 +161,19 @@ Add to your Claude Code MCP config (`.mcp.json` or user settings):
   }
 }
 ```
+
+### Using it in your workflow
+
+With the server running and the agent image built (see [Quick Start](#quick-start)), point your
+MCP client at it using the config above — set `PRAXIS_AUTH_TOKEN` to your `AUTH_TOKEN`. Then just
+ask your assistant:
+
+> _Use praxis to dispatch on `github.com/me/my-repo`: add a CONTRIBUTING.md. Model `qwen/qwen3.6-27b`._
+
+It calls `dispatch_task` and hands back a `task_id`. Praxis spawns a containerized coding agent that
+implements on a branch, opens a PR, and reviews it — ask the assistant to `poll_task` until the
+status is `merged` (or watch the dashboard). Pick a worker model that can follow a coding agent's
+edit format; very small chat models reply *with* the code instead of editing, so nothing commits.
 
 > **Not in v1:** `dispatch_task` always runs review (`review=false` opt-out planned);
 > `submit_spec` / `poll_plan` deferred; worker models are LM-Studio-served only.
