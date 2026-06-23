@@ -7,7 +7,12 @@ services:
     ports:
       - "${PORT:-8080}:8080"
     volumes:
-      - ./data:/app/data
+      # Named volume (not a host bind mount) for the SQLite DB.  On Docker Desktop
+      # the host bind-mount filesystem (9p/virtiofs) does not support the shared-memory
+      # / mmap semantics SQLite WAL needs, so `PRAGMA journal_mode=WAL` fails at startup
+      # with "disk I/O error".  A named volume is backed by the Linux VM's ext4 and
+      # works correctly; it also avoids DB-file contention with a local dev server.
+      - praxis_data:/app/data
       - /var/run/docker.sock:/var/run/docker.sock
       # SSH keys for git clone over SSH.  Override SSH_KEY_PATH in .env to
       # mount only the specific key file instead of the full ~/.ssh directory.
@@ -54,5 +59,6 @@ services:
       - hosted
 
 volumes:
+  praxis_data:
   caddy_data:
   caddy_config:
