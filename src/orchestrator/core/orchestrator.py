@@ -8,6 +8,7 @@ import logging
 from datetime import UTC, datetime
 from typing import Any, cast
 
+from orchestrator.core.agent_prompt import build_implementer_prompt
 from orchestrator.core.event_bus import EventBus
 from orchestrator.core.git_ops import (
     clone_with_token,
@@ -703,10 +704,4 @@ class Orchestrator:
                 continue
 
     def _task_prompt(self, task: dict[str, Any], project: dict[str, Any]) -> str:
-        return (
-            f"Project: {project['name']}\n"
-            f"Repository: {project['repo_url']}\n"
-            f"Task: {task['title']}\n\n"
-            f"{task['description']}\n\n"
-            "Open a pull request when complete."
-        )
+        return build_implementer_prompt(task, project)
