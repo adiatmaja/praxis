@@ -1,6 +1,6 @@
 # Praxis
 
-**Autonomous coding-agent loop powered by your AI subscription, with a local LLM handling implementation.**
+**An MCP server that dispatches autonomous coding work to a local LLM, with planning and review run on your AI subscription.**
 
 <p align="center">
   <a href="LICENSE"><img alt="License: Apache 2.0" src="https://img.shields.io/badge/License-Apache_2.0-blue.svg"></a>
@@ -10,9 +10,12 @@
   <a href="https://github.com/adiatmaja/praxis/stargazers"><img alt="Stars" src="https://img.shields.io/github/stars/adiatmaja/praxis?style=social"></a>
 </p>
 
-Praxis drives the Claude / Gemini / GPT CLI you already pay for to plan and review, and offloads
-implementation to a local LLM to save tokens — so the full **plan → implement → review → merge**
-loop runs on a flat-rate subscription instead of metered API credits.
+Praxis is an **MCP server**: point an MCP client (e.g. Claude Code) at it and your assistant can
+dispatch real implementation work to a **local LLM** running inside Praxis — a clean workaround to
+Claude Code's native subagents being model-locked to Claude. The Claude / Gemini / GPT CLI you
+already pay for plans and reviews; the local model writes the code. The full
+**plan → implement → review → merge** loop runs on a flat-rate subscription instead of metered API
+credits. A dashboard and CLI come along as the human window into the same engine.
 
 ## Demo
 
@@ -33,22 +36,23 @@ Praxis turns a written spec into reviewed, merged code automatically — and it'
 reviews; a local LLM does the heavy implementation work for free. It runs the
 **plan → implement → review → merge** loop for you.
 
-Under the hood: submit a spec, a **planner brain** breaks it into tasks, **coding agents**
+Under the hood: a **planner brain** breaks a spec into tasks, **coding agents**
 implement them on isolated branches, the planner reviews each PR, and the system iterates until
 quality meets the bar. An optional autonomous improvement loop drives continuous codebase
 enhancement.
 
-### Two ways to drive it
+### MCP-first
 
 Praxis is an orchestration **engine**; its REST API is the single source of truth, and every
-front-end is just a client of it:
+front-end is just a client of it. The primary one is **MCP**:
 
-- **Dashboard / CLI** — the human window: submit specs, watch the loop run over an SSE live log,
-  inspect PRs and reviews.
-- **MCP control surface** — drive Praxis from an MCP client (e.g. Claude Code). The client acts
-  as the brain and dispatches implementation work to a **non-Anthropic** model running inside
-  Praxis — a clean workaround to Claude Code's native subagents being model-locked to Claude.
-  See [MCP Control Surface](#mcp-control-surface) below.
+- **MCP control surface** *(the main interface)* — drive Praxis from an MCP client (e.g. Claude
+  Code). The client acts as the brain and calls `dispatch_task` to hand implementation work to a
+  **non-Anthropic** model running inside Praxis — the workaround to Claude Code's native subagents
+  being model-locked to Claude. See [MCP Control Surface](#mcp-control-surface) below.
+- **Dashboard / CLI** *(the human window)* — submit specs, watch the loop run over an SSE live log,
+  and inspect PRs and reviews. MCP is request/response and can't see a wedged long-running task;
+  the dashboard is where a human watches and unsticks one.
 
 ### Why Praxis is cheap to run
 
