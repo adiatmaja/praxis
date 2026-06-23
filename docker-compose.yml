@@ -5,7 +5,7 @@ services:
       dockerfile: docker/orchestrator/Dockerfile
     container_name: orchestrator
     ports:
-      - "${PORT:-8080}:8080"
+      - "${PORT:-12323}:8080"
     volumes:
       # Named volume (not a host bind mount) for the SQLite DB.  On Docker Desktop
       # the host bind-mount filesystem (9p/virtiofs) does not support the shared-memory
@@ -38,7 +38,10 @@ services:
       # default user) unless it believes it runs in a sandbox. Brainstorm/plan/
       # review all pass that flag, so without this they exit 1 and silently fail.
       - IS_SANDBOX=1
-      - AGENT_CALLBACK_URL=${AGENT_CALLBACK_URL:-http://host.docker.internal:8080/api/internal/agent-done}
+      # Agents reach the orchestrator back via the HOST-side port, so this must
+      # track ${PORT} (not the in-container 8080). Derived here so the two can
+      # never drift apart and silently 404 every agent callback.
+      - AGENT_CALLBACK_URL=${AGENT_CALLBACK_URL:-http://host.docker.internal:${PORT:-12323}/api/internal/agent-done}
     restart: unless-stopped
     extra_hosts:
       - "host.docker.internal:host-gateway"

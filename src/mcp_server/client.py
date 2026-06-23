@@ -46,7 +46,8 @@ class PraxisClient:
     @classmethod
     def from_env(cls) -> PraxisClient:
         """Build a client from PRAXIS_BASE_URL + PRAXIS_AUTH_TOKEN env vars."""
-        base_url = os.environ.get("PRAXIS_BASE_URL", "http://localhost:8080")
+        # Default matches the docker-compose host port (PORT in .env, 12323).
+        base_url = os.environ.get("PRAXIS_BASE_URL", "http://localhost:12323")
         token = os.environ.get("PRAXIS_AUTH_TOKEN")
         if not token:
             msg = "PRAXIS_AUTH_TOKEN is not set; the MCP server cannot authenticate."
@@ -73,6 +74,19 @@ class PraxisClient:
         except httpx.HTTPError as exc:
             msg = f"HTTP transport error: {exc}"
             raise PraxisClientError("connection_error", msg) from exc  # noqa: EM101
+
+        # Guard against PRAXIS_BASE_URL pointing at a different service (e.g. a
+        # dashboard/search UI that happens to share the port). Praxis always
+        # answers JSON; an HTML body means we are talking to the wrong server,
+        # which is far more actionable than a bare "404" from someone else's app.
+        content_type = response.headers.get("content-type", "")
+        if "text/html" in content_type:
+            msg = (
+                f"{self.base_url} responded with HTML, not Praxis JSON. "
+                f"PRAXIS_BASE_URL is almost certainly pointing at the wrong "
+                f"service or port (check it matches Praxis's PORT)."
+            )
+            raise PraxisClientError("wrong_service", msg)  # noqa: EM101
 
         if response.status_code >= 400:
             code = _STATUS_CODES.get(response.status_code, "request_error")

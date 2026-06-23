@@ -110,9 +110,9 @@ uv venv && uv sync --extra dev
 cp .env.example .env
 # Edit .env: set AUTH_TOKEN (any secret) and GITHUB_TOKEN (GitHub PAT)
 
-uv run uvicorn orchestrator.main:app --port 8080
-# Dashboard: http://localhost:8080
-# API docs:  http://localhost:8080/docs
+uv run uvicorn orchestrator.main:app --port 12323
+# Dashboard: http://localhost:12323
+# API docs:  http://localhost:12323/docs
 ```
 
 Or with Docker:
@@ -130,7 +130,7 @@ docker build -t aider-agent:latest -f docker/aider-agent/Dockerfile docker/aider
 
 With the server running, connect an MCP client to drive it
 (see [MCP Control Surface](#mcp-control-surface) for a full first-dispatch walkthrough), or open
-the dashboard at `http://localhost:8080`.
+the dashboard at `http://localhost:12323`.
 
 ## Configuration
 
@@ -142,7 +142,7 @@ the dashboard at `http://localhost:8080`.
 | `LM_STUDIO_URL` | No | `http://host.docker.internal:1234` | LM Studio endpoint |
 | `AGENT_MODEL` | No | `claude-opus-4-8` | Default planner model (per-call-site overrides in **Settings → Models**) |
 | `HOST` | No | `0.0.0.0` | Bind address |
-| `PORT` | No | `8080` | Server port |
+| `PORT` | No | `12323` | Host port (uncommon by design to avoid 8080 collisions; MCP `PRAXIS_BASE_URL` and agent callbacks must match it) |
 
 ## How It Works
 
@@ -200,7 +200,9 @@ Praxis project's environment, so you point `uv` at the cloned Praxis directory w
 3. Replace `/path/to/praxis` with the absolute path to your cloned Praxis folder (on Windows, use
    escaped backslashes, e.g. `"C:\\working-space\\praxis"`).
 4. Set `PRAXIS_AUTH_TOKEN` to the same value as the `AUTH_TOKEN` you put in Praxis's `.env`, and
-   `PRAXIS_BASE_URL` to wherever the server is running (the default is fine for a local setup).
+   `PRAXIS_BASE_URL` to wherever the server is running. The default host port is **12323** (chosen to
+   avoid colliding with common services on 8080); if you change `PORT` in Praxis's `.env`, change
+   `PRAXIS_BASE_URL` here to match, or every MCP call will hit the wrong service.
 5. Restart your assistant so it picks up the new MCP server. You should see the `praxis` tools become
    available.
 
@@ -211,7 +213,7 @@ Praxis project's environment, so you point `uv` at the cloned Praxis directory w
       "command": "uv",
       "args": ["run", "--directory", "/path/to/praxis", "praxis-mcp"],
       "env": {
-        "PRAXIS_BASE_URL": "http://localhost:8080",
+        "PRAXIS_BASE_URL": "http://localhost:12323",
         "PRAXIS_AUTH_TOKEN": "your-auth-token"
       }
     }

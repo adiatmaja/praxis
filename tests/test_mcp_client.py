@@ -70,6 +70,45 @@ async def test_connection_error_maps() -> None:
     assert exc.value.code == "connection_error"
 
 
+async def test_html_response_maps_wrong_service() -> None:
+    """An HTML body (e.g. another app on the same port) is flagged, not parsed."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            text="<!DOCTYPE html><html><body>SearXNG</body></html>",
+            headers={"content-type": "text/html; charset=utf-8"},
+        )
+
+    client = _client(handler)
+    with pytest.raises(PraxisClientError) as exc:
+        await client.get("/api/status")
+    assert exc.value.code == "wrong_service"
+
+
+async def test_html_error_page_maps_wrong_service() -> None:
+    """A 404 HTML page from a foreign service reports wrong_service, not not_found."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            404,
+            text="<html><body>not here</body></html>",
+            headers={"content-type": "text/html"},
+        )
+
+    client = _client(handler)
+    with pytest.raises(PraxisClientError) as exc:
+        await client.get("/api/status")
+    assert exc.value.code == "wrong_service"
+
+
+def test_from_env_default_base_url(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("PRAXIS_BASE_URL", raising=False)
+    monkeypatch.setenv("PRAXIS_AUTH_TOKEN", "secret")
+    client = PraxisClient.from_env()
+    assert client.base_url == "http://localhost:12323"
+
+
 def test_from_env_reads_config(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("PRAXIS_BASE_URL", "http://h:9000")
     monkeypatch.setenv("PRAXIS_AUTH_TOKEN", "secret")
