@@ -344,3 +344,24 @@ class SettingsResponse(BaseModel):
 
     editable: dict[str, SettingsEditableEntry]
     readonly: SettingsReadonly
+
+
+class DispatchRequest(BaseModel):
+    """Request payload for MCP single-task dispatch."""
+
+    repo_url: str
+    instructions: str
+    model: str
+    harness: str | None = None
+    branch: str | None = None
+    name: str | None = None
+
+
+class DispatchResponse(BaseModel):
+    """Response for a dispatched single-task plan."""
+
+    task_id: str
+    plan_id: str
+    project_id: str
+    status: str
+    dashboard_url: str
