@@ -63,6 +63,54 @@ async def test_dispatch_requires_auth(client: AsyncClient) -> None:
     assert resp.status_code == 401
 
 
+@pytest.mark.parametrize("bad_repo", ["", "x", "not-a-url", "ftp://h/r", "   "])
+async def test_dispatch_rejects_invalid_repo_url(
+    client: AsyncClient, auth_headers: dict[str, str], seeded_user: str, bad_repo: str
+) -> None:
+    resp = await client.post(
+        "/api/dispatch",
+        json={"repo_url": bad_repo, "instructions": "do it", "model": "qwen3-32b"},
+        headers=auth_headers,
+    )
+    assert resp.status_code == 422, resp.text
+
+
+@pytest.mark.parametrize(
+    "bad_branch",
+    ["../escape", "main/..", "a//b", "-rf", "/abs", "has space", "ends/", "x.lock"],
+)
+async def test_dispatch_rejects_unsafe_branch(
+    client: AsyncClient, auth_headers: dict[str, str], seeded_user: str, bad_branch: str
+) -> None:
+    resp = await client.post(
+        "/api/dispatch",
+        json={
+            "repo_url": "https://github.com/u/repo",
+            "instructions": "do it",
+            "model": "qwen3-32b",
+            "branch": bad_branch,
+        },
+        headers=auth_headers,
+    )
+    assert resp.status_code == 422, resp.text
+
+
+async def test_dispatch_accepts_valid_branch(
+    client: AsyncClient, auth_headers: dict[str, str], seeded_user: str
+) -> None:
+    resp = await client.post(
+        "/api/dispatch",
+        json={
+            "repo_url": "https://github.com/u/repo",
+            "instructions": "do it",
+            "model": "qwen3-32b",
+            "branch": "feature/my-work_1.2",
+        },
+        headers=auth_headers,
+    )
+    assert resp.status_code == 201, resp.text
+
+
 def test_dispatch_schemas_importable() -> None:
     from orchestrator.models.schemas import DispatchRequest, DispatchResponse
 

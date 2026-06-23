@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from enum import StrEnum
 from sys import version_info
 from typing import TypedDict
@@ -355,6 +356,57 @@ class DispatchRequest(BaseModel):
     harness: str | None = None
     branch: str | None = None
     name: str | None = None
+
+    @field_validator("repo_url")
+    @classmethod
+    def validate_repo_url(cls, value: str) -> str:
+        """Reject anything that isn't an http(s) or SSH (git@) repo URL.
+
+        A bad ``repo_url`` would otherwise create a project row that only fails
+        later at container-spawn/clone time with an opaque git error.
+        """
+        candidate = value.strip()
+        if not (
+            candidate.startswith(("http://", "https://", "git@", "ssh://"))
+            and len(candidate) > len("https://")
+        ):
+            msg = "repo_url must be an http(s) or git@/ssh:// repository URL"
+            raise ValueError(msg)
+        return candidate
+
+    @field_validator("instructions", "model")
+    @classmethod
+    def validate_non_empty(cls, value: str) -> str:
+        if not value.strip():
+            msg = "field must not be empty"
+            raise ValueError(msg)
+        return value
+
+    @field_validator("branch")
+    @classmethod
+    def validate_branch(cls, value: str | None) -> str | None:
+        """Sanitize a caller-supplied branch into a safe git ref.
+
+        Blocks path traversal, leading dashes, whitespace, and the dangerous
+        ``..``/``//`` ref sequences so a hostile branch can't escape the
+        ``agent/``-style namespace or confuse git ref parsing.
+        """
+        if value is None:
+            return None
+        candidate = value.strip()
+        if not candidate:
+            msg = "branch must not be empty when provided"
+            raise ValueError(msg)
+        if (
+            not re.fullmatch(r"[A-Za-z0-9._/-]+", candidate)
+            or candidate.startswith(("-", "/"))
+            or candidate.endswith(("/", ".lock"))
+            or ".." in candidate
+            or "//" in candidate
+        ):
+            msg = "branch contains illegal characters or an unsafe ref pattern"
+            raise ValueError(msg)
+        return candidate
 
 
 class DispatchResponse(BaseModel):
