@@ -184,14 +184,11 @@ class LLMRouter:
         if not out:
             # agy's --print renders only to an interactive TTY and yields no
             # capturable stdout when run non-interactively (exit 0, empty out).
-            message = (
-                f"{provider} returned empty output (exit 0)."
-                + (
-                    " agy --print writes only to an interactive terminal and "
-                    "cannot be captured non-interactively."
-                    if provider == "agy"
-                    else ""
-                )
+            message = f"{provider} returned empty output (exit 0)." + (
+                " agy --print writes only to an interactive terminal and "
+                "cannot be captured non-interactively."
+                if provider == "agy"
+                else ""
             )
             raise ProviderOutputError(message)
         return out

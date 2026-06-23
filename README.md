@@ -5,7 +5,7 @@
 <p align="center">
   <a href="LICENSE"><img alt="License: Apache 2.0" src="https://img.shields.io/badge/License-Apache_2.0-blue.svg"></a>
   <img alt="Python 3.11+" src="https://img.shields.io/badge/python-3.11+-blue.svg">
-  <img alt="Tests" src="https://img.shields.io/badge/tests-286_passing-brightgreen.svg">
+  <img alt="Tests" src="https://img.shields.io/badge/tests-331_passing-brightgreen.svg">
   <img alt="Coverage" src="https://img.shields.io/badge/coverage-88%25-brightgreen.svg">
   <a href="https://github.com/adiatmaja/praxis/stargazers"><img alt="Stars" src="https://img.shields.io/github/stars/adiatmaja/praxis?style=social"></a>
 </p>
@@ -38,6 +38,18 @@ implement them on isolated branches, the planner reviews each PR, and the system
 quality meets the bar. An optional autonomous improvement loop drives continuous codebase
 enhancement.
 
+### Two ways to drive it
+
+Praxis is an orchestration **engine**; its REST API is the single source of truth, and every
+front-end is just a client of it:
+
+- **Dashboard / CLI** — the human window: submit specs, watch the loop run over an SSE live log,
+  inspect PRs and reviews.
+- **MCP control surface** — drive Praxis from an MCP client (e.g. Claude Code). The client acts
+  as the brain and dispatches implementation work to a **non-Anthropic** model running inside
+  Praxis — a clean workaround to Claude Code's native subagents being model-locked to Claude.
+  See [MCP Control Surface](#mcp-control-surface) below.
+
 ### Why Praxis is cheap to run
 
 **Use your flat-rate subscription, not the pay-per-token API.** Most AI agent orchestrators only
@@ -60,11 +72,12 @@ mix and match — e.g. Claude to plan, a local model to implement, Gemini to rev
 ```
   ┌─────────────────────────────────────────────────────────────────┐
   │  CLIENTS                                                        │
-  │  ┌──────────┐   ┌──────────┐   ┌───────────────────────────┐   │
-  │  │  Web UI  │   │ Typer CLI│   │  REST API (Bearer auth)   │   │
-  │  └────┬─────┘   └────┬─────┘   └─────────────┬─────────────┘   │
-  └───────┼──────────────┼────────────────────────┼─────────────────┘
-          └──────────────┼────────────────────────┘
+  │  ┌────────┐  ┌─────────┐  ┌──────────────┐  ┌───────────────┐  │
+  │  │ Web UI │  │Typer CLI│  │  MCP server  │  │ REST API      │  │
+  │  │        │  │         │  │ (praxis-mcp) │  │ (Bearer auth) │  │
+  │  └───┬────┘  └────┬────┘  └──────┬───────┘  └───────┬───────┘  │
+  └──────┼────────────┼──────────────┼──────────────────┼──────────┘
+         └────────────┴──────┬───────┴──────────────────┘
                     REST API + SSE
                          │
   ┌──────────────────────▼──────────────────────────────────────────┐
@@ -135,6 +148,52 @@ DOMAIN=praxis.example.com docker compose --profile hosted up --build
 
 See [docs/architecture.md](docs/architecture.md), [docs/workflow.md](docs/workflow.md),
 and [docs/deployment.md](docs/deployment.md) for detailed documentation.
+
+## MCP Control Surface
+
+Praxis can be driven as an **MCP server**, letting an MCP client (e.g. Claude Code) act as
+the brain and dispatch implementation work to a **non-Anthropic** model running inside
+Praxis. Claude Code's native subagents are model-locked to Claude; Praxis routes the work
+to whatever model is loaded in LM Studio.
+
+The MCP server is a thin stdio adapter over the REST API. The Praxis server must be running.
+
+### Tools
+
+| Tool | Purpose |
+|------|---------|
+| `dispatch_task(repo_url, instructions, model, harness?, branch?)` | Dispatch one task; returns `{task_id, dashboard_url, status}`. Praxis always runs its own review. |
+| `poll_task(task_id)` | Get status, PR URL, review (and a dashboard link for wedged tasks). |
+| `list_providers()` | List brain providers + worker models available to dispatch to. |
+| `get_task_logs(task_id)` | Return agent-run logs for failure triage. |
+| `cancel_task(task_id)` | Stop a running task. |
+
+### Claude Code config
+
+Add to your Claude Code MCP config (`.mcp.json` or user settings):
+
+```json
+{
+  "mcpServers": {
+    "praxis": {
+      "command": "uv",
+      "args": ["run", "praxis-mcp"],
+      "env": {
+        "PRAXIS_BASE_URL": "http://localhost:8080",
+        "PRAXIS_AUTH_TOKEN": "your-auth-token"
+      }
+    }
+  }
+}
+```
+
+### Not in v1
+
+- `dispatch_task` always runs Praxis's review; a `review=false` opt-out is a planned
+  follow-up (requires orchestrator-loop changes).
+- `submit_spec` / `poll_plan` (full autonomous-loop trigger) is deferred to a later phase.
+- Worker models are LM-Studio-served only; arbitrary OpenAI-compatible endpoints and
+  CLI-as-worker (codex/agy) are later phases.
 
 ## Contributing
 

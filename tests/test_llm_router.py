@@ -151,9 +151,7 @@ async def test_run_missing_binary_raises_provider_auth_error(mocker):
     resolver = mocker.AsyncMock(
         return_value={"provider": "codex", "model": "", "effort": None}
     )
-    mocker.patch(
-        "orchestrator.core.llm_router.shutil.which", return_value=None
-    )
+    mocker.patch("orchestrator.core.llm_router.shutil.which", return_value=None)
     router = LLMRouter(resolve=resolver)
     with pytest.raises(ProviderAuthError):
         await router.run("plan_spec", "p", project_id=None)
