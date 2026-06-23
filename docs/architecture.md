@@ -4,12 +4,13 @@
 
 ```
   ┌─────────────────────────────────────────────────────────────────┐
-  │  CLIENTS                                                        │
-  │  ┌──────────┐   ┌──────────┐   ┌───────────────────────────┐   │
-  │  │  Web UI  │   │ Typer CLI│   │ Claude Code (claude -p)   │   │
-  │  └────┬─────┘   └────┬─────┘   └─────────────┬─────────────┘   │
-  └───────┼──────────────┼────────────────────────┼─────────────────┘
-          └──────────────┼────────────────────────┘
+  │  CLIENTS  (all pure REST clients — no engine logic)            │
+  │  ┌────────┐  ┌─────────┐  ┌──────────────┐  ┌───────────────┐  │
+  │  │ Web UI │  │Typer CLI│  │  MCP server  │  │ REST API      │  │
+  │  │        │  │         │  │ (praxis-mcp) │  │ (Bearer auth) │  │
+  │  └───┬────┘  └────┬────┘  └──────┬───────┘  └───────┬───────┘  │
+  └──────┼────────────┼──────────────┼──────────────────┼──────────┘
+         └────────────┴──────┬───────┴──────────────────┘
                     REST API + SSE
                          │
   ┌──────────────────────▼──────────────────────────────────────────┐
@@ -47,9 +48,29 @@
 | `settings.py` | `GET/PUT /api/settings` global/project, `GET/PUT /api/settings/models`, `POST /api/settings/models/reset` | Bearer |
 | `harnesses.py` | `GET /api/harnesses` catalog | Bearer |
 | `tasks.py` | `GET /api/plans/{id}/tasks`, `GET/POST /api/tasks/{id}`, logs | Bearer |
+| `dispatch.py` | `POST /api/dispatch` — single-task plan injection (used by the MCP server) | Bearer |
 | `system.py` | `GET /api/status`, `GET /api/opus/state` | Bearer |
 | `events.py` | `GET /api/events` (SSE stream) | Bearer |
 | `internal.py` | `POST /api/internal/agent-done` | None (agent callback) |
+
+### MCP Server (`src/mcp_server/`)
+
+A standalone stdio MCP adapter (`praxis-mcp` console script) that lets an MCP client (e.g.
+Claude Code) act as the brain and dispatch implementation work to a non-Anthropic model
+running inside Praxis. It owns **no engine logic** — it is a third REST client alongside the
+dashboard and CLI, forwarding every tool call over HTTP with a Bearer token.
+
+| Module | Responsibility |
+|--------|---------------|
+| `client.py` | `PraxisClient` — async httpx wrapper, env config (`PRAXIS_BASE_URL`/`PRAXIS_AUTH_TOKEN`), Bearer auth, HTTP-status → `PraxisClientError` translation |
+| `server.py` | FastMCP server; five tools (`dispatch_task`, `poll_task`, `list_providers`, `get_task_logs`, `cancel_task`) delegating to testable `*_impl` functions. Tool errors are returned as `{error, message}`, never raised |
+| `__main__.py` | `praxis-mcp` stdio entry point (`mcp.run()`) |
+
+The only engine-side addition is `POST /api/dispatch`, which injects a one-task `opus_plan`
+via `TaskQueue.activate_plan` (Praxis has no direct single-task creation route). Dispatch is
+async — `dispatch_task` returns a handle (`{task_id, dashboard_url, status}`); the caller
+polls `poll_task` and follows the `dashboard_url` to watch wedged tasks the request/response
+MCP transport cannot surface.
 
 ### Core Engine (`src/orchestrator/core/`)
 
