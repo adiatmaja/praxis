@@ -189,13 +189,19 @@ The five tools it exposes:
 
 ### Setup (one time)
 
-1. Start the Praxis server and build the agent image, per [Quick Start](#quick-start).
-2. Add the block below to your Claude Code MCP config (the `.mcp.json` file in your project, or your
-   user settings). Run it from inside the cloned `praxis` folder, since `uv run praxis-mcp` looks for
-   the project there.
-3. Set `PRAXIS_AUTH_TOKEN` to the same value as the `AUTH_TOKEN` you put in `.env`, and
+The point of Praxis is to drive your *other* repos, so you set this up from whatever project you
+want to work in, not from the Praxis folder. The one trick: the MCP server has to launch using the
+Praxis project's environment, so you point `uv` at the cloned Praxis directory with `--directory`.
+
+1. Start the Praxis server and build the agent image, per [Quick Start](#quick-start). Leave the
+   server running, the MCP adapter is just a REST client and does nothing without it.
+2. In the project you want to work in, add the block below to your Claude Code MCP config (the
+   `.mcp.json` file at that project's root, or your global user settings).
+3. Replace `/path/to/praxis` with the absolute path to your cloned Praxis folder (on Windows, use
+   escaped backslashes, e.g. `"C:\\working-space\\praxis"`).
+4. Set `PRAXIS_AUTH_TOKEN` to the same value as the `AUTH_TOKEN` you put in Praxis's `.env`, and
    `PRAXIS_BASE_URL` to wherever the server is running (the default is fine for a local setup).
-4. Restart your assistant so it picks up the new MCP server. You should see the `praxis` tools become
+5. Restart your assistant so it picks up the new MCP server. You should see the `praxis` tools become
    available.
 
 ```json
@@ -203,7 +209,7 @@ The five tools it exposes:
   "mcpServers": {
     "praxis": {
       "command": "uv",
-      "args": ["run", "praxis-mcp"],
+      "args": ["run", "--directory", "/path/to/praxis", "praxis-mcp"],
       "env": {
         "PRAXIS_BASE_URL": "http://localhost:8080",
         "PRAXIS_AUTH_TOKEN": "your-auth-token"
@@ -212,6 +218,13 @@ The five tools it exposes:
   }
 }
 ```
+
+> **Tip:** if you happen to be working *inside* the Praxis repo itself, you can drop the
+> `"--directory", "/path/to/praxis"` arguments, since `uv run praxis-mcp` already resolves the
+> project from the current folder. For every other project, keep `--directory`.
+
+> **Heads up on secrets:** `.mcp.json` lives in your project and may be committed. Keep your real
+> `PRAXIS_AUTH_TOKEN` out of a public repo (use global user settings, or gitignore the file).
 
 ### Using it in your workflow
 
