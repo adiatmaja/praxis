@@ -1,0 +1,150 @@
+"""Praxis MCP server: tool implementations + FastMCP registration.
+
+Each ``*_impl`` function takes a PraxisClient and is independently testable.
+The FastMCP tool wrappers (registered at module import) build a client from env
+and delegate. Tools never raise to the MCP client; client errors are caught and
+returned as ``{"error": code, "message": ...}`` so the brain can react.
+"""
+
+from __future__ import annotations
+
+from typing import Any, cast
+
+from mcp.server.fastmcp import FastMCP
+
+from mcp_server.client import PraxisClient, PraxisClientError
+
+
+def _error(exc: PraxisClientError) -> dict[str, Any]:
+    return {"error": exc.code, "message": exc.message}
+
+
+async def dispatch_task_impl(
+    client: Any,
+    repo_url: str,
+    instructions: str,
+    model: str,
+    harness: str | None = None,
+    branch: str | None = None,
+) -> dict[str, Any]:
+    """Dispatch a single implementation task to a non-Anthropic worker model."""
+    payload: dict[str, Any] = {
+        "repo_url": repo_url,
+        "instructions": instructions,
+        "model": model,
+    }
+    if harness is not None:
+        payload["harness"] = harness
+    if branch is not None:
+        payload["branch"] = branch
+    try:
+        return cast(dict[str, Any], await client.post("/api/dispatch", payload))
+    except PraxisClientError as exc:
+        return _error(exc)
+
+
+async def poll_task_impl(client: Any, task_id: str) -> dict[str, Any]:
+    """Return the current status, PR URL, and review of a dispatched task."""
+    try:
+        data = await client.get(f"/api/tasks/{task_id}")
+    except PraxisClientError as exc:
+        return _error(exc)
+    task = data.get("task", {})
+    return {
+        "status": task.get("status"),
+        "pr_url": task.get("pr_url"),
+        "review": task.get("review_feedback"),
+        "dashboard_url": _dashboard_url(client),
+    }
+
+
+async def list_providers_impl(client: Any) -> dict[str, Any]:
+    """List brain providers and the worker models available to dispatch to."""
+    try:
+        status_data = await client.get("/api/status")
+        models_data = await client.get("/api/lm-models")
+    except PraxisClientError as exc:
+        return _error(exc)
+    return {
+        "brain_providers": status_data.get("providers", []),
+        "worker_models": models_data.get("models", []),
+        "lm_studio_url": status_data.get("lm_studio_url"),
+        "lm_studio_connected": models_data.get("connected", False),
+    }
+
+
+async def get_task_logs_impl(client: Any, task_id: str) -> dict[str, Any]:
+    """Return concatenated agent-run logs for a task (inline failure triage)."""
+    try:
+        data = await client.get(f"/api/tasks/{task_id}")
+    except PraxisClientError as exc:
+        return _error(exc)
+    runs = data.get("runs", [])
+    logs = "".join(str(run.get("logs") or "") for run in runs)
+    return {"task_id": task_id, "logs": logs}
+
+
+async def cancel_task_impl(client: Any, task_id: str) -> dict[str, Any]:
+    """Stop a running task's agent containers and mark it failed."""
+    try:
+        data = await client.post(f"/api/tasks/{task_id}/stop")
+    except PraxisClientError as exc:
+        return _error(exc)
+    return {"status": "cancelled", "stopped": data.get("stopped", 0)}
+
+
+def _dashboard_url(client: Any) -> str:
+    base = getattr(client, "base_url", "").rstrip("/")
+    return f"{base}/" if base else ""
+
+
+# --- FastMCP registration -------------------------------------------------
+
+mcp = FastMCP("praxis")
+
+
+@mcp.tool()
+async def dispatch_task(
+    repo_url: str,
+    instructions: str,
+    model: str,
+    harness: str | None = None,
+    branch: str | None = None,
+) -> dict[str, Any]:
+    """Dispatch an implementation task to a non-Anthropic worker model inside Praxis.
+
+    Returns a handle: {task_id, plan_id, project_id, status, dashboard_url}.
+    Poll with poll_task. Praxis always runs its own review before merge.
+    """
+    return await dispatch_task_impl(
+        PraxisClient.from_env(),
+        repo_url=repo_url,
+        instructions=instructions,
+        model=model,
+        harness=harness,
+        branch=branch,
+    )
+
+
+@mcp.tool()
+async def poll_task(task_id: str) -> dict[str, Any]:
+    """Get the status, PR URL, and review of a dispatched task."""
+    return await poll_task_impl(PraxisClient.from_env(), task_id=task_id)
+
+
+@mcp.tool()
+async def list_providers() -> dict[str, Any]:
+    """List brain providers and the worker models available to dispatch to."""
+    return await list_providers_impl(PraxisClient.from_env())
+
+
+@mcp.tool()
+async def get_task_logs(task_id: str) -> dict[str, Any]:
+    """Return the agent-run logs for a task (for diagnosing a wedged/failed run)."""
+    return await get_task_logs_impl(PraxisClient.from_env(), task_id=task_id)
+
+
+@mcp.tool()
+async def cancel_task(task_id: str) -> dict[str, Any]:
+    """Stop a running task and mark it failed."""
+    return await cancel_task_impl(PraxisClient.from_env(), task_id=task_id)
