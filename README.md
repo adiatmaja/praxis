@@ -28,6 +28,11 @@ Drive it three ways, all clients of one engine:
 
 See [MCP Control Surface](#mcp-control-surface) for the MCP interface.
 
+**Who it's for:** solo developers and small teams who already pay for an AI assistant subscription
+and want to put it to work on real, multi-file changes without running up a metered API bill. You
+keep control: Praxis can pause for your approval before it acts (see [How It Works](#how-it-works)),
+and the dashboard gives you a live window to step in when a task gets stuck.
+
 > _Demo recording coming soon. See the [dashboard walkthrough](docs/workflow.md) in the meantime._
 
 ## Why Praxis
@@ -77,6 +82,23 @@ See [MCP Control Surface](#mcp-control-surface) for the MCP interface.
                              ▼
                   LM Studio / chosen model backend
 ```
+
+## Prerequisites
+
+Before you start, get these in place. The first run has a few moving parts, so it helps to check
+them off one at a time:
+
+- **Python 3.11+** and **[uv](https://docs.astral.sh/uv/)** (the package manager used here), or
+  **Docker** if you prefer the container route.
+- **A GitHub account + a Personal Access Token** with `repo` scope. Praxis pushes branches and
+  opens PRs on your behalf, so it needs this.
+- **[LM Studio](https://lmstudio.ai/)** running locally with a coding-capable model loaded (this is
+  the free "worker" that writes the code). Small chat models do not work well here, they tend to
+  reply with the code instead of editing files, so nothing gets committed. Pick a mid-size,
+  coding-oriented model that can follow a coding agent's edit format.
+- **At least one planner CLI logged in** for the planning/review brain. Pick one: Claude
+  (`claude`), Gemini (`agy`), or GPT (`codex`). This is the part that bills against your flat-rate
+  subscription. (You can also use a local model as the planner, but a hosted one plans better.)
 
 ## Quick Start
 
@@ -134,16 +156,28 @@ Driven from the dashboard or CLI, the full autonomous loop runs as follows.
 6. All tasks merged → integration PR to main.
 7. Optional: the planner proposes improvements when confidence ≥ threshold.
 
+**Staying in control.** You don't have to let it run unattended. Each project has an approval gate:
+turn it on and Praxis pauses after planning so you can review and approve the plan before any agent
+touches your code. The dashboard also shows live logs and lets you step in to unstick a task that
+gets wedged. Leave the gate off for a fully autonomous loop, turn it on while you're learning to
+trust it.
+
 See [docs/architecture.md](docs/architecture.md), [docs/workflow.md](docs/workflow.md), and
 [docs/deployment.md](docs/deployment.md) for full documentation.
 
 ## MCP Control Surface
 
-The MCP server is a thin stdio adapter over the REST API (the Praxis server must be running). It
-lets an MCP client act as the brain and dispatch implementation work to whatever model is loaded
-in LM Studio, including from an assistant that can't otherwise route work off its own provider.
-It's one of three clients of the engine, not the engine itself; the dashboard and CLI expose the
-same loop with live observability that MCP's request/response model can't.
+**In plain terms:** Praxis ships an [MCP](https://modelcontextprotocol.io/) server, so an AI
+assistant that speaks MCP (like Claude Code) can drive Praxis through normal tool calls. You stay in
+your assistant and say "use praxis to do X on this repo," and your assistant hands the actual coding
+off to a local model running in LM Studio. It's a handy way to get an assistant that's locked to one
+provider to route real work to a different (and free) worker model.
+
+The MCP server is a small adapter that talks to the running Praxis REST API, so the Praxis server
+from [Quick Start](#quick-start) must be up first. It's one of three ways to drive the same engine;
+the dashboard and CLI show live progress that MCP's one-shot request/response model can't.
+
+The five tools it exposes:
 
 | Tool | Purpose |
 |------|---------|
@@ -153,7 +187,16 @@ same loop with live observability that MCP's request/response model can't.
 | `get_task_logs(task_id)` | Return agent-run logs for failure triage. |
 | `cancel_task(task_id)` | Stop a running task. |
 
-Add to your Claude Code MCP config (`.mcp.json` or user settings):
+### Setup (one time)
+
+1. Start the Praxis server and build the agent image, per [Quick Start](#quick-start).
+2. Add the block below to your Claude Code MCP config (the `.mcp.json` file in your project, or your
+   user settings). Run it from inside the cloned `praxis` folder, since `uv run praxis-mcp` looks for
+   the project there.
+3. Set `PRAXIS_AUTH_TOKEN` to the same value as the `AUTH_TOKEN` you put in `.env`, and
+   `PRAXIS_BASE_URL` to wherever the server is running (the default is fine for a local setup).
+4. Restart your assistant so it picks up the new MCP server. You should see the `praxis` tools become
+   available.
 
 ```json
 {
@@ -172,16 +215,18 @@ Add to your Claude Code MCP config (`.mcp.json` or user settings):
 
 ### Using it in your workflow
 
-With the server running and the agent image built (see [Quick Start](#quick-start)), point your
-MCP client at it using the config above; set `PRAXIS_AUTH_TOKEN` to your `AUTH_TOKEN`. Then just
-ask your assistant:
+With setup done, you don't call the tools by hand, you just ask your assistant in plain English and
+it picks the right tool. For example:
 
-> _Use praxis to dispatch on `github.com/me/my-repo`: add a CONTRIBUTING.md. Model `qwen/qwen3.6-27b`._
+> _Use praxis to dispatch on `github.com/me/my-repo`: add a CONTRIBUTING.md. Model `<your-lm-studio-model>`._
 
 It calls `dispatch_task` and hands back a `task_id`. Praxis spawns a containerized coding agent that
 implements on a branch, opens a PR, and reviews it, then ask the assistant to `poll_task` until the
 status is `merged` (or watch the dashboard). Pick a worker model that can follow a coding agent's
 edit format; very small chat models reply *with* the code instead of editing, so nothing commits.
+
+Not sure the connection is working? Ask your assistant to run `list_providers`, it returns the
+planner providers and worker models Praxis can see, which confirms the server is reachable.
 
 > **Not in v1:** `dispatch_task` always runs review (`review=false` opt-out planned);
 > `submit_spec` / `poll_plan` deferred; worker models are LM-Studio-served only.
