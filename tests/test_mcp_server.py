@@ -124,3 +124,19 @@ async def test_tool_error_is_returned_not_raised() -> None:
     result = await server.poll_task_impl(FailClient(), task_id="t1")  # type: ignore[arg-type]
     assert result["error"] == "connection_error"
     assert "down" in result["message"]
+
+
+def test_main_callable_and_registers_tools() -> None:
+    from mcp_server.__main__ import main
+
+    assert callable(main)
+    from mcp_server.server import mcp
+
+    tool_names = {t.name for t in mcp._tool_manager.list_tools()}
+    assert {
+        "dispatch_task",
+        "poll_task",
+        "list_providers",
+        "get_task_logs",
+        "cancel_task",
+    } <= tool_names
