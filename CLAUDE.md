@@ -63,6 +63,10 @@ praxis/
 │   │   │   └── event_bus.py         # In-memory async pub/sub for SSE
 │   │   └── models/
 │   │       └── schemas.py           # Pydantic request/response + Opus JSON payloads
+│   ├── mcp_server/
+│   │   ├── client.py                # PraxisClient — thin httpx wrapper over REST API
+│   │   ├── server.py                # MCP tool definitions (dispatch_task, poll_task, …)
+│   │   └── __main__.py              # stdio entry point (praxis-mcp)
 │   └── cli/
 │       └── main.py                  # Typer CLI client (entrypoint: orchestrator-cli)
 ├── web/
@@ -318,6 +322,13 @@ Tables: `users`, `projects`, `plans`, `tasks`, `agent_runs`, `opus_state`,
   effectively unusable as a brain). `run_loop` catches `ProviderAuthError` and publishes a
   `provider_auth_required` SSE event instead of retrying-to-fail (the plan stays put, not
   marked failed).
+- **MCP server is a separate package** — `src/mcp_server/` (stdio adapter, `praxis-mcp`
+  entry point) forwards to the REST API via `PraxisClient`; it owns no engine logic. The
+  only engine-side addition is `POST /api/dispatch` (`api/dispatch.py`), which injects a
+  single-task plan because Praxis has no direct single-task creation route — tasks are
+  created only via `TaskQueue.activate_plan`. MCP dispatch sets `approval_gate=False` on the
+  auto-created project so the loop dispatches without a gate. v1 always runs review (no
+  `review=false` opt-out yet).
 - **Dashboard login banner is SSE-driven, not just poll-driven** — `/api/status` adds a
   `providers` block (`_probe_provider`: cli_available + best-effort authenticated +
   login_hint), but **`codex login status` lies** ("Logged in" even on a revoked token), so

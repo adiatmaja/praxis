@@ -136,6 +136,52 @@ DOMAIN=praxis.example.com docker compose --profile hosted up --build
 See [docs/architecture.md](docs/architecture.md), [docs/workflow.md](docs/workflow.md),
 and [docs/deployment.md](docs/deployment.md) for detailed documentation.
 
+## MCP Control Surface
+
+Praxis can be driven as an **MCP server**, letting an MCP client (e.g. Claude Code) act as
+the brain and dispatch implementation work to a **non-Anthropic** model running inside
+Praxis. Claude Code's native subagents are model-locked to Claude; Praxis routes the work
+to whatever model is loaded in LM Studio.
+
+The MCP server is a thin stdio adapter over the REST API. The Praxis server must be running.
+
+### Tools
+
+| Tool | Purpose |
+|------|---------|
+| `dispatch_task(repo_url, instructions, model, harness?, branch?)` | Dispatch one task; returns `{task_id, dashboard_url, status}`. Praxis always runs its own review. |
+| `poll_task(task_id)` | Get status, PR URL, review (and a dashboard link for wedged tasks). |
+| `list_providers()` | List brain providers + worker models available to dispatch to. |
+| `get_task_logs(task_id)` | Return agent-run logs for failure triage. |
+| `cancel_task(task_id)` | Stop a running task. |
+
+### Claude Code config
+
+Add to your Claude Code MCP config (`.mcp.json` or user settings):
+
+```json
+{
+  "mcpServers": {
+    "praxis": {
+      "command": "uv",
+      "args": ["run", "praxis-mcp"],
+      "env": {
+        "PRAXIS_BASE_URL": "http://localhost:8080",
+        "PRAXIS_AUTH_TOKEN": "your-auth-token"
+      }
+    }
+  }
+}
+```
+
+### Not in v1
+
+- `dispatch_task` always runs Praxis's review; a `review=false` opt-out is a planned
+  follow-up (requires orchestrator-loop changes).
+- `submit_spec` / `poll_plan` (full autonomous-loop trigger) is deferred to a later phase.
+- Worker models are LM-Studio-served only; arbitrary OpenAI-compatible endpoints and
+  CLI-as-worker (codex/agy) are later phases.
+
 ## Contributing
 
 Setup, project layout, and conventions are in [CONTRIBUTING.md](CONTRIBUTING.md).
