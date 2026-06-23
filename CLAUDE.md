@@ -243,8 +243,15 @@ Tables: `users`, `projects`, `plans`, `tasks`, `agent_runs`, `opus_state`,
   `send_callback` retries the POST to `/api/internal/agent-done` up to
   `CALLBACK_MAX_ATTEMPTS` (default 5) until HTTP 200. The orchestrator's reconciliation
   is the backstop if all attempts fail.
-- **Aider agent image is standalone** — `aider-agent:latest` is not in docker-compose.
-  Build it directly: `docker build -t aider-agent:latest -f docker/aider-agent/Dockerfile docker/aider-agent/`
+- **Aider agent image is standalone — rebuild it after ANY `entrypoint.sh` change** —
+  `aider-agent:latest` is not in docker-compose, so a stale image silently runs old
+  entrypoint logic while the source looks current. This bit us live: a pre-callback-token
+  image sent an **empty** `X-Praxis-Callback-Token`, so every callback 401'd and tasks
+  never advanced past implement (only reconcile → failed). Rebuild fixes it:
+  `docker build -t aider-agent:latest -f docker/aider-agent/Dockerfile docker/aider-agent/`.
+  To read an image's baked-in files reliably use `docker cp <container>:/path` — NOT
+  `docker run --entrypoint cat <img> /path`, which on buildkit multi-manifest images
+  resolves the attestation manifest (no rootfs) and returns nothing (false negative).
 - **Agent container runs as non-root** — The `agent` user cannot write to `/`.
   Workspace is at `/home/agent/workspace`. Do not change WORKDIR to a root-owned path
 - **Agent git auth uses `GH_TOKEN`** — configured via credential helper in entrypoint.

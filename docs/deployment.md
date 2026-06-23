@@ -219,6 +219,12 @@ The orchestrator passes this secret to agent containers as `CALLBACK_TOKEN` via 
 Docker environment.  The comparison uses `secrets.compare_digest` to prevent timing
 attacks.
 
+> **Rebuild the agent image after editing `entrypoint.sh`.** The token header is sent by
+> the entrypoint's `send_callback`. A stale `aider-agent:latest` (built before this logic)
+> sends an empty header, so every callback 401s and tasks stall at `in_progress` until the
+> reconciler fails them — implement→review→merge never completes. Rebuild with
+> `docker build -t aider-agent:latest -f docker/aider-agent/Dockerfile docker/aider-agent/`.
+
 ### Docker socket exposure
 
 `docker-compose.yml` mounts `/var/run/docker.sock` into the orchestrator container.
