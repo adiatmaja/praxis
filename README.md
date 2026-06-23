@@ -1,26 +1,32 @@
 # Praxis
 
-**An MCP server that dispatches autonomous coding work to a local LLM, with planning and review run on your AI subscription.**
+**A self-hostable engine that writes, reviews, and merges code autonomously, driven by a flat-rate AI subscription, not metered API calls.**
 
 <p align="center">
   <a href="LICENSE"><img alt="License: Apache 2.0" src="https://img.shields.io/badge/License-Apache_2.0-blue.svg"></a>
   <img alt="Python 3.11+" src="https://img.shields.io/badge/python-3.11+-blue.svg">
   <img alt="Tests" src="https://img.shields.io/badge/tests-345_passing-brightgreen.svg">
-  <img alt="Coverage" src="https://img.shields.io/badge/coverage-89%25-brightgreen.svg">
+  <img alt="Coverage" src="https://img.shields.io/badge/coverage-88%25-brightgreen.svg">
   <a href="https://github.com/adiatmaja/praxis/stargazers"><img alt="Stars" src="https://img.shields.io/github/stars/adiatmaja/praxis?style=social"></a>
 </p>
 
-**Praxis is an MCP server.** Point an MCP client (e.g. Claude Code) at it and your assistant can
-`dispatch_task` real implementation work to a **local LLM** running inside Praxis, a clean
-workaround to Claude Code's native subagents being model-locked to Claude. A coding agent
-implements the task on an isolated branch, Praxis reviews the PR, and merges it on pass.
+**Praxis is the orchestration platform around the delegation primitive.** Plenty of tools can hand
+a single prompt to a local model; Praxis runs the whole lifecycle around it: a planner brain breaks
+a spec into a task graph, containerized coding agents implement each task on isolated branches in
+parallel, the planner reviews every PR, merges on pass, re-dispatches on fail, and recovers wedged
+or lost runs, all while billing planning/review against a flat-rate subscription instead of
+per-token API.
 
-Driven from the **dashboard or CLI** instead, Praxis runs the full autonomous loop: a planner brain
-breaks a spec into a task graph, agents implement each task in parallel, the planner reviews every
-PR, and it iterates until quality meets the bar. The dashboard is also the human window for watching
-a run live and unsticking a wedged task, something MCP's request/response model can't do.
+Drive it three ways, all clients of one engine:
 
-See [MCP Control Surface](#mcp-control-surface) for the primary interface.
+- **Dashboard or CLI**: submit a spec and watch the full autonomous loop run end to end, including
+  live logs and a human window for unsticking a wedged task.
+- **MCP**: point an MCP client (e.g. Claude Code) at it and `dispatch_task` real implementation
+  work to a local model. Handy bonus: because an MCP tool is provider-agnostic, this also lets a
+  Claude-only assistant route work to a non-Claude worker. (MCP is request/response, so it's blind
+  to long-running async tasks, so the dashboard backs it up for that.)
+
+See [MCP Control Surface](#mcp-control-surface) for the MCP interface.
 
 > _Demo recording coming soon. See the [dashboard walkthrough](docs/workflow.md) in the meantime._
 
@@ -135,7 +141,9 @@ See [docs/architecture.md](docs/architecture.md), [docs/workflow.md](docs/workfl
 
 The MCP server is a thin stdio adapter over the REST API (the Praxis server must be running). It
 lets an MCP client act as the brain and dispatch implementation work to whatever model is loaded
-in LM Studio.
+in LM Studio, including from an assistant that can't otherwise route work off its own provider.
+It's one of three clients of the engine, not the engine itself; the dashboard and CLI expose the
+same loop with live observability that MCP's request/response model can't.
 
 | Tool | Purpose |
 |------|---------|
@@ -165,13 +173,13 @@ Add to your Claude Code MCP config (`.mcp.json` or user settings):
 ### Using it in your workflow
 
 With the server running and the agent image built (see [Quick Start](#quick-start)), point your
-MCP client at it using the config above — set `PRAXIS_AUTH_TOKEN` to your `AUTH_TOKEN`. Then just
+MCP client at it using the config above; set `PRAXIS_AUTH_TOKEN` to your `AUTH_TOKEN`. Then just
 ask your assistant:
 
 > _Use praxis to dispatch on `github.com/me/my-repo`: add a CONTRIBUTING.md. Model `qwen/qwen3.6-27b`._
 
 It calls `dispatch_task` and hands back a `task_id`. Praxis spawns a containerized coding agent that
-implements on a branch, opens a PR, and reviews it — ask the assistant to `poll_task` until the
+implements on a branch, opens a PR, and reviews it, then ask the assistant to `poll_task` until the
 status is `merged` (or watch the dashboard). Pick a worker model that can follow a coding agent's
 edit format; very small chat models reply *with* the code instead of editing, so nothing commits.
 
