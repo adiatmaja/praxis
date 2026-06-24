@@ -48,13 +48,15 @@ and the dashboard gives you a live window to step in when a task gets stuck.
 
 ## Why Praxis
 
-- **Runs on a flat-rate subscription, not pay-per-token API.** Praxis drives the assistant's own
+- **Cost savings via a flat-rate subscription.** Praxis drives the assistant's own
   CLI (Claude `claude -p`, Gemini `agy`, or GPT `codex`), so planning and review bill against
-  the ~$20/month subscription you already pay for. For many projects one entry-level plan runs the
-  whole loop.
-- **Offloads the heavy lifting to a local LLM.** Implementation is the token-hungry part, so it goes
+  the ~$20/month subscription you already pay for. Offloading heavy, repetitive file-editing
+  tasks to a local LLM saves expensive API credits. For many projects, one entry-level plan runs
+  the whole loop.
+- **Specialization through local execution.** Implementation is the token-hungry part, so it goes
   to a coding agent (**Aider**, **OpenCode**, or **OpenHands**) driven by a **local model via LM
-  Studio**, for zero tokens and zero cost. Your subscription is spent only where judgment matters.
+  Studio**. This lets your premium subscription model focus purely on high-level architecture,
+  planning, and review, while the local agent specializes in execution for zero tokens and zero cost.
 - **It does the git plumbing for you.** Praxis manages the whole branch-and-PR flow itself: a
   `plan/{date}-{slug}` branch groups the work, each task gets its own `agent/{task-slug}` branch and
   PR, passing PRs are squash-merged, and a final integration PR lands it on `main`. Everything shows
