@@ -168,3 +168,29 @@ async def test_run_local_provider(mocker):
     router = LLMRouter(resolve=resolver, lm_studio_url="http://lm:1234")
     out = await router.run("derive_tasks", "p", project_id=None)
     assert out == "LOCAL"
+
+
+@pytest.mark.unit
+async def test_run_passes_cwd_to_subprocess(mocker):
+    resolver = mocker.AsyncMock(
+        return_value={
+            "provider": "claude",
+            "model": "claude-sonnet-4-6",
+            "effort": None,
+        }
+    )
+    seen: dict[str, object] = {}
+
+    async def fake_exec(*argv, **kwargs):
+        seen["cwd"] = kwargs.get("cwd")
+        proc = mocker.AsyncMock()
+        proc.communicate = mocker.AsyncMock(return_value=(b'{"verdict":"pass"}', b""))
+        proc.returncode = 0
+        return proc
+
+    mocker.patch("asyncio.create_subprocess_exec", side_effect=fake_exec)
+    router = LLMRouter(resolve=resolver)
+    await router.run(
+        "review_diff_first", "prompt", project_id=None, cwd="/tmp/checkout"
+    )
+    assert seen["cwd"] == "/tmp/checkout"

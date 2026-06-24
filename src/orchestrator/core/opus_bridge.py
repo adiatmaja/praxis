@@ -129,6 +129,7 @@ class OpusBridge:
         prompt: str,
         model: str | None = None,
         effort: str | None = None,
+        cwd: str | None = None,
     ) -> tuple[int, str, str]:
         resolved_model = await self._resolve_model(model)
         resolved_effort = await self._resolve_effort(effort)
@@ -145,6 +146,7 @@ class OpusBridge:
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            cwd=cwd,
         )
         stdout, stderr = await proc.communicate(input=prompt.encode())
         return (
@@ -183,8 +185,9 @@ class OpusBridge:
         prompt: str,
         model: str | None = None,
         effort: str | None = None,
+        cwd: str | None = None,
     ) -> str:
-        code, stdout, stderr = await self._run_claude_raw(prompt, model, effort)
+        code, stdout, stderr = await self._run_claude_raw(prompt, model, effort, cwd)
         if await self._check_and_handle_rate_limit(code, stdout, stderr):
             message = "Opus rate limited"
             raise RuntimeError(message)
@@ -229,6 +232,7 @@ class OpusBridge:
         effort: str | None = None,
         project_id: str | None = None,
         tier: str = "first",
+        cwd: str | None = None,
     ) -> dict[str, Any]:
         prompt = REVIEW_PROMPT_TEMPLATE.format(
             diff=diff,
@@ -239,9 +243,9 @@ class OpusBridge:
             call_site = (
                 "review_diff_rereview" if tier == "rereview" else "review_diff_first"
             )
-            raw = await router.run(call_site, prompt, project_id)
+            raw = await router.run(call_site, prompt, project_id, cwd=cwd)
         else:
-            raw = await self._run_claude(prompt, model, effort)
+            raw = await self._run_claude(prompt, model, effort, cwd=cwd)
         return self._extract_json(raw)
 
     async def analyze_improvements(
