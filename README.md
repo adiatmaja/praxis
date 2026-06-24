@@ -1,21 +1,32 @@
-# Praxis
+<h1 align="center">Praxis</h1>
 
-**A self-hostable engine that writes, reviews, and merges code autonomously, driven by a flat-rate AI subscription, not metered API calls.**
+<p align="center">
+  <strong>A self-hostable engine that plans, writes, reviews, and merges code for you &mdash; planning<br>on the AI subscription you already pay for, coding on a free local model.</strong>
+</p>
 
 <p align="center">
   <a href="LICENSE"><img alt="License: Apache 2.0" src="https://img.shields.io/badge/License-Apache_2.0-blue.svg"></a>
   <img alt="Python 3.11+" src="https://img.shields.io/badge/python-3.11+-blue.svg">
-  <img alt="Tests" src="https://img.shields.io/badge/tests-345_passing-brightgreen.svg">
+  <img alt="Tests" src="https://img.shields.io/badge/tests-405_passing-brightgreen.svg">
   <img alt="Coverage" src="https://img.shields.io/badge/coverage-88%25-brightgreen.svg">
   <a href="https://github.com/adiatmaja/praxis/stargazers"><img alt="Stars" src="https://img.shields.io/github/stars/adiatmaja/praxis?style=social"></a>
 </p>
 
-**Praxis is the orchestration platform around the delegation primitive.** Plenty of tools can hand
-a single prompt to a local model; Praxis runs the whole lifecycle around it: a planner brain breaks
-a spec into a task graph, containerized coding agents implement each task on isolated branches in
-parallel, the planner reviews every PR, merges on pass, re-dispatches on fail, and recovers wedged
-or lost runs, all while billing planning/review against a flat-rate subscription instead of
-per-token API.
+**You give Praxis a description of what you want; it ships the code and hands you merged PRs.**
+Plenty of tools can pass a single prompt to a model. Praxis runs the whole engineering loop you'd
+otherwise do by hand:
+
+1. A smart "planner" model reads your spec and breaks it into separate tasks.
+2. For each task it spins up a coding agent in its own Docker container, on its own git branch.
+3. Each agent writes the code, commits, and opens a pull request.
+4. The planner reviews every PR. It squash-merges the ones that pass and sends the failures back for
+   another attempt (up to 3).
+5. If an agent crashes or hangs, Praxis notices and retries it, so nothing gets stuck forever.
+
+The trick that makes this cheap: the **planning and review** (the parts that need a strong model)
+run on the **flat-rate AI subscription you already pay for**, while the **token-heavy code-writing**
+runs on a **free local model** on your own machine. You get an autonomous dev loop without a metered
+API bill.
 
 Drive it three ways, all clients of one engine:
 
@@ -44,15 +55,26 @@ and the dashboard gives you a live window to step in when a task gets stuck.
 - **Offloads the heavy lifting to a local LLM.** Implementation is the token-hungry part, so it goes
   to a coding agent (**Aider**, **OpenCode**, or **OpenHands**) driven by a **local model via LM
   Studio**, for zero tokens and zero cost. Your subscription is spent only where judgment matters.
-- **Fully configurable.** Every brain call-site is set per provider/model in **Settings → Models**,
+- **It does the git plumbing for you.** Praxis manages the whole branch-and-PR flow itself: a
+  `plan/{date}-{slug}` branch groups the work, each task gets its own `agent/{task-slug}` branch and
+  PR, passing PRs are squash-merged, and a final integration PR lands it on `main`. Everything shows
+  up as normal GitHub PRs you can inspect, not a black box, and Praxis handles the parallel-branch
+  race conditions so two agents working at once don't clobber each other.
+- **It reviews before it merges.** Every PR diff goes back to the planner model for a code review;
+  only passing changes get merged, failures get re-dispatched. It's not blind auto-commit.
+- **Fully configurable.** Every model call-site is set per provider/model in **Settings → Models**,
   so you can mix and match: e.g. Claude to plan, a local model to implement, Gemini to review.
 - **One engine, many clients.** A REST API is the single source of truth; the MCP server,
   dashboard, and CLI are all thin clients of it.
 
 ## Architecture
 
+In one picture: you talk to Praxis through any of three front-ends (an MCP client like Claude Code,
+the web dashboard, or the CLI). They all hit the same backend, which farms code-writing out to local
+Docker agents and sends planning/review to your subscription model.
+
 ```
-  CLIENTS  ·  any one drives the engine; the MCP client acts as the brain
+  HOW YOU DRIVE IT  ·  pick any one; they all talk to the same backend
   ┌──────────────┐      ┌──────────────┐      ┌──────────────┐
   │  MCP client  │      │  Dashboard   │      │  Typer CLI   │
   │ (e.g. Claude │      │   (web UI)   │      │              │
