@@ -491,7 +491,7 @@
       transition: width 0.2s ease;
       flex-shrink: 0;
     }
-    .side-panel.open { width: 35%; min-width: 320px; }
+    .side-panel.open { width: 45%; min-width: 420px; }
     .side-panel-header {
       padding: 16px;
       border-bottom: 1px solid var(--border-subtle);
@@ -510,21 +510,74 @@
       padding: 0 4px;
     }
     .side-panel-close:hover { color: var(--text); }
-    .side-panel-content { flex: 1; overflow-y: auto; padding: 16px; }
+    .side-panel-content { flex: 1; overflow-y: auto; padding: 16px; display: flex; flex-direction: column; min-height: 0; }
     .side-panel-actions { padding: 12px 16px; border-top: 1px solid var(--border); display: flex; gap: 8px; flex-wrap: wrap; }
     .side-panel-log {
-      height: 180px;
+      flex: 1;
+      min-height: 200px;
       overflow-y: auto;
       background: var(--log-bg);
       color: var(--log-text);
       border-radius: 6px;
       padding: 8px 10px;
       font-family: "Cascadia Mono", "SF Mono", Consolas, monospace;
-      font-size: 11px;
-      line-height: 1.4;
+      font-size: 12.5px;
+      line-height: 1.45;
       white-space: pre-wrap;
       word-break: break-word;
     }
+    .side-panel-log-section { flex: 1; display: flex; flex-direction: column; min-height: 0; margin-bottom: 0; }
+    .side-panel-log-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
+    .log-mode-toggle { display: flex; gap: 2px; }
+    .log-mode-btn {
+      border: 1px solid var(--border);
+      background: transparent;
+      color: var(--text-muted);
+      cursor: pointer;
+      font-size: 11px;
+      padding: 2px 8px;
+      border-radius: 4px;
+      line-height: 1.4;
+    }
+    .log-mode-btn:first-child { border-radius: 4px 0 0 4px; }
+    .log-mode-btn:last-child { border-radius: 0 4px 4px 0; }
+    .log-mode-btn.active { background: var(--active-bg); color: var(--text); border-color: var(--selected-border); }
+    .side-panel-accordion { margin-bottom: 10px; }
+    .side-panel-accordion summary {
+      cursor: pointer;
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: .05em;
+      text-transform: uppercase;
+      color: var(--text-faint);
+      padding: 4px 0;
+      list-style: none;
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      user-select: none;
+    }
+    .side-panel-accordion summary::-webkit-details-marker { display: none; }
+    .side-panel-accordion summary::before { content: "▶"; font-size: 8px; transition: transform 0.15s; }
+    .side-panel-accordion[open] summary::before { transform: rotate(90deg); }
+    .side-panel-accordion .side-panel-block { margin-top: 6px; }
+    .side-panel-meta-strip {
+      font-size: 12px;
+      color: var(--text-muted);
+      margin-bottom: 12px;
+      padding: 6px 0;
+      border-bottom: 1px solid var(--border-subtle);
+    }
+    .side-panel-meta-strip a { color: var(--link, #6c8ebf); }
+    .side-panel-header-badge { margin-top: 4px; }
+    /* curated log line styles */
+    .log-line-phase { color: var(--badge-passed-text, #2ea44f); }
+    .log-line-file { color: var(--text); }
+    .log-line-commit { color: var(--badge-passed-text, #2ea44f); font-weight: 600; }
+    .log-line-test-pass { color: var(--badge-passed-text, #2ea44f); }
+    .log-line-test-fail { color: var(--badge-failed-text, #cf222e); }
+    .log-line-info { color: var(--text-muted); }
+    .log-line-collapse { color: var(--text-faint); font-style: italic; }
     .dashboard-idle {
       display: flex;
       flex-direction: column;
@@ -1182,7 +1235,11 @@
     let showingForm = false;
     let dashboardTasks = {};       // map: planId -> tasks[]
     let dashboardTaskLogs = {};    // map: taskId -> last log line
+    let dashboardTaskRawLog = {};  // map: taskId -> accumulated raw log text
     let selectedDashboardTaskId = null;
+    let sidePanelLogSource = null; // EventSource for side panel live log
+    let liveLogMode = "clean";     // "clean" | "raw" for side panel
+    let fullLogsMode = "clean";    // "clean" | "raw" for full-logs view
     let expandedCompletedPlans = new Set();
     let expandedSpecs = new Set();
     let dashboardSseSource = null;
@@ -1411,6 +1468,10 @@
       if (eventSource && name !== "logs" && name !== "dashboard") {
         eventSource.close();
         eventSource = null;
+      }
+      if (name !== "dashboard" && sidePanelLogSource) {
+        sidePanelLogSource.close();
+        sidePanelLogSource = null;
       }
       if (name === "dashboard") {
         setTopbar("Dashboard", "+ New Project");
@@ -1962,6 +2023,8 @@
 
     function renderLogs() {
       const container = document.getElementById("view-container");
+      const cleanActive = fullLogsMode === "clean" ? " active" : "";
+      const rawActive = fullLogsMode === "raw" ? " active" : "";
       container.innerHTML =
         '<div class="master-panel">' +
           '<div class="master-header"><div class="master-title">Log Sources</div>' +
@@ -1974,7 +2037,13 @@
         '</div><div class="detail-panel">' +
           '<div class="detail-header" style="display:flex;align-items:center;justify-content:space-between;gap:12px;">' +
             '<div><div class="detail-title" id="log-title">System Events</div><div class="detail-subtitle">Server-sent event stream</div></div>' +
-            '<button class="btn btn-compact" type="button" onclick="connectEvents()">Reconnect</button>' +
+            '<div style="display:flex;gap:8px;align-items:center;">' +
+              '<div class="log-mode-toggle" id="full-log-mode-toggle" style="display:none;">' +
+                '<button class="log-mode-btn' + cleanActive + '" id="full-log-clean-btn" data-mode="clean" type="button" onclick="setFullLogsMode(\'clean\')">Clean</button>' +
+                '<button class="log-mode-btn' + rawActive + '" id="full-log-raw-btn" data-mode="raw" type="button" onclick="setFullLogsMode(\'raw\')">Raw</button>' +
+              '</div>' +
+              '<button class="btn btn-compact" type="button" onclick="connectEvents()">Reconnect</button>' +
+            '</div>' +
           '</div>' +
           '<div style="flex:1;overflow:hidden;padding:12px 24px 24px;"><div id="log-output" class="log"></div></div>' +
         '</div>';
@@ -1992,6 +2061,9 @@
         ).join("");
     }
 
+    let fullLogsRawBuffer = "";   // raw log text for the full-logs task view
+    let fullLogsIsTask = false;   // true when the full-logs view is showing a task (vs system events)
+
     function appendLog(line) {
       const log = document.getElementById("log-output");
       if (!log) return;
@@ -1999,9 +2071,29 @@
       log.scrollTop = log.scrollHeight;
     }
 
+    function renderFullLogsOutput() {
+      const log = document.getElementById("log-output");
+      if (!log) return;
+      log.innerHTML = renderCuratedLog(fullLogsRawBuffer, fullLogsMode);
+      log.scrollTop = log.scrollHeight;
+    }
+
+    function setFullLogsMode(mode) {
+      fullLogsMode = mode;
+      const cleanBtn = document.getElementById("full-log-clean-btn");
+      const rawBtn = document.getElementById("full-log-raw-btn");
+      if (cleanBtn) cleanBtn.classList.toggle("active", mode === "clean");
+      if (rawBtn) rawBtn.classList.toggle("active", mode === "raw");
+      renderFullLogsOutput();
+    }
+
     function connectEvents() {
       const title = document.getElementById("log-title");
       if (title) title.textContent = "System Events";
+      // Hide toggle for system events view (not curated)
+      const toggle = document.getElementById("full-log-mode-toggle");
+      if (toggle) toggle.style.display = "none";
+      fullLogsIsTask = false;
       openSse("/api/events?token=" + encodeURIComponent(ensureToken()));
     }
 
@@ -2009,7 +2101,12 @@
       const task = currentTasks.find(item => item.id === taskId);
       const title = document.getElementById("log-title");
       if (title) title.textContent = task ? task.title : "Task Logs";
-      openSse("/api/tasks/" + taskId + "/logs?token=" + encodeURIComponent(ensureToken()));
+      // Show mode toggle for task logs
+      const toggle = document.getElementById("full-log-mode-toggle");
+      if (toggle) toggle.style.display = "";
+      fullLogsIsTask = true;
+      fullLogsRawBuffer = "";
+      openTaskSse("/api/tasks/" + taskId + "/logs?token=" + encodeURIComponent(ensureToken()));
     }
 
     function openSse(path) {
@@ -2023,6 +2120,31 @@
       handleBrainstormSse(eventSource);
       ["plan_activated", "agent_dispatched", "review_completed", "improvement_proposed",
        "task_completed", "task_failed", "task_retry", "opus_queued", "log", "agent_log"].forEach(type => {
+        eventSource.addEventListener(type, event => appendLog("[" + type + "] " + event.data));
+      });
+    }
+
+    // Task-specific SSE for the full-logs view — uses curated rendering
+    function openTaskSse(path) {
+      if (eventSource) eventSource.close();
+      const logEl = document.getElementById("log-output");
+      if (logEl) logEl.innerHTML = renderCuratedLog("", fullLogsMode);
+      eventSource = new EventSource(API + path);
+      eventSource.onerror = () => appendLog("connection error");
+      handleBrainstormSse(eventSource);
+      const handleLogChunk = (event) => {
+        let d;
+        try { d = JSON.parse(event.data); } catch (e) { return; }
+        if (!d) return;
+        const chunk = String(d.logs || d.line || "");
+        if (chunk) {
+          fullLogsRawBuffer += chunk;
+          renderFullLogsOutput();
+        }
+      };
+      eventSource.addEventListener("agent_log", handleLogChunk);
+      eventSource.addEventListener("log", handleLogChunk);
+      ["task_completed", "task_failed"].forEach(type => {
         eventSource.addEventListener(type, event => appendLog("[" + type + "] " + event.data));
       });
     }
@@ -2190,6 +2312,105 @@
       return days + "d ago";
     }
 
+    // ── Live Log: classifier ───────────────────────────────────────────────
+    function classifyLogLine(line) {
+      const t = line.trim();
+      if (!t) return null;
+      // Phase headers: lines surrounded by === or ---
+      if (/^={3,}.*={3,}$/.test(t) || /^-{3,}.*-{3,}$/.test(t)) return "phase";
+      if (/^Cloning into\b/.test(t)) return "phase";
+      if (/^Switched to\b/.test(t)) return "phase";
+      if (/^branch '/.test(t)) return "phase";
+      // File edit lines
+      if (/^Applied edit to /.test(t)) return "file";
+      if (/^Added .+(to the chat|to \.gitignore)/.test(t)) return "file";
+      // Commit lines
+      if (/^Commit [0-9a-f]/.test(t)) return "commit";
+      // Test / error lines
+      if (/passed|failed|PASS|FAIL|Traceback|Error:|[ \t]error[ \t]/i.test(t)) return "test";
+      // Info lines
+      if (/^(Aider v|Model:|Git repo:|Repo-map:|Tokens:|Warning:)/.test(t)) return "info";
+      return null;
+    }
+
+    // ── Live Log: shared curated-render helper ─────────────────────────────
+    // Returns an HTML string. mode: "clean" | "raw".
+    function renderCuratedLog(rawText, mode) {
+      if (!rawText) return '<span style="color:var(--text-faint);font-style:italic;">Waiting for output&hellip;</span>';
+      if (mode === "raw") {
+        return esc(rawText);
+      }
+      // Clean mode: classify lines, collapse null runs
+      const lines = rawText.split(/\r?\n/);
+      let html = "";
+      let nullRun = 0; // count of consecutive non-blank null lines
+
+      const flushNullRun = () => {
+        if (nullRun > 0) {
+          html += '<span class="log-line-collapse">&middot;&middot;&middot; writing code (' + nullRun + ' line' + (nullRun !== 1 ? "s" : "") + ') &middot;&middot;&middot;</span>\n';
+          nullRun = 0;
+        }
+      };
+
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed) {
+          // blank: flush any accumulated null run, then skip
+          flushNullRun();
+          continue;
+        }
+        const cat = classifyLogLine(trimmed);
+        if (cat === null) {
+          nullRun++;
+          continue;
+        }
+        flushNullRun();
+        let glyph, cls;
+        switch (cat) {
+          case "phase":
+            glyph = "&#10003; "; cls = "log-line-phase"; break;
+          case "file":
+            glyph = "&#8594; "; cls = "log-line-file"; break;
+          case "commit":
+            glyph = "&#9679; "; cls = "log-line-commit"; break;
+          case "test":
+            if (/passed|PASS/i.test(trimmed) && !/failed|FAIL/i.test(trimmed)) {
+              glyph = "&#10003; "; cls = "log-line-test-pass";
+            } else if (/failed|FAIL|Traceback|Error:/i.test(trimmed)) {
+              glyph = "&#10007; "; cls = "log-line-test-fail";
+            } else {
+              glyph = "&#8505; "; cls = "log-line-info";
+            }
+            break;
+          case "info":
+            glyph = "&#8505; "; cls = "log-line-info"; break;
+          default:
+            glyph = ""; cls = "";
+        }
+        html += '<span class="' + cls + '">' + glyph + esc(trimmed) + '</span>\n';
+      }
+      flushNullRun();
+      return html || '<span style="color:var(--text-faint);font-style:italic;">Waiting for output&hellip;</span>';
+    }
+
+    // ── Live Log: render into side-panel log container ─────────────────────
+    function renderLiveLog(taskId) {
+      const container = document.getElementById("dashboard-log-tail");
+      if (!container) return;
+      const raw = dashboardTaskRawLog[taskId] || "";
+      container.innerHTML = renderCuratedLog(raw, liveLogMode);
+      container.scrollTop = container.scrollHeight;
+    }
+
+    // Toggle mode and re-render
+    function setLiveLogMode(mode) {
+      liveLogMode = mode;
+      document.querySelectorAll(".log-mode-btn").forEach(btn => {
+        btn.classList.toggle("active", btn.dataset.mode === mode);
+      });
+      if (selectedDashboardTaskId) renderLiveLog(selectedDashboardTaskId);
+    }
+
     function openDashboardTask(taskId, planId) {
       const task = (dashboardTasks[planId] || []).find(item => item.id === taskId);
       if (!task) {
@@ -2202,6 +2423,32 @@
         el.classList.toggle("selected", el.dataset.taskId === taskId);
       });
       renderSidePanel(task);
+      // Open dedicated SSE to replay stored history + stream live log
+      if (sidePanelLogSource) { sidePanelLogSource.close(); sidePanelLogSource = null; }
+      if (!dashboardTaskRawLog[taskId]) dashboardTaskRawLog[taskId] = "";
+      const src = new EventSource(API + "/api/tasks/" + taskId + "/logs?token=" + encodeURIComponent(ensureToken()));
+      sidePanelLogSource = src;
+      src.addEventListener("agent_log", event => {
+        let d;
+        try { d = JSON.parse(event.data); } catch (e) { return; }
+        if (!d) return;
+        const chunk = String(d.logs || d.line || "");
+        if (chunk) {
+          dashboardTaskRawLog[taskId] = (dashboardTaskRawLog[taskId] || "") + chunk;
+          if (String(selectedDashboardTaskId) === String(taskId)) renderLiveLog(taskId);
+        }
+      });
+      src.addEventListener("log", event => {
+        let d;
+        try { d = JSON.parse(event.data); } catch (e) { return; }
+        if (!d) return;
+        const chunk = String(d.logs || d.line || "");
+        if (chunk) {
+          dashboardTaskRawLog[taskId] = (dashboardTaskRawLog[taskId] || "") + chunk;
+          if (String(selectedDashboardTaskId) === String(taskId)) renderLiveLog(taskId);
+        }
+      });
+      src.onerror = () => {};
     }
 
     function renderSidePanel(task) {
@@ -2213,33 +2460,59 @@
         '<button class="btn btn-danger" type="button" onclick="dashboardRetry(' + jsArg(task.id) + ')">Retry</button>' : "";
       const logsBtn = '<button class="btn" type="button" onclick="viewTaskLogs(' + jsArg(task.id) + ')">View Full Logs</button>';
       const panelPrHref = task.pr_url ? safeHref(task.pr_url) : "";
+      const prLink = panelPrHref ? '<a href="' + panelPrHref + '" target="_blank" rel="noreferrer">View PR</a>' : "—";
+      const metaStrip =
+        'Attempt ' + esc(task.attempt) +
+        ' &middot; PR ' + prLink +
+        (task.updated_at ? ' &middot; updated ' + esc(task.updated_at) : '');
+      const descAccordion = task.description
+        ? '<details class="side-panel-accordion side-panel-section">' +
+            '<summary>Description</summary>' +
+            '<div class="side-panel-block">' + esc(task.description) + '</div>' +
+          '</details>'
+        : "";
+      const reviewAccordion = task.review_feedback
+        ? '<details class="side-panel-accordion side-panel-section">' +
+            '<summary>Review Feedback</summary>' +
+            '<div class="side-panel-block">' + esc(task.review_feedback) + '</div>' +
+          '</details>'
+        : "";
+      const activeMode = liveLogMode;
+      const cleanActive = activeMode === "clean" ? " active" : "";
+      const rawActive = activeMode === "raw" ? " active" : "";
       panel.innerHTML =
         '<div class="side-panel-header">' +
           '<div class="side-panel-title-wrap">' +
             '<div class="side-panel-title">' + esc(task.title) + '</div>' +
             '<div class="side-panel-branch">' + esc(task.branch_name || "-") + '</div>' +
+            '<div class="side-panel-header-badge">' + badge(task.status) + '</div>' +
           '</div>' +
-          '<button class="side-panel-close" type="button" onclick="closeDashboardPanel()">x</button>' +
+          '<button class="side-panel-close" type="button" onclick="closeDashboardPanel()">&#x2715;</button>' +
         '</div>' +
         '<div class="side-panel-content">' +
-          '<div class="side-panel-section">' +
-            '<div class="side-panel-section-title">Details</div>' +
-            '<div class="side-panel-field"><span>Status</span><span>' + badge(task.status) + '</span></div>' +
-            '<div class="side-panel-field"><span>Attempt</span><span>' + esc(task.attempt) + '</span></div>' +
-            '<div class="side-panel-field"><span>PR</span><span>' + (panelPrHref ? '<a href="' + panelPrHref + '" target="_blank" rel="noreferrer">View PR</a>' : "-") + '</span></div>' +
-            '<div class="side-panel-field"><span>Created</span><span>' + esc(task.created_at || "-") + '</span></div>' +
-            '<div class="side-panel-field"><span>Updated</span><span>' + esc(task.updated_at || "-") + '</span></div>' +
+          '<div class="side-panel-meta-strip">' + metaStrip + '</div>' +
+          descAccordion +
+          reviewAccordion +
+          '<div class="side-panel-log-section">' +
+            '<div class="side-panel-log-header">' +
+              '<span class="side-panel-section-title" style="margin:0;">Live Activity</span>' +
+              '<div class="log-mode-toggle">' +
+                '<button class="log-mode-btn' + cleanActive + '" data-mode="clean" type="button" onclick="setLiveLogMode(\'clean\')">Clean</button>' +
+                '<button class="log-mode-btn' + rawActive + '" data-mode="raw" type="button" onclick="setLiveLogMode(\'raw\')">Raw</button>' +
+              '</div>' +
+            '</div>' +
+            '<div class="side-panel-log" id="dashboard-log-tail"></div>' +
           '</div>' +
-          (task.description ? '<div class="side-panel-section"><div class="side-panel-section-title">Description</div><div class="side-panel-block">' + esc(task.description) + '</div></div>' : "") +
-          (task.review_feedback ? '<div class="side-panel-section"><div class="side-panel-section-title">Review Feedback</div><div class="side-panel-block">' + esc(task.review_feedback) + '</div></div>' : "") +
-          '<div class="side-panel-section"><div class="side-panel-section-title">Live Log</div><div class="side-panel-log" id="dashboard-log-tail"></div></div>' +
         '</div>' +
         '<div class="side-panel-actions">' + stopBtn + retryBtn + logsBtn + '</div>';
       panel.classList.add("open");
+      // Render any already-accumulated log (e.g. when re-opening a task)
+      renderLiveLog(task.id);
     }
 
     function closeDashboardPanel() {
       selectedDashboardTaskId = null;
+      if (sidePanelLogSource) { sidePanelLogSource.close(); sidePanelLogSource = null; }
       const panel = document.getElementById("dashboard-side-panel");
       if (panel) {
         panel.classList.remove("open");
@@ -2311,13 +2584,7 @@
           }
           logLineEl.textContent = dashboardTaskLogs[taskId] || "";
         });
-
-        if (String(selectedDashboardTaskId) === String(taskId)) {
-          const logTail = document.getElementById("dashboard-log-tail");
-          if (!logTail) return;
-          logTail.textContent += logText + "\n";
-          logTail.scrollTop = logTail.scrollHeight;
-        }
+        // Side-panel log is now driven by its own dedicated SSE (sidePanelLogSource).
       });
 
       ["plan_activated", "agent_dispatched", "review_completed", "task_completed", "task_failed", "task_retry", "improvement_proposed"].forEach(type => {
