@@ -325,3 +325,19 @@ async def test_fallback_to_legacy_without_router(mocker) -> None:
     out = await bridge.plan_spec("spec", "https://r")
     run.assert_awaited_once()
     assert out["plan_slug"] == "x"
+
+
+@pytest.mark.unit
+async def test_review_prompt_includes_plan(mocker) -> None:
+    captured: dict = {}
+
+    async def fake_raw(prompt, model=None, effort=None, cwd=None):
+        captured["prompt"] = prompt
+        return '{"verdict":"pass","feedback":"ok","issues":[]}'
+
+    bridge = OpusBridge(db=mocker.MagicMock())
+    mocker.patch.object(bridge, "_run_claude", side_effect=fake_raw)
+    await bridge.review_diff(
+        "diff", "task desc", plan_text="PLAN: restore the deleted file"
+    )
+    assert "PLAN: restore the deleted file" in captured["prompt"]

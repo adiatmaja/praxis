@@ -52,6 +52,14 @@ REVIEW_PROMPT_TEMPLATE = """You are a senior code reviewer. Review this PR diff 
 
 Task description: {task_description}
 
+Plan / spec the change must satisfy:
+{plan_text}
+
+A clean checkout of the PR head is your current working directory; you may
+inspect files with your tools to verify the diff in context. If git is
+unavailable, review from the diff text alone - do NOT pass solely because you
+could not verify.
+
 Diff:
 {diff}
 
@@ -63,7 +71,8 @@ Respond with ONLY valid JSON in this exact format:
 }}
 
 Pass if the code correctly implements the task and has no critical issues.
-Fail if there are bugs, missing functionality, or security problems.
+Fail if there are bugs, missing functionality, security problems, or it deletes
+existing functionality/config the task did not ask to remove.
 """
 
 IMPROVEMENT_PROMPT_TEMPLATE = """You are a senior software architect. Analyze this project for improvements.
@@ -232,11 +241,13 @@ class OpusBridge:
         effort: str | None = None,
         project_id: str | None = None,
         tier: str = "first",
+        plan_text: str | None = None,
         cwd: str | None = None,
     ) -> dict[str, Any]:
         prompt = REVIEW_PROMPT_TEMPLATE.format(
             diff=diff,
             task_description=task_description,
+            plan_text=(plan_text or "(no plan text was provided)"),
         )
         router: LLMRouter | None = getattr(self, "_router", None)
         if router is not None:

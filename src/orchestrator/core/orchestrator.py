@@ -186,6 +186,39 @@ class Orchestrator:
             project["repo_url"]
         )
 
+        # Resolve plan_text for this task from the plan's opus_plan task list.
+        plan_text_for_review: str | None = None
+        plan = await self._tq.get_plan(task["plan_id"])
+        if plan is not None:
+            slug_to_plan_task: dict[str, dict[str, Any]] = {}
+            with contextlib.suppress(json.JSONDecodeError, TypeError):
+                opus_plan_raw = plan.get("opus_plan")
+                if opus_plan_raw:
+                    parsed = json.loads(opus_plan_raw)
+                    for pt in parsed.get("tasks", []):
+                        if isinstance(pt, dict) and "slug" in pt:
+                            slug_to_plan_task[pt["slug"]] = pt
+            branch_name: str = task["branch_name"]
+            task_slug = (
+                branch_name[len("agent/") :]
+                if branch_name.startswith("agent/")
+                else branch_name
+            )
+            plan_task = slug_to_plan_task.get(task_slug, {})
+            plan_text_for_review = plan_task.get("plan_text")
+            # Fall back to reading plan_path from the checkout dir if available.
+            if not plan_text_for_review:
+                plan_path_hint: str | None = plan_task.get("plan_path")
+                if plan_path_hint:
+                    try:
+                        import pathlib
+
+                        plan_file = pathlib.Path(plan_path_hint)
+                        if plan_file.exists():
+                            plan_text_for_review = plan_file.read_text(encoding="utf-8")
+                    except Exception:  # noqa: BLE001 - best-effort, never block review
+                        pass
+
         checkout: str | None
         with tempfile.TemporaryDirectory() as _checkout_dir:
             try:
@@ -203,6 +236,7 @@ class Orchestrator:
                 task["description"] or task["title"],
                 model=project.get("agent_model"),
                 effort=project.get("agent_model_effort"),
+                plan_text=plan_text_for_review,
                 cwd=checkout,
             )
         verdict = str(review["verdict"]).lower()
