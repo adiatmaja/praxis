@@ -40,3 +40,28 @@ def test_caps_size():
 def test_none_and_empty():
     assert scrub_context(None) is None
     assert scrub_context("   ") is None
+
+
+@pytest.mark.unit
+def test_preserves_lowercase_yaml_prose():
+    raw = "host: localhost\npath: /usr/local/bin\nurl: https://api.example.com"
+    out = scrub_context(raw)
+    assert "localhost" in out
+    assert "/usr/local/bin" in out
+    assert "https://api.example.com" in out
+
+
+@pytest.mark.unit
+def test_redacts_bare_env_assignment():
+    raw = "SOME_SECRET=notarecognizedtokenprefix12345"
+    out = scrub_context(raw)
+    assert "notarecognizedtokenprefix12345" not in out
+    assert "SOME_SECRET=[REDACTED]" in out
+
+
+@pytest.mark.unit
+def test_redacts_modern_openai_anthropic_keys():
+    raw = "key sk-proj-ABCDEFGHIJKLMNOP1234 and sk-ant-api03-ABCDEFGHIJKLMNOP done"
+    out = scrub_context(raw)
+    assert "sk-proj-ABCDEFGHIJKLMNOP1234" not in out
+    assert "sk-ant-api03-ABCDEFGHIJKLMNOP" not in out

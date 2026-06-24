@@ -15,14 +15,14 @@ _DEFAULT_MAX_CHARS = 12_000
 
 # KEY=secret / KEY: secret on a single line (value looks secret-ish: long/opaque).
 _ENV_ASSIGN = re.compile(
-    r"(?im)^\s*([A-Z0-9_]{2,})\s*[=:]\s*\S{8,}\s*$",
+    r"(?m)^\s*([A-Z0-9_]{2,})\s*[=:]\s*\S{8,}\s*$",
 )
 # Common opaque token shapes.
 _TOKEN_SHAPES = re.compile(
     r"(?x)"
     r"(ghp_[A-Za-z0-9]{20,})"  # GitHub PAT
     r"|(github_pat_[A-Za-z0-9_]{20,})"
-    r"|(sk-[A-Za-z0-9]{16,})"  # OpenAI-style
+    r"|(sk-[A-Za-z0-9-]{16,})"  # OpenAI/Anthropic-style (allows hyphens)
     r"|(AKIA[0-9A-Z]{16})"  # AWS access key id
     r"|(xox[baprs]-[A-Za-z0-9-]{10,})"  # Slack
     r"|(eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,})"  # JWT
