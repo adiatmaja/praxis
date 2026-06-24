@@ -15,7 +15,7 @@ _DEFAULT_MAX_CHARS = 12_000
 
 # KEY=secret / KEY: secret on a single line (value looks secret-ish: long/opaque).
 _ENV_ASSIGN = re.compile(
-    r"(?m)^\s*([A-Z0-9_]{2,})\s*[=:]\s*\S{8,}\s*$",
+    r"(?m)^\s*([A-Z0-9_]{2,})\s*[=:]\s*(?!https?://|/[A-Za-z]|[A-Za-z]:\\)\S{8,}\s*$",
 )
 # Common opaque token shapes.
 _TOKEN_SHAPES = re.compile(

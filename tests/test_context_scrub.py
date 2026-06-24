@@ -65,3 +65,11 @@ def test_redacts_modern_openai_anthropic_keys():
     out = scrub_context(raw)
     assert "sk-proj-ABCDEFGHIJKLMNOP1234" not in out
     assert "sk-ant-api03-ABCDEFGHIJKLMNOP" not in out
+
+
+@pytest.mark.unit
+def test_preserves_url_and_path_config_values():
+    raw = "LM_STUDIO_URL: http://host.docker.internal:1234/v1\nWORKSPACE: /home/agent/workspace"
+    out = scrub_context(raw)
+    assert "http://host.docker.internal:1234/v1" in out
+    assert "/home/agent/workspace" in out

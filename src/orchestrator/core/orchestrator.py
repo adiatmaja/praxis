@@ -207,18 +207,6 @@ class Orchestrator:
             )
             plan_task = slug_to_plan_task.get(task_slug, {})
             plan_text_for_review = plan_task.get("plan_text")
-            # Fall back to reading plan_path from the checkout dir if available.
-            if not plan_text_for_review:
-                plan_path_hint: str | None = plan_task.get("plan_path")
-                if plan_path_hint:
-                    try:
-                        import pathlib
-
-                        plan_file = pathlib.Path(plan_path_hint)
-                        if plan_file.exists():
-                            plan_text_for_review = plan_file.read_text(encoding="utf-8")
-                    except Exception:  # noqa: BLE001 - best-effort, never block review
-                        pass
 
         checkout: str | None
         with tempfile.TemporaryDirectory() as _checkout_dir:
