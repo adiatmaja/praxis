@@ -125,7 +125,7 @@ for ctx in CLAUDE.md MEMORY.md AGENTS.md; do
 done
 while IFS= read -r doc; do
     [ -n "${doc}" ] && read_args+=(--read "${doc}")
-done < <(find "${WORKSPACE}/docs" -maxdepth 1 -name '*.md' 2>/dev/null || true | sed "s|${WORKSPACE}/||")
+done < <(find "${WORKSPACE}/docs" -maxdepth 1 -name '*.md' 2>/dev/null | sed "s|${WORKSPACE}/||" || true)
 
 aider \
     --message "${TASK_PROMPT}" \
