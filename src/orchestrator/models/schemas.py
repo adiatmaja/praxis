@@ -355,6 +355,10 @@ class DispatchRequest(BaseModel):
     model: str
     harness: str | None = None
     branch: str | None = None
+    """Base branch for the dispatched task. The worker always cuts a NEW
+    agent/<slug> branch from this and opens a NEW PR; passing an existing PR's
+    head here does NOT push follow-up commits onto that PR. Re-dispatching
+    always creates a fresh PR. (Continue-on-PR mode is a planned follow-up.)"""
     name: str | None = None
     plan_path: str | None = None
     plan_text: str | None = None

@@ -181,7 +181,7 @@ The five tools it exposes:
 
 | Tool | Purpose |
 |------|---------|
-| `dispatch_task(repo_url, instructions, model, harness?, branch?)` | Dispatch one task; returns `{task_id, dashboard_url, status}`. Praxis always runs its own review. |
+| `dispatch_task(repo_url, instructions, model, harness?, branch?, context?)` | Dispatch one task; returns `{task_id, dashboard_url, status}`. `context` is curated, secret-scrubbed reference text for the worker. Praxis always runs its own review. |
 | `poll_task(task_id)` | Get status, PR URL, review (and a dashboard link for wedged tasks). |
 | `list_providers()` | List brain providers + worker models available to dispatch to. |
 | `get_task_logs(task_id)` | Return agent-run logs for failure triage. |
@@ -245,6 +245,15 @@ planner providers and worker models Praxis can see, which confirms the server is
 
 > **Not in v1:** `dispatch_task` always runs review (`review=false` opt-out planned);
 > `submit_spec` / `poll_plan` deferred; worker models are LM-Studio-served only.
+
+> **Limitations (by design):**
+> - **The worker reads only from GitHub.** Local and gitignored files (`.env`,
+>   data dirs, secrets) are never mounted into the coding agent. Give it
+>   reference context via `dispatch_task`'s `context` field instead - it is
+>   secret-scrubbed and size-capped before reaching the container.
+> - **`branch` is a base, not a target.** Praxis cuts a new `agent/<slug>`
+>   branch and opens a new PR; it cannot push follow-up commits onto an existing
+>   PR. Re-dispatching always creates a fresh PR. (Continue-on-PR mode is planned.)
 
 ## Contributing
 
