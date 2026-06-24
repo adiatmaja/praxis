@@ -1015,3 +1015,25 @@ class TestLogMonitor:
         run = await tq.get_agent_run(run_id)
         assert run is not None
         assert run["status"] == "completed"
+
+
+@pytest.fixture
+def orchestrator() -> Orchestrator:
+    from unittest.mock import AsyncMock, MagicMock
+
+    return Orchestrator(
+        task_queue=MagicMock(),
+        agent_manager=None,
+        opus_bridge=AsyncMock(),
+        git_ops=MagicMock(),
+        event_bus=EventBus(),
+    )
+
+
+@pytest.mark.unit
+async def test_empty_diff_failure_has_clear_message(orchestrator: Orchestrator) -> None:
+    msg = orchestrator._classify_pr_failure(
+        "GraphQL: No commits between main and agent/x (createPullRequest)"
+    )
+    assert "zero commits" in msg.lower()
+    assert "worker" in msg.lower()

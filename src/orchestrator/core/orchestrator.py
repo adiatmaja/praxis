@@ -663,6 +663,10 @@ class Orchestrator:
         reason = (
             f"Agent container exited (code {exit_code}) without a completion callback"
         )
+        # If the container logs reveal a gh/GraphQL PR-create failure (e.g. zero
+        # commits), surface a clear explanation instead of the generic exit reason.
+        if logs and ("No commits between" in logs or "no commits" in logs.lower()):
+            reason = self._classify_pr_failure(logs)
         # Docker is available on this path (we observed the container exit),
         # so a fresh dispatch can succeed — allow a bounded retry.
         await self._resolve_failed_run(run, reason, logs=logs, can_retry=True)
@@ -729,6 +733,17 @@ class Orchestrator:
                 {"type": "task_failed", "task_id": run["task_id"], "feedback": reason}
             )
             logger.warning("Reconciled run %s -> failed: %s", run["id"], reason)
+
+    @staticmethod
+    def _classify_pr_failure(raw: str) -> str:
+        """Turn an opaque gh/GraphQL PR-create error into an explained failure."""
+        if "No commits between" in raw or "no commits" in raw.lower():
+            return (
+                "Worker produced zero commits: the agent made no changes "
+                "(model likely too weak for this task, or the plan was unclear). "
+                f"Original error: {raw.strip()}"
+            )
+        return raw.strip()
 
     async def shutdown(self) -> None:
         """Cancel all in-flight log monitors."""
