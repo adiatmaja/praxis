@@ -252,7 +252,7 @@ class GitOps:
 
         Args:
             pr_url: Full GitHub PR URL (e.g. https://github.com/owner/repo/pull/42).
-            dest: Directory path to clone into (must not exist yet).
+            dest: Directory path to clone into (must be empty if it exists).
 
         Returns:
             ``dest`` on success.
@@ -266,14 +266,13 @@ class GitOps:
             raise RuntimeError(msg)
         pr_number = await self.extract_pr_number(pr_url)
         clone_url = f"https://github.com/{repo}.git"
-        env = os.environ.copy()
-        env["GH_TOKEN"] = self._github_token
         cmd_clone = [
             "git",
             *_token_git_args(),
             "clone",
             "--depth",
-            "50",
+            "1",
+            "--no-single-branch",
             clone_url,
             dest,
         ]

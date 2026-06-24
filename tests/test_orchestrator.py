@@ -265,6 +265,56 @@ class TestOrchestrationReview:
         assert "cwd" in calls, "review_diff was not called"
         assert calls["cwd"] == calls["cloned_to"]
 
+    @pytest.mark.unit
+    async def test_review_degrades_to_diff_only_when_clone_fails(
+        self, db: Database
+    ) -> None:
+        """review_task falls back to diff-only (cwd=None) when clone_pr_head raises."""
+        task_queue, _, task_id = await _setup(db)
+        await task_queue.update_task_status(task_id, TaskStatus.REVIEWING)
+        await task_queue.set_task_pr_url(task_id, "https://github.com/u/a/pull/1")
+
+        calls: dict[str, Any] = {}
+
+        async def fail_clone_pr_head(pr_url: str, dest: str) -> str:
+            msg = "simulated clone failure"
+            raise RuntimeError(msg)
+
+        mock_opus = AsyncMock()
+        mock_opus.is_available.return_value = True
+
+        async def fake_review_diff(
+            diff: str, desc: str, **kwargs: Any
+        ) -> dict[str, Any]:
+            calls["cwd"] = kwargs.get("cwd")
+            return {"verdict": "pass", "feedback": "ok", "issues": []}
+
+        mock_opus.review_diff.side_effect = fake_review_diff
+
+        mock_git = AsyncMock()
+        mock_git.extract_pr_number.return_value = 1
+        mock_git.get_pr_diff.return_value = "diff content"
+        mock_git.repo_slug = MagicMock(return_value="u/a")
+        mock_git.clone_pr_head.side_effect = fail_clone_pr_head
+
+        orch = Orchestrator(
+            task_queue=task_queue,
+            agent_manager=MagicMock(),
+            opus_bridge=mock_opus,
+            git_ops=mock_git,
+            event_bus=EventBus(),
+        )
+        await orch.review_task(task_id, await _project(db))
+
+        # review_diff must still be called with cwd=None (diff-only fallback).
+        assert "cwd" in calls, "review_diff was not called"
+        assert calls["cwd"] is None
+
+        # review must still reach a verdict: task ends up merged (pass verdict).
+        task = await task_queue.get_task(task_id)
+        assert task is not None
+        assert task["status"] == TaskStatus.MERGED
+
 
 @pytest.mark.integration
 class TestImprovementLoop:

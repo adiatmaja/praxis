@@ -6,6 +6,7 @@ import asyncio
 import contextlib
 import json
 import logging
+import tempfile
 from datetime import UTC, datetime
 from typing import Any, cast
 
@@ -185,8 +186,6 @@ class Orchestrator:
             project["repo_url"]
         )
 
-        import tempfile
-
         checkout: str | None
         with tempfile.TemporaryDirectory() as _checkout_dir:
             try:
@@ -292,7 +291,6 @@ class Orchestrator:
             if not rows:
                 return
 
-            import tempfile
             from pathlib import Path
 
             with tempfile.TemporaryDirectory() as tmp_dir:
