@@ -184,13 +184,28 @@ class Orchestrator:
         repo = self._git.repo_slug(task["pr_url"]) or self._git.repo_slug(
             project["repo_url"]
         )
-        diff = await self._git.get_pr_diff(".", pr_number, repo=repo)
-        review = await self._opus.review_diff(
-            diff,
-            task["description"] or task["title"],
-            model=project.get("agent_model"),
-            effort=project.get("agent_model_effort"),
-        )
+
+        import tempfile
+
+        checkout: str | None
+        with tempfile.TemporaryDirectory() as _checkout_dir:
+            try:
+                await self._git.clone_pr_head(task["pr_url"], _checkout_dir)
+                checkout = _checkout_dir
+            except Exception:  # noqa: BLE001 - degrade, never wedge review
+                logger.exception(
+                    "review: PR-head clone failed; falling back to diff-only review"
+                )
+                checkout = None
+
+            diff = await self._git.get_pr_diff(".", pr_number, repo=repo)
+            review = await self._opus.review_diff(
+                diff,
+                task["description"] or task["title"],
+                model=project.get("agent_model"),
+                effort=project.get("agent_model_effort"),
+                cwd=checkout,
+            )
         verdict = str(review["verdict"]).lower()
         feedback = str(review.get("feedback", ""))
 

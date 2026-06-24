@@ -244,6 +244,50 @@ class GitOps:
     async def extract_pr_number(self, pr_url: str) -> int:
         return int(pr_url.rstrip("/").split("/")[-1])
 
+    async def clone_pr_head(self, pr_url: str, dest: str) -> str:
+        """Clone the repo and check out the PR's head ref into ``dest``.
+
+        Gives the reviewer brain a real git checkout to reason against, instead
+        of the orchestrator's own /app cwd. Returns ``dest`` on success.
+
+        Args:
+            pr_url: Full GitHub PR URL (e.g. https://github.com/owner/repo/pull/42).
+            dest: Directory path to clone into (must not exist yet).
+
+        Returns:
+            ``dest`` on success.
+
+        Raises:
+            RuntimeError: If the clone or checkout fails.
+        """
+        repo = self.repo_slug(pr_url)
+        if repo is None:
+            msg = f"cannot extract repo slug from PR URL: {pr_url}"
+            raise RuntimeError(msg)
+        pr_number = await self.extract_pr_number(pr_url)
+        clone_url = f"https://github.com/{repo}.git"
+        env = os.environ.copy()
+        env["GH_TOKEN"] = self._github_token
+        cmd_clone = [
+            "git",
+            *_token_git_args(),
+            "clone",
+            "--depth",
+            "50",
+            clone_url,
+            dest,
+        ]
+        code, _, stderr = await self._run_command(cmd_clone)
+        if code != 0:
+            msg = f"clone failed (exit {code}) for {clone_url}: {stderr}"
+            raise RuntimeError(msg)
+        await self._run_checked(
+            ["gh", "pr", "checkout", str(pr_number), "--repo", repo],
+            cwd=dest,
+        )
+        logger.info("Cloned PR #%d head into %s", pr_number, dest)
+        return dest
+
     async def remote_branch_exists(self, repo_url: str, branch: str) -> bool:
         """Check whether ``branch`` exists on the remote at ``repo_url``.
 
