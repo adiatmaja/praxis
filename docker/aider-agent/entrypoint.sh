@@ -99,14 +99,33 @@ git checkout -b "${BRANCH}"
 echo "--- Running Aider ---"
 export OPENAI_API_KEY="${OPENAI_API_KEY:-not-needed}"
 
-# Build --read args so Aider has the plan file in its context.
+# Build --read args so Aider has reference context (read-only) while implementing.
 read_args=()
+
+# 1. The plan file (existing behavior).
 if [ -n "${PLAN_PATH:-}" ]; then
     read_args+=(--read "${PLAN_PATH}")
 elif [ -n "${PLAN_TEXT:-}" ]; then
-    printf "%s" "${PLAN_TEXT}" > /home/agent/workspace/.praxis-plan.md
+    printf "%s" "${PLAN_TEXT}" > "${WORKSPACE}/.praxis-plan.md"
     read_args+=(--read ".praxis-plan.md")
 fi
+
+# 2. Caller-curated, secret-scrubbed context from the orchestrator.
+if [ -n "${CONTEXT_TEXT:-}" ]; then
+    printf "%s" "${CONTEXT_TEXT}" > "${WORKSPACE}/.praxis-context.md"
+    read_args+=(--read ".praxis-context.md")
+fi
+
+# 3. Repo-local project memory already committed in the clone (GitHub-only:
+#    we never mount local or gitignored files). Best-effort; skip if absent.
+for ctx in CLAUDE.md MEMORY.md AGENTS.md; do
+    if [ -f "${WORKSPACE}/${ctx}" ]; then
+        read_args+=(--read "${ctx}")
+    fi
+done
+while IFS= read -r doc; do
+    [ -n "${doc}" ] && read_args+=(--read "${doc}")
+done < <(find "${WORKSPACE}/docs" -maxdepth 1 -name '*.md' 2>/dev/null || true | sed "s|${WORKSPACE}/||")
 
 aider \
     --message "${TASK_PROMPT}" \
