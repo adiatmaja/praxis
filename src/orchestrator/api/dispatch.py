@@ -16,17 +16,125 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 
 from orchestrator.api.auth import verify_token
+from orchestrator.core.git_ops import GitOps
 from orchestrator.core.harnesses import default_harness_id
 from orchestrator.models.schemas import DispatchRequest, DispatchResponse
 
 
 router = APIRouter(tags=["dispatch"], dependencies=[Depends(verify_token)])
 
+# Tokens that indicate no real GitHub token is configured.
+_PLACEHOLDER_TOKENS: frozenset[str] = frozenset({"placeholder", ""})
+
 
 def _slugify(text: str) -> str:
     """Build a short branch-safe slug from free text plus a uniqueness suffix."""
     base = re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")[:40] or "task"
     return f"{base}-{uuid.uuid4().hex[:6]}"
+
+
+async def _preflight(body: DispatchRequest, settings: Any) -> list[str]:
+    """Validate remote state before writing any DB rows.
+
+    Args:
+        body: The incoming dispatch request.
+        settings: Application settings (must expose ``github_token``).
+
+    Returns:
+        A (possibly empty) list of non-fatal warning strings.
+
+    Raises:
+        HTTPException: On validation failure or upstream communication error.
+    """
+    # No branch and no plan_path: nothing to validate (fresh-branch flow).
+    if body.branch is None and body.plan_path is None:
+        return []
+
+    # plan_path without branch: we cannot know which remote ref to check.
+    if body.plan_path is not None and body.branch is None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=(
+                "plan_path requires branch: Praxis reads only from the GitHub remote, "
+                "never from the caller's local workspace. "
+                "Push the plan branch and supply its name via the 'branch' field."
+            ),
+        )
+
+    # At this point branch is set (plan_path may or may not be).
+    # Narrow the type: we have already handled the None case above.
+    branch: str = body.branch  # type: ignore[assignment]
+    github_token = getattr(settings, "github_token", "")
+    git = GitOps(github_token)
+
+    # Verify the branch exists on the remote.
+    try:
+        branch_exists = await git.remote_branch_exists(body.repo_url, branch)
+    except RuntimeError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"could not verify branch on remote: {exc}",
+        ) from exc
+
+    if not branch_exists:
+        if body.plan_path is not None:
+            detail = (
+                f"branch '{branch}' was not found on the remote. "
+                "Praxis reads only from GitHub: push the plan branch first, "
+                "then retry."
+            )
+        else:
+            detail = (
+                f"branch '{branch}' was not found on the remote. "
+                "Push it first, or omit 'branch' to let Praxis create a fresh "
+                "branch from the default branch."
+            )
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=detail,
+        )
+
+    warnings: list[str] = []
+
+    if body.plan_path is not None:
+        repo_slug = GitOps.repo_slug(body.repo_url)
+        if repo_slug is None:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=(
+                    "plan_path validation is only supported for github.com repositories. "
+                    "Supply a github.com repo_url or omit plan_path."
+                ),
+            )
+
+        token_lower = github_token.lower().strip()
+        if token_lower in _PLACEHOLDER_TOKENS:
+            warnings.append(
+                "plan_path existence check skipped: no GitHub token is configured. "
+                "Ensure the file exists on the remote branch before dispatching."
+            )
+        else:
+            try:
+                file_exists = await git.remote_file_exists(
+                    repo_slug, branch, body.plan_path
+                )
+            except RuntimeError as exc:
+                raise HTTPException(
+                    status_code=status.HTTP_502_BAD_GATEWAY,
+                    detail=f"could not verify plan_path on remote: {exc}",
+                ) from exc
+
+            if not file_exists:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail=(
+                        f"plan_path '{body.plan_path}' was not found on branch "
+                        f"'{branch}' in '{repo_slug}'. "
+                        "Praxis reads only from GitHub: push the file first, then retry."
+                    ),
+                )
+
+    return warnings
 
 
 @router.post(
@@ -40,6 +148,9 @@ async def dispatch_task(request: Request, body: DispatchRequest) -> dict[str, An
     db = request.app.state.db
     queue = request.app.state.task_queue
     settings = request.app.state.settings
+
+    # Preflight: validate remote state before touching the database.
+    warnings = await _preflight(body, settings)
 
     user = await db.fetch_one("SELECT id FROM users LIMIT 1")
     if user is None:
@@ -80,16 +191,18 @@ async def dispatch_task(request: Request, body: DispatchRequest) -> dict[str, An
 
     plan_id = await queue.create_plan(project_id, source="mcp")
     slug = _slugify(body.instructions)
-    opus_plan = {
-        "tasks": [
-            {
-                "title": body.instructions[:80],
-                "description": body.instructions,
-                "slug": slug,
-                "depends_on": [],
-            }
-        ]
+    task_dict: dict[str, Any] = {
+        "title": body.instructions[:80],
+        "description": body.instructions,
+        "slug": slug,
+        "depends_on": [],
     }
+    if body.plan_path is not None:
+        task_dict["plan_path"] = body.plan_path
+    if body.plan_text is not None:
+        task_dict["plan_text"] = body.plan_text
+
+    opus_plan = {"tasks": [task_dict]}
     branch_name = body.branch or f"plan/mcp-{slug}"
     await queue.activate_plan(plan_id, opus_plan, branch_name)
 
@@ -107,4 +220,5 @@ async def dispatch_task(request: Request, body: DispatchRequest) -> dict[str, An
         "project_id": project_id,
         "status": "queued",
         "dashboard_url": base_url,
+        "warnings": warnings,
     }

@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -184,3 +184,143 @@ async def test_extract_pr_number() -> None:
     git = GitOps(github_token="ghp_test")
 
     assert await git.extract_pr_number("https://github.com/user/repo/pull/42") == 42
+
+
+# ---------------------------------------------------------------------------
+# remote_branch_exists
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+@patch("orchestrator.core.git_ops.GitOps._run_command")
+async def test_remote_branch_exists_returns_true_when_ref_present(
+    mock_run: AsyncMock,
+) -> None:
+    mock_run.return_value = (
+        0,
+        "abc123\trefs/heads/my-branch",
+        "",
+    )
+    git = GitOps(github_token="ghp_test")
+    result = await git.remote_branch_exists("https://github.com/u/r", "my-branch")
+    assert result is True
+    cmd = mock_run.call_args.args[0]
+    assert "ls-remote" in cmd
+    assert "--heads" in cmd
+    assert "my-branch" in cmd
+
+
+@pytest.mark.unit
+@patch("orchestrator.core.git_ops.GitOps._run_command")
+async def test_remote_branch_exists_returns_false_when_empty_stdout(
+    mock_run: AsyncMock,
+) -> None:
+    mock_run.return_value = (0, "", "")
+    git = GitOps(github_token="ghp_test")
+    result = await git.remote_branch_exists("https://github.com/u/r", "no-such")
+    assert result is False
+
+
+@pytest.mark.unit
+@patch("orchestrator.core.git_ops.GitOps._run_command")
+async def test_remote_branch_exists_raises_on_nonzero_exit(
+    mock_run: AsyncMock,
+) -> None:
+    mock_run.return_value = (128, "", "fatal: not found")
+    git = GitOps(github_token="ghp_test")
+    with pytest.raises(RuntimeError, match="git ls-remote failed"):
+        await git.remote_branch_exists("https://github.com/u/r", "main")
+
+
+@pytest.mark.unit
+@patch("orchestrator.core.git_ops.GitOps._run_command")
+async def test_remote_branch_exists_no_partial_match(
+    mock_run: AsyncMock,
+) -> None:
+    # The output contains a ref for a *different* branch — must not match.
+    mock_run.return_value = (
+        0,
+        "abc123\trefs/heads/my-branch-extra",
+        "",
+    )
+    git = GitOps(github_token="ghp_test")
+    result = await git.remote_branch_exists("https://github.com/u/r", "my-branch")
+    assert result is False
+
+
+# ---------------------------------------------------------------------------
+# remote_file_exists
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+async def test_remote_file_exists_returns_true_on_200() -> None:
+    mock_response = MagicMock()
+    mock_response.status_code = 200
+
+    mock_client = AsyncMock()
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=None)
+    mock_client.get = AsyncMock(return_value=mock_response)
+
+    git = GitOps(github_token="ghp_real")
+    with patch("orchestrator.core.git_ops.httpx.AsyncClient", return_value=mock_client):
+        result = await git.remote_file_exists("u/r", "main", "docs/plan.md")
+
+    assert result is True
+    call_kwargs = mock_client.get.call_args
+    # Check auth header was sent
+    assert "Authorization" in call_kwargs.kwargs["headers"]
+    assert "ghp_real" in call_kwargs.kwargs["headers"]["Authorization"]
+
+
+@pytest.mark.unit
+async def test_remote_file_exists_returns_false_on_404() -> None:
+    mock_response = MagicMock()
+    mock_response.status_code = 404
+
+    mock_client = AsyncMock()
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=None)
+    mock_client.get = AsyncMock(return_value=mock_response)
+
+    git = GitOps(github_token="ghp_real")
+    with patch("orchestrator.core.git_ops.httpx.AsyncClient", return_value=mock_client):
+        result = await git.remote_file_exists("u/r", "main", "missing.md")
+
+    assert result is False
+
+
+@pytest.mark.unit
+async def test_remote_file_exists_raises_on_unexpected_status() -> None:
+    mock_response = MagicMock()
+    mock_response.status_code = 500
+
+    mock_client = AsyncMock()
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=None)
+    mock_client.get = AsyncMock(return_value=mock_response)
+
+    git = GitOps(github_token="ghp_real")
+    with (
+        patch("orchestrator.core.git_ops.httpx.AsyncClient", return_value=mock_client),
+        pytest.raises(RuntimeError, match="unexpected GitHub API status 500"),
+    ):
+        await git.remote_file_exists("u/r", "main", "plan.md")
+
+
+@pytest.mark.unit
+async def test_remote_file_exists_raises_on_network_error() -> None:
+    import httpx
+
+    mock_client = AsyncMock()
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=None)
+    mock_client.get = AsyncMock(side_effect=httpx.ConnectError("connection refused"))
+
+    git = GitOps(github_token="ghp_real")
+    with (
+        patch("orchestrator.core.git_ops.httpx.AsyncClient", return_value=mock_client),
+        pytest.raises(RuntimeError, match="network error checking file on GitHub"),
+    ):
+        await git.remote_file_exists("u/r", "main", "plan.md")

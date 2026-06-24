@@ -356,6 +356,8 @@ class DispatchRequest(BaseModel):
     harness: str | None = None
     branch: str | None = None
     name: str | None = None
+    plan_path: str | None = None
+    plan_text: str | None = None
 
     @field_validator("repo_url")
     @classmethod
@@ -417,3 +419,4 @@ class DispatchResponse(BaseModel):
     project_id: str
     status: str
     dashboard_url: str
+    warnings: list[str] = Field(default_factory=list)

@@ -98,6 +98,16 @@ git checkout -b "${BRANCH}"
 
 echo "--- Running Aider ---"
 export OPENAI_API_KEY="${OPENAI_API_KEY:-not-needed}"
+
+# Build --read args so Aider has the plan file in its context.
+read_args=()
+if [ -n "${PLAN_PATH:-}" ]; then
+    read_args+=(--read "${PLAN_PATH}")
+elif [ -n "${PLAN_TEXT:-}" ]; then
+    printf "%s" "${PLAN_TEXT}" > /home/agent/workspace/.praxis-plan.md
+    read_args+=(--read ".praxis-plan.md")
+fi
+
 aider \
     --message "${TASK_PROMPT}" \
     --model "openai/${MODEL}" \
@@ -107,7 +117,8 @@ aider \
     --no-suggest-shell-commands \
     --no-show-model-warnings \
     --no-browser \
-    --no-detect-urls
+    --no-detect-urls \
+    "${read_args[@]}"
 
 echo "--- Pushing branch ---"
 git push -u origin "${BRANCH}"

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import logging
 from datetime import UTC, datetime
 from typing import Any, cast
@@ -109,8 +110,30 @@ class Orchestrator:
             logger.warning("Plan %s not found for dispatch", plan_id)
             return
 
+        # Build a slug -> plan-task lookup so we can read per-task plan hints
+        # (plan_path, plan_text) stored in the opus_plan by the dispatch endpoint.
+        slug_to_plan_task: dict[str, dict[str, Any]] = {}
+        with contextlib.suppress(json.JSONDecodeError, TypeError):
+            opus_plan_raw = plan.get("opus_plan")
+            if opus_plan_raw:
+                parsed = json.loads(opus_plan_raw)
+                for pt in parsed.get("tasks", []):
+                    if isinstance(pt, dict) and "slug" in pt:
+                        slug_to_plan_task[pt["slug"]] = pt
+
         for task in await self._tq.get_dispatchable_tasks(plan_id):
             prompt = self._task_prompt(task, project)
+
+            # Derive the task slug from its branch name (agent/{slug}).
+            branch_name: str = task["branch_name"]
+            if branch_name.startswith("agent/"):
+                task_slug = branch_name[len("agent/") :]
+            else:
+                task_slug = branch_name
+            plan_task = slug_to_plan_task.get(task_slug, {})
+            plan_path: str | None = plan_task.get("plan_path")
+            plan_text: str | None = plan_task.get("plan_text")
+
             container_id = await self._agents.spawn_agent(
                 task_id=task["id"],
                 repo_url=project["repo_url"],
@@ -121,6 +144,8 @@ class Orchestrator:
                 harness=project.get("harness"),
                 callback_url=self._callback_url,
                 callback_token=self._callback_token,
+                plan_path=plan_path,
+                plan_text=plan_text,
             )
             run_id = await self._tq.create_agent_run(task["id"], container_id)
             await self._tq.update_task_status(task["id"], TaskStatus.IN_PROGRESS)

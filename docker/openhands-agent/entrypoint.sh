@@ -98,7 +98,20 @@ export LLM_MODEL="openai/${MODEL}"
 export LLM_BASE_URL="${OPENAI_API_BASE}"
 export LLM_API_KEY="${OPENAI_API_KEY:-not-needed}"
 export RUNTIME="local"
-python3 -m openhands.core.main -t "${TASK_PROMPT}" --override-with-envs
+
+# Prepend plan context to the prompt when supplied.
+EFFECTIVE_PROMPT="${TASK_PROMPT}"
+if [ -n "${PLAN_PATH:-}" ]; then
+    EFFECTIVE_PROMPT="Plan reference: ${PLAN_PATH}
+
+${TASK_PROMPT}"
+elif [ -n "${PLAN_TEXT:-}" ]; then
+    EFFECTIVE_PROMPT="${PLAN_TEXT}
+
+${TASK_PROMPT}"
+fi
+
+python3 -m openhands.core.main -t "${EFFECTIVE_PROMPT}" --override-with-envs
 
 echo "--- Committing changes (OpenHands may not commit) ---"
 git add -A

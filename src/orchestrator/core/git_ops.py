@@ -8,6 +8,8 @@ import os
 import re
 import subprocess
 
+import httpx
+
 
 logger = logging.getLogger(__name__)
 
@@ -241,3 +243,75 @@ class GitOps:
 
     async def extract_pr_number(self, pr_url: str) -> int:
         return int(pr_url.rstrip("/").split("/")[-1])
+
+    async def remote_branch_exists(self, repo_url: str, branch: str) -> bool:
+        """Check whether ``branch`` exists on the remote at ``repo_url``.
+
+        Runs ``git ls-remote --heads <repo_url> <branch>`` via the token-auth
+        credential helper and returns True if the output contains a matching
+        ``refs/heads/<branch>`` line.
+
+        Args:
+            repo_url: HTTPS or SSH URL of the remote repository.
+            branch: Branch name to check (without ``refs/heads/`` prefix).
+
+        Returns:
+            True if the branch exists on the remote, False if absent.
+
+        Raises:
+            RuntimeError: If the git command exits with a non-zero code.
+        """
+        cmd = [
+            "git",
+            *_token_git_args(),
+            "ls-remote",
+            "--heads",
+            repo_url,
+            branch,
+        ]
+        code, stdout, stderr = await self._run_command(cmd)
+        if code != 0:
+            msg = f"git ls-remote failed (exit {code}): {stderr}"
+            raise RuntimeError(msg)
+        ref = f"refs/heads/{branch}"
+        return any(ref == line.split("\t")[-1] for line in stdout.splitlines() if line)
+
+    async def remote_file_exists(self, repo_slug: str, branch: str, path: str) -> bool:
+        """Check whether ``path`` exists on ``branch`` in a GitHub repo.
+
+        Uses the GitHub Contents API
+        ``GET /repos/{slug}/contents/{path}?ref={branch}``.
+        Returns True on HTTP 200, False on 404, and raises RuntimeError for
+        any other status or network failure.
+
+        Args:
+            repo_slug: GitHub ``owner/repo`` slug.
+            branch: Branch ref to check the file on.
+            path: Repository-relative file path (no leading slash).
+
+        Returns:
+            True if the file exists, False if it does not.
+
+        Raises:
+            RuntimeError: On unexpected HTTP status or network error.
+        """
+        url = f"https://api.github.com/repos/{repo_slug}/contents/{path}"
+        headers = {
+            "Authorization": f"Bearer {self._github_token}",
+            "Accept": "application/vnd.github+json",
+        }
+        try:
+            async with httpx.AsyncClient(timeout=15) as client:
+                resp = await client.get(url, headers=headers, params={"ref": branch})
+        except httpx.HTTPError as exc:
+            msg = f"network error checking file on GitHub: {exc}"
+            raise RuntimeError(msg) from exc
+        if resp.status_code == 200:
+            return True
+        if resp.status_code == 404:
+            return False
+        msg = (
+            f"unexpected GitHub API status {resp.status_code}"
+            f" for {repo_slug}/{path}@{branch}"
+        )
+        raise RuntimeError(msg)

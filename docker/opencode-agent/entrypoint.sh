@@ -110,7 +110,20 @@ EOF
 
 echo "--- Running OpenCode (headless) ---"
 export OPENAI_API_KEY="${OPENAI_API_KEY:-not-needed}"
-opencode run --model "lmstudio/${MODEL}" "${TASK_PROMPT}"
+
+# Prepend plan context to the prompt when supplied.
+EFFECTIVE_PROMPT="${TASK_PROMPT}"
+if [ -n "${PLAN_PATH:-}" ]; then
+    EFFECTIVE_PROMPT="Plan reference: ${PLAN_PATH}
+
+${TASK_PROMPT}"
+elif [ -n "${PLAN_TEXT:-}" ]; then
+    EFFECTIVE_PROMPT="${PLAN_TEXT}
+
+${TASK_PROMPT}"
+fi
+
+opencode run --model "lmstudio/${MODEL}" "${EFFECTIVE_PROMPT}"
 
 echo "--- Committing changes (OpenCode does not auto-commit) ---"
 git add -A
