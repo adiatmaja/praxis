@@ -578,6 +578,7 @@
     .log-line-test-fail { color: var(--badge-failed-text, #cf222e); }
     .log-line-info { color: var(--text-muted); }
     .log-line-collapse { color: var(--text-faint); font-style: italic; }
+    .log-line-prose { color: var(--text); display: block; margin: 2px 0; }
     .dashboard-idle {
       display: flex;
       flex-direction: column;
@@ -2326,11 +2327,40 @@
       if (/^Added .+(to the chat|to \.gitignore)/.test(t)) return "file";
       // Commit lines
       if (/^Commit [0-9a-f]/.test(t)) return "commit";
-      // Test / error lines
-      if (/passed|failed|PASS|FAIL|Traceback|Error:|[ \t]error[ \t]/i.test(t)) return "test";
+      // Test / error result lines (conservative: real test-runner summaries
+      // and tracebacks, NOT arbitrary code that mentions "failed"/"error").
+      if (/^\d+ (passed|failed|error)/i.test(t)) return "test";           // pytest summary
+      if (/\b\d+ (passed|failed)\b/i.test(t) && /\b(test|spec)/i.test(t)) return "test";
+      if (/^(PASS|FAIL|FAILED|ERROR)\b/.test(t)) return "test";           // jest/pytest line
+      if (/^ok \d/.test(t)) return "test";                                // TAP "ok 1 - ..."
+      if (/^(Tests?:|Test Suites:)/.test(t)) return "test";               // jest footer
+      if (/^Traceback \(most recent call last\)/.test(t)) return "test";
+      if (/^E\s+\w+Error\b/.test(t)) return "test";                       // pytest error line
       // Info lines
       if (/^(Aider v|Model:|Git repo:|Repo-map:|Tokens:|Warning:)/.test(t)) return "info";
       return null;
+    }
+
+    // Heuristic: does this raw line look like source code (vs natural-language
+    // reasoning)? Used so reasoning is shown while code collapses. Receives the
+    // UN-trimmed line so leading indentation is available as a signal.
+    function looksLikeCode(rawLine) {
+      const t = rawLine.trim();
+      if (!t) return false;
+      // Indented lines are almost always code in this stream.
+      if (/^\s{2,}/.test(rawLine) || /^\t/.test(rawLine)) return true;
+      // Common code-line openers / closers.
+      if (/^(import |from |export |const |let |var |function |class |def |async |await |return |public |private |protected |interface |type |enum |package |module|namespace|#include|#define|#!|@|\/\/|\/\*|\*|\}|\)|\]|<\/|<[A-Za-z])/.test(t)) return true;
+      // Code-ish symbols / operators.
+      if (/[{};]|=>|===|!==|::|\)\s*\{|\(\)|\bself\.|\bconsole\.|\brequire\(/.test(t)) return true;
+      // Assignment / key-value that is NOT a normal sentence.
+      if (/^[\w.$\[\]"']+\s*[:=]\s*\S/.test(t) && !/^\S+\s+\S+\s+\S+\s+\S+/.test(t)) return true;
+      // Ends with code punctuation.
+      if (/[;{(,]$/.test(t)) return true;
+      // Bare file path / filename on its own line (Aider echoes these in
+      // lists) — not reasoning, fold into the collapsed code block.
+      if (/^\S+$/.test(t) && (t.includes("/") || /\.\w{1,5}$/.test(t))) return true;
+      return false;
     }
 
     // ── Live Log: shared curated-render helper ─────────────────────────────
@@ -2355,13 +2385,21 @@
       for (const line of lines) {
         const trimmed = line.trim();
         if (!trimmed) {
-          // blank: flush any accumulated null run, then skip
-          flushNullRun();
+          // blank: skip WITHOUT flushing so interspersed blanks (Aider
+          // double-spaces its output) don't fragment one code block into
+          // many tiny "writing code (1 line)" markers.
           continue;
         }
         const cat = classifyLogLine(trimmed);
         if (cat === null) {
-          nullRun++;
+          if (looksLikeCode(line)) {
+            // accumulate into one merged "writing code" marker
+            nullRun++;
+            continue;
+          }
+          // natural-language reasoning: flush any pending code block, then show it
+          flushNullRun();
+          html += '<span class="log-line-prose">' + esc(trimmed) + '</span>\n';
           continue;
         }
         flushNullRun();
@@ -2428,6 +2466,9 @@
       if (!dashboardTaskRawLog[taskId]) dashboardTaskRawLog[taskId] = "";
       const src = new EventSource(API + "/api/tasks/" + taskId + "/logs?token=" + encodeURIComponent(ensureToken()));
       sidePanelLogSource = src;
+      // Each (re)connection replays the full stored log from the start, so
+      // reset the buffer on open to prevent duplication if the stream reconnects.
+      src.onopen = () => { dashboardTaskRawLog[taskId] = ""; };
       src.addEventListener("agent_log", event => {
         let d;
         try { d = JSON.parse(event.data); } catch (e) { return; }

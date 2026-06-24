@@ -76,6 +76,14 @@ async def task_logs(request: Request, task_id: str) -> EventSourceResponse:
         for event in stored_events:
             yield event
         if stored_events and not has_running_run:
+            # Task is finished: there is nothing more to stream. Keep the
+            # connection open and idle (ping only) instead of returning, so the
+            # browser EventSource does NOT auto-reconnect and re-replay the
+            # stored logs, which would duplicate them in the client buffer.
+            yield {"event": "complete", "data": "{}"}
+            while not await request.is_disconnected():
+                await asyncio.sleep(30.0)
+                yield {"event": "ping", "data": ""}
             return
 
         queue = event_bus.subscribe()
