@@ -26,6 +26,7 @@ async def dispatch_task_impl(
     model: str,
     harness: str | None = None,
     branch: str | None = None,
+    context: str | None = None,
 ) -> dict[str, Any]:
     """Dispatch a single implementation task to a non-Anthropic worker model."""
     payload: dict[str, Any] = {
@@ -37,6 +38,8 @@ async def dispatch_task_impl(
         payload["harness"] = harness
     if branch is not None:
         payload["branch"] = branch
+    if context is not None:
+        payload["context"] = context
     try:
         return cast(dict[str, Any], await client.post("/api/dispatch", payload))
     except PraxisClientError as exc:
@@ -110,11 +113,18 @@ async def dispatch_task(
     model: str,
     harness: str | None = None,
     branch: str | None = None,
+    context: str | None = None,
 ) -> dict[str, Any]:
     """Dispatch an implementation task to a non-Anthropic worker model inside Praxis.
 
     Returns a handle: {task_id, plan_id, project_id, status, dashboard_url}.
     Poll with poll_task. Praxis always runs its own review before merge.
+
+    context: Optional curated context to brief the worker: task-relevant project
+    memory, conventions, and architecture notes that help implement THIS task.
+    Pass a focused slice, not your whole memory tree. Do NOT include secrets,
+    tokens, or .env values - they are redacted server-side, but keep them out
+    anyway.
     """
     return await dispatch_task_impl(
         PraxisClient.from_env(),
@@ -123,6 +133,7 @@ async def dispatch_task(
         model=model,
         harness=harness,
         branch=branch,
+        context=context,
     )
 
 

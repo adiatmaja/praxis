@@ -336,6 +336,9 @@ Tables: `users`, `projects`, `plans`, `tasks`, `agent_runs`, `opus_state`,
   created only via `TaskQueue.activate_plan`. MCP dispatch sets `approval_gate=False` on the
   auto-created project so the loop dispatches without a gate. v1 always runs review (no
   `review=false` opt-out yet).
+- **`dispatch` `branch` is always a base, never a target** - Praxis cuts a new
+  `agent/<slug>` branch off it and opens a new PR. There is no amend-existing-PR
+  mode yet; re-dispatch = new PR. Follow-up: add `target_branch`/`pr_number`.
 - **Dashboard login banner is SSE-driven, not just poll-driven** — `/api/status` adds a
   `providers` block (`_probe_provider`: cli_available + best-effort authenticated +
   login_hint), but **`codex login status` lies** ("Logged in" even on a revoked token), so

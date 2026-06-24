@@ -251,6 +251,28 @@ def test_cleanup_container(mock_docker: MagicMock) -> None:
 
 @pytest.mark.unit
 @patch("orchestrator.core.agent_manager.docker")
+async def test_spawn_agent_sets_context_env(mock_docker: MagicMock) -> None:
+    mock_client = MagicMock()
+    mock_docker.from_env.return_value = mock_client
+    mock_client.containers.run.return_value = _mock_container()
+
+    manager = AgentManager(lm_studio_url="http://localhost:1234", github_token="ghp_x")
+    await manager.spawn_agent(
+        task_id="abcd1234",
+        repo_url="https://github.com/o/r",
+        branch="agent/x",
+        base_branch="main",
+        task_prompt="do x",
+        model_name="qwen3",
+        callback_url="http://cb/",
+        context_text="Conventions: ruff.",
+    )
+    env = mock_client.containers.run.call_args.kwargs["environment"]
+    assert env["CONTEXT_TEXT"] == "Conventions: ruff."
+
+
+@pytest.mark.unit
+@patch("orchestrator.core.agent_manager.docker")
 def test_list_agent_containers(mock_docker: MagicMock) -> None:
     mock_client = MagicMock()
     mock_docker.from_env.return_value = mock_client

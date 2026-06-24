@@ -364,3 +364,34 @@ async def test_dispatch_plan_path_and_plan_text_stored_in_opus_plan(
     task = opus_plan["tasks"][0]
     assert task["plan_path"] == "docs/plans/feature-x.md"
     assert task["plan_text"] == "# Plan\n- step 1\n- step 2"
+
+
+@pytest.mark.integration
+async def test_dispatch_scrubs_and_stores_context(
+    client: AsyncClient,
+    auth_headers: dict[str, str],
+    seeded_user: str,
+    db: Database,
+) -> None:
+    """context is scrubbed (tokens removed) and stored as context_text in opus_plan."""
+    resp = await client.post(
+        "/api/dispatch",
+        headers=auth_headers,
+        json={
+            "repo_url": "https://github.com/o/r",
+            "instructions": "do x",
+            "model": "qwen3",
+            "context": "Use ruff.\nAPI_KEY=ghp_abcdef1234567890abcdef1234567890abcd",
+        },
+    )
+    assert resp.status_code == 201, resp.text
+    plan_id = resp.json()["plan_id"]
+
+    plan_row = await db.fetch_one(
+        "SELECT opus_plan FROM plans WHERE id = ?", (plan_id,)
+    )
+    assert plan_row is not None
+    opus_plan = json.loads(plan_row["opus_plan"])
+    task = opus_plan["tasks"][0]
+    assert "Use ruff." in task["context_text"]
+    assert "ghp_abcdef" not in task["context_text"]

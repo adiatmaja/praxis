@@ -6,10 +6,12 @@ import asyncio
 import contextlib
 import json
 import logging
+import tempfile
 from datetime import UTC, datetime
 from typing import Any, cast
 
 from orchestrator.core.agent_prompt import build_implementer_prompt
+from orchestrator.core.diff_guard import destructive_deletions
 from orchestrator.core.event_bus import EventBus
 from orchestrator.core.git_ops import (
     clone_with_token,
@@ -111,7 +113,7 @@ class Orchestrator:
             return
 
         # Build a slug -> plan-task lookup so we can read per-task plan hints
-        # (plan_path, plan_text) stored in the opus_plan by the dispatch endpoint.
+        # (plan_path, plan_text, context_text) stored in the opus_plan by the dispatch endpoint.
         slug_to_plan_task: dict[str, dict[str, Any]] = {}
         with contextlib.suppress(json.JSONDecodeError, TypeError):
             opus_plan_raw = plan.get("opus_plan")
@@ -133,6 +135,7 @@ class Orchestrator:
             plan_task = slug_to_plan_task.get(task_slug, {})
             plan_path: str | None = plan_task.get("plan_path")
             plan_text: str | None = plan_task.get("plan_text")
+            context_text: str | None = plan_task.get("context_text")
 
             container_id = await self._agents.spawn_agent(
                 task_id=task["id"],
@@ -146,6 +149,7 @@ class Orchestrator:
                 callback_token=self._callback_token,
                 plan_path=plan_path,
                 plan_text=plan_text,
+                context_text=context_text,
             )
             run_id = await self._tq.create_agent_run(task["id"], container_id)
             await self._tq.update_task_status(task["id"], TaskStatus.IN_PROGRESS)
@@ -182,15 +186,58 @@ class Orchestrator:
         repo = self._git.repo_slug(task["pr_url"]) or self._git.repo_slug(
             project["repo_url"]
         )
-        diff = await self._git.get_pr_diff(".", pr_number, repo=repo)
-        review = await self._opus.review_diff(
-            diff,
-            task["description"] or task["title"],
-            model=project.get("agent_model"),
-            effort=project.get("agent_model_effort"),
-        )
+
+        # Resolve plan_text for this task from the plan's opus_plan task list.
+        plan_text_for_review: str | None = None
+        plan = await self._tq.get_plan(task["plan_id"])
+        if plan is not None:
+            slug_to_plan_task: dict[str, dict[str, Any]] = {}
+            with contextlib.suppress(json.JSONDecodeError, TypeError):
+                opus_plan_raw = plan.get("opus_plan")
+                if opus_plan_raw:
+                    parsed = json.loads(opus_plan_raw)
+                    for pt in parsed.get("tasks", []):
+                        if isinstance(pt, dict) and "slug" in pt:
+                            slug_to_plan_task[pt["slug"]] = pt
+            branch_name: str = task["branch_name"]
+            task_slug = (
+                branch_name[len("agent/") :]
+                if branch_name.startswith("agent/")
+                else branch_name
+            )
+            plan_task = slug_to_plan_task.get(task_slug, {})
+            plan_text_for_review = plan_task.get("plan_text")
+
+        checkout: str | None
+        with tempfile.TemporaryDirectory() as _checkout_dir:
+            try:
+                await self._git.clone_pr_head(task["pr_url"], _checkout_dir)
+                checkout = _checkout_dir
+            except Exception:  # noqa: BLE001 - degrade, never wedge review
+                logger.exception(
+                    "review: PR-head clone failed; falling back to diff-only review"
+                )
+                checkout = None
+
+            diff = await self._git.get_pr_diff(".", pr_number, repo=repo)
+            review = await self._opus.review_diff(
+                diff,
+                task["description"] or task["title"],
+                model=project.get("agent_model"),
+                effort=project.get("agent_model_effort"),
+                plan_text=plan_text_for_review,
+                cwd=checkout,
+            )
         verdict = str(review["verdict"]).lower()
         feedback = str(review.get("feedback", ""))
+
+        flagged = destructive_deletions(diff)
+        if flagged and verdict == "pass":
+            verdict = "fail"
+            feedback = (
+                "Hard-blocked: large deletions from existing file(s) "
+                f"{flagged} not justified by the task. " + (feedback or "")
+            )
 
         if verdict == "pass":
             await self._git.merge_pr(".", pr_number, repo=repo)
@@ -275,7 +322,6 @@ class Orchestrator:
             if not rows:
                 return
 
-            import tempfile
             from pathlib import Path
 
             with tempfile.TemporaryDirectory() as tmp_dir:
@@ -605,6 +651,10 @@ class Orchestrator:
         reason = (
             f"Agent container exited (code {exit_code}) without a completion callback"
         )
+        # If the container logs reveal a gh/GraphQL PR-create failure (e.g. zero
+        # commits), surface a clear explanation instead of the generic exit reason.
+        if logs and ("No commits between" in logs or "no commits" in logs.lower()):
+            reason = self._classify_pr_failure(logs)
         # Docker is available on this path (we observed the container exit),
         # so a fresh dispatch can succeed — allow a bounded retry.
         await self._resolve_failed_run(run, reason, logs=logs, can_retry=True)
@@ -671,6 +721,17 @@ class Orchestrator:
                 {"type": "task_failed", "task_id": run["task_id"], "feedback": reason}
             )
             logger.warning("Reconciled run %s -> failed: %s", run["id"], reason)
+
+    @staticmethod
+    def _classify_pr_failure(raw: str) -> str:
+        """Turn an opaque gh/GraphQL PR-create error into an explained failure."""
+        if "No commits between" in raw or "no commits" in raw.lower():
+            return (
+                "Worker produced zero commits: the agent made no changes "
+                "(model likely too weak for this task, or the plan was unclear). "
+                f"Original error: {raw.strip()}"
+            )
+        return raw.strip()
 
     async def shutdown(self) -> None:
         """Cancel all in-flight log monitors."""

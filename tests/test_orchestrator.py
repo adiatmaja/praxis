@@ -222,6 +222,144 @@ class TestOrchestrationReview:
         assert task is not None
         assert task["status"] == TaskStatus.FAILED
 
+    @pytest.mark.unit
+    async def test_review_clones_pr_head_and_passes_cwd(self, db: Database) -> None:
+        """review_task clones the PR head and passes the checkout dir as cwd."""
+        task_queue, _, task_id = await _setup(db)
+        await task_queue.update_task_status(task_id, TaskStatus.REVIEWING)
+        await task_queue.set_task_pr_url(task_id, "https://github.com/u/a/pull/1")
+
+        calls: dict[str, Any] = {}
+
+        async def fake_clone_pr_head(pr_url: str, dest: str) -> str:
+            calls["cloned_to"] = dest
+            return dest
+
+        mock_opus = AsyncMock()
+        mock_opus.is_available.return_value = True
+
+        async def fake_review_diff(
+            diff: str, desc: str, **kwargs: Any
+        ) -> dict[str, Any]:
+            calls["cwd"] = kwargs.get("cwd")
+            return {"verdict": "pass", "feedback": "ok", "issues": []}
+
+        mock_opus.review_diff.side_effect = fake_review_diff
+
+        mock_git = AsyncMock()
+        mock_git.extract_pr_number.return_value = 1
+        mock_git.get_pr_diff.return_value = "diff content"
+        mock_git.repo_slug = MagicMock(return_value="u/a")
+        mock_git.clone_pr_head.side_effect = fake_clone_pr_head
+
+        orch = Orchestrator(
+            task_queue=task_queue,
+            agent_manager=MagicMock(),
+            opus_bridge=mock_opus,
+            git_ops=mock_git,
+            event_bus=EventBus(),
+        )
+        await orch.review_task(task_id, await _project(db))
+
+        assert "cloned_to" in calls, "clone_pr_head was not called"
+        assert "cwd" in calls, "review_diff was not called"
+        assert calls["cwd"] == calls["cloned_to"]
+
+    @pytest.mark.unit
+    async def test_review_degrades_to_diff_only_when_clone_fails(
+        self, db: Database
+    ) -> None:
+        """review_task falls back to diff-only (cwd=None) when clone_pr_head raises."""
+        task_queue, _, task_id = await _setup(db)
+        await task_queue.update_task_status(task_id, TaskStatus.REVIEWING)
+        await task_queue.set_task_pr_url(task_id, "https://github.com/u/a/pull/1")
+
+        calls: dict[str, Any] = {}
+
+        async def fail_clone_pr_head(pr_url: str, dest: str) -> str:
+            msg = "simulated clone failure"
+            raise RuntimeError(msg)
+
+        mock_opus = AsyncMock()
+        mock_opus.is_available.return_value = True
+
+        async def fake_review_diff(
+            diff: str, desc: str, **kwargs: Any
+        ) -> dict[str, Any]:
+            calls["cwd"] = kwargs.get("cwd")
+            return {"verdict": "pass", "feedback": "ok", "issues": []}
+
+        mock_opus.review_diff.side_effect = fake_review_diff
+
+        mock_git = AsyncMock()
+        mock_git.extract_pr_number.return_value = 1
+        mock_git.get_pr_diff.return_value = "diff content"
+        mock_git.repo_slug = MagicMock(return_value="u/a")
+        mock_git.clone_pr_head.side_effect = fail_clone_pr_head
+
+        orch = Orchestrator(
+            task_queue=task_queue,
+            agent_manager=MagicMock(),
+            opus_bridge=mock_opus,
+            git_ops=mock_git,
+            event_bus=EventBus(),
+        )
+        await orch.review_task(task_id, await _project(db))
+
+        # review_diff must still be called with cwd=None (diff-only fallback).
+        assert "cwd" in calls, "review_diff was not called"
+        assert calls["cwd"] is None
+
+        # review must still reach a verdict: task ends up merged (pass verdict).
+        task = await task_queue.get_task(task_id)
+        assert task is not None
+        assert task["status"] == TaskStatus.MERGED
+
+    async def test_review_hard_blocks_large_deletion(self, db: Database) -> None:
+        """Brain 'pass' is overridden to 'fail' when diff deletes >40 lines from an existing file."""
+        task_queue, _, task_id = await _setup(db)
+        await task_queue.update_task_status(task_id, TaskStatus.REVIEWING)
+        await task_queue.set_task_pr_url(task_id, "https://github.com/u/a/pull/1")
+
+        large_deletion_diff = "\n".join(
+            ["--- a/config.py", "+++ b/config.py"]
+            + [f"-ORIGINAL_LINE_{i} = True" for i in range(60)]
+            + ["+# truncated"]
+        )
+
+        mock_opus = AsyncMock()
+        mock_opus.is_available.return_value = True
+        mock_opus.review_diff.return_value = {
+            "verdict": "pass",
+            "feedback": "ok",
+            "issues": [],
+        }
+        mock_git = AsyncMock()
+        mock_git.extract_pr_number.return_value = 1
+        mock_git.get_pr_diff.return_value = large_deletion_diff
+        mock_git.repo_slug = MagicMock(return_value="u/a")
+
+        orch = Orchestrator(
+            task_queue=task_queue,
+            agent_manager=MagicMock(),
+            opus_bridge=mock_opus,
+            git_ops=mock_git,
+            event_bus=EventBus(),
+        )
+        await orch.review_task(task_id, await _project(db))
+
+        task = await task_queue.get_task(task_id)
+        assert task is not None
+        # Must NOT be merged: brain pass was overridden by hard-block
+        assert task["status"] != TaskStatus.MERGED
+        mock_git.merge_pr.assert_not_called()
+        # Feedback must mention the hard-block
+        comment_call = mock_git.comment_on_pr.call_args
+        assert comment_call is not None
+        comment_text = comment_call[0][2]
+        assert "Hard-blocked" in comment_text
+        assert "config.py" in comment_text
+
 
 @pytest.mark.integration
 class TestImprovementLoop:
@@ -877,3 +1015,25 @@ class TestLogMonitor:
         run = await tq.get_agent_run(run_id)
         assert run is not None
         assert run["status"] == "completed"
+
+
+@pytest.fixture
+def orchestrator() -> Orchestrator:
+    from unittest.mock import AsyncMock, MagicMock
+
+    return Orchestrator(
+        task_queue=MagicMock(),
+        agent_manager=None,
+        opus_bridge=AsyncMock(),
+        git_ops=MagicMock(),
+        event_bus=EventBus(),
+    )
+
+
+@pytest.mark.unit
+async def test_empty_diff_failure_has_clear_message(orchestrator: Orchestrator) -> None:
+    msg = orchestrator._classify_pr_failure(
+        "GraphQL: No commits between main and agent/x (createPullRequest)"
+    )
+    assert "zero commits" in msg.lower()
+    assert "worker" in msg.lower()

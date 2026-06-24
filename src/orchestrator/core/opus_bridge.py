@@ -52,6 +52,14 @@ REVIEW_PROMPT_TEMPLATE = """You are a senior code reviewer. Review this PR diff 
 
 Task description: {task_description}
 
+Plan / spec the change must satisfy:
+{plan_text}
+
+A clean checkout of the PR head is your current working directory; you may
+inspect files with your tools to verify the diff in context. If git is
+unavailable, review from the diff text alone - do NOT pass solely because you
+could not verify.
+
 Diff:
 {diff}
 
@@ -63,7 +71,8 @@ Respond with ONLY valid JSON in this exact format:
 }}
 
 Pass if the code correctly implements the task and has no critical issues.
-Fail if there are bugs, missing functionality, or security problems.
+Fail if there are bugs, missing functionality, security problems, or it deletes
+existing functionality/config the task did not ask to remove.
 """
 
 IMPROVEMENT_PROMPT_TEMPLATE = """You are a senior software architect. Analyze this project for improvements.
@@ -129,6 +138,7 @@ class OpusBridge:
         prompt: str,
         model: str | None = None,
         effort: str | None = None,
+        cwd: str | None = None,
     ) -> tuple[int, str, str]:
         resolved_model = await self._resolve_model(model)
         resolved_effort = await self._resolve_effort(effort)
@@ -145,6 +155,7 @@ class OpusBridge:
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            cwd=cwd,
         )
         stdout, stderr = await proc.communicate(input=prompt.encode())
         return (
@@ -183,8 +194,9 @@ class OpusBridge:
         prompt: str,
         model: str | None = None,
         effort: str | None = None,
+        cwd: str | None = None,
     ) -> str:
-        code, stdout, stderr = await self._run_claude_raw(prompt, model, effort)
+        code, stdout, stderr = await self._run_claude_raw(prompt, model, effort, cwd)
         if await self._check_and_handle_rate_limit(code, stdout, stderr):
             message = "Opus rate limited"
             raise RuntimeError(message)
@@ -229,19 +241,22 @@ class OpusBridge:
         effort: str | None = None,
         project_id: str | None = None,
         tier: str = "first",
+        plan_text: str | None = None,
+        cwd: str | None = None,
     ) -> dict[str, Any]:
         prompt = REVIEW_PROMPT_TEMPLATE.format(
             diff=diff,
             task_description=task_description,
+            plan_text=(plan_text or "(no plan text was provided)"),
         )
         router: LLMRouter | None = getattr(self, "_router", None)
         if router is not None:
             call_site = (
                 "review_diff_rereview" if tier == "rereview" else "review_diff_first"
             )
-            raw = await router.run(call_site, prompt, project_id)
+            raw = await router.run(call_site, prompt, project_id, cwd=cwd)
         else:
-            raw = await self._run_claude(prompt, model, effort)
+            raw = await self._run_claude(prompt, model, effort, cwd=cwd)
         return self._extract_json(raw)
 
     async def analyze_improvements(

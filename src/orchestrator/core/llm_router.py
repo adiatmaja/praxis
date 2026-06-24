@@ -138,7 +138,13 @@ class LLMRouter:
         self._resolve = resolve
         self._lm_studio_url = lm_studio_url
 
-    async def run(self, call_site: str, prompt: str, project_id: str | None) -> str:
+    async def run(
+        self,
+        call_site: str,
+        prompt: str,
+        project_id: str | None,
+        cwd: str | None = None,
+    ) -> str:
         cfg = await self._resolve(call_site, project_id)
         provider = cfg["provider"]
         if provider == "local":
@@ -167,6 +173,7 @@ class LLMRouter:
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            cwd=cwd,
         )
         stdin_input = None if prompt_in_argv else prompt.encode()
         stdout, stderr = await proc.communicate(input=stdin_input)
