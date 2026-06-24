@@ -315,6 +315,51 @@ class TestOrchestrationReview:
         assert task is not None
         assert task["status"] == TaskStatus.MERGED
 
+    async def test_review_hard_blocks_large_deletion(self, db: Database) -> None:
+        """Brain 'pass' is overridden to 'fail' when diff deletes >40 lines from an existing file."""
+        task_queue, _, task_id = await _setup(db)
+        await task_queue.update_task_status(task_id, TaskStatus.REVIEWING)
+        await task_queue.set_task_pr_url(task_id, "https://github.com/u/a/pull/1")
+
+        large_deletion_diff = "\n".join(
+            ["--- a/config.py", "+++ b/config.py"]
+            + [f"-ORIGINAL_LINE_{i} = True" for i in range(60)]
+            + ["+# truncated"]
+        )
+
+        mock_opus = AsyncMock()
+        mock_opus.is_available.return_value = True
+        mock_opus.review_diff.return_value = {
+            "verdict": "pass",
+            "feedback": "ok",
+            "issues": [],
+        }
+        mock_git = AsyncMock()
+        mock_git.extract_pr_number.return_value = 1
+        mock_git.get_pr_diff.return_value = large_deletion_diff
+        mock_git.repo_slug = MagicMock(return_value="u/a")
+
+        orch = Orchestrator(
+            task_queue=task_queue,
+            agent_manager=MagicMock(),
+            opus_bridge=mock_opus,
+            git_ops=mock_git,
+            event_bus=EventBus(),
+        )
+        await orch.review_task(task_id, await _project(db))
+
+        task = await task_queue.get_task(task_id)
+        assert task is not None
+        # Must NOT be merged: brain pass was overridden by hard-block
+        assert task["status"] != TaskStatus.MERGED
+        mock_git.merge_pr.assert_not_called()
+        # Feedback must mention the hard-block
+        comment_call = mock_git.comment_on_pr.call_args
+        assert comment_call is not None
+        comment_text = comment_call[0][2]
+        assert "Hard-blocked" in comment_text
+        assert "config.py" in comment_text
+
 
 @pytest.mark.integration
 class TestImprovementLoop:

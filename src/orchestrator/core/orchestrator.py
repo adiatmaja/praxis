@@ -11,6 +11,7 @@ from datetime import UTC, datetime
 from typing import Any, cast
 
 from orchestrator.core.agent_prompt import build_implementer_prompt
+from orchestrator.core.diff_guard import destructive_deletions
 from orchestrator.core.event_bus import EventBus
 from orchestrator.core.git_ops import (
     clone_with_token,
@@ -241,6 +242,14 @@ class Orchestrator:
             )
         verdict = str(review["verdict"]).lower()
         feedback = str(review.get("feedback", ""))
+
+        flagged = destructive_deletions(diff)
+        if flagged and verdict == "pass":
+            verdict = "fail"
+            feedback = (
+                "Hard-blocked: large deletions from existing file(s) "
+                f"{flagged} not justified by the task. " + (feedback or "")
+            )
 
         if verdict == "pass":
             await self._git.merge_pr(".", pr_number, repo=repo)
