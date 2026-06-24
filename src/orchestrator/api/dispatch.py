@@ -16,6 +16,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 
 from orchestrator.api.auth import verify_token
+from orchestrator.core.context_scrub import scrub_context
 from orchestrator.core.git_ops import GitOps
 from orchestrator.core.harnesses import default_harness_id
 from orchestrator.models.schemas import DispatchRequest, DispatchResponse
@@ -201,6 +202,9 @@ async def dispatch_task(request: Request, body: DispatchRequest) -> dict[str, An
         task_dict["plan_path"] = body.plan_path
     if body.plan_text is not None:
         task_dict["plan_text"] = body.plan_text
+    scrubbed_context = scrub_context(body.context)
+    if scrubbed_context is not None:
+        task_dict["context_text"] = scrubbed_context
 
     opus_plan = {"tasks": [task_dict]}
     branch_name = body.branch or f"plan/mcp-{slug}"
