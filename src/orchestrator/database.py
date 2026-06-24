@@ -36,7 +36,7 @@ MIGRATIONS: tuple[str, ...] = (
         max_improvement_cycles INTEGER NOT NULL DEFAULT 5,
         lm_studio_url TEXT NOT NULL DEFAULT 'http://host.docker.internal:1234',
         model_name TEXT NOT NULL DEFAULT '',
-        harness TEXT NOT NULL DEFAULT 'aider',
+        harness TEXT NOT NULL DEFAULT 'opencode',
         agent_model TEXT,
         agent_model_effort TEXT,
         created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -162,7 +162,7 @@ class Database:
                 (
                     "agent_model TEXT",
                     "agent_model_effort TEXT",
-                    "harness TEXT NOT NULL DEFAULT 'aider'",
+                    "harness TEXT NOT NULL DEFAULT 'opencode'",
                 ),
             ),
             ("plans", ("spec_path TEXT", "plan_path TEXT")),

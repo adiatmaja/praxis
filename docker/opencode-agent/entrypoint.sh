@@ -94,6 +94,15 @@ git checkout -b "${BRANCH}"
 
 echo "--- Writing OpenCode config (OpenAI-compatible local provider) ---"
 mkdir -p "${HOME}/.config/opencode"
+# MODEL_CONTEXT_LIMIT is detected per-model from LM Studio by the orchestrator
+# (never hardcoded). When present, advertise it as the model's context limit so
+# OpenCode's auto-compaction triggers at the real window instead of overflowing
+# into silent server-side truncation. Omitted -> OpenCode uses its own default.
+model_cfg='{ "name": "'"${MODEL}"'" }'
+if [ -n "${MODEL_CONTEXT_LIMIT:-}" ]; then
+    model_cfg='{ "name": "'"${MODEL}"'", "limit": { "context": '"${MODEL_CONTEXT_LIMIT}"' } }'
+    echo "Using detected context limit: ${MODEL_CONTEXT_LIMIT}"
+fi
 cat > "${HOME}/.config/opencode/opencode.json" <<EOF
 {
   "\$schema": "https://opencode.ai/config.json",
@@ -102,7 +111,7 @@ cat > "${HOME}/.config/opencode/opencode.json" <<EOF
       "npm": "@ai-sdk/openai-compatible",
       "name": "LM Studio (local)",
       "options": { "baseURL": "${OPENAI_API_BASE}", "apiKey": "not-needed" },
-      "models": { "${MODEL}": { "name": "${MODEL}" } }
+      "models": { "${MODEL}": ${model_cfg} }
     }
   }
 }

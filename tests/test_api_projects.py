@@ -150,7 +150,7 @@ async def test_create_project_persists_harness(
 
 
 @pytest.mark.integration
-async def test_create_project_defaults_harness_aider(
+async def test_create_project_defaults_harness_opencode(
     client: AsyncClient,
     db: Database,
     auth_headers: dict[str, str],
@@ -167,4 +167,4 @@ async def test_create_project_defaults_harness_aider(
         },
     )
     assert resp.status_code == 201
-    assert resp.json()["harness"] == "aider"
+    assert resp.json()["harness"] == "opencode"

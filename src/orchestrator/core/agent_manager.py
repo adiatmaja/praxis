@@ -6,6 +6,7 @@ import logging
 from typing import TYPE_CHECKING, Any
 
 import docker.errors
+import httpx
 
 import docker
 from orchestrator.core.harnesses import REGISTRY, default_harness_id
@@ -16,6 +17,42 @@ if TYPE_CHECKING:
 
 
 logger = logging.getLogger(__name__)
+
+
+async def detect_context_limit(lm_studio_url: str, model_name: str) -> int | None:
+    """Return the model's real loaded context window from LM Studio, or None.
+
+    Queries LM Studio's native REST API (``/api/v0/models``), which reports
+    ``loaded_context_length`` (the window the model is actually serving) and
+    ``max_context_length``. We prefer the loaded value because that is the hard
+    limit a worker will hit; the model id may advertise far more than is loaded.
+
+    The value is detected per-model at spawn time — never hardcoded — so it
+    tracks whatever the host has loaded. Best-effort: any failure (LM Studio
+    down, model not listed, unexpected payload) returns None and the caller
+    simply omits the limit rather than guessing.
+    """
+    base = lm_studio_url.rstrip("/")
+    url = f"{base}/api/v0/models"
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(url)
+            resp.raise_for_status()
+            payload = resp.json()
+    except (httpx.HTTPError, ValueError) as exc:
+        logger.warning("Could not detect context limit from %s: %s", url, exc)
+        return None
+    for model in payload.get("data", []):
+        if model.get("id") != model_name:
+            continue
+        limit = model.get("loaded_context_length") or model.get("max_context_length")
+        if isinstance(limit, int) and limit > 0:
+            return limit
+        return None
+    logger.warning(
+        "Model %s not found in %s; cannot detect context limit", model_name, url
+    )
+    return None
 
 
 class AgentManager:
@@ -73,6 +110,13 @@ class AgentManager:
             environment["PLAN_TEXT"] = plan_text
         if context_text is not None:
             environment["CONTEXT_TEXT"] = context_text
+        # Detect the model's real context window so compaction-capable harnesses
+        # (OpenCode) can trigger at the right threshold instead of sailing past
+        # it into silent server-side truncation. Detected per-model, never
+        # hardcoded; omitted when LM Studio can't be reached.
+        context_limit = await detect_context_limit(lm_studio_url, model_name)
+        if context_limit is not None:
+            environment["MODEL_CONTEXT_LIMIT"] = str(context_limit)
         container_name = f"aider-agent-{task_id[:8]}"
         self._remove_existing_container(container_name)
         container = self._client.containers.run(

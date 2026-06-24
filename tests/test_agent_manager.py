@@ -3,12 +3,48 @@
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import docker.errors
+import httpx
 import pytest
 
-from orchestrator.core.agent_manager import AgentManager
+from orchestrator.core.agent_manager import AgentManager, detect_context_limit
+
+
+def _mock_async_client(
+    json_payload: dict | None = None, raise_exc: Exception | None = None
+):
+    """Build a patch target for ``httpx.AsyncClient`` used as an async CM."""
+    client = MagicMock()
+    if raise_exc is not None:
+        client.get = AsyncMock(side_effect=raise_exc)
+    else:
+        resp = MagicMock()
+        resp.raise_for_status = MagicMock()
+        resp.json = MagicMock(return_value=json_payload)
+        client.get = AsyncMock(return_value=resp)
+    cm = MagicMock()
+    cm.__aenter__ = AsyncMock(return_value=client)
+    cm.__aexit__ = AsyncMock(return_value=False)
+    return cm
+
+
+@pytest.fixture(autouse=True)
+def _no_real_context_probe():
+    """Stop spawn tests hitting the network for context detection.
+
+    Patches the module-global ``detect_context_limit`` (so ``spawn_agent`` sees
+    it) to return None by default. Tests that exercise detection import the
+    symbol directly and are unaffected; the env-wiring tests override this with
+    their own patch.
+    """
+    with patch(
+        "orchestrator.core.agent_manager.detect_context_limit",
+        new_callable=AsyncMock,
+        return_value=None,
+    ):
+        yield
 
 
 def _mock_container(
@@ -95,7 +131,7 @@ async def test_spawn_agent_sets_correct_env(mock_docker: MagicMock) -> None:
 
 @pytest.mark.unit
 @patch("orchestrator.core.agent_manager.docker")
-async def test_spawn_agent_defaults_to_aider(mock_docker: MagicMock) -> None:
+async def test_spawn_agent_defaults_to_opencode(mock_docker: MagicMock) -> None:
     mock_client = MagicMock()
     mock_docker.from_env.return_value = mock_client
     mock_client.containers.run.return_value = _mock_container()
@@ -110,7 +146,10 @@ async def test_spawn_agent_defaults_to_aider(mock_docker: MagicMock) -> None:
         model_name="m",
         callback_url="http://o/cb",
     )
-    assert mock_client.containers.run.call_args.kwargs["image"] == "aider-agent:latest"
+    assert (
+        mock_client.containers.run.call_args.kwargs["image"]
+        == "opencode-agent:latest"
+    )
 
 
 @pytest.mark.unit
@@ -269,6 +308,97 @@ async def test_spawn_agent_sets_context_env(mock_docker: MagicMock) -> None:
     )
     env = mock_client.containers.run.call_args.kwargs["environment"]
     assert env["CONTEXT_TEXT"] == "Conventions: ruff."
+
+
+@pytest.mark.unit
+@patch("orchestrator.core.agent_manager.httpx.AsyncClient")
+async def test_detect_context_limit_prefers_loaded(mock_client: MagicMock) -> None:
+    mock_client.return_value = _mock_async_client(
+        {
+            "data": [
+                {
+                    "id": "m",
+                    "loaded_context_length": 112277,
+                    "max_context_length": 262144,
+                }
+            ]
+        }
+    )
+    assert await detect_context_limit("http://x:1234", "m") == 112277
+
+
+@pytest.mark.unit
+@patch("orchestrator.core.agent_manager.httpx.AsyncClient")
+async def test_detect_context_limit_falls_back_to_max(mock_client: MagicMock) -> None:
+    mock_client.return_value = _mock_async_client(
+        {"data": [{"id": "m", "max_context_length": 8192}]}
+    )
+    assert await detect_context_limit("http://x:1234/", "m") == 8192
+
+
+@pytest.mark.unit
+@patch("orchestrator.core.agent_manager.httpx.AsyncClient")
+async def test_detect_context_limit_model_absent(mock_client: MagicMock) -> None:
+    mock_client.return_value = _mock_async_client({"data": [{"id": "other"}]})
+    assert await detect_context_limit("http://x:1234", "m") is None
+
+
+@pytest.mark.unit
+@patch("orchestrator.core.agent_manager.httpx.AsyncClient")
+async def test_detect_context_limit_on_error(mock_client: MagicMock) -> None:
+    mock_client.return_value = _mock_async_client(raise_exc=httpx.ConnectError("down"))
+    assert await detect_context_limit("http://x:1234", "m") is None
+
+
+@pytest.mark.unit
+@patch("orchestrator.core.agent_manager.detect_context_limit", new_callable=AsyncMock)
+@patch("orchestrator.core.agent_manager.docker")
+async def test_spawn_sets_context_limit_env(
+    mock_docker: MagicMock, mock_detect: AsyncMock
+) -> None:
+    mock_client = MagicMock()
+    mock_docker.from_env.return_value = mock_client
+    mock_client.containers.run.return_value = _mock_container()
+    mock_detect.return_value = 112277
+
+    manager = AgentManager(lm_studio_url="http://localhost:1234", github_token="ghp_x")
+    await manager.spawn_agent(
+        task_id="t9",
+        repo_url="https://github.com/o/r",
+        branch="agent/x",
+        base_branch="main",
+        task_prompt="do x",
+        model_name="google/gemma-4-26b-a4b",
+        callback_url="http://cb/",
+        harness="opencode",
+    )
+    env = mock_client.containers.run.call_args.kwargs["environment"]
+    assert env["MODEL_CONTEXT_LIMIT"] == "112277"
+
+
+@pytest.mark.unit
+@patch("orchestrator.core.agent_manager.detect_context_limit", new_callable=AsyncMock)
+@patch("orchestrator.core.agent_manager.docker")
+async def test_spawn_omits_context_limit_when_undetected(
+    mock_docker: MagicMock, mock_detect: AsyncMock
+) -> None:
+    mock_client = MagicMock()
+    mock_docker.from_env.return_value = mock_client
+    mock_client.containers.run.return_value = _mock_container()
+    mock_detect.return_value = None
+
+    manager = AgentManager(lm_studio_url="http://localhost:1234", github_token="ghp_x")
+    await manager.spawn_agent(
+        task_id="t10",
+        repo_url="https://github.com/o/r",
+        branch="agent/x",
+        base_branch="main",
+        task_prompt="do x",
+        model_name="m",
+        callback_url="http://cb/",
+    )
+    env = mock_client.containers.run.call_args.kwargs["environment"]
+    assert "MODEL_CONTEXT_LIMIT" not in env
 
 
 @pytest.mark.unit

@@ -353,9 +353,9 @@ def test_project_create_agent_model_optional():
 
 
 @pytest.mark.unit
-def test_project_create_defaults_harness_to_aider() -> None:
+def test_project_create_defaults_harness_to_opencode() -> None:
     p = ProjectCreate(name="p", repo_url="https://x/y", model_name="m")
-    assert p.harness == "aider"
+    assert p.harness == "opencode"
 
 
 @pytest.mark.unit

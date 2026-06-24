@@ -45,8 +45,9 @@ REGISTRY: dict[str, HarnessSpec] = {
             "wiring. Smallest, fastest image."
         ),
         when_to_pick=(
-            "Default choice. Best for focused, well-scoped tasks on small-to-"
-            "medium repos and when you want minimal moving parts and fast runs."
+            "Best for focused, well-scoped tasks that comfortably fit one "
+            "context window, on small-to-medium repos, when you want minimal "
+            "moving parts and fast runs. Pre-decompose larger work first."
         ),
         pros=(
             "Auto-commits — zero git glue required",
@@ -55,12 +56,16 @@ REGISTRY: dict[str, HarnessSpec] = {
             "Excellent diff/edit quality on scoped tasks",
         ),
         cons=(
+            "Single-shot --message: NO context compaction — each task must fit "
+            "one context window",
+            "On overflow it sends everything raw; if the model server (e.g. LM "
+            "Studio) silently truncates, Aider reports SUCCESS on a partial "
+            "view (verified) — no error, no flag",
             "Less autonomous on large multi-step tasks",
             "No built-in sandboxed code execution or browsing",
-            "Single-shot --message runs; limited self-correction",
         ),
         maturity="stable",
-        recommended=True,
+        recommended=False,
     ),
     "opencode": HarnessSpec(
         id="opencode",
@@ -76,22 +81,28 @@ REGISTRY: dict[str, HarnessSpec] = {
             "use; the de facto community default. Mixes/swaps providers freely."
         ),
         when_to_pick=(
-            "When you want the most actively-developed, capable general agent "
-            "and your local model is strong. Good middle ground between Aider's "
-            "minimalism and OpenHands' heavyweight autonomy."
+            "Default choice. Best for long-running, large, or open-ended tasks: "
+            "its agentic loop reads files in bounded, paginated chunks and never "
+            "builds one oversized request, so it survives big repos where Aider "
+            "would silently truncate. Adds auto-compaction on top."
         ),
         pros=(
+            "Bounded, paginated tool reads — never dumps a whole file into one "
+            "request, so it sidesteps silent context-truncation (verified)",
+            "Auto-compacts conversation context (~95% capacity) for long "
+            "multi-turn tasks",
             "Largest community / most active development",
-            "Strong agentic loop and tool use",
-            "Works with any OpenAI-compatible local model",
-            "Headless `opencode run` mode suits automation",
+            "Works with any OpenAI-compatible local model; headless `opencode "
+            "run` suits automation",
         ),
         cons=(
             "Does not auto-commit — entrypoint must stage & commit changes",
             "Larger image than Aider",
-            "Config-driven provider setup adds a step",
+            "Compaction triggers off the model's known context length; for a "
+            "custom local provider set `limit.context` so it fires correctly",
         ),
         maturity="active",
+        recommended=True,
         does_own_git=False,
         notes=(
             "Praxis's entrypoint runs `git add -A && git commit` after the "
@@ -141,9 +152,14 @@ REGISTRY: dict[str, HarnessSpec] = {
 
 
 def default_harness_id() -> str:
-    """The harness assigned to projects that don't specify one."""
+    """The harness assigned to projects that don't specify one.
 
-    return "aider"
+    OpenCode is the default because its agentic loop reads files in bounded
+    chunks and auto-compacts, so it survives long-running / large tasks. Aider
+    is single-shot with no compaction and silently truncates on overflow.
+    """
+
+    return "opencode"
 
 
 def get_harness(harness_id: str) -> HarnessSpec:

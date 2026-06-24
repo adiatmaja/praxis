@@ -20,9 +20,9 @@ def test_registry_contains_expected_harnesses() -> None:
 
 
 @pytest.mark.unit
-def test_default_is_aider() -> None:
-    assert default_harness_id() == "aider"
-    assert REGISTRY["aider"].image == "aider-agent:latest"
+def test_default_is_opencode() -> None:
+    assert default_harness_id() == "opencode"
+    assert REGISTRY["opencode"].image == "opencode-agent:latest"
 
 
 @pytest.mark.unit

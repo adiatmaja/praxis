@@ -206,7 +206,7 @@ class ProjectResponse(BaseModel):
     lm_studio_url: str
     agent_model: str | None = None
     agent_model_effort: str | None = None
-    harness: str = "aider"
+    harness: str = Field(default_factory=default_harness_id)
     created_at: str
 
 

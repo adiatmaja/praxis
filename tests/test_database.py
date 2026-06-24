@@ -158,7 +158,7 @@ async def test_projects_table_has_harness_column(tmp_path) -> None:
 
 
 @pytest.mark.unit
-async def test_harness_defaults_to_aider(tmp_path) -> None:
+async def test_harness_defaults_to_opencode(tmp_path) -> None:
     db = Database(f"sqlite+aiosqlite:///{tmp_path / 'mig2.db'}")
     await db.initialize()
     try:
@@ -176,7 +176,7 @@ async def test_harness_defaults_to_aider(tmp_path) -> None:
         )
         row = await db.fetch_one("SELECT harness FROM projects WHERE id = ?", (pid,))
         assert row is not None
-        assert row["harness"] == "aider"
+        assert row["harness"] == "opencode"
     finally:
         await db.close()
 
