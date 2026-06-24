@@ -111,7 +111,7 @@ class Orchestrator:
             return
 
         # Build a slug -> plan-task lookup so we can read per-task plan hints
-        # (plan_path, plan_text) stored in the opus_plan by the dispatch endpoint.
+        # (plan_path, plan_text, context_text) stored in the opus_plan by the dispatch endpoint.
         slug_to_plan_task: dict[str, dict[str, Any]] = {}
         with contextlib.suppress(json.JSONDecodeError, TypeError):
             opus_plan_raw = plan.get("opus_plan")
@@ -133,6 +133,7 @@ class Orchestrator:
             plan_task = slug_to_plan_task.get(task_slug, {})
             plan_path: str | None = plan_task.get("plan_path")
             plan_text: str | None = plan_task.get("plan_text")
+            context_text: str | None = plan_task.get("context_text")
 
             container_id = await self._agents.spawn_agent(
                 task_id=task["id"],
@@ -146,6 +147,7 @@ class Orchestrator:
                 callback_token=self._callback_token,
                 plan_path=plan_path,
                 plan_text=plan_text,
+                context_text=context_text,
             )
             run_id = await self._tq.create_agent_run(task["id"], container_id)
             await self._tq.update_task_status(task["id"], TaskStatus.IN_PROGRESS)
