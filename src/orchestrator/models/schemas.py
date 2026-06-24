@@ -358,6 +358,10 @@ class DispatchRequest(BaseModel):
     name: str | None = None
     plan_path: str | None = None
     plan_text: str | None = None
+    context: str | None = None
+    """Curated, task-relevant context for the worker (memory, conventions,
+    architecture notes). Scrubbed of secrets and size-capped server-side. NOT
+    a place for secret values - those are redacted on arrival."""
 
     @field_validator("repo_url")
     @classmethod

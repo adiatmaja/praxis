@@ -9,6 +9,7 @@ from pydantic import ValidationError
 from orchestrator.models.schemas import (
     AgentRunResponse,
     AgentRunStatus,
+    DispatchRequest,
     OpusImprovementPayload,
     OpusPlanPayload,
     OpusReviewPayload,
@@ -380,3 +381,22 @@ def test_project_update_rejects_unknown_harness() -> None:
 @pytest.mark.unit
 def test_project_update_allows_none_harness() -> None:
     assert ProjectUpdate(harness=None).harness is None
+
+
+@pytest.mark.unit
+def test_dispatch_request_accepts_context() -> None:
+    req = DispatchRequest(
+        repo_url="https://github.com/o/r",
+        instructions="do x",
+        model="qwen3",
+        context="Conventions: use ruff.",
+    )
+    assert req.context == "Conventions: use ruff."
+
+
+@pytest.mark.unit
+def test_dispatch_request_context_defaults_none() -> None:
+    req = DispatchRequest(
+        repo_url="https://github.com/o/r", instructions="do x", model="qwen3"
+    )
+    assert req.context is None
