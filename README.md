@@ -23,21 +23,103 @@ otherwise do by hand:
    another attempt (up to 3).
 5. If an agent crashes or hangs, Praxis notices and retries it, so nothing gets stuck forever.
 
-The trick that makes this cheap: the **planning and review** (the parts that need a strong model)
-run on the **flat-rate AI subscription you already pay for**, while the **token-heavy code-writing**
-runs on a **free local model** on your own machine. You get an autonomous dev loop without a metered
-API bill.
+The trick that makes this cheap — and the reason Praxis exists — is in the next section. Drive the
+whole loop three ways (all clients of one engine): **MCP** (from Claude Code), the **dashboard**, or
+the **CLI**.
 
-Drive it three ways, all clients of one engine:
+## The one thing Praxis is really for
 
-- **Dashboard or CLI**: submit a spec and watch the full autonomous loop run end to end, including
-  live logs and a human window for unsticking a wedged task.
-- **MCP**: point an MCP client (e.g. Claude Code) at it and `dispatch_task` real implementation
-  work to a local model. Handy bonus: because an MCP tool is provider-agnostic, this also lets a
-  Claude-only assistant route work to a non-Claude worker. (MCP is request/response, so it's blind
-  to long-running async tasks, so the dashboard backs it up for that.)
+**Let the AI subscription you already pay for do the planning, and a free local
+model do the implementation.** Strong models are worth their judgment on
+architecture, task breakdown, and code review; they are wasteful (and expensive)
+spent on token-heavy file editing. Praxis splits those two jobs across two cost
+tiers so each runs where it's cheapest — in practice, one entry-level (~$20/month)
+subscription can run the whole loop, with the local model coding for zero tokens.
 
-See [MCP Control Surface](#mcp-control-surface) for the MCP interface.
+The capability that delivers this — and the main reason Praxis exists:
+
+> **Praxis ships an MCP server, so an assistant locked to one provider (e.g.
+> Claude Code on a flat-rate subscription) can dispatch real implementation work
+> to a local LLM through a normal tool call.** Claude Code's own subagents are
+> Claude-only by design. Praxis is the bridge: you stay in Claude Code, say
+> _"use praxis to implement X on this repo with `<my-local-model>`"_, and the
+> coding is done by a free local model in LM Studio — while Claude does the
+> planning and reviews the resulting PR.
+
+So in one sentence: **Praxis is how you use an AI subscription as the brain and a
+local model as the hands, driven from inside the assistant you already use.**
+
+```
+   YOU
+    │  "use praxis to implement X on my-repo with <local-model>"
+    ▼
+  ┌───────────────────────┐
+  │  Claude Code  (BRAIN) │   flat-rate subscription · plans + reviews
+  │  your subscription    │
+  └───────────┬───────────┘
+              │  MCP  dispatch_task()          ◀── the bridge: provider-locked
+              ▼                                     assistant → local worker
+  ┌───────────────────────────────────────────────────────────────┐
+  │  PRAXIS  ·  orchestrator (FastAPI + SQLite)                    │
+  │                                                                │
+  │   plan ──▶ task ──▶ dispatch ──▶ open PR ──▶ review ──▶ merge  │
+  │    ▲                   │                        │              │
+  │    │ subscription      │ local & free           │ subscription │
+  │    │ (judgment)        ▼ (token-heavy)          │ (judgment)   │
+  └────┼───────────────────┼────────────────────────┼─────────────┘
+       │                   ▼                         │
+       │        ┌──────────────────────┐            │
+       │        │  CODING AGENT (Docker)│            │
+       │        │  Aider / OpenCode /   │            │
+       │        │  OpenHands            │            │
+       │        └──────────┬───────────┘            │
+       │                   │ OpenAI-compatible       │
+       │                   ▼                         │
+       │        ┌──────────────────────┐            │
+       │        │  LOCAL MODEL (HANDS)  │            │
+       │        │  LM Studio · free     │            │
+       │        └──────────────────────┘            │
+       │                                             │
+       └──────────────── reviews the PR ◀────────────┘
+                         (pass → squash-merge · fail → retry ×3)
+
+   BRAIN  = your AI subscription   → planning + code review (needs judgment)
+   HANDS  = local model, zero cost → writing the actual file edits (token-heavy)
+```
+
+### Why this is different from Aider / Roo Code / Cline / OpenHands
+
+Those tools can already pair a strong planner with a cheaper implementer — but
+they assume a **metered API** for the planner, and none lets a *provider-locked
+assistant delegate to a local worker from inside that assistant*. Praxis's
+distinct combination:
+
+- **Subscription-CLI arbitrage** — planning/review bill against your flat-rate
+  plan (`claude -p`, `codex`, `agy`), not a per-token API.
+- **Provider escape hatch via MCP** — route Claude → local worker without leaving
+  Claude Code.
+- **Functional fleet dashboard** — live SSE logs of N agents on N branches, plus
+  a human window to unstick wedged tasks (MCP is request/response and can't show
+  long-running async work; the dashboard covers that).
+- **GitHub-native PR loop** — real, inspectable PRs with a review gate, not blind
+  auto-commit.
+
+### Honest tradeoffs
+
+Praxis is opinionated about being upfront. The control surface (MCP + dashboard)
+is solid; these caveats are about the economic foundation:
+
+- **Subscription-CLI dependence.** Driving a subscription CLI programmatically is
+  a usage pattern providers may change; it's not a foundation Praxis controls.
+- **Local model quality is the bottleneck.** "Free coding" only holds if your
+  local model can follow an edit format and produce mergeable diffs. Weak models
+  reply *with* code instead of editing, and a high retry rate consumes planner
+  review cycles — which means the savings can invert. Pick a mid-size,
+  coding-oriented model.
+- **Self-review caveat.** The planner reviews its own plan's PRs; real
+  correctness still leans on your repo having CI/tests.
+
+See [docs/positioning.md](docs/positioning.md) for the full rationale.
 
 **Who it's for:** solo developers and small teams who already pay for an AI assistant subscription
 and want to put it to work on real, multi-file changes without running up a metered API bill. You
@@ -46,28 +128,17 @@ and the dashboard gives you a live window to step in when a task gets stuck.
 
 > _Demo recording coming soon. See the [dashboard walkthrough](docs/workflow.md) in the meantime._
 
-## Why Praxis
+## What else you get
 
-- **Cost savings via a flat-rate subscription.** Praxis drives the assistant's own
-  CLI (Claude `claude -p`, Gemini `agy`, or GPT `codex`), so planning and review bill against
-  the ~$20/month subscription you already pay for. Offloading heavy, repetitive file-editing
-  tasks to a local LLM saves expensive API credits. For many projects, one entry-level plan runs
-  the whole loop.
-- **Specialization through local execution.** Implementation is the token-hungry part, so it goes
-  to a coding agent (**Aider**, **OpenCode**, or **OpenHands**) driven by a **local model via LM
-  Studio**. This lets your premium subscription model focus purely on high-level architecture,
-  planning, and review, while the local agent specializes in execution for zero tokens and zero cost.
-- **It does the git plumbing for you.** Praxis manages the whole branch-and-PR flow itself: a
-  `plan/{date}-{slug}` branch groups the work, each task gets its own `agent/{task-slug}` branch and
-  PR, passing PRs are squash-merged, and a final integration PR lands it on `main`. Everything shows
-  up as normal GitHub PRs you can inspect, not a black box, and Praxis handles the parallel-branch
-  race conditions so two agents working at once don't clobber each other.
-- **It reviews before it merges.** Every PR diff goes back to the planner model for a code review;
-  only passing changes get merged, failures get re-dispatched. It's not blind auto-commit.
-- **Fully configurable.** Every model call-site is set per provider/model in **Settings → Models**,
-  so you can mix and match: e.g. Claude to plan, a local model to implement, Gemini to review.
-- **One engine, many clients.** A REST API is the single source of truth; the MCP server,
-  dashboard, and CLI are all thin clients of it.
+Beyond the brain/hands split above:
+
+- **It does the git plumbing for you.** A `plan/{date}-{slug}` branch groups the work, each task gets
+  its own `agent/{task-slug}` branch and PR, passing PRs are squash-merged, and a final integration
+  PR lands on `main` — all normal GitHub PRs you can inspect, with parallel-branch race handling.
+- **Fully configurable per call-site.** Mix and match in **Settings → Models**: e.g. Claude to plan,
+  a local model to implement, Gemini to review.
+- **One engine, many clients.** A REST API is the single source of truth; the MCP server, dashboard,
+  and CLI are all thin clients of it.
 
 ## Architecture
 
