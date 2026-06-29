@@ -13,3 +13,19 @@ def test_load_orchestration_guide_returns_nonempty_markdown() -> None:
     assert isinstance(text, str)
     assert text.strip()
     assert text.lstrip().startswith("#")
+
+
+@pytest.mark.unit
+async def test_orchestration_guide_resource_registered() -> None:
+    resources_list = await server.mcp.list_resources()
+    uris = {str(r.uri) for r in resources_list}
+    assert "praxis://guide/orchestration" in uris
+
+
+@pytest.mark.unit
+async def test_orchestration_guide_resource_reads_content() -> None:
+    contents = await server.mcp.read_resource("praxis://guide/orchestration")
+    # FastMCP returns an iterable of content parts; join their text.
+    text = "".join(part.content for part in contents)
+    assert text.strip()
+    assert text.lstrip().startswith("#")

@@ -173,3 +173,14 @@ async def get_task_logs(task_id: str) -> dict[str, Any]:
 async def cancel_task(task_id: str) -> dict[str, Any]:
     """Stop a running task and mark it failed."""
     return await cancel_task_impl(PraxisClient.from_env(), task_id=task_id)
+
+
+@mcp.resource("praxis://guide/orchestration")
+def orchestration_guide() -> str:
+    """Workflow guide for an agent orchestrating Praxis over MCP.
+
+    Covers when to delegate to Praxis and how to drive its tools: tool
+    selection, what context to pass, polling cadence, task statuses, and
+    troubleshooting. For live provider/model state, call list_providers.
+    """
+    return load_orchestration_guide()
