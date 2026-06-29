@@ -1,3 +1,14 @@
 # Global Praxis orchestrator settings. PRAXIS_<KEY> env vars override these.
 loop_interval: 30      # seconds between orchestration loop passes
 callback_grace: 5      # seconds to wait before reconciling a missing callback
+
+capability:
+  default:
+    parameter_count_b: 30
+    context_window: 8192
+    strengths: "single-file edits, adding tests, small bug fixes"
+    weaknesses: "multi-file refactors, novel architecture, large context"
+    max_task_complexity: "medium"
+
+escalation:
+  policy: block   # block | brain | paid_fallback

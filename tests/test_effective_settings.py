@@ -103,3 +103,64 @@ async def test_resolve_call_site_global_override(
     es = EffectiveSettings(test_settings, db)
     cfg = await es.call_site_config("plan_spec", None)
     assert cfg["provider"] == "codex"
+
+
+# ---------------------------------------------------------------------------
+# Capability profile + escalation policy
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def effective_settings(db: Database, test_settings: Settings) -> EffectiveSettings:
+    return EffectiveSettings(test_settings, db)
+
+
+@pytest.fixture
+def seed_override(db: Database):
+    """Helper that inserts a settings_overrides row with a JSON value."""
+    import json
+
+    async def _seed(key: str, value: object, project_id: str | None = None) -> None:
+        full_key = key if project_id is None else f"project.{project_id}.{key}"
+        await db.execute(
+            "INSERT INTO settings_overrides (key, value, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP)"
+            " ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP",
+            (full_key, json.dumps(value)),
+        )
+
+    return _seed
+
+
+@pytest.mark.unit
+async def test_capability_profile_falls_back_to_yaml_default(
+    effective_settings: EffectiveSettings,
+) -> None:
+    prof = await effective_settings.capability_profile(project_id=None)
+    assert prof.parameter_count_b > 0
+    assert prof.context_window > 0
+
+
+@pytest.mark.unit
+async def test_capability_profile_project_override_wins(
+    effective_settings: EffectiveSettings, seed_override
+) -> None:
+    await seed_override(
+        "capability.qwen3",
+        {
+            "parameter_count_b": 70,
+            "context_window": 32000,
+            "strengths": "big",
+            "weaknesses": "",
+            "max_task_complexity": "high",
+        },
+        project_id="p1",
+    )
+    prof = await effective_settings.capability_profile(project_id="p1", model="qwen3")
+    assert prof.parameter_count_b == 70
+
+
+@pytest.mark.unit
+async def test_escalation_policy_defaults_block(
+    effective_settings: EffectiveSettings,
+) -> None:
+    assert await effective_settings.escalation_policy(project_id=None) == "block"

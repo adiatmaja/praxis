@@ -6,6 +6,7 @@ from typing import Any
 
 from orchestrator.config import Settings
 from orchestrator.database import Database
+from orchestrator.models.schemas import CapabilityProfile
 
 
 # Keys that callers are allowed to override at runtime.
@@ -112,6 +113,59 @@ class EffectiveSettings:
         if row and row["value"]:
             default.update(json.loads(row["value"]))
         return default
+
+    async def _get_yaml(self) -> dict:
+        """Return the raw YAML settings dict for capability/escalation lookups."""
+        from orchestrator.core.settings_file import load_yaml_settings
+
+        return load_yaml_settings("config/praxis.yaml")
+
+    async def capability_profile(
+        self, project_id: str | None, model: str | None = None
+    ) -> CapabilityProfile:
+        """Resolve the capability profile: project override -> YAML default.
+
+        Args:
+            project_id: Optional project scope for per-project overrides.
+            model: Model name key; defaults to ``"default"``.
+
+        Returns:
+            A populated CapabilityProfile instance.
+        """
+        import json
+
+        model_name = model or "default"
+        yaml_data = await self._get_yaml()
+        defaults: dict = yaml_data.get("capability", {}).get("default", {})
+
+        override_data: dict = {}
+        if project_id is not None:
+            raw = await self._get_override(
+                f"project.{project_id}.capability.{model_name}"
+            )
+            if raw:
+                override_data = json.loads(raw)
+
+        data = {**defaults, **override_data}
+        return CapabilityProfile(model_name=model_name, **data)
+
+    async def escalation_policy(self, project_id: str | None) -> str:
+        """Resolve the escalation policy: project override -> YAML default -> ``"block"``.
+
+        Args:
+            project_id: Optional project scope for per-project overrides.
+
+        Returns:
+            One of ``"block"``, ``"brain"``, or ``"paid_fallback"``.
+        """
+        if project_id is not None:
+            override = await self._get_override(
+                f"project.{project_id}.escalation.policy"
+            )
+            if override:
+                return str(override)
+        yaml_data = await self._get_yaml()
+        return str(yaml_data.get("escalation", {}).get("policy", "block"))
 
     async def set_override(self, key: str, value: str | None) -> None:
         """Upsert an override (value=None deletes the override row)."""
