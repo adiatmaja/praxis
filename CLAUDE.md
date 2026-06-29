@@ -360,7 +360,11 @@ Tables: `users`, `projects`, `plans`, `tasks`, `agent_runs`, `opus_state`,
   (`specs/2026-06-29-capability-aware-execution-design.md`), each with a matching plan in
   `docs/superpowers/plans/2026-06-29-*`. Adds a Static Bible + git-spine progress handover for the
   worker, pre-flight token budgeting, and an `execute_plan` entry point that capability-gates an
-  externally-authored plan against the local model before dispatch.
+  externally-authored plan against the local model before dispatch. A third spec/plan
+  (`2026-06-29-mcp-orchestration-guide-*`) serves a static MCP **resource**
+  `praxis://guide/orchestration` teaching an orchestrating agent when to delegate and how
+  to drive the tools; it documents `execute_plan`, so it ships after/alongside the
+  capability-aware spec.
 - **Testing & debugging:** `CLAUDE.local.md`
 
 ## Coding Standards
