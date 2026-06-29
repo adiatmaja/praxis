@@ -44,3 +44,19 @@ def test_guide_loads_regardless_of_cwd(tmp_path: Path) -> None:
         assert text.strip()
     finally:
         os.chdir(original)
+
+
+@pytest.mark.unit
+async def test_guide_names_every_registered_tool() -> None:
+    """Every live MCP tool must be documented, so the guide cannot drift."""
+    text = server.load_orchestration_guide()
+    tools = await server.mcp.list_tools()
+    for tool in tools:
+        assert tool.name in text, f"guide omits tool {tool.name}"
+
+
+@pytest.mark.unit
+def test_guide_mentions_execute_plan_even_before_implemented() -> None:
+    """execute_plan is documented as part of the decision tree (Spec 2)."""
+    text = server.load_orchestration_guide()
+    assert "execute_plan" in text
