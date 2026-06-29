@@ -8,11 +8,25 @@ returned as ``{"error": code, "message": ...}`` so the brain can react.
 
 from __future__ import annotations
 
+from importlib import resources
 from typing import Any, cast
 
 from mcp.server.fastmcp import FastMCP
 
 from mcp_server.client import PraxisClient, PraxisClientError
+
+
+def load_orchestration_guide() -> str:
+    """Read the packaged orchestration-guide markdown, CWD-independent.
+
+    Returns:
+        The full markdown content of the orchestration guide.
+    """
+    return (
+        resources.files("mcp_server.resources")
+        .joinpath("orchestration_guide.md")
+        .read_text(encoding="utf-8")
+    )
 
 
 def _error(exc: PraxisClientError) -> dict[str, Any]:
