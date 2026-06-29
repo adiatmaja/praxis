@@ -7,8 +7,13 @@ import logging
 import os
 import re
 import subprocess
+from typing import TYPE_CHECKING
 
 import httpx
+
+
+if TYPE_CHECKING:
+    from orchestrator.core.progress_handover import Commit
 
 
 logger = logging.getLogger(__name__)
@@ -318,6 +323,43 @@ class GitOps:
             raise RuntimeError(msg)
         ref = f"refs/heads/{branch}"
         return any(ref == line.split("\t")[-1] for line in stdout.splitlines() if line)
+
+    async def branch_commit_log(
+        self, cwd: str, base_branch: str, branch: str
+    ) -> list[Commit]:
+        """Return commits on ``branch`` not on ``base_branch``, oldest first.
+
+        Commit subjects are the spine of the progress handover, so we read them
+        verbatim. Returns an empty list when the branch has no extra commits.
+
+        Args:
+            cwd: Working directory of the git repository.
+            base_branch: The branch to exclude commits from (e.g. ``"main"``).
+            branch: The branch whose extra commits to return.
+
+        Returns:
+            List of :class:`~orchestrator.core.progress_handover.Commit` objects
+            ordered from oldest to newest.
+        """
+        from orchestrator.core.progress_handover import Commit
+
+        out = await self._run_checked(
+            [
+                "git",
+                "log",
+                "--reverse",
+                "--format=%H%x1f%s",
+                f"{base_branch}..{branch}",
+            ],
+            cwd=cwd,
+        )
+        commits: list[Commit] = []
+        for line in out.splitlines():
+            if "\x1f" not in line:
+                continue
+            sha, subject = line.split("\x1f", 1)
+            commits.append(Commit(sha=sha, subject=subject))
+        return commits
 
     async def remote_file_exists(self, repo_slug: str, branch: str, path: str) -> bool:
         """Check whether ``path`` exists on ``branch`` in a GitHub repo.
