@@ -354,7 +354,13 @@ Tables: `users`, `projects`, `plans`, `tasks`, `agent_runs`, `opus_state`,
 - **Workflow & orchestration cycle:** `docs/workflow.md`
 - **Deployment, Docker & API reference:** `docs/deployment.md`
 - **Design spec:** `docs/superpowers/specs/2026-06-01-ai-agent-orchestrator-design.md`
-- **Implementation plans:** `docs/superpowers/plans/` (5 sequential plans)
+- **Implementation plans:** `docs/superpowers/plans/` (sequential plans)
+- **Designed, not yet built (2026-06-29):** worker context continuity
+  (`specs/2026-06-29-worker-context-continuity-design.md`) and capability-aware plan execution
+  (`specs/2026-06-29-capability-aware-execution-design.md`), each with a matching plan in
+  `docs/superpowers/plans/2026-06-29-*`. Adds a Static Bible + git-spine progress handover for the
+  worker, pre-flight token budgeting, and an `execute_plan` entry point that capability-gates an
+  externally-authored plan against the local model before dispatch.
 - **Testing & debugging:** `CLAUDE.local.md`
 
 ## Coding Standards
