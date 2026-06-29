@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import os
+from pathlib import Path
+
 import pytest
 
 from mcp_server import server
@@ -29,3 +32,15 @@ async def test_orchestration_guide_resource_reads_content() -> None:
     text = "".join(part.content for part in contents)
     assert text.strip()
     assert text.lstrip().startswith("#")
+
+
+@pytest.mark.unit
+def test_guide_loads_regardless_of_cwd(tmp_path: Path) -> None:
+    """The loader resolves the file via the package, not the working dir."""
+    original = Path.cwd()
+    os.chdir(tmp_path)
+    try:
+        text = server.load_orchestration_guide()
+        assert text.strip()
+    finally:
+        os.chdir(original)
