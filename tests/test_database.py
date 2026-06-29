@@ -250,3 +250,12 @@ async def test_plans_spec_column_dropped(db: Database) -> None:
     assert "spec_path" in names
     assert "plan_path" in names
     assert "opus_plan" in names  # retained: runtime task graph
+
+
+@pytest.mark.integration
+async def test_tasks_table_has_escalation_columns(db: Database) -> None:
+    cols = {
+        row[1]
+        for row in await (await db.execute("PRAGMA table_info(tasks)")).fetchall()
+    }
+    assert {"needs_stronger_model", "escalation_state", "escalated_to"} <= cols

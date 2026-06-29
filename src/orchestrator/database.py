@@ -166,6 +166,14 @@ class Database:
                 ),
             ),
             ("plans", ("spec_path TEXT", "plan_path TEXT")),
+            (
+                "tasks",
+                (
+                    "needs_stronger_model INTEGER DEFAULT 0",
+                    "escalation_state TEXT",
+                    "escalated_to TEXT",
+                ),
+            ),
         ):
             for ddl in column_ddls:
                 with contextlib.suppress(Exception):
