@@ -194,3 +194,9 @@ async def test_run_passes_cwd_to_subprocess(mocker):
         "review_diff_first", "prompt", project_id=None, cwd="/tmp/checkout"
     )
     assert seen["cwd"] == "/tmp/checkout"
+
+
+@pytest.mark.unit
+def test_plan_review_call_site_registered():
+    cfg = CALL_SITE_DEFAULTS["plan_review"]
+    assert cfg["provider"] == "claude"  # capability judgment needs the brain

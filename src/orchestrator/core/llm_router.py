@@ -89,6 +89,7 @@ CALL_SITE_DEFAULTS: dict[str, dict[str, str | None]] = {
     },
     "context_sync": {"provider": "claude", "model": "claude-haiku-4-5", "effort": None},
     "derive_tasks": {"provider": "local", "model": "", "effort": None},
+    "plan_review": {"provider": "claude", "model": "claude-opus-4-8", "effort": "high"},
 }
 
 
