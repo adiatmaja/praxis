@@ -20,6 +20,7 @@ from orchestrator.api.auth import verify_token
 from orchestrator.core.capability_history import summarize_outcomes
 from orchestrator.core.context_scrub import scrub_context
 from orchestrator.core.harnesses import default_harness_id
+from orchestrator.core.plan_derive import slugify
 from orchestrator.core.plan_review import (
     PlanReviewError,
     build_review_prompt,
@@ -40,6 +41,29 @@ def _slugify(text: str) -> str:
     """Build a short branch-safe slug from free text plus a uniqueness suffix."""
     base = re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")[:40] or "plan"
     return f"{base}-{uuid.uuid4().hex[:6]}"
+
+
+def _normalize_slugs(opus_plan: dict[str, Any]) -> None:
+    """Add a unique ``slug`` to each task and remap ``depends_on`` ids -> slugs.
+
+    The plan-review brain emits tasks keyed by ``id`` (e.g. "t1") with
+    ``depends_on`` referencing those ids, but TaskQueue.activate_plan and
+    get_dispatchable_tasks key on ``slug`` (and expect depends_on to hold
+    slugs). Without this bridge the dispatch loop raises ``KeyError: 'slug'``.
+    """
+    id_to_slug: dict[str, str] = {}
+    seen: set[str] = set()
+    for task in opus_plan["tasks"]:
+        slug = slugify(str(task.get("title") or task.get("id") or "task"))
+        while slug in seen:
+            slug = f"{slug}-{uuid.uuid4().hex[:4]}"
+        seen.add(slug)
+        task["slug"] = slug
+        if "id" in task:
+            id_to_slug[str(task["id"])] = slug
+    for task in opus_plan["tasks"]:
+        deps = task.get("depends_on") or []
+        task["depends_on"] = [id_to_slug.get(str(d), str(d)) for d in deps]
 
 
 async def _create_or_reuse_project(
@@ -117,13 +141,16 @@ async def execute_plan(request: Request, body: ExecutePlanRequest) -> dict[str, 
             detail=f"plan review failed: {exc}",
         ) from exc
 
-    # 3. Thread any curated, scrubbed context onto every leaf (mirror dispatch).
+    # 3. Bridge brain ids -> the slug convention TaskQueue requires.
+    _normalize_slugs(opus_plan)
+
+    # 4. Thread any curated, scrubbed context onto every leaf (mirror dispatch).
     scrubbed_context = scrub_context(body.context)
     if scrubbed_context is not None:
         for task in opus_plan["tasks"]:
             task.setdefault("context_text", scrubbed_context)
 
-    # 4. Create + activate the plan via the existing TaskQueue path.
+    # 5. Create + activate the plan via the existing TaskQueue path.
     harness = body.harness or default_harness_id()
     project_id = await _create_or_reuse_project(
         db, body.repo_url, None, body.model, harness

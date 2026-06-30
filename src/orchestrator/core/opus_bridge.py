@@ -149,7 +149,7 @@ class OpusBridge:
         if resolved_model:
             args += ["--model", resolved_model]
         if resolved_effort:
-            args += ["--reasoning-effort", resolved_effort]
+            args += ["--effort", resolved_effort]
         proc = await asyncio.create_subprocess_exec(
             *args,
             stdin=asyncio.subprocess.PIPE,

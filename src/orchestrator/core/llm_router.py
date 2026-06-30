@@ -108,7 +108,7 @@ def build_argv(
         if model:
             argv += ["--model", model]
         if effort:
-            argv += ["--reasoning-effort", effort]
+            argv += ["--effort", effort]
         return argv
     if provider == "agy":
         # Gemini CLI: `--print` takes the prompt as its argument value, NOT

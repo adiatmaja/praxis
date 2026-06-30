@@ -81,3 +81,31 @@ async def test_execute_plan_missing_plan_returns_422(
         json={"repo_url": "https://github.com/o/r", "model": "qwen3"},
     )
     assert resp.status_code == 422
+
+
+@pytest.mark.unit
+def test_normalize_slugs_adds_slug_and_remaps_depends_on() -> None:
+    """Brain ids must become slugs so TaskQueue.activate_plan can consume them."""
+    from orchestrator.api.execute_plan import _normalize_slugs
+
+    opus_plan = {
+        "tasks": [
+            {
+                "id": "t1",
+                "title": "Add the model",
+                "description": "d",
+                "depends_on": [],
+            },
+            {
+                "id": "t2",
+                "title": "Add the model",
+                "description": "d",
+                "depends_on": ["t1"],
+            },
+        ]
+    }
+    _normalize_slugs(opus_plan)
+    t1, t2 = opus_plan["tasks"]
+    assert t1["slug"] and t2["slug"]
+    assert t1["slug"] != t2["slug"]  # duplicate titles disambiguated
+    assert t2["depends_on"] == [t1["slug"]]  # id remapped to slug

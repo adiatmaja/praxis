@@ -236,7 +236,11 @@ Tables: `users`, `projects`, `plans`, `tasks`, `agent_runs`, `opus_state`,
   and `LLMRouter.run` pipe the prompt through stdin (`communicate(input=...)`); a full
   PR diff as an argv element overflows the OS command-line limit (Windows `WinError 206`
   above ~32K chars). `build_argv` deliberately omits the prompt.
-- **Review targets the PR's own repo** — `review_task` runs `gh pr diff/merge/comment`
+- **The claude CLI effort flag is `--effort`, not `--reasoning-effort`** — the installed
+  CLI (v2.1.170) renamed it; passing the old flag fails every effort-tiered brain call
+  with `unknown option '--reasoning-effort'` (this 500'd `/api/execute-plan`, whose
+  `plan_review` call-site is opus/high). Both `core/llm_router.build_argv` and
+  `OpusBridge` use `--effort`. `review_task` runs `gh pr diff/merge/comment`
   with `--repo <owner/name>` (from `GitOps.repo_slug(pr_url)`); without it `gh` resolves
   the PR against the orchestrator's own cwd (the praxis repo) and reviews the wrong diff.
 - **Agent callbacks retry with backoff** — each `docker/<harness>-agent/entrypoint.sh`
@@ -275,6 +279,21 @@ Tables: `users`, `projects`, `plans`, `tasks`, `agent_runs`, `opus_state`,
 - **OpenCode/OpenHands don't auto-commit** — unlike Aider, their entrypoints run
   `git add -A && git commit` after the agent. A run that produces no changes is
   marked `failed`.
+- **OpenCode config needs `limit.output`, not just `limit.context`** — when the
+  orchestrator detects a model's context window (`MODEL_CONTEXT_LIMIT`), the OpenCode
+  entrypoint writes a `limit` block; OpenCode's schema requires BOTH `context` and
+  `output`, so omitting `output` fails validation ("Missing key ...limit.output") and
+  the container exits before implementing. The detect-context-limit feature exposed this.
+- **The Static Bible must NOT land in the PR** — OpenCode injects the Bible into
+  `AGENTS.md` (compaction-proof slot), so the entrypoint strips the
+  `<!-- praxis:bible:start -->...:end -->` block before `git add -A` (and deletes
+  `AGENTS.md` if it was untracked and now empty). Without this the Bible leaks into every
+  OpenCode PR. Aider's Bible is a read-only `--read .praxis-bible.md` (never committed);
+  OpenHands does not inject a Bible.
+- **PR body uses `TASK_SUMMARY`, not a slice of `TASK_PROMPT`** — `TASK_PROMPT` is the
+  fully-wrapped prompt that starts with a generic autonomous-loop preamble, so
+  `${TASK_PROMPT:0:500}` showed only boilerplate. All three entrypoints now render the
+  body from `TASK_SUMMARY` (task title + description), set by `spawn_agent(task_summary=)`.
 - **OpenHands needs a sandbox runtime** — the image uses `RUNTIME=local` to avoid
   Docker-in-Docker. If unsupported, mount `/var/run/docker.sock` when spawning.
 - **Generic MODEL env var** — all harness entrypoints consume `MODEL` (raw model
@@ -339,6 +358,13 @@ Tables: `users`, `projects`, `plans`, `tasks`, `agent_runs`, `opus_state`,
 - **`dispatch` `branch` is always a base, never a target** - Praxis cuts a new
   `agent/<slug>` branch off it and opens a new PR. There is no amend-existing-PR
   mode yet; re-dispatch = new PR. Follow-up: add `target_branch`/`pr_number`.
+- **`execute_plan` must bridge brain ids → slugs** — `plan_review` emits tasks keyed by
+  `id` (`t1`) with `depends_on` referencing ids, but `TaskQueue.activate_plan` /
+  `get_dispatchable_tasks` key on `slug` and expect `depends_on` to hold slugs. Without the
+  bridge the dispatch loop raises `KeyError: 'slug'`. `api/execute_plan._normalize_slugs`
+  adds a unique `slug` per task and remaps `depends_on` id→slug before activation. (The
+  existing execute-plan API tests mock `activate_plan`, so they did NOT catch this — a live
+  run did; there's now a dedicated `_normalize_slugs` unit test.)
 - **Dashboard login banner is SSE-driven, not just poll-driven** — `/api/status` adds a
   `providers` block (`_probe_provider`: cli_available + best-effort authenticated +
   login_hint), but **`codex login status` lies** ("Logged in" even on a revoked token), so
@@ -355,16 +381,16 @@ Tables: `users`, `projects`, `plans`, `tasks`, `agent_runs`, `opus_state`,
 - **Deployment, Docker & API reference:** `docs/deployment.md`
 - **Design spec:** `docs/superpowers/specs/2026-06-01-ai-agent-orchestrator-design.md`
 - **Implementation plans:** `docs/superpowers/plans/` (sequential plans)
-- **Designed, not yet built (2026-06-29):** worker context continuity
-  (`specs/2026-06-29-worker-context-continuity-design.md`) and capability-aware plan execution
-  (`specs/2026-06-29-capability-aware-execution-design.md`), each with a matching plan in
-  `docs/superpowers/plans/2026-06-29-*`. Adds a Static Bible + git-spine progress handover for the
-  worker, pre-flight token budgeting, and an `execute_plan` entry point that capability-gates an
-  externally-authored plan against the local model before dispatch. A third spec/plan
-  (`2026-06-29-mcp-orchestration-guide-*`) serves a static MCP **resource**
-  `praxis://guide/orchestration` teaching an orchestrating agent when to delegate and how
-  to drive the tools; it documents `execute_plan`, so it ships after/alongside the
-  capability-aware spec.
+- **Implemented + merged (2026-06-29 epic, live e2e-verified 2026-07-01):** worker context
+  continuity (`specs/2026-06-29-worker-context-continuity-design.md`), capability-aware plan
+  execution (`specs/2026-06-29-capability-aware-execution-design.md`), and the MCP orchestration
+  guide (`2026-06-29-mcp-orchestration-guide-*`), each with a matching plan in
+  `docs/superpowers/plans/2026-06-29-*`. Delivers the Static Bible + git-spine progress handover,
+  pre-flight token budgeting, the `execute_plan` entry point (REST + MCP) that capability-gates an
+  externally-authored plan against the local model before dispatch, and the static MCP **resource**
+  `praxis://guide/orchestration`. A live run on `openclaw-telegram` with `qwen3.6-27b` drove
+  `execute_plan` end-to-end (brain decompose → local worker implement → review → squash-merge);
+  the run also surfaced + fixed the `--effort`/`limit.output`/`_normalize_slugs` bugs above.
 - **Testing & debugging:** `CLAUDE.local.md`
 
 ## Coding Standards

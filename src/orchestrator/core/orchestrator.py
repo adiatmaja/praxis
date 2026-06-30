@@ -179,6 +179,7 @@ class Orchestrator:
                 plan_text=plan_text,
                 context_text=context_text,
                 bible_text=bible,
+                task_summary=f"{task['title']}\n\n{task['description']}",
             )
             run_id = await self._tq.create_agent_run(task["id"], container_id)
             await self._tq.update_task_status(task["id"], TaskStatus.IN_PROGRESS)

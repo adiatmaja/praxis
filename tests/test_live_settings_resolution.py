@@ -94,8 +94,8 @@ async def test_opus_bridge_uses_effective_effort_override() -> None:
         await bridge._run_claude_raw("hello")
 
     argv = captured_args[0]
-    assert "--reasoning-effort" in argv
-    effort_index = argv.index("--reasoning-effort")
+    assert "--effort" in argv
+    effort_index = argv.index("--effort")
     assert argv[effort_index + 1] == "medium"
 
 

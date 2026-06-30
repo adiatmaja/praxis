@@ -84,6 +84,7 @@ class AgentManager:
         plan_text: str | None = None,
         context_text: str | None = None,
         bible_text: str | None = None,
+        task_summary: str | None = None,
     ) -> str:
         harness_id = harness or default_harness_id()
         spec = REGISTRY[harness_id]
@@ -113,6 +114,10 @@ class AgentManager:
             environment["CONTEXT_TEXT"] = context_text
         if bible_text is not None:
             environment["BIBLE_TEXT"] = bible_text
+        if task_summary is not None:
+            # Clean, human-readable task text for the PR body (the wrapped
+            # TASK_PROMPT starts with a generic preamble, not the instruction).
+            environment["TASK_SUMMARY"] = task_summary
         # Detect the model's real context window so compaction-capable harnesses
         # (OpenCode) can trigger at the right threshold instead of sailing past
         # it into silent server-side truncation. Detected per-model, never
