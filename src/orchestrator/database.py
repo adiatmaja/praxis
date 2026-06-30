@@ -31,6 +31,7 @@ MIGRATIONS: tuple[str, ...] = (
         repo_url TEXT NOT NULL,
         default_branch TEXT NOT NULL DEFAULT 'main',
         approval_gate INTEGER NOT NULL DEFAULT 1,
+        auto_merge INTEGER NOT NULL DEFAULT 0,
         confidence_threshold REAL NOT NULL DEFAULT 0.7,
         max_retries INTEGER NOT NULL DEFAULT 3,
         max_improvement_cycles INTEGER NOT NULL DEFAULT 5,
@@ -163,6 +164,7 @@ class Database:
                     "agent_model TEXT",
                     "agent_model_effort TEXT",
                     "harness TEXT NOT NULL DEFAULT 'opencode'",
+                    "auto_merge INTEGER NOT NULL DEFAULT 0",
                 ),
             ),
             ("plans", ("spec_path TEXT", "plan_path TEXT")),
@@ -174,6 +176,7 @@ class Database:
                     "escalated_to TEXT",
                     "checklist TEXT",
                     "progress_note TEXT",
+                    "approved_at TEXT",
                 ),
             ),
         ):
