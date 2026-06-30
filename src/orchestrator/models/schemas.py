@@ -53,6 +53,21 @@ class AgentRunStatus(StrEnum):
     STOPPED = "stopped"
 
 
+class CapabilityProfile(BaseModel):
+    """Declared and learned capability profile for a local worker model.
+
+    Used by the capability-aware plan review to decide which tasks the local
+    model can handle and which to flag ``needs_stronger_model``.
+    """
+
+    model_name: str
+    parameter_count_b: float
+    context_window: int
+    strengths: str = ""
+    weaknesses: str = ""
+    max_task_complexity: str = "medium"
+
+
 class ProjectCreate(BaseModel):
     """Request payload for creating a project."""
 

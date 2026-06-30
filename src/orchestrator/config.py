@@ -64,4 +64,9 @@ class Settings(BaseSettings):
         }
         # Explicit kwargs passed by caller override YAML defaults.
         merged = {**filtered, **kwargs}
+        # The YAML may carry nested config consumed elsewhere (e.g. capability,
+        # escalation read via EffectiveSettings); drop keys that are not Settings
+        # fields so pydantic's extra="forbid" does not reject them.
+        known_fields = set(type(self).model_fields)
+        merged = {k: v for k, v in merged.items() if k in known_fields or k in kwargs}
         super().__init__(*args, **merged)
