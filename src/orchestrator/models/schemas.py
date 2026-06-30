@@ -431,3 +431,28 @@ class DispatchResponse(BaseModel):
     status: str
     dashboard_url: str
     warnings: list[str] = Field(default_factory=list)
+
+
+class ExecutePlanRequest(BaseModel):
+    """Request to ingest an externally-authored plan for capability-aware execution."""
+
+    repo_url: str
+    plan: str
+    model: str
+    harness: str | None = None
+    branch: str | None = None
+    context: str | None = None
+
+
+class ExecutePlanResponse(BaseModel):
+    """Response for an ingested-and-activated plan.
+
+    ``leaves`` are task ids the local model is expected to handle; ``blocked``
+    are tasks the review brain flagged as too hard (``needs_stronger_model``).
+    """
+
+    plan_id: str
+    project_id: str
+    dashboard_url: str
+    leaves: list[str] = Field(default_factory=list)
+    blocked: list[str] = Field(default_factory=list)
