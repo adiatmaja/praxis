@@ -270,3 +270,32 @@ async def test_mark_merged_sets_status_and_approved_at(db: Database) -> None:
     assert task is not None
     assert task["status"] == TaskStatus.MERGED
     assert task["approved_at"] is not None
+
+
+@pytest.mark.integration
+async def test_passed_task_does_not_unblock_dependents(db: Database) -> None:
+    """A dependent task stays blocked until its upstream is MERGED, not PASSED."""
+    opus_plan = {
+        "plan_summary": "Test",
+        "plan_slug": "test",
+        "tasks": [
+            {"title": "A", "description": "a", "slug": "a", "depends_on": []},
+            {"title": "B", "description": "b", "slug": "b", "depends_on": ["a"]},
+        ],
+    }
+    queue, plan_id = await _activate_test_plan(db, opus_plan)
+
+    tasks = await queue.get_tasks_for_plan(plan_id)
+    task_a = next(t for t in tasks if t["title"] == "A")
+
+    await queue.mark_passed(task_a["id"], "ok")
+    dispatchable = await queue.get_dispatchable_tasks(plan_id)
+    assert all(t["title"] != "B" for t in dispatchable), (
+        "B must stay blocked while A is only PASSED, not MERGED"
+    )
+
+    await queue.mark_merged(task_a["id"])
+    dispatchable = await queue.get_dispatchable_tasks(plan_id)
+    assert any(t["title"] == "B" for t in dispatchable), (
+        "B must become dispatchable once A is MERGED"
+    )
