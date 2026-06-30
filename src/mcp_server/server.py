@@ -8,11 +8,25 @@ returned as ``{"error": code, "message": ...}`` so the brain can react.
 
 from __future__ import annotations
 
+from importlib import resources
 from typing import Any, cast
 
 from mcp.server.fastmcp import FastMCP
 
 from mcp_server.client import PraxisClient, PraxisClientError
+
+
+def load_orchestration_guide() -> str:
+    """Read the packaged orchestration-guide markdown, CWD-independent.
+
+    Returns:
+        The full markdown content of the orchestration guide.
+    """
+    return (
+        resources.files("mcp_server.resources")
+        .joinpath("orchestration_guide.md")
+        .read_text(encoding="utf-8")
+    )
 
 
 def _error(exc: PraxisClientError) -> dict[str, Any]:
@@ -218,3 +232,14 @@ async def get_task_logs(task_id: str) -> dict[str, Any]:
 async def cancel_task(task_id: str) -> dict[str, Any]:
     """Stop a running task and mark it failed."""
     return await cancel_task_impl(PraxisClient.from_env(), task_id=task_id)
+
+
+@mcp.resource("praxis://guide/orchestration")
+def orchestration_guide() -> str:
+    """Workflow guide for an agent orchestrating Praxis over MCP.
+
+    Covers when to delegate to Praxis and how to drive its tools: tool
+    selection, what context to pass, polling cadence, task statuses, and
+    troubleshooting. For live provider/model state, call list_providers.
+    """
+    return load_orchestration_guide()

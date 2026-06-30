@@ -41,6 +41,9 @@ praxis-mcp = "mcp_server.__main__:main"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+mcp_server = ["resources/*.md"]
+
 [tool.ruff]
 line-length = 88
 target-version = "py311"
