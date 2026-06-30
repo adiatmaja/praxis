@@ -367,6 +367,84 @@ class Orchestrator:
                 }
             )
 
+    async def approve_task_merge(self, task_id: str, project: dict[str, Any]) -> None:
+        """Merge a human-approved, review-passed task.
+
+        Args:
+            task_id: ID of the task to merge.
+            project: Project dict (needs ``repo_url``).
+
+        Raises:
+            ValueError: If the task is missing or not in the PASSED state.
+        """
+        task = await self._tq.get_task(task_id)
+        if task is None:
+            msg = f"Task {task_id} not found"
+            raise ValueError(msg)
+        if task["status"] != TaskStatus.PASSED or task["pr_url"] is None:
+            msg = f"Task {task_id} is not awaiting merge"
+            raise ValueError(msg)
+
+        pr_number = await self._git.extract_pr_number(task["pr_url"])
+        repo = self._git.repo_slug(task["pr_url"]) or self._git.repo_slug(
+            project["repo_url"]
+        )
+        await self._git.merge_pr(".", pr_number, repo=repo)
+        await self._tq.mark_merged(task_id)
+        await self._sync_plan_checkbox(task)
+        self._bus.publish(
+            {
+                "type": "task_completed",
+                "task_id": task_id,
+                "pr_url": task["pr_url"],
+            }
+        )
+
+    async def reject_task_merge(
+        self,
+        task_id: str,
+        project: dict[str, Any],
+        feedback: str | None = None,
+    ) -> None:
+        """Reject a parked merge: comment, fail, and re-dispatch if attempts remain.
+
+        Args:
+            task_id: ID of the task to reject.
+            project: Project dict (needs ``repo_url``, ``max_retries``).
+            feedback: Optional rejection message posted as a PR comment.
+
+        Raises:
+            ValueError: If the task is missing or not in the PASSED state.
+        """
+        task = await self._tq.get_task(task_id)
+        if task is None:
+            msg = f"Task {task_id} not found"
+            raise ValueError(msg)
+        if task["status"] != TaskStatus.PASSED or task["pr_url"] is None:
+            msg = f"Task {task_id} is not awaiting merge"
+            raise ValueError(msg)
+
+        message = feedback or "Merge rejected by user."
+        pr_number = await self._git.extract_pr_number(task["pr_url"])
+        repo = self._git.repo_slug(task["pr_url"]) or self._git.repo_slug(
+            project["repo_url"]
+        )
+        await self._git.comment_on_pr(".", pr_number, message, repo=repo)
+        await self._tq.fail_task(task_id, message)
+        if int(task["attempt"]) < int(project["max_retries"]):
+            await self._tq.retry_task(task_id)
+            self._bus.publish(
+                {
+                    "type": "task_retry",
+                    "task_id": task_id,
+                    "attempt": int(task["attempt"]) + 1,
+                }
+            )
+        else:
+            self._bus.publish(
+                {"type": "task_failed", "task_id": task_id, "feedback": message}
+            )
+
     async def _sync_plan_checkbox(self, task: dict[str, Any]) -> None:
         """Flip the task checkbox in the plan file inside the TARGET project repo.
 

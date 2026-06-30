@@ -1207,3 +1207,78 @@ async def test_decide_escalation_retry_while_retries_remain() -> None:
         project={"id": "p1"}, retries_exhausted=False
     )
     assert action == "retry"
+
+
+# ---------------------------------------------------------------------------
+# Task 6: approve_task_merge / reject_task_merge
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.integration
+class TestApprovRejectMerge:
+    """Tests for Orchestrator.approve_task_merge and reject_task_merge."""
+
+    async def _orch_parked_task(
+        self,
+        db: Database,
+        *,
+        status: TaskStatus = TaskStatus.PASSED,
+    ) -> tuple[Orchestrator, Any]:
+        """Seed a task at *status* with a pr_url and return (orch, mocks)."""
+        task_queue, _plan_id, task_id = await _setup(db)
+
+        await task_queue.update_task_status(task_id, TaskStatus.REVIEWING)
+        await task_queue.set_task_pr_url(task_id, "https://github.com/u/a/pull/7")
+
+        if status == TaskStatus.PASSED:
+            await task_queue.mark_passed(task_id, "lgtm")
+        elif status != TaskStatus.REVIEWING:
+            await task_queue.update_task_status(task_id, status)
+
+        mock_git = AsyncMock()
+        mock_git.extract_pr_number.return_value = 7
+        mock_git.repo_slug = MagicMock(return_value="u/a")
+
+        bus = EventBus()
+
+        orch = Orchestrator(
+            task_queue=task_queue,
+            agent_manager=MagicMock(),
+            opus_bridge=AsyncMock(),
+            git_ops=mock_git,
+            event_bus=bus,
+        )
+
+        project = await db.fetch_one("SELECT * FROM projects WHERE id = 'p1'")
+        assert project is not None
+
+        class _Mocks:
+            def __init__(self) -> None:
+                self.task_id = task_id
+                self.project = dict(project)
+                self.git = mock_git
+
+        return orch, _Mocks()
+
+    async def test_approve_task_merge_merges_passed(self, db: Database) -> None:
+        orch, mocks = await self._orch_parked_task(db)
+        await orch.approve_task_merge(mocks.task_id, mocks.project)
+        mocks.git.merge_pr.assert_called_once()
+        task = await orch._tq.get_task(mocks.task_id)
+        assert task is not None
+        assert task["status"] == TaskStatus.MERGED
+        assert task["approved_at"] is not None
+
+    async def test_approve_task_merge_rejects_non_passed(self, db: Database) -> None:
+        orch, mocks = await self._orch_parked_task(db, status=TaskStatus.REVIEWING)
+        with pytest.raises(ValueError, match="not awaiting merge"):
+            await orch.approve_task_merge(mocks.task_id, mocks.project)
+        mocks.git.merge_pr.assert_not_called()
+
+    async def test_reject_task_merge_comments_and_fails(self, db: Database) -> None:
+        orch, mocks = await self._orch_parked_task(db)
+        await orch.reject_task_merge(mocks.task_id, mocks.project, "please redo")
+        mocks.git.comment_on_pr.assert_called_once()
+        task = await orch._tq.get_task(mocks.task_id)
+        assert task is not None
+        assert task["status"] in (TaskStatus.FAILED, TaskStatus.PENDING)
