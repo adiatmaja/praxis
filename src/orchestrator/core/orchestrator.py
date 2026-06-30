@@ -757,7 +757,7 @@ class Orchestrator:
             return "retry"
         if self._effective_settings is None:
             return "block"
-        return await self._effective_settings.escalation_policy(project["id"])
+        return str(await self._effective_settings.escalation_policy(project["id"]))
 
     @staticmethod
     def _classify_pr_failure(raw: str) -> str:

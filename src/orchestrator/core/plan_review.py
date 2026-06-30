@@ -102,13 +102,13 @@ def parse_review_response(raw: str) -> dict:
     try:
         data = json.loads(raw)
     except (ValueError, IndexError) as exc:
-        raise PlanReviewError(f"review response not valid JSON: {exc}") from exc
+        raise PlanReviewError(f"review response not valid JSON: {exc}") from exc  # noqa: EM102
     tasks = data.get("tasks") if isinstance(data, dict) else None
     if not isinstance(tasks, list) or not tasks:
-        raise PlanReviewError("review response had no tasks")
+        raise PlanReviewError("review response had no tasks")  # noqa: EM101
     for t in tasks:
         if "id" not in t or "title" not in t:
-            raise PlanReviewError(f"task missing id/title: {t}")
+            raise PlanReviewError(f"task missing id/title: {t}")  # noqa: EM102
         t.setdefault("description", t["title"])
         t.setdefault("depends_on", [])
         t.setdefault("checklist", [{"text": t["title"]}])
