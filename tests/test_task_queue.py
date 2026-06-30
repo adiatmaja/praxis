@@ -244,3 +244,29 @@ async def test_update_agent_run_logs_keeps_running(db: Database) -> None:
     assert run["logs"] == "partial log output"
     assert run["status"] == "running"
     assert run["finished_at"] is None
+
+
+@pytest.mark.integration
+async def test_mark_passed_sets_status_and_feedback(db: Database) -> None:
+    queue, plan_id = await _activate_test_plan(db)
+    task_id = (await queue.get_tasks_for_plan(plan_id))[0]["id"]
+
+    await queue.mark_passed(task_id, "looks good")
+    task = await queue.get_task(task_id)
+
+    assert task is not None
+    assert task["status"] == TaskStatus.PASSED
+    assert task["review_feedback"] == "looks good"
+
+
+@pytest.mark.integration
+async def test_mark_merged_sets_status_and_approved_at(db: Database) -> None:
+    queue, plan_id = await _activate_test_plan(db)
+    task_id = (await queue.get_tasks_for_plan(plan_id))[0]["id"]
+
+    await queue.mark_merged(task_id)
+    task = await queue.get_task(task_id)
+
+    assert task is not None
+    assert task["status"] == TaskStatus.MERGED
+    assert task["approved_at"] is not None
