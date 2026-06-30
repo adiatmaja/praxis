@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 from httpx import AsyncClient
 
@@ -139,10 +141,23 @@ async def test_stream_task_logs(
     run_id = await queue.create_agent_run(task_id, "container-abc")
     await queue.complete_agent_run(run_id, "completed", "line 1\nline 2")
 
-    response = await client.get(f"/api/tasks/{task_id}/logs", headers=auth_headers)
+    # The /logs route is an SSE stream that, for a finished task, emits the
+    # stored logs and a terminal "complete" event, then ends. Read it as a
+    # stream (a buffered GET would still need the body to finish); the stream
+    # terminates on its own. Bound it defensively so a regression can never wedge
+    # the suite.
+    received = ""
+    async with asyncio.timeout(10):
+        async with client.stream(
+            "GET", f"/api/tasks/{task_id}/logs", headers=auth_headers
+        ) as response:
+            assert response.status_code == 200
+            async for chunk in response.aiter_text():
+                received += chunk
+                if "line 1" in received:
+                    break
 
-    assert response.status_code == 200
-    assert "line 1" in response.text
+    assert "line 1" in received
 
 
 @pytest.mark.integration

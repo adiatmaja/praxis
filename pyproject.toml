@@ -29,6 +29,7 @@ dev = [
     "pytest-cov>=5.0",
     "pytest-asyncio>=0.24",
     "pytest-mock>=3.0",
+    "pytest-timeout>=2.4.0",
     "ruff>=0.8",
     "mypy>=1.0",
 ]
@@ -74,4 +75,6 @@ markers = [
     "unit: fast, isolated unit tests",
     "integration: tests that touch the database",
 ]
-addopts = "-v --tb=short"
+# Hard per-test timeout (thread method works on Windows) so a hung test fails
+# loudly instead of wedging the whole run, as the SSE log-stream test once did.
+addopts = "-v --tb=short --timeout=120 --timeout-method=thread"

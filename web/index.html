@@ -2148,6 +2148,12 @@
       ["task_completed", "task_failed"].forEach(type => {
         eventSource.addEventListener(type, event => appendLog("[" + type + "] " + event.data));
       });
+      // The server ends a finished task's log stream with a terminal "complete"
+      // event. Close the EventSource so it does NOT auto-reconnect and re-replay
+      // the already-rendered stored logs.
+      eventSource.addEventListener("complete", () => {
+        if (eventSource) { eventSource.close(); eventSource = null; }
+      });
     }
 
     async function loadDashboard(options = {}) {
