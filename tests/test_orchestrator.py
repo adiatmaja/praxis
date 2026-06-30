@@ -110,6 +110,31 @@ class TestOrchestrationDispatch:
         kwargs = mock_agent_manager.spawn_agent.call_args.kwargs
         assert kwargs["harness"] == "openhands"
 
+    async def test_dispatch_builds_bible_with_goal_and_handover(
+        self, db: Database
+    ) -> None:
+        """Dispatch must pass a bible_text with the goal and progress handover."""
+        task_queue, plan_id, _ = await _setup(db)
+        mock_agent_manager = MagicMock()
+        mock_agent_manager.spawn_agent = AsyncMock(return_value="container-789")
+        mock_git = AsyncMock()
+        mock_git.branch_commit_log = AsyncMock(return_value=[])  # fresh run
+
+        orch = Orchestrator(
+            task_queue=task_queue,
+            agent_manager=mock_agent_manager,
+            opus_bridge=AsyncMock(),
+            git_ops=mock_git,
+            event_bus=EventBus(),
+        )
+        orch._start_monitor = lambda *_: None  # type: ignore[assignment, method-assign]
+        await orch.dispatch_pending_tasks(plan_id, await _project(db))
+
+        mock_agent_manager.spawn_agent.assert_called_once()
+        bible = mock_agent_manager.spawn_agent.call_args.kwargs["bible_text"]
+        assert "# GOAL" in bible
+        assert "# PROGRESS (resume here)" in bible
+
     async def test_dispatch_skips_non_pending(self, db: Database) -> None:
         task_queue, plan_id, task_id = await _setup(db)
         await task_queue.update_task_status(task_id, TaskStatus.IN_PROGRESS)

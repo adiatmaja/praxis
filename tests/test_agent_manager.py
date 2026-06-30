@@ -147,8 +147,7 @@ async def test_spawn_agent_defaults_to_opencode(mock_docker: MagicMock) -> None:
         callback_url="http://o/cb",
     )
     assert (
-        mock_client.containers.run.call_args.kwargs["image"]
-        == "opencode-agent:latest"
+        mock_client.containers.run.call_args.kwargs["image"] == "opencode-agent:latest"
     )
 
 
@@ -374,6 +373,32 @@ async def test_spawn_sets_context_limit_env(
     )
     env = mock_client.containers.run.call_args.kwargs["environment"]
     assert env["MODEL_CONTEXT_LIMIT"] == "112277"
+
+
+@pytest.mark.unit
+@patch("orchestrator.core.agent_manager.detect_context_limit", new_callable=AsyncMock)
+@patch("orchestrator.core.agent_manager.docker")
+async def test_spawn_agent_sets_bible_env(
+    mock_docker: MagicMock, mock_detect: AsyncMock
+) -> None:
+    mock_client = MagicMock()
+    mock_docker.from_env.return_value = mock_client
+    mock_client.containers.run.return_value = _mock_container()
+    mock_detect.return_value = None
+
+    manager = AgentManager(lm_studio_url="http://localhost:1234", github_token="ghp_x")
+    await manager.spawn_agent(
+        task_id="abcd1234",
+        repo_url="https://github.com/o/r",
+        branch="agent/x",
+        base_branch="main",
+        task_prompt="do x",
+        model_name="qwen3",
+        callback_url="http://cb/",
+        bible_text="# GOAL\nDo x",
+    )
+    env = mock_client.containers.run.call_args.kwargs["environment"]
+    assert env["BIBLE_TEXT"] == "# GOAL\nDo x"
 
 
 @pytest.mark.unit

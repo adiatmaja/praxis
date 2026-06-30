@@ -116,6 +116,12 @@ if [ -n "${CONTEXT_TEXT:-}" ]; then
     read_args+=(--read ".praxis-context.md")
 fi
 
+# 2b. Static Bible: goal + handover + conventions, re-sent each message by Aider.
+if [ -n "${BIBLE_TEXT:-}" ]; then
+    printf "%s\n" "${BIBLE_TEXT}" > "${WORKSPACE}/.praxis-bible.md"
+    read_args+=(--read ".praxis-bible.md")
+fi
+
 # 3. Repo-local project memory already committed in the clone (GitHub-only:
 #    we never mount local or gitignored files). Best-effort; skip if absent.
 for ctx in CLAUDE.md MEMORY.md AGENTS.md; do

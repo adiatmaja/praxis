@@ -92,6 +92,30 @@ else
 fi
 git checkout -b "${BRANCH}"
 
+echo "--- Writing Static Bible to AGENTS.md (persists across compaction) ---"
+if [ -n "${BIBLE_TEXT:-}" ]; then
+    bible_block=".praxis-bible-tmp.md"
+    printf "%s\n" "${BIBLE_TEXT}" > "${bible_block}"
+    if [ -f "${WORKSPACE}/AGENTS.md" ]; then
+        # Preserve the repo's own AGENTS.md; prepend the Bible in a fenced block.
+        {
+            echo "<!-- praxis:bible:start -->"
+            cat "${bible_block}"
+            echo "<!-- praxis:bible:end -->"
+            echo ""
+            cat "${WORKSPACE}/AGENTS.md"
+        } > "${WORKSPACE}/AGENTS.md.new"
+        mv "${WORKSPACE}/AGENTS.md.new" "${WORKSPACE}/AGENTS.md"
+    else
+        {
+            echo "<!-- praxis:bible:start -->"
+            cat "${bible_block}"
+            echo "<!-- praxis:bible:end -->"
+        } > "${WORKSPACE}/AGENTS.md"
+    fi
+    rm -f "${bible_block}"
+fi
+
 echo "--- Writing OpenCode config (OpenAI-compatible local provider) ---"
 mkdir -p "${HOME}/.config/opencode"
 # MODEL_CONTEXT_LIMIT is detected per-model from LM Studio by the orchestrator

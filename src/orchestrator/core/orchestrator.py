@@ -10,6 +10,7 @@ import tempfile
 from datetime import UTC, datetime
 from typing import Any, cast
 
+from orchestrator.core.agent_manager import detect_context_limit
 from orchestrator.core.agent_prompt import build_implementer_prompt
 from orchestrator.core.diff_guard import destructive_deletions
 from orchestrator.core.event_bus import EventBus
@@ -19,7 +20,10 @@ from orchestrator.core.git_ops import (
     flip_checklist_item,
 )
 from orchestrator.core.llm_router import ProviderAuthError
+from orchestrator.core.progress_handover import ChecklistItem, render_handover
 from orchestrator.core.task_queue import TaskQueue
+from orchestrator.core.token_budget import ContextBudgetExceeded
+from orchestrator.core.worker_bible import BibleSources, build_bible
 from orchestrator.models.schemas import PlanStatus, TaskStatus
 
 
@@ -140,12 +144,32 @@ class Orchestrator:
             plan_path: str | None = plan_task.get("plan_path")
             plan_text: str | None = plan_task.get("plan_text")
             context_text: str | None = plan_task.get("context_text")
+            base_branch = plan["plan_branch_name"] or project["default_branch"]
+
+            # Build the Static Bible (goal + git-spine progress handover +
+            # conventions), scrubbed and trimmed to the model's window, so the
+            # goal/progress survive compaction and cross-run re-dispatch.
+            try:
+                bible = await self._build_worker_bible(
+                    task, plan_task, project, base_branch, task["branch_name"]
+                )
+            except ContextBudgetExceeded:
+                logger.warning(
+                    "Task %s context exceeds the local model window; failing",
+                    task["id"],
+                )
+                await self._tq.fail_task(
+                    task["id"],
+                    "context for this task exceeds the local model's window; "
+                    "split the task",
+                )
+                continue
 
             container_id = await self._agents.spawn_agent(
                 task_id=task["id"],
                 repo_url=project["repo_url"],
                 branch=task["branch_name"],
-                base_branch=plan["plan_branch_name"] or project["default_branch"],
+                base_branch=base_branch,
                 task_prompt=prompt,
                 model_name=project["model_name"],
                 harness=project.get("harness"),
@@ -154,6 +178,7 @@ class Orchestrator:
                 plan_path=plan_path,
                 plan_text=plan_text,
                 context_text=context_text,
+                bible_text=bible,
             )
             run_id = await self._tq.create_agent_run(task["id"], container_id)
             await self._tq.update_task_status(task["id"], TaskStatus.IN_PROGRESS)
@@ -167,6 +192,55 @@ class Orchestrator:
                     "container_id": container_id,
                 }
             )
+
+    async def _build_worker_bible(
+        self,
+        task: dict[str, Any],
+        plan_task: dict[str, Any],
+        project: dict[str, Any],
+        base_branch: str,
+        branch: str,
+    ) -> str:
+        """Assemble the Static Bible for a task: goal + handover + context.
+
+        Reconstructs the progress handover deterministically from the task
+        branch's commit log plus a per-task checklist, then folds it into a
+        scrubbed, budget-trimmed Bible.
+
+        Raises:
+            ContextBudgetExceeded: If the floor context exceeds the model window.
+        """
+        goal = task["description"] or task["title"]
+        raw_checklist = (
+            plan_task.get("checklist") or task.get("checklist") or [{"text": goal}]
+        )
+        items = [ChecklistItem(c["text"]) for c in raw_checklist]
+        try:
+            commits = await self._git.branch_commit_log(".", base_branch, branch)
+        except Exception:  # noqa: BLE001 - fresh/absent branch -> no progress yet
+            commits = []
+        handover = render_handover(items, commits, task.get("progress_note"))
+
+        if self._effective_settings is not None:
+            lm_studio_url = await self._effective_settings.lm_studio_url()
+        else:
+            lm_studio_url = ""
+        context_window = (
+            await detect_context_limit(lm_studio_url, project["model_name"])
+            if lm_studio_url
+            else None
+        ) or 8192
+
+        return build_bible(
+            BibleSources(
+                goal=goal,
+                handover=handover,
+                context_window=context_window,
+                plan_slice=plan_task.get("plan_text"),
+                caller_context=plan_task.get("context_text"),
+                repo_memory=None,  # repo files folded in by entrypoint --read
+            )
+        )
 
     async def review_task(self, task_id: str, project: dict[str, Any]) -> None:
         """Review a task PR with Opus and merge or retry accordingly."""

@@ -172,6 +172,8 @@ class Database:
                     "needs_stronger_model INTEGER DEFAULT 0",
                     "escalation_state TEXT",
                     "escalated_to TEXT",
+                    "checklist TEXT",
+                    "progress_note TEXT",
                 ),
             ),
         ):

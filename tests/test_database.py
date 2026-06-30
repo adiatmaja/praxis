@@ -259,3 +259,10 @@ async def test_tasks_table_has_escalation_columns(db: Database) -> None:
         for row in await (await db.execute("PRAGMA table_info(tasks)")).fetchall()
     }
     assert {"needs_stronger_model", "escalation_state", "escalated_to"} <= cols
+
+
+@pytest.mark.integration
+async def test_tasks_table_has_checklist_and_progress_note(db: Database) -> None:
+    cols = {r["name"] for r in await db.fetch_all("PRAGMA table_info(tasks)")}
+    assert "checklist" in cols
+    assert "progress_note" in cols

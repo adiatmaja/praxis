@@ -324,3 +324,61 @@ async def test_remote_file_exists_raises_on_network_error() -> None:
         pytest.raises(RuntimeError, match="network error checking file on GitHub"),
     ):
         await git.remote_file_exists("u/r", "main", "plan.md")
+
+
+# ---------------------------------------------------------------------------
+# branch_commit_log
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+async def test_branch_commit_log_parses_sha_and_subject(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    git = GitOps(github_token="ghp_test")
+
+    async def fake_run_checked(cmd: list[str], cwd: str | None = None) -> str:
+        return "abc123def\x1fagent: Add model\n789ghijkl\x1fagent: Add test\n"
+
+    monkeypatch.setattr(git, "_run_checked", fake_run_checked)
+
+    from orchestrator.core.progress_handover import Commit
+
+    commits = await git.branch_commit_log(".", "main", "agent/x")
+    assert commits == [
+        Commit(sha="abc123def", subject="agent: Add model"),
+        Commit(sha="789ghijkl", subject="agent: Add test"),
+    ]
+
+
+@pytest.mark.unit
+async def test_branch_commit_log_empty(monkeypatch: pytest.MonkeyPatch) -> None:
+    git = GitOps(github_token="ghp_test")
+
+    async def fake_run_checked(cmd: list[str], cwd: str | None = None) -> str:
+        return ""
+
+    monkeypatch.setattr(git, "_run_checked", fake_run_checked)
+
+    commits = await git.branch_commit_log(".", "main", "agent/x")
+    assert commits == []
+
+
+@pytest.mark.unit
+async def test_branch_commit_log_passes_correct_git_args(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    git = GitOps(github_token="ghp_test")
+    captured: list[tuple[list[str], str | None]] = []
+
+    async def fake_run_checked(cmd: list[str], cwd: str | None = None) -> str:
+        captured.append((cmd, cwd))
+        return ""
+
+    monkeypatch.setattr(git, "_run_checked", fake_run_checked)
+    await git.branch_commit_log("/repo", "main", "agent/feat")
+
+    assert len(captured) == 1
+    cmd, cwd = captured[0]
+    assert cmd == ["git", "log", "--reverse", "--format=%H%x1f%s", "main..agent/feat"]
+    assert cwd == "/repo"

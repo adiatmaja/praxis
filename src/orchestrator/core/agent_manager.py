@@ -83,6 +83,7 @@ class AgentManager:
         plan_path: str | None = None,
         plan_text: str | None = None,
         context_text: str | None = None,
+        bible_text: str | None = None,
     ) -> str:
         harness_id = harness or default_harness_id()
         spec = REGISTRY[harness_id]
@@ -110,6 +111,8 @@ class AgentManager:
             environment["PLAN_TEXT"] = plan_text
         if context_text is not None:
             environment["CONTEXT_TEXT"] = context_text
+        if bible_text is not None:
+            environment["BIBLE_TEXT"] = bible_text
         # Detect the model's real context window so compaction-capable harnesses
         # (OpenCode) can trigger at the right threshold instead of sailing past
         # it into silent server-side truncation. Detected per-model, never
