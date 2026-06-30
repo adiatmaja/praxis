@@ -52,19 +52,61 @@ async def test_poll_task_maps_status_and_pr() -> None:
         {
             ("GET", "/api/tasks/t1"): {
                 "task": {
-                    "status": "passed",
+                    "status": "in_progress",
                     "pr_url": "https://github.com/u/r/pull/9",
                     "review_feedback": "looks good",
+                    "branch_name": "agent/foo",
                 },
                 "runs": [],
             }
         }
     )
     result = await server.poll_task_impl(client, task_id="t1")
-    assert result["status"] == "passed"
+    assert result["status"] == "in_progress"
     assert result["pr_url"].endswith("/pull/9")
     assert result["review"] == "looks good"
     assert "dashboard_url" in result
+
+
+async def test_poll_task_maps_passed_to_awaiting_merge() -> None:
+    client = FakeClient(
+        {
+            ("GET", "/api/tasks/t1"): {
+                "task": {
+                    "status": "passed",
+                    "pr_url": "https://github.com/u/r/pull/5",
+                    "review_feedback": "looks good",
+                    "branch_name": "agent/foo",
+                },
+                "runs": [],
+            }
+        }
+    )
+    result = await server.poll_task_impl(client, task_id="t1")
+    assert result["status"] == "awaiting_merge"
+    assert result["pr_url"].endswith("/pull/5")
+    assert result["review"] == "looks good"
+    assert result["branch"] == "agent/foo"
+    assert result["verdict"] == "pass"
+
+
+async def test_poll_task_passthrough_non_passed() -> None:
+    client = FakeClient(
+        {
+            ("GET", "/api/tasks/t1"): {
+                "task": {
+                    "status": "in_progress",
+                    "pr_url": None,
+                    "review_feedback": None,
+                    "branch_name": None,
+                },
+                "runs": [],
+            }
+        }
+    )
+    result = await server.poll_task_impl(client, task_id="t1")
+    assert result["status"] == "in_progress"
+    assert result["verdict"] is None
 
 
 async def test_list_providers_combines_status_and_models() -> None:
