@@ -80,6 +80,7 @@ class ProjectCreate(BaseModel):
     max_retries: int = Field(default=3, ge=1, le=10)
     max_improvement_cycles: int = Field(default=5, ge=1, le=20)
     lm_studio_url: str = "http://host.docker.internal:1234"
+    auto_merge: bool = False
     agent_model: str | None = None
     agent_model_effort: str | None = None
     harness: str = Field(default_factory=default_harness_id)
@@ -155,6 +156,7 @@ class ProjectUpdate(BaseModel):
     name: str | None = None
     model_name: str | None = None
     approval_gate: bool | None = None
+    auto_merge: bool | None = None
     confidence_threshold: float | None = Field(default=None, ge=0.0, le=1.0)
     max_retries: int | None = Field(default=None, ge=1, le=10)
     max_improvement_cycles: int | None = Field(default=None, ge=1, le=20)
@@ -215,6 +217,7 @@ class ProjectResponse(BaseModel):
     model_name: str
     default_branch: str
     approval_gate: bool
+    auto_merge: bool = False
     confidence_threshold: float
     max_retries: int
     max_improvement_cycles: int
