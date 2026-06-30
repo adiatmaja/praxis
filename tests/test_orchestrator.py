@@ -1037,3 +1037,51 @@ async def test_empty_diff_failure_has_clear_message(orchestrator: Orchestrator) 
     )
     assert "zero commits" in msg.lower()
     assert "worker" in msg.lower()
+
+
+@pytest.mark.unit
+async def test_decide_escalation_blocks_by_default() -> None:
+    effective = MagicMock()
+    effective.escalation_policy = AsyncMock(return_value="block")
+    orch = Orchestrator(
+        task_queue=AsyncMock(),
+        agent_manager=MagicMock(),
+        opus_bridge=AsyncMock(),
+        git_ops=AsyncMock(),
+        event_bus=EventBus(),
+        effective_settings=effective,
+    )
+    action = await orch._decide_escalation(project={"id": "p1"}, retries_exhausted=True)
+    assert action == "block"
+
+
+@pytest.mark.unit
+async def test_decide_escalation_returns_brain_when_configured() -> None:
+    effective = MagicMock()
+    effective.escalation_policy = AsyncMock(return_value="brain")
+    orch = Orchestrator(
+        task_queue=AsyncMock(),
+        agent_manager=MagicMock(),
+        opus_bridge=AsyncMock(),
+        git_ops=AsyncMock(),
+        event_bus=EventBus(),
+        effective_settings=effective,
+    )
+    action = await orch._decide_escalation(project={"id": "p1"}, retries_exhausted=True)
+    assert action == "brain"
+
+
+@pytest.mark.unit
+async def test_decide_escalation_retry_while_retries_remain() -> None:
+    orch = Orchestrator(
+        task_queue=AsyncMock(),
+        agent_manager=MagicMock(),
+        opus_bridge=AsyncMock(),
+        git_ops=AsyncMock(),
+        event_bus=EventBus(),
+        effective_settings=None,
+    )
+    action = await orch._decide_escalation(
+        project={"id": "p1"}, retries_exhausted=False
+    )
+    assert action == "retry"

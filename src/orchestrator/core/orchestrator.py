@@ -40,6 +40,7 @@ class Orchestrator:
         context_sync: Any = None,
         callback_url: str = "http://host.docker.internal:8080/api/internal/agent-done",
         callback_token: str | None = None,
+        effective_settings: Any = None,
     ) -> None:
         self._tq = task_queue
         self._agents = agent_manager
@@ -48,6 +49,9 @@ class Orchestrator:
         self._bus = event_bus
         self._doc_indexer = doc_indexer
         self._context_sync = context_sync
+        # Resolves the escalation policy (block | brain | paid_fallback) for a
+        # failing leaf. Optional so tests/older callers can omit it.
+        self._effective_settings = effective_settings
         # Where agent containers POST completion; must match the orchestrator's
         # listening port (a wrong port makes every callback 404 -> reconcile).
         self._callback_url = callback_url
@@ -717,10 +721,43 @@ class Orchestrator:
                 reason,
             )
         else:
+            escalation = "block"
+            if project is not None:
+                escalation = await self._decide_escalation(
+                    project, retries_exhausted=True
+                )
             self._bus.publish(
-                {"type": "task_failed", "task_id": run["task_id"], "feedback": reason}
+                {
+                    "type": "task_failed",
+                    "task_id": run["task_id"],
+                    "feedback": reason,
+                    "escalation": escalation,
+                }
             )
-            logger.warning("Reconciled run %s -> failed: %s", run["id"], reason)
+            logger.warning(
+                "Reconciled run %s -> failed (escalation=%s): %s",
+                run["id"],
+                escalation,
+                reason,
+            )
+
+    async def _decide_escalation(self, project: dict, retries_exhausted: bool) -> str:
+        """Return the escalation action for a failing leaf.
+
+        Args:
+            project: The owning project row (must expose ``id``).
+            retries_exhausted: True once bounded retries are spent.
+
+        Returns:
+            ``"retry"`` while retries remain, else the configured policy
+            (``"block"`` | ``"brain"`` | ``"paid_fallback"``); defaults to
+            ``"block"`` when no effective-settings resolver is wired.
+        """
+        if not retries_exhausted:
+            return "retry"
+        if self._effective_settings is None:
+            return "block"
+        return await self._effective_settings.escalation_policy(project["id"])
 
     @staticmethod
     def _classify_pr_failure(raw: str) -> str:
