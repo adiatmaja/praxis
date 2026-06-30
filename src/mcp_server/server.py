@@ -46,6 +46,33 @@ async def dispatch_task_impl(
         return _error(exc)
 
 
+async def execute_plan_impl(
+    client: Any,
+    repo_url: str,
+    plan: str,
+    model: str,
+    harness: str | None = None,
+    branch: str | None = None,
+    context: str | None = None,
+) -> dict[str, Any]:
+    """Submit a full, externally-authored plan for capability-aware execution."""
+    payload: dict[str, Any] = {
+        "repo_url": repo_url,
+        "plan": plan,
+        "model": model,
+    }
+    if harness is not None:
+        payload["harness"] = harness
+    if branch is not None:
+        payload["branch"] = branch
+    if context is not None:
+        payload["context"] = context
+    try:
+        return cast(dict[str, Any], await client.post("/api/execute-plan", payload))
+    except PraxisClientError as exc:
+        return _error(exc)
+
+
 async def poll_task_impl(client: Any, task_id: str) -> dict[str, Any]:
     """Return the current status, PR URL, and review of a dispatched task."""
     try:
@@ -130,6 +157,38 @@ async def dispatch_task(
         PraxisClient.from_env(),
         repo_url=repo_url,
         instructions=instructions,
+        model=model,
+        harness=harness,
+        branch=branch,
+        context=context,
+    )
+
+
+@mcp.tool()
+async def execute_plan(
+    repo_url: str,
+    plan: str,
+    model: str,
+    harness: str | None = None,
+    branch: str | None = None,
+    context: str | None = None,
+) -> dict[str, Any]:
+    """Execute a full, externally-authored implementation plan on a repo.
+
+    Praxis runs a capability-aware review that decomposes the plan into tasks the
+    LOCAL model can each complete, flags any tasks too hard for it (returned in
+    "blocked"), and runs its own review/merge loop. Pass the FULL plan text. Use
+    this (not dispatch_task) when you already have a multi-step plan; dispatch_task
+    is for a single small task.
+
+    Returns {plan_id, project_id, dashboard_url, leaves, blocked}.
+
+    context: Optional curated, secret-scrubbed reference text for the worker.
+    """
+    return await execute_plan_impl(
+        PraxisClient.from_env(),
+        repo_url=repo_url,
+        plan=plan,
         model=model,
         harness=harness,
         branch=branch,

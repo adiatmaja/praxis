@@ -140,3 +140,43 @@ def test_main_callable_and_registers_tools() -> None:
         "get_task_logs",
         "cancel_task",
     } <= tool_names
+
+
+async def test_execute_plan_forwards_and_returns_summary() -> None:
+    client = FakeClient(
+        {
+            ("POST", "/api/execute-plan"): {
+                "plan_id": "p1",
+                "project_id": "pr1",
+                "dashboard_url": "http://localhost:8080/",
+                "leaves": ["t1"],
+                "blocked": [],
+            }
+        }
+    )
+    result = await server.execute_plan_impl(
+        client,
+        repo_url="https://github.com/u/r",
+        plan="Build a thing with a model and a test",
+        model="qwen3-32b",
+    )
+    assert result["plan_id"] == "p1"
+    assert result["leaves"] == ["t1"]
+    method, path, body = client.calls[0]
+    assert (method, path) == ("POST", "/api/execute-plan")
+    assert body["plan"].startswith("Build a thing")
+    assert body["model"] == "qwen3-32b"
+
+
+async def test_execute_plan_returns_error_on_client_failure() -> None:
+    class FailingClient:
+        async def post(self, path: str, json: Any = None) -> Any:
+            raise PraxisClientError("validation_error", "missing plan")
+
+    result = await server.execute_plan_impl(
+        FailingClient(),
+        repo_url="https://github.com/u/r",
+        plan="x",
+        model="qwen3",
+    )
+    assert result["error"] == "validation_error"
