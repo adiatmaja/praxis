@@ -389,6 +389,7 @@ class Orchestrator:
         repo = self._git.repo_slug(task["pr_url"]) or self._git.repo_slug(
             project["repo_url"]
         )
+        # Human approval: no auto_merge gate or protected-branch check applies here.
         await self._git.merge_pr(".", pr_number, repo=repo)
         await self._tq.mark_merged(task_id)
         await self._sync_plan_checkbox(task)

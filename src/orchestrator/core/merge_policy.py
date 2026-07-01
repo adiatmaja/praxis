@@ -12,7 +12,7 @@ from typing import Any
 
 # Branch-name patterns always treated as protected, regardless of project
 # default. Matched case-insensitively with shell-style globbing.
-_PROTECTED_PATTERNS: tuple[str, ...] = ("main", "master", "release", "release*")
+_PROTECTED_PATTERNS: tuple[str, ...] = ("main", "master", "release*")
 
 
 def is_protected_branch(branch: str | None, default_branch: str) -> bool:
