@@ -120,7 +120,7 @@ docker compose --profile hosted up --build             # with Caddy
 ## Task State Machine
 
 ```
-PENDING -> IN_PROGRESS -> REVIEWING -> PASSED -> MERGED
+PENDING -> IN_PROGRESS -> REVIEWING -> PASSED -> (human approve) -> MERGED
                                     -> FAILED -> (re-dispatch, max 3)
 ```
 
@@ -182,6 +182,14 @@ Tables: `users`, `projects`, `plans`, `tasks`, `agent_runs`, `opus_state`,
 
 ## Gotchas
 
+- **Merge is gated by default**: review PASS parks a task at `PASSED` (PR left
+  open, `task_awaiting_merge` event emitted), it does NOT auto-merge. Merge
+  happens only via `POST /api/tasks/{id}/approve-merge` (or the dashboard /
+  plan-level `approve-merges`), or when a project sets `auto_merge=True`. Even
+  with `auto_merge=True`, Praxis never auto-merges into a protected branch
+  (project default / `main` / `master` / `release*`): `core/merge_policy.py`.
+  MCP `poll_task` reports this as `status: awaiting_merge` so a main brain can
+  relay the PR for approval.
 - **CLI is at `src/cli/`**, not top-level `cli/`. The entrypoint in pyproject.toml is
   `orchestrator-cli = "cli.main:app"` which works because `[tool.setuptools.packages.find]`
   has `where = ["src"]`
