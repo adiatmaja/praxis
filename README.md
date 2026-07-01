@@ -12,16 +12,19 @@
   <a href="https://github.com/adiatmaja/praxis/stargazers"><img alt="Stars" src="https://img.shields.io/github/stars/adiatmaja/praxis?style=social"></a>
 </p>
 
-**You give Praxis a description of what you want; it ships the code and hands you merged PRs.**
+**You give Praxis a description of what you want; it writes the code and hands you reviewed, ready-to-merge PRs.**
 Plenty of tools can pass a single prompt to a model. Praxis runs the whole engineering loop you'd
 otherwise do by hand:
 
 1. A smart "planner" model reads your spec and breaks it into separate tasks.
 2. For each task it spins up a coding agent in its own Docker container, on its own git branch.
 3. Each agent writes the code, commits, and opens a pull request.
-4. The planner reviews every PR. It squash-merges the ones that pass and sends the failures back for
-   another attempt (up to 3).
+4. The planner reviews every PR. By default it **parks the ones that pass for you to approve and
+   merge** (opt in to auto-merge per project — never into a protected branch), and sends the
+   failures back for another attempt (up to 3).
 5. If an agent crashes or hangs, Praxis notices and retries it, so nothing gets stuck forever.
+
+You stay in control of what lands: Praxis does the work and the review, you keep the merge button.
 
 The trick that makes this cheap — and the reason Praxis exists — is in the next section. Drive the
 whole loop three ways (all clients of one engine): **MCP** (from Claude Code), the **dashboard**, or
@@ -81,7 +84,7 @@ local model as the hands, driven from inside the assistant you already use.**
        │        └──────────────────────┘            │
        │                                             │
        └──────────────── reviews the PR ◀────────────┘
-                         (pass → squash-merge · fail → retry ×3)
+                         (pass → park for your approval · fail → retry ×3)
 
    BRAIN  = your AI subscription   → planning + code review (needs judgment)
    HANDS  = local model, zero cost → writing the actual file edits (token-heavy)
@@ -247,7 +250,7 @@ Driven from the dashboard or CLI, the full autonomous loop runs as follows.
 2. The planner brain breaks the spec into tasks with a dependency graph.
 3. Praxis creates a `plan/{date}-{slug}` branch.
 4. Coding agents implement tasks on `agent/{task-slug}` branches.
-5. The planner reviews each PR diff. Pass: squash merge; fail: retry (max 3).
+5. The planner reviews each PR diff. Pass: park for your approval (or auto-merge if opted in); fail: retry (max 3).
 6. All tasks merged → integration PR to main.
 7. Optional: the planner proposes improvements when confidence ≥ threshold.
 
