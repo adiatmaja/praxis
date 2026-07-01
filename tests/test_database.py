@@ -266,3 +266,21 @@ async def test_tasks_table_has_checklist_and_progress_note(db: Database) -> None
     cols = {r["name"] for r in await db.fetch_all("PRAGMA table_info(tasks)")}
     assert "checklist" in cols
     assert "progress_note" in cols
+
+
+@pytest.mark.asyncio
+async def test_new_columns_exist(tmp_path) -> None:
+    """projects.auto_merge and tasks.approved_at are present after initialize."""
+    db = Database(f"sqlite+aiosqlite:///{tmp_path / 'm.db'}")
+    await db.initialize()
+    try:
+        proj_cols = {
+            row["name"] for row in await db.fetch_all("PRAGMA table_info(projects)")
+        }
+        task_cols = {
+            row["name"] for row in await db.fetch_all("PRAGMA table_info(tasks)")
+        }
+        assert "auto_merge" in proj_cols
+        assert "approved_at" in task_cols
+    finally:
+        await db.close()

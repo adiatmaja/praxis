@@ -218,3 +218,98 @@ async def test_missing_task_returns_404(
     response = await client.get("/api/tasks/missing", headers=auth_headers)
 
     assert response.status_code == 404
+
+
+async def _seed_passed_task(
+    client: AsyncClient,
+    db: Database,
+    auth_headers: dict[str, str],
+) -> str:
+    """Seed a project/plan/task in PASSED state with a pr_url."""
+    await seed_user(db)
+    project = await client.post(
+        "/api/projects",
+        json={"name": "App", "repo_url": "https://github.com/u/a", "model_name": "m"},
+        headers=auth_headers,
+    )
+    queue = client.app.state.task_queue  # type: ignore[attr-defined]
+    plan_id = await queue.create_plan(project.json()["id"], "Build auth")
+    await queue.activate_plan(
+        plan_id,
+        {
+            "plan_summary": "Auth",
+            "plan_slug": "auth",
+            "tasks": [
+                {
+                    "title": "Login",
+                    "slug": "login",
+                    "description": "Build login",
+                    "depends_on": [],
+                }
+            ],
+        },
+        "plan/2026-06-01-auth",
+    )
+    task_id = (await queue.get_tasks_for_plan(plan_id))[0]["id"]
+    await queue.update_task_status(task_id, TaskStatus.PASSED)
+    await queue.set_task_pr_url(task_id, "https://github.com/u/a/pull/1")
+    return task_id
+
+
+@pytest.mark.integration
+async def test_approve_merge_endpoint(
+    client: AsyncClient,
+    db: Database,
+    auth_headers: dict[str, str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    called: dict[str, str] = {}
+
+    async def fake_approve(task_id: str, project: dict) -> None:
+        called["task_id"] = task_id
+
+    task_id = await _seed_passed_task(client, db, auth_headers)
+    monkeypatch.setattr(
+        client.app.state.orchestrator, "approve_task_merge", fake_approve
+    )
+    resp = await client.post(
+        f"/api/tasks/{task_id}/approve-merge", headers=auth_headers
+    )
+    assert resp.status_code == 200
+    assert called["task_id"] == task_id
+
+
+@pytest.mark.integration
+async def test_approve_merge_unknown_task_404(
+    client: AsyncClient,
+    db: Database,
+    auth_headers: dict[str, str],
+) -> None:
+    await seed_user(db)
+    resp = await client.post(
+        "/api/tasks/does-not-exist/approve-merge", headers=auth_headers
+    )
+    assert resp.status_code == 404
+
+
+@pytest.mark.integration
+async def test_reject_merge_endpoint(
+    client: AsyncClient,
+    db: Database,
+    auth_headers: dict[str, str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, str | None] = {}
+
+    async def fake_reject(task_id: str, project: dict, feedback: str | None) -> None:
+        captured["feedback"] = feedback
+
+    task_id = await _seed_passed_task(client, db, auth_headers)
+    monkeypatch.setattr(client.app.state.orchestrator, "reject_task_merge", fake_reject)
+    resp = await client.post(
+        f"/api/tasks/{task_id}/reject-merge",
+        headers=auth_headers,
+        json={"feedback": "redo"},
+    )
+    assert resp.status_code == 200
+    assert captured["feedback"] == "redo"

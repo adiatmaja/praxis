@@ -269,6 +269,35 @@ project) allows the orchestrator to merge LLM-written code autonomously.
 **This is a deliberate supply-chain trust decision.**  Only disable it for repositories
 where you are comfortable with fully automated merges of AI-generated code.
 
+### Merge approval & security
+
+Praxis **parks a reviewed PR for explicit human approval by default** instead of
+auto-merging.  On an Opus review PASS the task lands in the `PASSED` status (the PR is
+left open) and a `task_awaiting_merge` event is emitted; nothing is merged until a human
+approves.
+
+Approve or reject a parked merge via:
+
+| Endpoint | Effect |
+|----------|--------|
+| `POST /api/tasks/{id}/approve-merge` | Squash-merge one review-passed task's PR. |
+| `POST /api/tasks/{id}/reject-merge` | Comment on the PR, fail the task, and re-dispatch if retry attempts remain (optional `{"feedback": "..."}` body). |
+| `POST /api/plans/{id}/approve-merges` | Batch-approve every `PASSED` task in a plan; returns `{approved, errors}`. |
+
+MCP `poll_task` surfaces a parked task as `status: awaiting_merge` (with `pr_url`,
+`review`, `branch`, `verdict`) so a main brain can relay the PR for approval.
+
+**Opt-in auto-merge.**  A per-project `auto_merge` flag (default off) restores the old
+merge-on-PASS behavior.  Even with `auto_merge=True`, Praxis **never** auto-merges into a
+protected branch (the project default branch, or any `main` / `master` / `release*`
+branch): the rule lives in `core/merge_policy.py` and an unknown base branch is treated as
+protected (fail safe).
+
+**Defense in depth.**  Scope `GITHUB_TOKEN` least-privilege (`contents:write` +
+`pull_requests:write` only; no admin or branch-protection-bypass) and enable GitHub
+branch protection on your default branch, so the merge gate is enforced by GitHub even if
+orchestrator logic is bypassed.
+
 ### Prompt injection via PR diffs
 
 When reviewing a PR, the orchestrator feeds the full diff to the reviewing LLM.

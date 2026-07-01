@@ -88,16 +88,27 @@ async def execute_plan_impl(
 
 
 async def poll_task_impl(client: Any, task_id: str) -> dict[str, Any]:
-    """Return the current status, PR URL, and review of a dispatched task."""
+    """Return the current status, PR URL, and review of a dispatched task.
+
+    When a task has been reviewed and its PR approved, the status is returned
+    as ``awaiting_merge`` (mapped from the internal ``passed`` state) and
+    ``verdict`` is set to ``"pass"``.  The caller should surface the ``pr_url``
+    to a human for final merge approval.
+    """
     try:
         data = await client.get(f"/api/tasks/{task_id}")
     except PraxisClientError as exc:
         return _error(exc)
     task = data.get("task", {})
+    raw_status = task.get("status")
+    awaiting = raw_status == "passed"
     return {
-        "status": task.get("status"),
+        "task_id": task_id,
+        "status": "awaiting_merge" if awaiting else raw_status,
         "pr_url": task.get("pr_url"),
         "review": task.get("review_feedback"),
+        "branch": task.get("branch_name"),
+        "verdict": "pass" if awaiting else None,
         "dashboard_url": _dashboard_url(client),
     }
 
@@ -212,7 +223,12 @@ async def execute_plan(
 
 @mcp.tool()
 async def poll_task(task_id: str) -> dict[str, Any]:
-    """Get the status, PR URL, and review of a dispatched task."""
+    """Get the status, PR URL, and review of a dispatched task.
+
+    Returns ``status="awaiting_merge"`` (with ``verdict="pass"``) when the
+    task's PR has passed review and is parked for human approval.  Relay
+    ``pr_url`` to the user so they can approve and merge the PR themselves.
+    """
     return await poll_task_impl(PraxisClient.from_env(), task_id=task_id)
 
 

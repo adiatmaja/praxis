@@ -168,3 +168,52 @@ async def test_create_project_defaults_harness_opencode(
     )
     assert resp.status_code == 201
     assert resp.json()["harness"] == "opencode"
+
+
+@pytest.mark.integration
+async def test_create_project_auto_merge_defaults_false(
+    client: AsyncClient,
+    db: Database,
+    auth_headers: dict[str, str],
+) -> None:
+    await seed_user(db)
+
+    resp = await client.post(
+        "/api/projects",
+        headers=auth_headers,
+        json={
+            "name": "amrepo",
+            "repo_url": "https://github.com/user/amrepo",
+            "model_name": "qwen3-32b",
+        },
+    )
+    assert resp.status_code == 201
+    assert resp.json()["auto_merge"] is False
+
+
+@pytest.mark.integration
+async def test_update_project_auto_merge(
+    client: AsyncClient,
+    db: Database,
+    auth_headers: dict[str, str],
+) -> None:
+    await seed_user(db)
+
+    created = await client.post(
+        "/api/projects",
+        headers=auth_headers,
+        json={
+            "name": "amrepo2",
+            "repo_url": "https://github.com/user/amrepo2",
+            "model_name": "qwen3-32b",
+        },
+    )
+    project_id = created.json()["id"]
+
+    resp = await client.patch(
+        f"/api/projects/{project_id}",
+        headers=auth_headers,
+        json={"auto_merge": True},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["auto_merge"] is True

@@ -116,6 +116,26 @@ class TaskQueue:
             (status, now, task_id),
         )
 
+    async def mark_passed(self, task_id: str, feedback: str) -> None:
+        """Park a reviewed-clean task awaiting human merge approval."""
+        now = datetime.now(UTC).isoformat()
+        await self._db.execute(
+            """UPDATE tasks
+               SET status = ?, review_feedback = ?, updated_at = ?
+               WHERE id = ?""",
+            (TaskStatus.PASSED, feedback, now, task_id),
+        )
+
+    async def mark_merged(self, task_id: str) -> None:
+        """Mark a task merged and stamp the approval time."""
+        now = datetime.now(UTC).isoformat()
+        await self._db.execute(
+            """UPDATE tasks
+               SET status = ?, approved_at = ?, updated_at = ?
+               WHERE id = ?""",
+            (TaskStatus.MERGED, now, now, task_id),
+        )
+
     async def fail_task(self, task_id: str, feedback: str) -> None:
         now = datetime.now(UTC).isoformat()
         await self._db.execute(

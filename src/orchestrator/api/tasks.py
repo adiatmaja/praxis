@@ -5,9 +5,16 @@ from __future__ import annotations
 from typing import Any, cast
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
+from pydantic import BaseModel
 
 from orchestrator.api.auth import verify_token
 from orchestrator.models.schemas import TaskResponse, TaskStatus
+
+
+class RejectMergeRequest(BaseModel):
+    """Optional feedback when rejecting a parked merge."""
+
+    feedback: str | None = None
 
 
 router = APIRouter(tags=["tasks"], dependencies=[Depends(verify_token)])
@@ -90,3 +97,71 @@ async def retry_task(request: Request, task_id: str) -> dict[str, Any]:
 
     updated = await queue.get_task(task_id)
     return cast(dict[str, Any], updated)
+
+
+async def _resolve_task_and_project(
+    request: Request, task_id: str
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Load a task and its owning project, or raise 404."""
+    queue = request.app.state.task_queue
+    db = request.app.state.db
+    task = await queue.get_task(task_id)
+    if task is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Task not found"
+        )
+    plan = await queue.get_plan(task["plan_id"])
+    project = None
+    if plan is not None:
+        project = await db.fetch_one(
+            "SELECT * FROM projects WHERE id = ?", (plan["project_id"],)
+        )
+    if project is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Project not found"
+        )
+    return task, project
+
+
+@router.post("/tasks/{task_id}/approve-merge")
+async def approve_merge(request: Request, task_id: str) -> dict[str, Any]:
+    """Approve and merge a review-passed, parked task."""
+    _, project = await _resolve_task_and_project(request, task_id)
+    orchestrator = request.app.state.orchestrator
+    if orchestrator is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Orchestrator unavailable",
+        )
+    try:
+        await orchestrator.approve_task_merge(task_id, project)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail=str(exc)
+        ) from exc
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY, detail=f"merge failed: {exc}"
+        ) from exc
+    return {"task_id": task_id, "status": "merged"}
+
+
+@router.post("/tasks/{task_id}/reject-merge")
+async def reject_merge(
+    request: Request, task_id: str, body: RejectMergeRequest
+) -> dict[str, Any]:
+    """Reject a parked merge; re-dispatched if retry attempts remain."""
+    _, project = await _resolve_task_and_project(request, task_id)
+    orchestrator = request.app.state.orchestrator
+    if orchestrator is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Orchestrator unavailable",
+        )
+    try:
+        await orchestrator.reject_task_merge(task_id, project, body.feedback)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail=str(exc)
+        ) from exc
+    return {"task_id": task_id, "status": "rejected"}

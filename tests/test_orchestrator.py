@@ -156,6 +156,7 @@ class TestOrchestrationDispatch:
 class TestOrchestrationReview:
     async def test_review_pass_merges(self, db: Database) -> None:
         task_queue, _, task_id = await _setup(db)
+        await db.execute("UPDATE projects SET auto_merge = 1 WHERE id = 'p1'")
         await task_queue.update_task_status(task_id, TaskStatus.REVIEWING)
         await task_queue.set_task_pr_url(task_id, "https://github.com/u/a/pull/1")
         mock_opus = AsyncMock()
@@ -251,6 +252,7 @@ class TestOrchestrationReview:
     async def test_review_clones_pr_head_and_passes_cwd(self, db: Database) -> None:
         """review_task clones the PR head and passes the checkout dir as cwd."""
         task_queue, _, task_id = await _setup(db)
+        await db.execute("UPDATE projects SET auto_merge = 1 WHERE id = 'p1'")
         await task_queue.update_task_status(task_id, TaskStatus.REVIEWING)
         await task_queue.set_task_pr_url(task_id, "https://github.com/u/a/pull/1")
 
@@ -296,6 +298,7 @@ class TestOrchestrationReview:
     ) -> None:
         """review_task falls back to diff-only (cwd=None) when clone_pr_head raises."""
         task_queue, _, task_id = await _setup(db)
+        await db.execute("UPDATE projects SET auto_merge = 1 WHERE id = 'p1'")
         await task_queue.update_task_status(task_id, TaskStatus.REVIEWING)
         await task_queue.set_task_pr_url(task_id, "https://github.com/u/a/pull/1")
 
@@ -384,6 +387,100 @@ class TestOrchestrationReview:
         comment_text = comment_call[0][2]
         assert "Hard-blocked" in comment_text
         assert "config.py" in comment_text
+
+    # ------------------------------------------------------------------
+    # Merge-gate tests (Task 5)
+    # ------------------------------------------------------------------
+
+    async def _make_review_pass_orch(
+        self,
+        db: Database,
+        auto_merge: int,
+        base_branch: str,
+    ) -> tuple[Orchestrator, dict]:
+        """Seed a REVIEWING task and build an Orchestrator with controlled mocks."""
+        task_queue, plan_id, task_id = await _setup(db)
+        await db.execute(
+            "UPDATE projects SET auto_merge = ?, default_branch = 'main' WHERE id = 'p1'",
+            (auto_merge,),
+        )
+        # Store the desired base_branch into the plan row.
+        await db.execute(
+            "UPDATE plans SET plan_branch_name = ? WHERE id = ?",
+            (base_branch, plan_id),
+        )
+        await task_queue.update_task_status(task_id, TaskStatus.REVIEWING)
+        await task_queue.set_task_pr_url(task_id, "https://github.com/u/a/pull/1")
+
+        mock_opus = AsyncMock()
+        mock_opus.is_available.return_value = True
+        mock_opus.review_diff.return_value = {
+            "verdict": "pass",
+            "feedback": "ok",
+            "issues": [],
+        }
+        mock_git = AsyncMock()
+        mock_git.extract_pr_number.return_value = 1
+        mock_git.get_pr_diff.return_value = "diff"
+        mock_git.repo_slug = MagicMock(return_value="u/a")
+
+        published: list[dict] = []
+        bus = EventBus()
+        _orig_publish = bus.publish
+        bus.publish = lambda e: (published.append(e), _orig_publish(e))  # type: ignore[method-assign]
+
+        orch = Orchestrator(
+            task_queue=task_queue,
+            agent_manager=MagicMock(),
+            opus_bridge=mock_opus,
+            git_ops=mock_git,
+            event_bus=bus,
+        )
+
+        project = await db.fetch_one("SELECT * FROM projects WHERE id = 'p1'")
+        assert project is not None
+
+        class _Mocks:
+            def __init__(self) -> None:
+                self.task_id = task_id
+                self.project = dict(project)
+                self.git = mock_git
+                self.published = published
+
+        return orch, _Mocks()
+
+    async def test_review_pass_parks_when_not_auto_merge(self, db: Database) -> None:
+        orch, mocks = await self._make_review_pass_orch(
+            db, auto_merge=0, base_branch="plan/x"
+        )
+        await orch.review_task(mocks.task_id, mocks.project)
+        mocks.git.merge_pr.assert_not_called()
+        task = await orch._tq.get_task(mocks.task_id)
+        assert task is not None
+        assert task["status"] == TaskStatus.PASSED
+        assert any(e["type"] == "task_awaiting_merge" for e in mocks.published)
+
+    async def test_review_pass_auto_merges_nonprotected(self, db: Database) -> None:
+        orch, mocks = await self._make_review_pass_orch(
+            db, auto_merge=1, base_branch="plan/x"
+        )
+        await orch.review_task(mocks.task_id, mocks.project)
+        mocks.git.merge_pr.assert_called_once()
+        task = await orch._tq.get_task(mocks.task_id)
+        assert task is not None
+        assert task["status"] == TaskStatus.MERGED
+
+    async def test_review_pass_auto_merge_blocked_on_protected(
+        self, db: Database
+    ) -> None:
+        orch, mocks = await self._make_review_pass_orch(
+            db, auto_merge=1, base_branch="main"
+        )
+        await orch.review_task(mocks.task_id, mocks.project)
+        mocks.git.merge_pr.assert_not_called()
+        task = await orch._tq.get_task(mocks.task_id)
+        assert task is not None
+        assert task["status"] == TaskStatus.PASSED
 
 
 @pytest.mark.integration
@@ -1110,3 +1207,78 @@ async def test_decide_escalation_retry_while_retries_remain() -> None:
         project={"id": "p1"}, retries_exhausted=False
     )
     assert action == "retry"
+
+
+# ---------------------------------------------------------------------------
+# Task 6: approve_task_merge / reject_task_merge
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.integration
+class TestApprovRejectMerge:
+    """Tests for Orchestrator.approve_task_merge and reject_task_merge."""
+
+    async def _orch_parked_task(
+        self,
+        db: Database,
+        *,
+        status: TaskStatus = TaskStatus.PASSED,
+    ) -> tuple[Orchestrator, Any]:
+        """Seed a task at *status* with a pr_url and return (orch, mocks)."""
+        task_queue, _plan_id, task_id = await _setup(db)
+
+        await task_queue.update_task_status(task_id, TaskStatus.REVIEWING)
+        await task_queue.set_task_pr_url(task_id, "https://github.com/u/a/pull/7")
+
+        if status == TaskStatus.PASSED:
+            await task_queue.mark_passed(task_id, "lgtm")
+        elif status != TaskStatus.REVIEWING:
+            await task_queue.update_task_status(task_id, status)
+
+        mock_git = AsyncMock()
+        mock_git.extract_pr_number.return_value = 7
+        mock_git.repo_slug = MagicMock(return_value="u/a")
+
+        bus = EventBus()
+
+        orch = Orchestrator(
+            task_queue=task_queue,
+            agent_manager=MagicMock(),
+            opus_bridge=AsyncMock(),
+            git_ops=mock_git,
+            event_bus=bus,
+        )
+
+        project = await db.fetch_one("SELECT * FROM projects WHERE id = 'p1'")
+        assert project is not None
+
+        class _Mocks:
+            def __init__(self) -> None:
+                self.task_id = task_id
+                self.project = dict(project)
+                self.git = mock_git
+
+        return orch, _Mocks()
+
+    async def test_approve_task_merge_merges_passed(self, db: Database) -> None:
+        orch, mocks = await self._orch_parked_task(db)
+        await orch.approve_task_merge(mocks.task_id, mocks.project)
+        mocks.git.merge_pr.assert_called_once()
+        task = await orch._tq.get_task(mocks.task_id)
+        assert task is not None
+        assert task["status"] == TaskStatus.MERGED
+        assert task["approved_at"] is not None
+
+    async def test_approve_task_merge_rejects_non_passed(self, db: Database) -> None:
+        orch, mocks = await self._orch_parked_task(db, status=TaskStatus.REVIEWING)
+        with pytest.raises(ValueError, match="not awaiting merge"):
+            await orch.approve_task_merge(mocks.task_id, mocks.project)
+        mocks.git.merge_pr.assert_not_called()
+
+    async def test_reject_task_merge_comments_and_fails(self, db: Database) -> None:
+        orch, mocks = await self._orch_parked_task(db)
+        await orch.reject_task_merge(mocks.task_id, mocks.project, "please redo")
+        mocks.git.comment_on_pr.assert_called_once()
+        task = await orch._tq.get_task(mocks.task_id)
+        assert task is not None
+        assert task["status"] in (TaskStatus.FAILED, TaskStatus.PENDING)
