@@ -11,7 +11,12 @@ from pydantic import BaseModel
 from orchestrator.api.auth import verify_token
 from orchestrator.core.markdown_utils import extract_frontmatter_field
 from orchestrator.core.plan_derive import PlanDeriveError, derive_opus_plan
-from orchestrator.models.schemas import PlanCreate, PlanResponse, PlanStatus
+from orchestrator.models.schemas import (
+    PlanCreate,
+    PlanResponse,
+    PlanStatus,
+    TaskStatus,
+)
 
 
 router = APIRouter(tags=["plans"], dependencies=[Depends(verify_token)])
@@ -184,3 +189,40 @@ async def promote_plan(request: Request, body: PromoteRequest) -> dict[str, Any]
     if plan is None:
         raise HTTPException(status_code=500, detail="promotion failed")
     return cast(dict[str, Any], plan)
+
+
+@router.post("/plans/{plan_id}/approve-merges")
+async def approve_merges(request: Request, plan_id: str) -> dict[str, Any]:
+    """Approve and merge every review-passed task in a plan."""
+    queue = request.app.state.task_queue
+    db = request.app.state.db
+    orchestrator = request.app.state.orchestrator
+    plan = await queue.get_plan(plan_id)
+    if plan is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Plan not found"
+        )
+    if orchestrator is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Orchestrator unavailable",
+        )
+    project = await db.fetch_one(
+        "SELECT * FROM projects WHERE id = ?", (plan["project_id"],)
+    )
+    if project is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Project not found"
+        )
+    tasks = await queue.get_tasks_for_plan(plan_id)
+    approved = 0
+    errors: list[dict[str, str]] = []
+    for task in tasks:
+        if task["status"] != TaskStatus.PASSED:
+            continue
+        try:
+            await orchestrator.approve_task_merge(task["id"], project)
+            approved += 1
+        except Exception as exc:  # noqa: BLE001 - collect, keep going
+            errors.append({"task_id": task["id"], "error": str(exc)})
+    return {"plan_id": plan_id, "approved": approved, "errors": errors}

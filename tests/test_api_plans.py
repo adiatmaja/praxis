@@ -9,6 +9,7 @@ import pytest
 from httpx import AsyncClient
 
 from orchestrator.database import Database
+from orchestrator.models.schemas import TaskStatus
 from tests.conftest import seed_user
 
 
@@ -126,3 +127,72 @@ async def test_promote_missing_doc_returns_404(
         json={"project_id": pid, "plan_path": "docs/superpowers/plans/missing.md"},
     )
     assert resp.status_code == 404
+
+
+async def _seed_plan_with_passed_tasks(
+    client: AsyncClient,
+    db: Database,
+    auth_headers: dict[str, str],
+    n: int = 2,
+) -> tuple[str, list[str]]:
+    """Seed one plan with N tasks in PASSED state, each with a pr_url."""
+    await seed_user(db)
+    project = await client.post(
+        "/api/projects",
+        json={"name": "App", "repo_url": "https://github.com/u/a", "model_name": "m"},
+        headers=auth_headers,
+    )
+    queue = client.app.state.task_queue  # type: ignore[attr-defined]
+    plan_id = await queue.create_plan(project.json()["id"], "Build things")
+    await queue.activate_plan(
+        plan_id,
+        {
+            "plan_summary": "Things",
+            "plan_slug": "things",
+            "tasks": [
+                {
+                    "title": f"Task {i}",
+                    "slug": f"task-{i}",
+                    "description": f"Do thing {i}",
+                    "depends_on": [],
+                }
+                for i in range(n)
+            ],
+        },
+        "plan/2026-06-01-things",
+    )
+    tasks = await queue.get_tasks_for_plan(plan_id)
+    passed_ids = []
+    for task in tasks:
+        await queue.update_task_status(task["id"], TaskStatus.PASSED)
+        await queue.set_task_pr_url(
+            task["id"], f"https://github.com/u/a/pull/{task['id']}"
+        )
+        passed_ids.append(task["id"])
+    return plan_id, passed_ids
+
+
+@pytest.mark.integration
+async def test_approve_merges_batch(
+    client: AsyncClient,
+    db: Database,
+    auth_headers: dict[str, str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    approved: list[str] = []
+
+    async def fake_approve(task_id: str, project: dict) -> None:
+        approved.append(task_id)
+
+    plan_id, passed_ids = await _seed_plan_with_passed_tasks(
+        client, db, auth_headers, n=2
+    )
+    monkeypatch.setattr(
+        client.app.state.orchestrator, "approve_task_merge", fake_approve
+    )
+    resp = await client.post(
+        f"/api/plans/{plan_id}/approve-merges", headers=auth_headers
+    )
+    assert resp.status_code == 200
+    assert sorted(approved) == sorted(passed_ids)
+    assert resp.json()["approved"] == 2
