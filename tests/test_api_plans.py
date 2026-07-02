@@ -83,7 +83,11 @@ async def test_promote_creates_and_activates_run(
         "---\nspec_path: docs/superpowers/specs/x-design.md\n---\n"
         "# X Plan\n\n### Task 1: Do thing\n\nDetails.\n"
     )
-    mocker.patch.object(client.app.state.brainstorm, "read_doc", return_value=plan_md)
+    mocker.patch.object(
+        client.app.state.brainstorm,
+        "read_doc",
+        new=mocker.AsyncMock(return_value=plan_md),
+    )
 
     resp = await client.post(
         "/api/plans/promote",
@@ -119,7 +123,7 @@ async def test_promote_missing_doc_returns_404(
     mocker.patch.object(
         client.app.state.brainstorm,
         "read_doc",
-        side_effect=FileNotFoundError("nope"),
+        new=mocker.AsyncMock(side_effect=FileNotFoundError("nope")),
     )
     resp = await client.post(
         "/api/plans/promote",

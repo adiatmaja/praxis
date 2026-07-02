@@ -58,19 +58,19 @@ async def test_run_turn_publishes_text(mocker):
     assert any(e["text"] == "Q1?" for e in texts)
 
 
-def test_manager_starts_session(mocker, tmp_path):
+async def test_manager_starts_session(mocker, tmp_path):
     from orchestrator.core.brainstorm import BrainstormManager
 
     mgr = BrainstormManager(
-        workspace_base=str(tmp_path), event_bus=mocker.MagicMock(), github_token="t"
+        workspace_base=str(tmp_path), event_bus=mocker.MagicMock(), credentials="t"
     )
-    mocker.patch.object(mgr, "_clone_repo")
-    sid = mgr.create_session(repo_url="https://x/y")
+    mocker.patch.object(mgr, "_clone_repo", new=mocker.AsyncMock())
+    sid = await mgr.create_session(repo_url="https://x/y")
     assert sid in mgr._sessions
     mgr._clone_repo.assert_called_once()
 
 
-def test_clone_repo_delegates_to_clone_with_token(mocker, tmp_path):
+async def test_clone_repo_delegates_to_clone_with_token(mocker, tmp_path):
     """_clone_repo must call clone_with_token with clean URL + token, not embed token in URL."""
     from orchestrator.core.brainstorm import BrainstormManager
 
@@ -78,9 +78,9 @@ def test_clone_repo_delegates_to_clone_with_token(mocker, tmp_path):
     mgr = BrainstormManager(
         workspace_base=str(tmp_path),
         event_bus=mocker.MagicMock(),
-        github_token="secret-tok",
+        credentials="secret-tok",
     )
-    mgr._clone_repo("https://github.com/user/repo", "/some/dest")
+    await mgr._clone_repo("https://github.com/user/repo", "/some/dest")
     mock_cwt.assert_called_once_with(
         "https://github.com/user/repo", "/some/dest", "secret-tok", depth=50
     )
@@ -89,18 +89,18 @@ def test_clone_repo_delegates_to_clone_with_token(mocker, tmp_path):
     assert "secret-tok" not in url_arg
 
 
-def test_write_and_commit_uses_commit_and_push(mocker, tmp_path):
+async def test_write_and_commit_uses_commit_and_push(mocker, tmp_path):
     """write_and_commit must delegate push to commit_and_push, not raw git commands."""
     from orchestrator.core.brainstorm import BrainstormManager
 
     mock_cap = mocker.patch("orchestrator.core.brainstorm.commit_and_push")
 
     mgr = BrainstormManager(
-        workspace_base=str(tmp_path), event_bus=mocker.MagicMock(), github_token="tok"
+        workspace_base=str(tmp_path), event_bus=mocker.MagicMock(), credentials="tok"
     )
-    mocker.patch.object(mgr, "_clone_repo")
+    mocker.patch.object(mgr, "_clone_repo", new=mocker.AsyncMock())
 
-    result = mgr.write_and_commit(
+    result = await mgr.write_and_commit(
         repo_url="https://github.com/user/repo",
         path="docs/spec.md",
         content="# spec",
@@ -117,20 +117,20 @@ def test_write_and_commit_uses_commit_and_push(mocker, tmp_path):
     )
 
 
-def test_write_and_commit_rejects_path_escape(mocker, tmp_path):
+async def test_write_and_commit_rejects_path_escape(mocker, tmp_path):
     """write_and_commit must raise ValueError for paths that escape workspace."""
+    import pytest
+
     from orchestrator.core.brainstorm import BrainstormManager
 
     mgr = BrainstormManager(
-        workspace_base=str(tmp_path), event_bus=mocker.MagicMock(), github_token="tok"
+        workspace_base=str(tmp_path), event_bus=mocker.MagicMock(), credentials="tok"
     )
-    mocker.patch.object(mgr, "_clone_repo")
+    mocker.patch.object(mgr, "_clone_repo", new=mocker.AsyncMock())
     mocker.patch("orchestrator.core.brainstorm.commit_and_push")
 
-    import pytest
-
     with pytest.raises(ValueError, match="escapes workspace"):
-        mgr.write_and_commit(
+        await mgr.write_and_commit(
             repo_url="https://github.com/user/repo",
             path="../../etc/passwd",
             content="bad",
@@ -142,9 +142,9 @@ async def test_generate_plan_cleans_up_workspace(mocker, tmp_path):
     from orchestrator.core.brainstorm import BrainstormManager, BrainstormSession
 
     mgr = BrainstormManager(
-        workspace_base=str(tmp_path), event_bus=mocker.MagicMock(), github_token="tok"
+        workspace_base=str(tmp_path), event_bus=mocker.MagicMock(), credentials="tok"
     )
-    mocker.patch.object(mgr, "_clone_repo")
+    mocker.patch.object(mgr, "_clone_repo", new=mocker.AsyncMock())
 
     async def fake_run_turn(self, message, *, resume):
         pass
@@ -171,14 +171,16 @@ def _seed_repo(workspace: str) -> None:
     )
 
 
-def test_list_lifecycle_docs(tmp_path, mocker):
+async def test_list_lifecycle_docs(tmp_path, mocker):
     mgr = BrainstormManager(
-        workspace_base=str(tmp_path / "ws"), event_bus=None, github_token="t"
+        workspace_base=str(tmp_path / "ws"), event_bus=None, credentials="t"
     )
     mocker.patch.object(
-        mgr, "_clone_repo", side_effect=lambda _url, dest: _seed_repo(dest)
+        mgr,
+        "_clone_repo",
+        new=mocker.AsyncMock(side_effect=lambda _url, dest: _seed_repo(dest)),
     )
-    docs = mgr.list_lifecycle_docs("https://example.com/repo.git")
+    docs = await mgr.list_lifecycle_docs("https://example.com/repo.git")
     specs = [d for d in docs if d["category"] == "spec"]
     plans = [d for d in docs if d["category"] == "plan"]
     assert specs[0]["path"] == "docs/superpowers/specs/x-design.md"
@@ -186,14 +188,16 @@ def test_list_lifecycle_docs(tmp_path, mocker):
     assert (plans[0]["done_count"], plans[0]["total_count"]) == (1, 2)
 
 
-def test_read_doc(tmp_path, mocker):
+async def test_read_doc(tmp_path, mocker):
     mgr = BrainstormManager(
-        workspace_base=str(tmp_path / "ws"), event_bus=None, github_token="t"
+        workspace_base=str(tmp_path / "ws"), event_bus=None, credentials="t"
     )
     mocker.patch.object(
-        mgr, "_clone_repo", side_effect=lambda _url, dest: _seed_repo(dest)
+        mgr,
+        "_clone_repo",
+        new=mocker.AsyncMock(side_effect=lambda _url, dest: _seed_repo(dest)),
     )
-    content = mgr.read_doc(
+    content = await mgr.read_doc(
         "https://example.com/repo.git", "docs/superpowers/plans/x.md"
     )
     assert "# X Plan" in content
@@ -203,6 +207,26 @@ def test_plan_bootstrap_requests_spec_path_frontmatter():
     prompt = PLAN_BOOTSTRAP.format(spec_path="docs/specs/x.md", notes="none")
     assert "spec_path" in prompt
     assert "front-matter" in prompt.lower() or "frontmatter" in prompt.lower()
+
+
+async def test_brainstorm_resolves_token_from_provider(monkeypatch):
+    import orchestrator.core.brainstorm as bs
+    from orchestrator.core.github_credentials import PatCredentialProvider
+
+    seen = {}
+
+    def fake_clone(repo_url, dest, token, depth=50):
+        seen["clone_token"] = token
+
+    monkeypatch.setattr(bs, "clone_with_token", fake_clone)
+
+    mgr = bs.BrainstormManager(
+        workspace_base="/tmp/x",
+        event_bus=None,
+        credentials=PatCredentialProvider("ghs_scoped"),
+    )
+    await mgr._clone_repo("https://github.com/o/r", "read-1")
+    assert seen["clone_token"] == "ghs_scoped"
 
 
 async def test_stream_lines_logs_nonzero_exit(mocker, tmp_path):

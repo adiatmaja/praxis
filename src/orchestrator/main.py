@@ -55,7 +55,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     _brainstorm_pre = BrainstormManager(
         workspace_base=settings.brainstorm_workspace,
         event_bus=None,  # EventBus not yet created; backfill doesn't need events
-        github_token=github_token,
+        credentials=github_token,
     )
 
     async def _before_drop() -> None:
@@ -123,14 +123,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.brainstorm = BrainstormManager(
         workspace_base=settings.brainstorm_workspace,
         event_bus=app.state.event_bus,
-        github_token=github_token,
+        credentials=github_token,
     )
 
     from orchestrator.core.context_sync import ContextSync
 
     app.state.context_sync = ContextSync(
         workspace_base=settings.brainstorm_workspace,
-        github_token=github_token,
+        credentials=github_token,
         memory_md_path=settings.memory_md_path,
     )
 

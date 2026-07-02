@@ -78,7 +78,7 @@ async def start_session(
         )
     mgr = request.app.state.brainstorm
     event_bus = getattr(request.app.state, "event_bus", None)
-    session_id = mgr.create_session(repo_url=project["repo_url"])
+    session_id = await mgr.create_session(repo_url=project["repo_url"])
     asyncio.create_task(_run_turn_safely(mgr, event_bus, session_id, body.message))
     return {"session_id": session_id}
 
@@ -113,7 +113,7 @@ async def modify_spec(
         )
     return cast(
         dict[str, Any],
-        request.app.state.brainstorm.write_and_commit(
+        await request.app.state.brainstorm.write_and_commit(
             project["repo_url"], body.spec_path, body.content
         ),
     )

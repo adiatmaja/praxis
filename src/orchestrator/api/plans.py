@@ -147,7 +147,7 @@ async def promote_plan(request: Request, body: PromoteRequest) -> dict[str, Any]
         return cast(dict[str, Any], existing)
 
     try:
-        plan_md = request.app.state.brainstorm.read_doc(
+        plan_md = await request.app.state.brainstorm.read_doc(
             project["repo_url"], body.plan_path
         )
     except FileNotFoundError as exc:
