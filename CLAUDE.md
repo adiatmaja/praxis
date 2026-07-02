@@ -166,7 +166,12 @@ Tables: `users`, `projects`, `plans`, `tasks`, `agent_runs`, `opus_state`,
 
 ## Key Design Decisions
 
-- **No ORM** — raw SQL via aiosqlite, migrations as inline CREATE TABLE IF NOT EXISTS
+- **No ORM** — raw SQL via aiosqlite, baseline tables as inline CREATE TABLE IF NOT EXISTS
+  (the `CREATE_TABLE_STATEMENTS` tuple, run every startup).
+  Schema changes now go through the versioned migration list in `database.py`
+  (`MIGRATIONS` + `PRAGMA user_version`, applied at the end of `initialize()`).
+  Add a new `Migration(n, desc, fn)` instead of another ad-hoc conditional
+  rebuild; steps must be idempotent (re-run safe).
 - **Global settings layer (Spec 2)** — git-trackable defaults live in `config/praxis.yaml`
   (loaded by `core/settings_file.load_yaml_settings`); `Settings.__init__` overlays them
   beneath env vars, so precedence is **env > YAML > field default**. Keys map by uppercase
