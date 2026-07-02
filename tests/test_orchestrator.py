@@ -904,7 +904,7 @@ class TestSyncPlanCheckbox:
         )
 
         mock_doc_indexer = AsyncMock()
-        # git_ops has no _github_token attribute → token is None → safe no-op.
+        # git_ops has no _provider attribute → provider is None → safe no-op.
         mock_git = MagicMock(spec=[])  # no attributes at all
 
         orch = Orchestrator(
@@ -939,9 +939,11 @@ class TestSyncPlanCheckbox:
 
         mock_doc_indexer = AsyncMock()
 
-        # git_ops stub with a token so the clone path is taken.
+        # git_ops stub with a credential provider so the clone path is taken.
+        from orchestrator.core.github_credentials import PatCredentialProvider
+
         mock_git = MagicMock()
-        mock_git._github_token = "test-token-xyz"
+        mock_git._provider = PatCredentialProvider("test-token-xyz")
 
         cloned_ws: list[str] = []
 
