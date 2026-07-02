@@ -21,7 +21,11 @@ class Settings(BaseSettings):
     """Runtime settings sourced from environment variables."""
 
     auth_token: str
-    github_token: str
+    github_token: str | None = None
+    github_app_id: str | None = None
+    # PEM contents OR a path to a PEM file holding the App private key.
+    github_app_private_key: str | None = None
+    github_app_installation_id: int | None = None
     database_url: str = "sqlite+aiosqlite:///data/orchestrator.db"
     lm_studio_url: str = "http://host.docker.internal:1234"
     agent_model: str = "claude-opus-4-8"

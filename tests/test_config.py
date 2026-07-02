@@ -126,6 +126,32 @@ def test_memory_md_path_default():
     assert s.memory_md_path == "docs/MEMORY.md"
 
 
+def test_github_app_fields_default_none():
+    from orchestrator.config import Settings
+
+    settings = Settings(
+        auth_token="t",
+        github_token="ghp_x",
+        _env_file=None,
+    )
+    assert settings.github_app_id is None
+    assert settings.github_app_private_key is None
+    assert settings.github_app_installation_id is None
+
+
+def test_github_token_optional_when_app_configured():
+    from orchestrator.config import Settings
+
+    settings = Settings(
+        auth_token="t",
+        github_app_id="12345",
+        github_app_private_key="-----BEGIN PRIVATE KEY-----\nabc\n-----END PRIVATE KEY-----",
+        _env_file=None,
+    )
+    assert settings.github_token is None
+    assert settings.github_app_id == "12345"
+
+
 def test_yaml_provides_defaults(tmp_path, monkeypatch):
     cfg = tmp_path / "praxis.yaml"
     cfg.write_text("loop_interval: 7\n", encoding="utf-8")

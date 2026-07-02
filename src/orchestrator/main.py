@@ -36,6 +36,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Initialize and teardown shared application resources."""
 
     settings = Settings()
+    # Resolve github_token to a plain str for components that require one.
+    # An empty string is safe: git ops and brainstorm skip authenticated network
+    # calls when the token is absent, mirroring the previous required-field behaviour.
+    github_token: str = settings.github_token or ""
     database = Database(settings.database_url)
 
     db_path = Path(database.db_path)
@@ -51,7 +55,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     _brainstorm_pre = BrainstormManager(
         workspace_base=settings.brainstorm_workspace,
         event_bus=None,  # EventBus not yet created; backfill doesn't need events
-        github_token=settings.github_token,
+        github_token=github_token,
     )
 
     async def _before_drop() -> None:
@@ -59,7 +63,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     # Only backfill when a GitHub token is available (brainstorm needs it to
     # write+commit spec docs to the target repo).
-    _before_drop_cb = _before_drop if settings.github_token else None
+    _before_drop_cb = _before_drop if github_token else None
 
     await database.initialize(before_drop=_before_drop_cb)
 
@@ -94,13 +98,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         effective_settings=effective_settings,
         router=router,
     )
-    git_ops = GitOps(settings.github_token)
+    git_ops = GitOps(github_token)
     app.state.git_ops = git_ops
     app.state.event_bus = EventBus()
     try:
         app.state.agent_manager = AgentManager(
             lm_studio_url=settings.lm_studio_url,
-            github_token=settings.github_token,
+            github_token=github_token,
             effective_settings=effective_settings,
         )
     except Exception as exc:
@@ -119,14 +123,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.brainstorm = BrainstormManager(
         workspace_base=settings.brainstorm_workspace,
         event_bus=app.state.event_bus,
-        github_token=settings.github_token,
+        github_token=github_token,
     )
 
     from orchestrator.core.context_sync import ContextSync
 
     app.state.context_sync = ContextSync(
         workspace_base=settings.brainstorm_workspace,
-        github_token=settings.github_token,
+        github_token=github_token,
         memory_md_path=settings.memory_md_path,
     )
 
