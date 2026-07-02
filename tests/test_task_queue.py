@@ -299,3 +299,44 @@ async def test_passed_task_does_not_unblock_dependents(db: Database) -> None:
     assert any(t["title"] == "B" for t in dispatchable), (
         "B must become dispatchable once A is MERGED"
     )
+
+
+@pytest.mark.integration
+async def test_mark_needs_clarification_parks_without_burning_attempt(
+    db: Database,
+) -> None:
+    queue, plan_id = await _activate_test_plan(db)
+    tasks = await queue.get_tasks_for_plan(plan_id)
+    task_id = tasks[0]["id"]
+    before = tasks[0]["attempt"]
+    await queue.mark_needs_clarification(
+        task_id, "Which config file holds the API base?"
+    )
+    task = await queue.get_task(task_id)
+    assert task is not None
+    assert task["status"] == TaskStatus.NEEDS_CLARIFICATION
+    assert task["clarification_question"] == "Which config file holds the API base?"
+    assert task["clarification_state"] == "asked"
+    assert task["attempt"] == before
+
+
+@pytest.mark.integration
+async def test_record_clarification_answer_requeues_with_progress_note(
+    db: Database,
+) -> None:
+    queue, plan_id = await _activate_test_plan(db)
+    tasks = await queue.get_tasks_for_plan(plan_id)
+    task_id = tasks[0]["id"]
+    before_attempt = tasks[0]["attempt"]
+    await queue.mark_needs_clarification(task_id, "Which config file?")
+    await queue.record_clarification_answer(
+        task_id, "Use config/praxis.yaml", state="answered_by_brain"
+    )
+    task = await queue.get_task(task_id)
+    assert task is not None
+    assert task["status"] == TaskStatus.PENDING
+    assert task["clarification_answer"] == "Use config/praxis.yaml"
+    assert task["clarification_state"] == "answered_by_brain"
+    assert "Which config file?" in task["progress_note"]
+    assert "Use config/praxis.yaml" in task["progress_note"]
+    assert task["attempt"] == before_attempt + 1

@@ -145,6 +145,49 @@ class TaskQueue:
             (TaskStatus.FAILED, feedback, now, task_id),
         )
 
+    async def mark_needs_clarification(self, task_id: str, question: str) -> None:
+        """Park a task that asked a question, WITHOUT consuming a retry attempt."""
+        now = datetime.now(UTC).isoformat()
+        await self._db.execute(
+            """UPDATE tasks
+               SET status = ?, clarification_question = ?,
+                   clarification_state = 'asked', updated_at = ?
+               WHERE id = ?""",
+            (TaskStatus.NEEDS_CLARIFICATION, question, now, task_id),
+        )
+
+    async def record_clarification_answer(
+        self, task_id: str, answer: str, state: str
+    ) -> None:
+        """Store the answer, fold the Q&A into progress_note, requeue for dispatch."""
+        task = await self.get_task(task_id)
+        if task is None:
+            message = f"Task {task_id} not found"
+            raise ValueError(message)
+        question = task.get("clarification_question") or "(question not recorded)"
+        existing_note = task.get("progress_note") or ""
+        qa_block = (
+            f"ANSWER TO YOUR EARLIER QUESTION (act on this now):\n"
+            f"Q: {question}\nA: {answer}"
+        )
+        merged_note = f"{existing_note}\n\n{qa_block}".strip()
+        now = datetime.now(UTC).isoformat()
+        await self._db.execute(
+            """UPDATE tasks
+               SET status = ?, clarification_answer = ?, clarification_state = ?,
+                   progress_note = ?, attempt = ?, updated_at = ?
+               WHERE id = ?""",
+            (
+                TaskStatus.PENDING,
+                answer,
+                state,
+                merged_note,
+                int(task["attempt"]) + 1,
+                now,
+                task_id,
+            ),
+        )
+
     async def retry_task(self, task_id: str) -> None:
         task = await self.get_task(task_id)
         if task is None:

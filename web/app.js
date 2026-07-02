@@ -1439,6 +1439,54 @@
         }
         if (data?.provider) flagRuntimeAuthFailure(data.provider, data.login_hint);
       });
+
+      source.addEventListener("task_needs_clarification", event => {
+        let data;
+        try {
+          data = JSON.parse(event.data);
+        } catch (error) {
+          return;
+        }
+        if (data?.task_id) renderClarification(data.task_id, data.question, data.brain_note);
+      });
+
+      source.addEventListener("clarification_resolved", event => {
+        let data;
+        try {
+          data = JSON.parse(event.data);
+        } catch (error) {
+          return;
+        }
+        if (data?.task_id) clearClarification(data.task_id);
+      });
+    }
+
+    function renderClarification(taskId, question, brainNote) {
+      const el = document.querySelector('.task-card[data-task-id="' + taskId + '"]');
+      if (!el) return;
+      clearClarification(taskId);
+      const box = document.createElement("div");
+      box.className = "clarification-banner";
+      box.innerHTML =
+        '<p class="clarification-q"><strong>Worker needs clarification:</strong> ' + esc(question) + "</p>" +
+        (brainNote ? '<p class="clarification-note">Brain could not resolve: ' + esc(brainNote) + "</p>" : "") +
+        '<textarea id="clarify-input-' + esc(taskId) + '" placeholder="Answer the worker\'s question..."></textarea>' +
+        '<button onclick="submitClarification(\'' + esc(taskId) + '\')">Submit answer</button>';
+      el.appendChild(box);
+    }
+
+    window.submitClarification = async function submitClarification(taskId) {
+      const input = document.getElementById("clarify-input-" + taskId);
+      if (!input) return;
+      const answer = input.value.trim();
+      if (!answer) return;
+      await api("POST", "/api/tasks/" + taskId + "/clarify", { answer });
+      clearClarification(taskId);
+    };
+
+    function clearClarification(taskId) {
+      document.querySelectorAll('.task-card[data-task-id="' + taskId + '"] .clarification-banner')
+        .forEach(n => n.remove());
     }
 
     function toggleSpec(planId) {

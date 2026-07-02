@@ -12,7 +12,7 @@
                           ┌────────────────────┼────────────────────┐
                           ▼                    ▼                    ▼
                    ┌────────────┐       ┌────────────┐      ┌────────────┐
-                   │ Aider      │       │ Aider      │      │ Aider      │
+                   │ Harness    │       │ Harness    │      │ Harness    │
                    │ agent/     │       │ agent/     │      │ agent/     │
                    │ task-1     │       │ task-2     │      │ task-3     │
                    └─────┬──────┘       └─────┬──────┘      └─────┬──────┘
@@ -74,7 +74,7 @@
    OpenHands). The container:
    - Clones the repo
    - Creates an `agent/{task-slug}` branch from the plan branch
-   - Runs Aider with the task description as the prompt
+   - Runs the selected harness with the task description as the prompt
    - Commits, pushes, and creates a PR targeting the plan branch
    - Calls back to `/api/internal/agent-done` when finished
 
@@ -96,6 +96,29 @@
    - With approval gate ON: plan is created with `pending` status, awaiting user approval
    - With approval gate OFF: plan is automatically activated and dispatched
 
+## Worker Clarification Channel
+
+When a worker agent cannot proceed without more information, it reports
+`Status: BLOCKED` or `NEEDS_CONTEXT` in its FINAL REPORT instead of guessing.
+The orchestrator treats this as a clarification request: the task parks at
+`NEEDS_CLARIFICATION` without burning a retry, and the brain (`answer_clarification`,
+Sonnet/medium) attempts to answer from the task description and `plan_text`. A
+confident answer (confidence >= project `confidence_threshold`) re-dispatches the
+task with the Q&A injected via `progress_note` into the Static Bible; a low-confidence
+answer parks the task at `awaiting_human` and emits `task_needs_clarification` over
+SSE so a human can supply the answer via `POST /api/tasks/{id}/clarify` or MCP
+`poll_task` (which reports `status: awaiting_clarification`).
+
+State transitions:
+
+```
+IN_PROGRESS -> NEEDS_CLARIFICATION -> (brain confident) -> PENDING (re-dispatch)
+                                   -> (low confidence)  -> awaiting_human -> PENDING
+```
+
+All three harnesses (aider, opencode, openhands) parse the FINAL REPORT for
+block signals and route them through the same harness-agnostic callback.
+
 ## Per-Project Settings
 
 Each registered repository can be configured with:
@@ -107,7 +130,7 @@ Each registered repository can be configured with:
 | `max_retries` | `3` | Max re-dispatches per failed code review |
 | `max_improvement_cycles` | `5` | Hard cap on autonomous improvement loops |
 | `model_name` | *(required)* | LLM model identifier for the implementer agent |
-| `harness` | `aider` | Implementer harness: `aider` / `opencode` / `openhands` |
+| `harness` | `opencode` | Implementer harness: `aider` / `opencode` / `openhands` |
 | `agent_model` / `agent_model_effort` | *(inherited)* | Per-project override of the implementer model/effort |
 
 Global brain call-site models (planning, review, classify, derive) are configured in

@@ -29,7 +29,12 @@ send_callback() {
         run_json=$(printf "%s" "${RUN_ID}" | json_escape)
     fi
 
-    local payload="{\"task_id\":\"${TASK_ID}\",\"run_id\":${run_json},\"status\":\"${STATUS}\",\"pr_url\":${pr_json}}"
+    local question_json="null"
+    if [ -n "${QUESTION:-}" ]; then
+        question_json=$(printf "%s" "${QUESTION}" | json_escape)
+    fi
+
+    local payload="{\"task_id\":\"${TASK_ID}\",\"run_id\":${run_json},\"status\":\"${STATUS}\",\"pr_url\":${pr_json},\"question\":${question_json}}"
     local max_attempts="${CALLBACK_MAX_ATTEMPTS:-5}"
     local attempt=1
     while [ "${attempt}" -le "${max_attempts}" ]; do
@@ -133,6 +138,10 @@ while IFS= read -r doc; do
     [ -n "${doc}" ] && read_args+=(--read "${doc}")
 done < <(find "${WORKSPACE}/docs" -maxdepth 1 -name '*.md' 2>/dev/null | sed "s|${WORKSPACE}/||" || true)
 
+QUESTION=""
+OUTPUT_LOG="$(mktemp)"
+
+set +e
 aider \
     --message "${TASK_PROMPT}" \
     --model "openai/${MODEL}" \
@@ -143,7 +152,26 @@ aider \
     --no-show-model-warnings \
     --no-browser \
     --no-detect-urls \
-    "${read_args[@]}"
+    "${read_args[@]}" 2>&1 | tee "${OUTPUT_LOG}"
+aider_rc="${PIPESTATUS[0]}"
+set -e
+if [ "${aider_rc}" -ne 0 ]; then
+    exit "${aider_rc}"
+fi
+
+report_status=$(grep -oE '^Status:[[:space:]]*[A-Z_]+' "${OUTPUT_LOG}" \
+    | tail -n1 | sed -E 's/^Status:[[:space:]]*//' ) || true
+
+if [ "${report_status}" = "BLOCKED" ] || [ "${report_status}" = "NEEDS_CONTEXT" ]; then
+    echo "--- Worker reported ${report_status}; sending clarification request (no PR) ---"
+    QUESTION=$(awk '/^Concerns/{flag=1;next}/^====/{flag=0}flag' "${OUTPUT_LOG}" \
+        | sed '/^[[:space:]]*$/d')
+    [ -z "${QUESTION}" ] && QUESTION="Worker reported ${report_status} without details."
+    STATUS="needs_clarification"
+    send_callback
+    trap - EXIT
+    exit 0
+fi
 
 echo "--- Pushing branch ---"
 git push -u origin "${BRANCH}"

@@ -243,6 +243,7 @@ def test_status_enums_have_expected_values() -> None:
         "passed",
         "failed",
         "merged",
+        "needs_clarification",
     ]
     assert PlanStatus.PENDING.value == "pending"
     assert PlanStatus.ACTIVE.value == "active"
@@ -400,3 +401,8 @@ def test_dispatch_request_context_defaults_none() -> None:
         repo_url="https://github.com/o/r", instructions="do x", model="qwen3"
     )
     assert req.context is None
+
+
+def test_needs_clarification_status_exists():
+    assert TaskStatus.NEEDS_CLARIFICATION == "needs_clarification"
+    assert TaskStatus.NEEDS_CLARIFICATION != TaskStatus.FAILED

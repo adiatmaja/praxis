@@ -202,7 +202,7 @@ Tables: `users`, `projects`, `plans`, `tasks`, `agent_runs`, `opus_state`,
 - **Single static auth token** for v1 (data model supports multi-user for future)
 - **Pluggable harnesses** — `core/harnesses.py` is the registry (image + About
   content) for Aider, OpenCode, OpenHands. Projects pick one via the `harness`
-  column (default `aider`). `AgentManager.spawn_agent` selects the image and
+  column (default `opencode`). `AgentManager.spawn_agent` selects the image and
   sets a harness-agnostic env contract (`HARNESS`, `MODEL`, `OPENAI_API_BASE`,
   + repo/branch/callback vars). Each `docker/<harness>-agent/` image honors the
   same entrypoint contract.
@@ -441,6 +441,17 @@ Tables: `users`, `projects`, `plans`, `tasks`, `agent_runs`, `opus_state`,
   stores the RAW v1 auth token, not a hash (see `api/auth.py`). Renames were
   evaluated (2026-07-02 refactor) and deliberately skipped as churn; a future
   `token_hash` rename should ride the migration framework in `database.py`.
+- **Blocked workers ask, they don't guess** - every harness entrypoint parses the
+  FINAL REPORT; a `Status: BLOCKED`/`NEEDS_CONTEXT` sends the `Concerns:` text as
+  a `question` in the agent-done callback and opens NO PR. The task parks at
+  `NEEDS_CLARIFICATION` (does NOT burn a retry). The loop asks the brain
+  (`answer_clarification`, Sonnet/medium) to answer from task+plan_text; a
+  confident answer (>= project `confidence_threshold`) re-dispatches with the Q&A
+  injected via `progress_note` (-> Static Bible), otherwise the task parks
+  `awaiting_human` (SSE `task_needs_clarification`, `POST /api/tasks/{id}/clarify`,
+  MCP `poll_task` -> `awaiting_clarification`). All three harnesses (aider, opencode, openhands)
+  parse the FINAL REPORT and send `needs_clarification` when the report ends
+  with `Status: BLOCKED` or `Status: NEEDS_CONTEXT`.
 
 ## Documentation
 

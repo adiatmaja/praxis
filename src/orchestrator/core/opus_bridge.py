@@ -107,6 +107,25 @@ Rules:
 - Do not propose cosmetic or stylistic changes
 """
 
+CLARIFICATION_PROMPT_TEMPLATE = """\
+A local coding model was implementing a task and stopped to ask a question.
+Answer it ONLY if the answer is determinable from the task and plan context
+below. If the answer requires information not present here (a human decision,
+a missing credential, an undocumented business rule), do NOT guess.
+
+Task description:
+{task_description}
+
+Plan context:
+{plan_text}
+
+The worker's question:
+{question}
+
+Respond with a single JSON object and nothing else:
+{{"resolved": <true|false>, "answer": "<the answer, or why you cannot answer>", "confidence": <0.0-1.0>}}
+"""
+
 
 class OpusBridge:
     """Interface to Claude Opus via the `claude -p` CLI."""
@@ -265,6 +284,28 @@ class OpusBridge:
             raw = await router.run(call_site, prompt, project_id, cwd=cwd)
         else:
             raw = await self._run_claude(prompt, model, effort, cwd=cwd)
+        return self._extract_json(raw)
+
+    async def answer_clarification(
+        self,
+        question: str,
+        task_description: str,
+        plan_text: str | None = None,
+        model: str | None = None,
+        effort: str | None = None,
+        project_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Attempt to answer a blocked worker's question from task/plan context."""
+        prompt = CLARIFICATION_PROMPT_TEMPLATE.format(
+            question=question,
+            task_description=task_description,
+            plan_text=(plan_text or "(no plan text was provided)"),
+        )
+        router: LLMRouter | None = getattr(self, "_router", None)
+        if router is not None:
+            raw = await router.run("answer_clarification", prompt, project_id)
+        else:
+            raw = await self._run_claude(prompt, model, effort)
         return self._extract_json(raw)
 
     async def analyze_improvements(

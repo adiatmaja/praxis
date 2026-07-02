@@ -14,6 +14,7 @@ set -euo pipefail
 WORKSPACE="/home/agent/workspace"
 STATUS="completed"
 PR_URL=""
+QUESTION=""
 
 json_escape() {
     python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))'
@@ -28,7 +29,13 @@ send_callback() {
     if [ -n "${RUN_ID:-}" ]; then
         run_json=$(printf "%s" "${RUN_ID}" | json_escape)
     fi
-    local payload="{\"task_id\":\"${TASK_ID}\",\"run_id\":${run_json},\"status\":\"${STATUS}\",\"pr_url\":${pr_json}}"
+
+    local question_json="null"
+    if [ -n "${QUESTION:-}" ]; then
+        question_json=$(printf "%s" "${QUESTION}" | json_escape)
+    fi
+
+    local payload="{\"task_id\":\"${TASK_ID}\",\"run_id\":${run_json},\"status\":\"${STATUS}\",\"pr_url\":${pr_json},\"question\":${question_json}}"
     local max_attempts="${CALLBACK_MAX_ATTEMPTS:-5}"
     local attempt=1
     while [ "${attempt}" -le "${max_attempts}" ]; do
@@ -111,7 +118,28 @@ elif [ -n "${PLAN_TEXT:-}" ]; then
 ${TASK_PROMPT}"
 fi
 
-python3 -m openhands.core.main -t "${EFFECTIVE_PROMPT}" --override-with-envs
+OUTPUT_LOG="$(mktemp)"
+set +e
+python3 -m openhands.core.main -t "${EFFECTIVE_PROMPT}" --override-with-envs 2>&1 | tee "${OUTPUT_LOG}"
+openhands_rc="${PIPESTATUS[0]}"
+set -e
+if [ "${openhands_rc}" -ne 0 ]; then
+    exit "${openhands_rc}"
+fi
+
+report_status=$(grep -oE '^Status:[[:space:]]*[A-Z_]+' "${OUTPUT_LOG}" \
+    | tail -n1 | sed -E 's/^Status:[[:space:]]*//' ) || true
+
+if [ "${report_status}" = "BLOCKED" ] || [ "${report_status}" = "NEEDS_CONTEXT" ]; then
+    echo "--- Worker reported ${report_status}; sending clarification request (no PR) ---"
+    QUESTION=$(awk '/^Concerns/{flag=1;next}/^====/{flag=0}flag' "${OUTPUT_LOG}" \
+        | sed '/^[[:space:]]*$/d')
+    [ -z "${QUESTION}" ] && QUESTION="Worker reported ${report_status} without details."
+    STATUS="needs_clarification"
+    send_callback
+    trap - EXIT
+    exit 0
+fi
 
 echo "--- Committing changes (OpenHands may not commit) ---"
 git add -A
