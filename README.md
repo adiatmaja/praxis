@@ -7,7 +7,7 @@
 <p align="center">
   <a href="LICENSE"><img alt="License: Apache 2.0" src="https://img.shields.io/badge/License-Apache_2.0-blue.svg"></a>
   <img alt="Python 3.11+" src="https://img.shields.io/badge/python-3.11+-blue.svg">
-  <img alt="Tests" src="https://img.shields.io/badge/tests-405_passing-brightgreen.svg">
+  <a href="https://github.com/adiatmaja/praxis/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/adiatmaja/praxis/actions/workflows/ci.yml/badge.svg"></a>
   <img alt="Coverage" src="https://img.shields.io/badge/coverage-88%25-brightgreen.svg">
   <a href="https://github.com/adiatmaja/praxis/stargazers"><img alt="Stars" src="https://img.shields.io/github/stars/adiatmaja/praxis?style=social"></a>
 </p>
@@ -30,6 +30,21 @@ The trick that makes this cheap — and the reason Praxis exists — is in the n
 whole loop three ways (all clients of one engine): **MCP** (from Claude Code), the **dashboard**, or
 the **CLI**.
 
+## Table of Contents
+
+- [The one thing Praxis is really for](#the-one-thing-praxis-is-really-for)
+- [Architecture](#architecture)
+- [Prerequisites](#prerequisites)
+- [Quick Start](#quick-start)
+- [Choosing a worker model](#choosing-a-worker-model)
+- [Configuration](#configuration)
+- [How It Works](#how-it-works)
+- [MCP Control Surface](#mcp-control-surface)
+- [Security Model](#security-model)
+- [Troubleshooting](#troubleshooting)
+- [Contributing](#contributing)
+- [License](#license)
+
 ## The one thing Praxis is really for
 
 **Let the AI subscription you already pay for do the planning, and a free local
@@ -39,18 +54,13 @@ spent on token-heavy file editing. Praxis splits those two jobs across two cost
 tiers so each runs where it's cheapest — in practice, one entry-level (~$20/month)
 subscription can run the whole loop, with the local model coding for zero tokens.
 
-The capability that delivers this — and the main reason Praxis exists:
-
-> **Praxis ships an MCP server, so an assistant locked to one provider (e.g.
-> Claude Code on a flat-rate subscription) can dispatch real implementation work
-> to a local LLM through a normal tool call.** Claude Code's own subagents are
-> Claude-only by design. Praxis is the bridge: you stay in Claude Code, say
-> _"use praxis to implement X on this repo with `<my-local-model>`"_, and the
+> **The bridge that makes it work: Praxis ships an MCP server, so an assistant
+> locked to one provider (e.g. Claude Code on a flat-rate subscription) can
+> dispatch real implementation work to a local LLM through a normal tool call.**
+> Claude Code's own subagents are Claude-only by design. You stay in Claude Code,
+> say _"use praxis to implement X on this repo with `<my-local-model>`"_, and the
 > coding is done by a free local model in LM Studio — while Claude does the
 > planning and reviews the resulting PR.
-
-So in one sentence: **Praxis is how you use an AI subscription as the brain and a
-local model as the hands, driven from inside the assistant you already use.**
 
 ```
    YOU
@@ -145,41 +155,13 @@ Beyond the brain/hands split above:
 
 ## Architecture
 
-In one picture: you talk to Praxis through any of three front-ends (an MCP client like Claude Code,
-the web dashboard, or the CLI). They all hit the same backend, which farms code-writing out to local
-Docker agents and sends planning/review to your subscription model.
+Three front-ends (an MCP client like Claude Code, the web dashboard, the Typer CLI) are
+all thin clients of one REST API. Behind it, a FastAPI + SQLite orchestrator farms
+code-writing out to per-task Docker agents (Aider / OpenCode / OpenHands, talking to LM
+Studio) and sends planning/review to your subscription CLI (`claude`, `codex`, `agy`) or
+a local model, configurable per call-site.
 
-```
-  HOW YOU DRIVE IT  ·  pick any one; they all talk to the same backend
-  ┌──────────────┐      ┌──────────────┐      ┌──────────────┐
-  │  MCP client  │      │  Dashboard   │      │  Typer CLI   │
-  │ (e.g. Claude │      │   (web UI)   │      │              │
-  │     Code)    │      │              │      │              │
-  └──────┬───────┘      └──────┬───────┘      └──────┬───────┘
-         └─────────────────────┼─────────────────────┘
-                  REST API + SSE  (single source of truth, Bearer auth)
-                                 │
-  ┌──────────────────────────────▼─────────────────────────────────────┐
-  │  ORCHESTRATOR  ·  FastAPI + SQLite                                  │
-  │  ┌───────────┐  ┌───────────┐  ┌───────────┐  ┌────────────┐       │
-  │  │ API Router│  │Task Queue │  │  Agent    │  │ LLM Router │       │
-  │  │ REST + SSE│  │ (SQLite)  │  │  Manager  │  │ (per-site) │       │
-  │  └───────────┘  └───────────┘  └─────┬─────┘  └─────┬──────┘       │
-  └──────────────────────────────────────┼──────────────┼──────────────┘
-        implement                         │              │       plan + review
-   token-heavy → local & free  ◀──────────┘              └──────▶  judgment → subscription
-            │                                                            │
-  ┌─────────▼──────────────────────────────┐      ┌────────────────────▼─────────────────┐
-  │  CODING AGENTS (Docker, per task)       │      │  PLANNER BRAIN (provider CLI / local) │
-  │  ┌───────┐  ┌─────────┐  ┌──────────┐   │      │ ┌────────┬────────┬────────┬────────┐ │
-  │  │ aider │  │ opencode│  │ openhands│   │      │ │ claude │ gemini │  gpt   │ local  │ │
-  │  └───┬───┘  └────┬────┘  └────┬─────┘   │      │ │  (-p)  │ (agy)  │(codex) │LMStudio│ │
-  └──────┼───────────┼───────────┼──────────┘      │ └────────┴────────┴────────┴────────┘ │
-         └───────────┴─────┬─────┘                 └───────────────────────────────────────┘
-            OpenAI-compatible │
-                             ▼
-                  LM Studio / chosen model backend
-```
+Full component diagrams and design rationale: [docs/architecture.md](docs/architecture.md).
 
 ## Prerequisites
 
@@ -220,15 +202,45 @@ docker compose up --build                                    # local mode
 DOMAIN=praxis.example.com docker compose --profile hosted up --build   # hosted (Caddy auto-HTTPS)
 ```
 
-Build the coding-agent image once (it is not built by `docker compose`):
+Build the coding-agent image for the harness you'll use (they are **not** built by
+`docker compose`). New projects default to **OpenCode**, so build at least that one:
 
 ```bash
+# Default harness (OpenCode)
+docker build -t opencode-agent:latest -f docker/opencode-agent/Dockerfile docker/opencode-agent/
+
+# Optional alternatives
 docker build -t aider-agent:latest -f docker/aider-agent/Dockerfile docker/aider-agent/
+docker build -t openhands-agent:latest -f docker/openhands-agent/Dockerfile docker/openhands-agent/
 ```
+
+> **Rebuild these images every time you pull a new Praxis version.** The agent
+> entrypoint lives inside the image; a stale image silently runs old logic (for
+> example, sending an empty callback token, so tasks never advance past
+> "implementing"). If tasks hang or fail right after an upgrade, rebuild first.
 
 With the server running, connect an MCP client to drive it
 (see [MCP Control Surface](#mcp-control-surface) for a full first-dispatch walkthrough), or open
 the dashboard at `http://localhost:12323`.
+
+## Choosing a worker model
+
+Local model quality is the single biggest factor in whether Praxis saves you money or
+burns planner review cycles on retries. The failure mode of a too-small model is
+specific: it replies *with* code in chat instead of following the agent's edit
+format, so nothing is committed and the run fails. Rough guidance from live runs:
+
+| Model class | Example | Result |
+|-------------|---------|--------|
+| Small chat models (< ~14B) | `qwen3.5-9b` | Fails: can't follow the edit format, no commits |
+| Mid-size coding models (~27B+) | `qwen3.6-27b` | Works: mergeable diffs, passes review |
+| MoE coding models | `qwen3.6-35b-a3b` | Works |
+
+Pick a coding-oriented instruct model of roughly 27B or larger (or an equivalent MoE),
+load it in LM Studio with as much context as your hardware allows, and verify the
+loaded context window is at least ~32K. Praxis detects the loaded context length per
+model and budgets prompts against it, so a model loaded with a tiny window will be
+rejected up front rather than silently truncated.
 
 ## Configuration
 
@@ -262,51 +274,16 @@ trust it.
 
 ### Where agents run (and why your local files are safe)
 
-A common worry with parallel work: "if an agent edits my repo while I'm mid-change, does it clobber
-my uncommitted work?" It can't. Each coding agent runs in its **own throwaway Docker container** and
-does a fresh `git clone` **from the GitHub remote** — it never mounts, opens, or writes your local
-checkout. There is no bind mount back to your disk. The only durable output is a pushed
-`agent/{task-slug}` branch and its PR; when the container exits, its filesystem is gone.
+Each coding agent runs in its **own throwaway Docker container** and does a fresh
+`git clone` **from the GitHub remote** — it never mounts, opens, or writes your local
+checkout, so it cannot clobber uncommitted work. The only durable output is a pushed
+`agent/{task-slug}` branch and its PR; when the container exits, its filesystem is
+gone. The one trade-off: the agent sees only committed-and-pushed code, so pass local
+reference context explicitly via `dispatch_task`'s `context` field.
 
-```
-  YOUR MACHINE                                    GITHUB REMOTE
-  ┌────────────────────────────┐                 ┌───────────────────────────┐
-  │  your local checkout       │                 │  origin/main               │
-  │  (edits, uncommitted work) │                 │                            │
-  │        UNTOUCHED           │                 │  agent/task-a  ──▶ PR #1    │
-  └────────────────────────────┘                 │  agent/task-b  ──▶ PR #2    │
-              ▲                                   └───────────┬───────────────┘
-              │ you pull only when                    ▲       │ clone (read)
-              │ you merge a PR                        │       │ push branch (write)
-              │                              push ────┘       ▼
-  ┌───────────┼───────────────────────────────────────────────────────────────┐
-  │  DOCKER (one container per task · no volume mount to your disk)            │
-  │                                                                            │
-  │   ┌──────────────────────────┐        ┌──────────────────────────┐        │
-  │   │ container: task-a         │        │ container: task-b         │       │
-  │   │  git clone ──▶ /home/     │        │  git clone ──▶ /home/     │       │
-  │   │     agent/workspace       │        │     agent/workspace       │       │
-  │   │  checkout -b agent/task-a │        │  checkout -b agent/task-b │       │
-  │   │  local model edits + commit        │  local model edits + commit       │
-  │   │  push branch ──▶ open PR  │        │  push branch ──▶ open PR  │       │
-  │   └──────────────────────────┘        └──────────────────────────┘        │
-  │        (filesystem discarded on exit)                                      │
-  └────────────────────────────────────────────────────────────────────────────┘
-
-  Writes land in TWO places, neither is your working tree:
-    1. the container's own filesystem  (/home/agent/workspace — ephemeral)
-    2. the GitHub remote               (new agent/<slug> branch + PR — durable)
-```
-
-This is stronger isolation than a git worktree would give: a worktree shares one `.git` object store
-on your machine, so concurrent agents (and you) contend on the same repo. A per-container clone gives
-each agent a physically separate `.git` and filesystem, and keeps the **remote** as the only shared
-surface. The one deliberate trade-off: because the agent clones from the remote, it sees only
-committed-and-pushed code, not your local uncommitted changes — pass reference context explicitly via
-`dispatch_task`'s `context` field instead.
-
-See [docs/architecture.md](docs/architecture.md), [docs/workflow.md](docs/workflow.md), and
-[docs/deployment.md](docs/deployment.md) for full documentation.
+Full isolation diagram and the worktree comparison:
+[docs/architecture.md](docs/architecture.md#agent-isolation-model). See also
+[docs/workflow.md](docs/workflow.md) and [docs/deployment.md](docs/deployment.md).
 
 ## MCP Control Surface
 
@@ -398,16 +375,47 @@ planner providers and worker models Praxis can see, which confirms the server is
 >   branch and opens a new PR; it cannot push follow-up commits onto an existing
 >   PR. Re-dispatching always creates a fresh PR. (Continue-on-PR mode is planned.)
 
+## Security Model
+
+Praxis is designed for a **single trusted operator on hardware they control**. Read
+this before exposing it beyond localhost:
+
+- **Treat `AUTH_TOKEN` as root on the host.** Anyone holding it can set a project's
+  `verify_cmd`, which the orchestrator executes as a shell command. There is no
+  privilege separation between API users in v1.
+- **Agent containers use host networking.** The coding agent runs LLM-written code in
+  a container that shares your host's network namespace: it can reach LM Studio, the
+  orchestrator, and any other localhost service. The container isolates the
+  filesystem, not the network. Don't run Praxis on a machine with sensitive
+  unauthenticated local services.
+- **`GITHUB_TOKEN` is visible inside agent containers.** Scope it least-privilege
+  (`contents:write` + `pull_requests:write` on the repos you dispatch to, never
+  admin), and pair it with GitHub branch protection so the human merge gate is
+  enforced server-side even if the orchestrator is bypassed.
+- **Merge gate is on by default.** Reviewed PRs are parked for your approval;
+  auto-merge is per-project opt-in and never targets protected branches
+  (`main`/`master`/`release*`).
+- Never commit real `AUTH_TOKEN` or `GITHUB_TOKEN` values; `.env` is gitignored and
+  `.env.example` ships placeholders only.
+
+Found a vulnerability? Report it privately, see [SECURITY.md](SECURITY.md).
+
+## Troubleshooting
+
+| Symptom | Likely cause and fix |
+|---------|---------------------|
+| Task stuck at "implementing", then marked failed by reconcile | Stale agent image sending a bad callback. Rebuild the harness image (see [Quick Start](#quick-start)). |
+| Every task fails with no commits, agent log shows the model chatting code | Worker model too small for the edit format. Use a mid-size coding model (see [Choosing a worker model](#choosing-a-worker-model)). |
+| Agent callbacks 404, tasks only finish via reconcile | Orchestrator running on a non-default port without `AGENT_CALLBACK_URL` set. Keep `PORT`, `PRAXIS_BASE_URL`, and callbacks in sync. |
+| MCP tools error or hang | Praxis server not running, or `PRAXIS_BASE_URL` points at the wrong port. Ask your assistant to run `list_providers` to test connectivity. |
+| Planner shows unavailable | `claude` CLI not installed or not logged in on the orchestrator host (`claude --version`, then log in). |
+| Dispatch fails with a Docker image error | The harness image for the project isn't built. Build it per [Quick Start](#quick-start). |
+| No models in the New Project dropdown | LM Studio isn't running or isn't reachable at `LM_STUDIO_URL`. |
+
 ## Contributing
 
 Setup, project layout, and conventions are in [CONTRIBUTING.md](CONTRIBUTING.md). Please also read
 our [Code of Conduct](CODE_OF_CONDUCT.md).
-
-## Security
-
-Found a vulnerability? Report it privately. See [SECURITY.md](SECURITY.md). Never commit real
-`AUTH_TOKEN` or `GITHUB_TOKEN` values; `.env` is gitignored and `.env.example` ships placeholders
-only.
 
 ## License
 
