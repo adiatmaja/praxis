@@ -185,6 +185,83 @@ class ReviewMixin:
                 }
             )
 
+    async def handle_clarification(self, task_id: str, project: dict[str, Any]) -> None:
+        """Answer a blocked worker's question, or park it for a human."""
+        task = await self._tq.get_task(task_id)
+        if task is None:
+            return
+        if (
+            task["status"] != TaskStatus.NEEDS_CLARIFICATION
+            or task.get("clarification_state") != "asked"
+        ):
+            return
+
+        if not await self._opus.is_available():
+            await self._opus.queue_action(
+                {"action": "clarify", "task_id": task_id, "project_id": project["id"]}
+            )
+            self._bus.publish({"type": "opus_queued", "action": "clarify"})
+            return
+
+        # Resolve plan_text (same slug lookup as review_task)
+        plan_text: str | None = None
+        plan = await self._tq.get_plan(task["plan_id"])
+        if plan is not None:
+            slug_to_plan_task: dict[str, dict[str, Any]] = {}
+            with contextlib.suppress(json.JSONDecodeError, TypeError):
+                opus_plan_raw = plan.get("opus_plan")
+                if opus_plan_raw:
+                    for pt in json.loads(opus_plan_raw).get("tasks", []):
+                        if isinstance(pt, dict) and "slug" in pt:
+                            slug_to_plan_task[pt["slug"]] = pt
+            branch_name: str = task["branch_name"]
+            task_slug = (
+                branch_name[len("agent/") :]
+                if branch_name.startswith("agent/")
+                else branch_name
+            )
+            plan_text = slug_to_plan_task.get(task_slug, {}).get("plan_text")
+
+        result = await self._opus.answer_clarification(
+            question=task["clarification_question"] or "",
+            task_description=task["description"] or task["title"],
+            plan_text=plan_text,
+            model=project.get("agent_model"),
+            effort=project.get("agent_model_effort"),
+            project_id=project["id"],
+        )
+
+        threshold = float(project.get("confidence_threshold") or 0.7)
+        resolved = bool(result.get("resolved")) and (
+            float(result.get("confidence") or 0.0) >= threshold
+        )
+        answer = str(result.get("answer", ""))
+
+        if resolved:
+            await self._tq.record_clarification_answer(
+                task_id, answer, state="answered_by_brain"
+            )
+            self._bus.publish(
+                {
+                    "type": "clarification_resolved",
+                    "task_id": task_id,
+                    "answer": answer,
+                }
+            )
+        else:
+            await self._tq._db.execute(
+                "UPDATE tasks SET clarification_state = 'awaiting_human' WHERE id = ?",
+                (task_id,),
+            )
+            self._bus.publish(
+                {
+                    "type": "task_needs_clarification",
+                    "task_id": task_id,
+                    "question": task["clarification_question"],
+                    "brain_note": answer,
+                }
+            )
+
     async def approve_task_merge(self, task_id: str, project: dict[str, Any]) -> None:
         """Merge a human-approved, review-passed task.
 

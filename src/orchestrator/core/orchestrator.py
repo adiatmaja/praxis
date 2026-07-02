@@ -124,6 +124,12 @@ class Orchestrator(DispatchMixin, ReviewMixin, ReconcileMixin, ImprovementMixin)
         for task in tasks:
             if task["status"] == TaskStatus.REVIEWING:
                 await self.review_task(task["id"], project)
+                continue
+            if (
+                task["status"] == TaskStatus.NEEDS_CLARIFICATION
+                and task.get("clarification_state") == "asked"
+            ):
+                await self.handle_clarification(task["id"], project)
         tasks = await self._tq.get_tasks_for_plan(plan_id)
         active = [
             t
