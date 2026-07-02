@@ -25,6 +25,7 @@ class TaskStatus(StrEnum):
     PASSED = "passed"
     FAILED = "failed"
     MERGED = "merged"
+    NEEDS_CLARIFICATION = "needs_clarification"
 
 
 class PlanStatus(StrEnum):
