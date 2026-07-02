@@ -1036,3 +1036,9 @@
       .settings-modal { width: 100vw; max-height: 85vh; border-radius: 10px 10px 0 0; }
       .settings-overlay.open { align-items: flex-end; }
     }
+
+/* Clarification banner — shown on task cards when worker needs human input */
+.clarification-banner { border: 1px solid var(--badge-reviewing-text, #b45309); border-radius: 6px; padding: 8px; margin-top: 6px; }
+.clarification-q { margin: 0 0 4px; font-size: 13px; }
+.clarification-note { margin: 0 0 6px; font-size: 12px; opacity: 0.8; }
+.clarification-banner textarea { width: 100%; min-height: 3em; box-sizing: border-box; }
