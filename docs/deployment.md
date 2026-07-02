@@ -197,6 +197,61 @@ env vars); secrets (`AUTH_TOKEN`, `GITHUB_TOKEN`) stay in env / `.env`.
 
 ---
 
+## Verification Gate and Build Visibility
+
+### Per-project `verify_cmd`
+
+Each project can set a `verify_cmd` string (via the API or dashboard project settings).
+When set, `review_task` runs this command against the cloned PR head **before** the brain
+review step.
+
+```
+clone PR head -> run verify_cmd -> (non-zero exit = task FAILED) -> brain review
+```
+
+Example values:
+
+```
+npx tsc --noEmit && npm test
+pytest tests/ -x -q
+go build ./... && go test ./...
+```
+
+Key properties:
+
+- **Deterministic, cheap gate.** A failing command hard-fails the task immediately with
+  the command output as feedback. No brain tokens are spent on a broken build.
+- **Orchestrator-side, harness-agnostic.** The command runs in the orchestrator process
+  against the cloned checkout (`core/verify_gate.py`), so it applies equally to Aider,
+  OpenCode, and OpenHands agents without any entrypoint changes.
+- **Trusted operator config, never from a PR.** `verify_cmd` is stored in the projects
+  table and set only by the operator via the API or dashboard. It is never read from PR
+  content or branch files. Prefer running the orchestrator inside a container to further
+  limit the blast radius of a misconfigured command.
+
+### Build stamp on `/health` and `/api/status`
+
+Both endpoints include a `build` object:
+
+```json
+{
+  "build": {
+    "commit": "a1b2c3d",
+    "started_at": "2026-07-02T10:00:00Z"
+  }
+}
+```
+
+`commit` is derived from `git rev-parse --short HEAD` at startup, or from the
+`PRAXIS_BUILD_SHA` environment variable if set (useful in CI/CD where the working tree
+may not have git history). `started_at` is the server start time.
+
+Use this to confirm the live server is running the code you just deployed. If `commit`
+does not match your expected SHA after a deploy, the old process is still running:
+**restart the orchestrator after every deploy.**
+
+---
+
 ## Security / Trust Model
 
 Praxis is designed to run as a **trusted single-operator tool**, not a multi-tenant
