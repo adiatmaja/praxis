@@ -34,7 +34,7 @@ async def run_verify(
     Returns:
         (True, output) on exit 0; (False, output) on non-zero exit or timeout.
     """
-    proc = await asyncio.create_subprocess_shell(
+    proc = await asyncio.create_subprocess_shell(  # nosec B602
         verify_cmd,
         cwd=checkout_dir,
         stdout=asyncio.subprocess.PIPE,
