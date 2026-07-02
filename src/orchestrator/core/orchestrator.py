@@ -6,12 +6,13 @@ import asyncio
 import contextlib
 import logging
 from datetime import UTC, datetime
-from typing import Any, cast
+from typing import Any
 
 from orchestrator.core.agent_prompt import build_implementer_prompt
 from orchestrator.core.event_bus import EventBus
 from orchestrator.core.llm_router import ProviderAuthError
 from orchestrator.core.orchestrator_dispatch import DispatchMixin
+from orchestrator.core.orchestrator_improve import ImprovementMixin
 from orchestrator.core.orchestrator_reconcile import ReconcileMixin
 from orchestrator.core.orchestrator_review import ReviewMixin
 from orchestrator.core.task_queue import TaskQueue
@@ -21,7 +22,7 @@ from orchestrator.models.schemas import PlanStatus, TaskStatus
 logger = logging.getLogger(__name__)
 
 
-class Orchestrator(DispatchMixin, ReviewMixin, ReconcileMixin):
+class Orchestrator(DispatchMixin, ReviewMixin, ReconcileMixin, ImprovementMixin):
     """Coordinate the task queue, agents, Claude review, and GitHub actions."""
 
     def __init__(
@@ -92,99 +93,6 @@ class Orchestrator(DispatchMixin, ReviewMixin, ReconcileMixin):
                 "task_count": len(opus_plan["tasks"]),
             }
         )
-
-    async def check_improvements(
-        self,
-        plan_id: str,
-        project: dict[str, Any],
-    ) -> dict[str, Any] | None:
-        """Ask Opus whether a completed plan merits autonomous follow-up work."""
-
-        if not await self._tq.all_tasks_done(plan_id):
-            return None
-        if not await self._opus.is_available():
-            await self._opus.queue_action(
-                {"action": "improve", "plan_id": plan_id, "project_id": project["id"]}
-            )
-            self._bus.publish({"type": "opus_queued", "action": "improve"})
-            return None
-
-        plan = await self._tq.get_plan(plan_id)
-        if plan is None:
-            return None
-
-        summary = (
-            f"Project: {project['name']}\n"
-            f"Repo: {project['repo_url']}\n"
-            f"Completed plan: {plan.get('plan_path') or plan.get('spec_path') or 'unknown'}"
-        )
-        analysis = cast(
-            dict[str, Any],
-            await self._opus.analyze_improvements(
-                summary,
-                model=project.get("agent_model"),
-                effort=project.get("agent_model_effort"),
-            ),
-        )
-        confidence = float(analysis["confidence"])
-        if confidence < float(project["confidence_threshold"]):
-            self._bus.publish(
-                {
-                    "type": "improvement_skipped",
-                    "plan_id": plan_id,
-                    "confidence": confidence,
-                    "reason": analysis["reason"],
-                }
-            )
-            return None
-
-        self._bus.publish(
-            {
-                "type": "improvement_proposed",
-                "plan_id": plan_id,
-                "confidence": confidence,
-                "reason": analysis["reason"],
-                "task_count": len(analysis["proposed_tasks"]),
-            }
-        )
-        return analysis
-
-    async def create_improvement_plan(
-        self,
-        project_id: str,
-        analysis: dict[str, Any],
-        activate: bool = True,
-    ) -> str:
-        """Create and activate an autonomous improvement plan."""
-
-        plan_id = await self._tq.create_plan(
-            project_id,
-            source="autonomous",
-            confidence=float(analysis["confidence"]),
-            confidence_reason=str(analysis["reason"]),
-        )
-        today = datetime.now(UTC).date().isoformat()
-        opus_plan = {
-            "plan_summary": analysis["reason"],
-            "plan_slug": f"improve-{today}",
-            "tasks": [
-                {**task, "depends_on": task.get("depends_on", [])}
-                for task in analysis["proposed_tasks"]
-            ],
-        }
-        branch = f"plan/{today}-improve"
-        await self._tq.activate_plan(plan_id, opus_plan, branch)
-        if not activate:
-            await self._tq.update_plan_status(plan_id, PlanStatus.PENDING)
-        self._bus.publish(
-            {
-                "type": "improvement_plan_created",
-                "plan_id": plan_id,
-                "source": "autonomous",
-                "status": PlanStatus.ACTIVE if activate else PlanStatus.PENDING,
-            }
-        )
-        return plan_id
 
     async def process_plan_once(
         self,
