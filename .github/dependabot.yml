@@ -1,16 +1,32 @@
 version: 2
 updates:
+  # Python deps: group tooling/dev deps aggressively; runtime deps stay
+  # ungrouped so a breaking production bump is isolated and easy to bisect.
   - package-ecosystem: "pip"
     directory: "/"
     schedule:
       interval: "weekly"
+    open-pull-requests-limit: 5
     groups:
       dev-dependencies:
         dependency-type: "development"
+      linters-and-types:
+        patterns:
+          - "ruff"
+          - "mypy"
+          - "pytest*"
+          - "types-*"
+
+  # GitHub Actions are low blast radius; batch every bump into one PR.
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
       interval: "weekly"
+    groups:
+      github-actions:
+        patterns:
+          - "*"
+
   - package-ecosystem: "docker"
     directory: "/docker/orchestrator"
     schedule:
