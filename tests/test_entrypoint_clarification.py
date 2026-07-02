@@ -64,3 +64,53 @@ def test_done_report_stays_completed(tmp_path):
     out = _run(tmp_path, "Status: DONE\n")
     assert "STATUS=completed" in out
     assert "QUESTION=\n" in out
+
+
+# ---------------------------------------------------------------------------
+# Structural presence tests: assert each real entrypoint contains the
+# clarification wiring (no Docker required).
+# ---------------------------------------------------------------------------
+
+REPO_ROOT = Path(__file__).parent.parent
+
+
+def _read_entrypoint(harness: str) -> str:
+    return (REPO_ROOT / "docker" / f"{harness}-agent" / "entrypoint.sh").read_text()
+
+
+@pytest.mark.parametrize("harness", ["opencode", "openhands"])
+def test_entrypoint_has_needs_clarification_status(harness):
+    content = _read_entrypoint(harness)
+    assert 'STATUS="needs_clarification"' in content, (
+        f"{harness} entrypoint missing needs_clarification STATUS assignment"
+    )
+
+
+@pytest.mark.parametrize("harness", ["opencode", "openhands"])
+def test_entrypoint_has_concerns_awk_extraction(harness):
+    content = _read_entrypoint(harness)
+    assert "awk '/^Concerns/" in content, (
+        f"{harness} entrypoint missing awk Concerns block extraction"
+    )
+
+
+@pytest.mark.parametrize("harness", ["opencode", "openhands"])
+def test_entrypoint_has_question_in_payload(harness):
+    content = _read_entrypoint(harness)
+    # In the shell file the payload uses escaped quotes: \"question\":${question_json}
+    assert r"\"question\":${question_json}" in content, (
+        f"{harness} entrypoint missing question field in send_callback payload"
+    )
+
+
+@pytest.mark.parametrize("harness", ["opencode", "openhands"])
+def test_entrypoint_syntax_valid(harness):
+    """bash -n syntax check on each entrypoint."""
+    bash = shutil.which("bash")
+    if bash is None:
+        pytest.skip("bash unavailable")
+    path = REPO_ROOT / "docker" / f"{harness}-agent" / "entrypoint.sh"
+    result = subprocess.run([bash, "-n", str(path)], capture_output=True, text=True)
+    assert result.returncode == 0, (
+        f"{harness} entrypoint failed bash -n: {result.stderr}"
+    )

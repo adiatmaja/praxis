@@ -202,7 +202,7 @@ Tables: `users`, `projects`, `plans`, `tasks`, `agent_runs`, `opus_state`,
 - **Single static auth token** for v1 (data model supports multi-user for future)
 - **Pluggable harnesses** — `core/harnesses.py` is the registry (image + About
   content) for Aider, OpenCode, OpenHands. Projects pick one via the `harness`
-  column (default `aider`). `AgentManager.spawn_agent` selects the image and
+  column (default `opencode`). `AgentManager.spawn_agent` selects the image and
   sets a harness-agnostic env contract (`HARNESS`, `MODEL`, `OPENAI_API_BASE`,
   + repo/branch/callback vars). Each `docker/<harness>-agent/` image honors the
   same entrypoint contract.
@@ -449,8 +449,9 @@ Tables: `users`, `projects`, `plans`, `tasks`, `agent_runs`, `opus_state`,
   confident answer (>= project `confidence_threshold`) re-dispatches with the Q&A
   injected via `progress_note` (-> Static Bible), otherwise the task parks
   `awaiting_human` (SSE `task_needs_clarification`, `POST /api/tasks/{id}/clarify`,
-  MCP `poll_task` -> `awaiting_clarification`). Only the **aider** harness parses
-  the report today; opencode/openhands parity is a follow-up.
+  MCP `poll_task` -> `awaiting_clarification`). All three harnesses (aider, opencode, openhands)
+  parse the FINAL REPORT and send `needs_clarification` when the report ends
+  with `Status: BLOCKED` or `Status: NEEDS_CONTEXT`.
 
 ## Documentation
 
