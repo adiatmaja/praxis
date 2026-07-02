@@ -297,3 +297,16 @@ async def test_verify_cmd_column_exists(tmp_path) -> None:
         assert "verify_cmd" in cols
     finally:
         await db.close()
+
+
+@pytest.mark.asyncio
+async def test_tasks_table_has_clarification_columns(tmp_path) -> None:
+    db = Database(f"sqlite+aiosqlite:///{tmp_path / 't.db'}")
+    await db.initialize()
+    try:
+        cols = {
+            row["name"] for row in await db.fetch_all("PRAGMA table_info(tasks)")
+        }
+        assert {"clarification_question", "clarification_answer", "clarification_state"} <= cols
+    finally:
+        await db.close()

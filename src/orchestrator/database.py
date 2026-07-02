@@ -210,6 +210,9 @@ class Database:
                     "checklist TEXT",
                     "progress_note TEXT",
                     "approved_at TEXT",
+                    "clarification_question TEXT",
+                    "clarification_answer TEXT",
+                    "clarification_state TEXT",
                 ),
             ),
         ):
