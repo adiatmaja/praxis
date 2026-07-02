@@ -11,6 +11,7 @@ import logging
 import re
 import time
 from collections.abc import Callable
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Protocol
 
@@ -136,7 +137,14 @@ class GitHubAppCredentialProvider:
 
     @staticmethod
     def _parse_expiry(expires_at: str) -> float:
-        return time.mktime(time.strptime(expires_at, "%Y-%m-%dT%H:%M:%SZ"))
+        # GitHub returns UTC (trailing ``Z``); parse as UTC so the epoch aligns
+        # with ``self._clock()`` (real UTC epoch) regardless of the host's local
+        # timezone. ``time.mktime`` would (wrongly) treat the struct as local.
+        return (
+            datetime.strptime(expires_at, "%Y-%m-%dT%H:%M:%SZ")
+            .replace(tzinfo=UTC)
+            .timestamp()
+        )
 
     async def token_for_repo(self, repo_url: str) -> str:
         """Return a short-lived installation token scoped to ``repo_url``.

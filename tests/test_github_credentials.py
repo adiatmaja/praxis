@@ -1,5 +1,5 @@
 import json as _json
-import time
+from datetime import UTC, datetime
 
 import httpx
 import pytest
@@ -96,9 +96,9 @@ async def test_app_provider_caches_token_until_near_expiry(monkeypatch):
             )
         return httpx.Response(404)
 
-    clock = _FakeClock(
-        time.mktime(time.strptime("2026-07-02T12:00:00Z", "%Y-%m-%dT%H:%M:%SZ"))
-    )
+    # Seed the fake clock with a real UTC epoch (independent of the provider's
+    # own parser) so the test would fail if expiry were parsed as local time.
+    clock = _FakeClock(datetime(2026, 7, 2, 12, 0, 0, tzinfo=UTC).timestamp())
     provider = GitHubAppCredentialProvider(
         app_id="123",
         private_key_pem="unused",
