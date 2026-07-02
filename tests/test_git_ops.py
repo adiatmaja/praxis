@@ -45,7 +45,7 @@ def test_commit_and_push_stages_commits_pushes(mock_run: object) -> None:
 @patch("orchestrator.core.git_ops.GitOps._run_command")
 async def test_clone_repo(mock_run: AsyncMock) -> None:
     mock_run.return_value = (0, "", "")
-    git = GitOps(github_token="ghp_test")
+    git = GitOps("ghp_test")
 
     await git.clone_repo("https://github.com/user/repo.git", "/tmp/workspace")
 
@@ -57,18 +57,18 @@ async def test_clone_repo(mock_run: AsyncMock) -> None:
 @patch("orchestrator.core.git_ops.GitOps._run_command")
 async def test_create_branch(mock_run: AsyncMock) -> None:
     mock_run.return_value = (0, "", "")
-    git = GitOps(github_token="ghp_test")
+    git = GitOps("ghp_test")
 
     await git.create_branch("/tmp/workspace", "plan/2026-06-01-auth", "main")
 
-    assert mock_run.call_count == 3
+    assert mock_run.call_count == 4
 
 
 @pytest.mark.unit
 @patch("orchestrator.core.git_ops.GitOps._run_command")
 async def test_push_branch(mock_run: AsyncMock) -> None:
     mock_run.return_value = (0, "", "")
-    git = GitOps(github_token="ghp_test")
+    git = GitOps("ghp_test")
 
     await git.push_branch("/tmp/workspace", "agent/login")
 
@@ -79,7 +79,7 @@ async def test_push_branch(mock_run: AsyncMock) -> None:
 @patch("orchestrator.core.git_ops.GitOps._run_command")
 async def test_create_pr(mock_run: AsyncMock) -> None:
     mock_run.return_value = (0, "https://github.com/user/repo/pull/1\n", "")
-    git = GitOps(github_token="ghp_test")
+    git = GitOps("ghp_test")
 
     pr_url = await git.create_pr(
         "/tmp/workspace",
@@ -96,7 +96,7 @@ async def test_create_pr(mock_run: AsyncMock) -> None:
 @patch("orchestrator.core.git_ops.GitOps._run_command")
 async def test_merge_pr_squash(mock_run: AsyncMock) -> None:
     mock_run.return_value = (0, "", "")
-    git = GitOps(github_token="ghp_test")
+    git = GitOps("ghp_test")
 
     await git.merge_pr("/tmp/workspace", 1)
 
@@ -109,7 +109,7 @@ async def test_merge_pr_squash(mock_run: AsyncMock) -> None:
 @patch("orchestrator.core.git_ops.GitOps._run_command")
 async def test_comment_on_pr(mock_run: AsyncMock) -> None:
     mock_run.return_value = (0, "", "")
-    git = GitOps(github_token="ghp_test")
+    git = GitOps("ghp_test")
 
     await git.comment_on_pr("/tmp/workspace", 1, "Needs fixes")
 
@@ -120,7 +120,7 @@ async def test_comment_on_pr(mock_run: AsyncMock) -> None:
 @patch("orchestrator.core.git_ops.GitOps._run_command")
 async def test_get_pr_diff(mock_run: AsyncMock) -> None:
     mock_run.return_value = (0, "diff --git a/file.py ...", "")
-    git = GitOps(github_token="ghp_test")
+    git = GitOps("ghp_test")
 
     diff = await git.get_pr_diff("/tmp/workspace", 1)
 
@@ -131,7 +131,7 @@ async def test_get_pr_diff(mock_run: AsyncMock) -> None:
 @patch("orchestrator.core.git_ops.GitOps._run_command")
 async def test_get_pr_diff_targets_repo(mock_run: AsyncMock) -> None:
     mock_run.return_value = (0, "diff", "")
-    git = GitOps(github_token="ghp_test")
+    git = GitOps("ghp_test")
 
     await git.get_pr_diff("/tmp/workspace", 2, repo="owner/name")
 
@@ -162,7 +162,7 @@ def test_repo_slug(url: str, expected: str | None) -> None:
 @patch("orchestrator.core.git_ops.GitOps._run_command")
 async def test_get_changed_files(mock_run: AsyncMock) -> None:
     mock_run.return_value = (0, "a.py\nb.py\n", "")
-    git = GitOps(github_token="ghp_test")
+    git = GitOps("ghp_test")
 
     files = await git.get_changed_files("/tmp/workspace", "main", "agent/login")
 
@@ -173,7 +173,7 @@ async def test_get_changed_files(mock_run: AsyncMock) -> None:
 @patch("orchestrator.core.git_ops.GitOps._run_command")
 async def test_command_failure_raises(mock_run: AsyncMock) -> None:
     mock_run.return_value = (1, "", "fatal: not a git repository")
-    git = GitOps(github_token="ghp_test")
+    git = GitOps("ghp_test")
 
     with pytest.raises(RuntimeError, match="Git command failed"):
         await git.clone_repo("https://github.com/user/repo.git", "/tmp/workspace")
@@ -181,7 +181,7 @@ async def test_command_failure_raises(mock_run: AsyncMock) -> None:
 
 @pytest.mark.unit
 async def test_extract_pr_number() -> None:
-    git = GitOps(github_token="ghp_test")
+    git = GitOps("ghp_test")
 
     assert await git.extract_pr_number("https://github.com/user/repo/pull/42") == 42
 
@@ -201,7 +201,7 @@ async def test_remote_branch_exists_returns_true_when_ref_present(
         "abc123\trefs/heads/my-branch",
         "",
     )
-    git = GitOps(github_token="ghp_test")
+    git = GitOps("ghp_test")
     result = await git.remote_branch_exists("https://github.com/u/r", "my-branch")
     assert result is True
     cmd = mock_run.call_args.args[0]
@@ -216,7 +216,7 @@ async def test_remote_branch_exists_returns_false_when_empty_stdout(
     mock_run: AsyncMock,
 ) -> None:
     mock_run.return_value = (0, "", "")
-    git = GitOps(github_token="ghp_test")
+    git = GitOps("ghp_test")
     result = await git.remote_branch_exists("https://github.com/u/r", "no-such")
     assert result is False
 
@@ -227,7 +227,7 @@ async def test_remote_branch_exists_raises_on_nonzero_exit(
     mock_run: AsyncMock,
 ) -> None:
     mock_run.return_value = (128, "", "fatal: not found")
-    git = GitOps(github_token="ghp_test")
+    git = GitOps("ghp_test")
     with pytest.raises(RuntimeError, match="git ls-remote failed"):
         await git.remote_branch_exists("https://github.com/u/r", "main")
 
@@ -243,7 +243,7 @@ async def test_remote_branch_exists_no_partial_match(
         "abc123\trefs/heads/my-branch-extra",
         "",
     )
-    git = GitOps(github_token="ghp_test")
+    git = GitOps("ghp_test")
     result = await git.remote_branch_exists("https://github.com/u/r", "my-branch")
     assert result is False
 
@@ -263,7 +263,7 @@ async def test_remote_file_exists_returns_true_on_200() -> None:
     mock_client.__aexit__ = AsyncMock(return_value=None)
     mock_client.get = AsyncMock(return_value=mock_response)
 
-    git = GitOps(github_token="ghp_real")
+    git = GitOps("ghp_real")
     with patch("orchestrator.core.git_ops.httpx.AsyncClient", return_value=mock_client):
         result = await git.remote_file_exists("u/r", "main", "docs/plan.md")
 
@@ -284,7 +284,7 @@ async def test_remote_file_exists_returns_false_on_404() -> None:
     mock_client.__aexit__ = AsyncMock(return_value=None)
     mock_client.get = AsyncMock(return_value=mock_response)
 
-    git = GitOps(github_token="ghp_real")
+    git = GitOps("ghp_real")
     with patch("orchestrator.core.git_ops.httpx.AsyncClient", return_value=mock_client):
         result = await git.remote_file_exists("u/r", "main", "missing.md")
 
@@ -301,7 +301,7 @@ async def test_remote_file_exists_raises_on_unexpected_status() -> None:
     mock_client.__aexit__ = AsyncMock(return_value=None)
     mock_client.get = AsyncMock(return_value=mock_response)
 
-    git = GitOps(github_token="ghp_real")
+    git = GitOps("ghp_real")
     with (
         patch("orchestrator.core.git_ops.httpx.AsyncClient", return_value=mock_client),
         pytest.raises(RuntimeError, match="unexpected GitHub API status 500"),
@@ -318,7 +318,7 @@ async def test_remote_file_exists_raises_on_network_error() -> None:
     mock_client.__aexit__ = AsyncMock(return_value=None)
     mock_client.get = AsyncMock(side_effect=httpx.ConnectError("connection refused"))
 
-    git = GitOps(github_token="ghp_real")
+    git = GitOps("ghp_real")
     with (
         patch("orchestrator.core.git_ops.httpx.AsyncClient", return_value=mock_client),
         pytest.raises(RuntimeError, match="network error checking file on GitHub"),
@@ -335,7 +335,7 @@ async def test_remote_file_exists_raises_on_network_error() -> None:
 async def test_branch_commit_log_parses_sha_and_subject(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    git = GitOps(github_token="ghp_test")
+    git = GitOps("ghp_test")
 
     async def fake_run_checked(cmd: list[str], cwd: str | None = None) -> str:
         return "abc123def\x1fagent: Add model\n789ghijkl\x1fagent: Add test\n"
@@ -353,7 +353,7 @@ async def test_branch_commit_log_parses_sha_and_subject(
 
 @pytest.mark.unit
 async def test_branch_commit_log_empty(monkeypatch: pytest.MonkeyPatch) -> None:
-    git = GitOps(github_token="ghp_test")
+    git = GitOps("ghp_test")
 
     async def fake_run_checked(cmd: list[str], cwd: str | None = None) -> str:
         return ""
@@ -368,7 +368,7 @@ async def test_branch_commit_log_empty(monkeypatch: pytest.MonkeyPatch) -> None:
 async def test_branch_commit_log_passes_correct_git_args(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    git = GitOps(github_token="ghp_test")
+    git = GitOps("ghp_test")
     captured: list[tuple[list[str], str | None]] = []
 
     async def fake_run_checked(cmd: list[str], cwd: str | None = None) -> str:
@@ -382,3 +382,61 @@ async def test_branch_commit_log_passes_correct_git_args(
     cmd, cwd = captured[0]
     assert cmd == ["git", "log", "--reverse", "--format=%H%x1f%s", "main..agent/feat"]
     assert cwd == "/repo"
+
+
+# ---------------------------------------------------------------------------
+# Credential provider construction tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_gitops_accepts_str_token_for_backcompat() -> None:
+    from orchestrator.core.github_credentials import PatCredentialProvider
+
+    ops = GitOps("ghp_legacy")
+    assert isinstance(ops._provider, PatCredentialProvider)
+
+
+@pytest.mark.unit
+def test_gitops_accepts_provider() -> None:
+    from orchestrator.core.github_credentials import PatCredentialProvider
+
+    provider = PatCredentialProvider("ghp_x")
+    ops = GitOps(provider)
+    assert ops._provider is provider
+
+
+@pytest.mark.unit
+async def test_remote_branch_exists_resolves_repo_token(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from orchestrator.core.github_credentials import PatCredentialProvider
+
+    class _Recording(PatCredentialProvider):
+        def __init__(self) -> None:
+            super().__init__("ghs_scoped")
+            self.seen: list[str] = []
+
+        async def token_for_repo(self, repo_url: str) -> str:
+            self.seen.append(repo_url)
+            return await super().token_for_repo(repo_url)
+
+    provider = _Recording()
+    ops = GitOps(provider)
+
+    captured: dict[str, object] = {}
+
+    async def fake_run(
+        cmd: list[str],
+        cwd: str | None = None,
+        token: str | None = None,
+    ) -> tuple[int, str, str]:
+        captured["token"] = token
+        return (0, "abc123\trefs/heads/main", "")
+
+    monkeypatch.setattr(ops, "_run_command", fake_run)
+
+    result = await ops.remote_branch_exists("https://github.com/o/r", "main")
+    assert result is True
+    assert provider.seen == ["https://github.com/o/r"]
+    assert captured["token"] == "ghs_scoped"
