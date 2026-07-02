@@ -96,6 +96,29 @@
    - With approval gate ON: plan is created with `pending` status, awaiting user approval
    - With approval gate OFF: plan is automatically activated and dispatched
 
+## Worker Clarification Channel
+
+When a worker agent cannot proceed without more information, it reports
+`Status: BLOCKED` or `NEEDS_CONTEXT` in its FINAL REPORT instead of guessing.
+The orchestrator treats this as a clarification request: the task parks at
+`NEEDS_CLARIFICATION` without burning a retry, and the brain (`answer_clarification`,
+Sonnet/medium) attempts to answer from the task description and `plan_text`. A
+confident answer (confidence >= project `confidence_threshold`) re-dispatches the
+task with the Q&A injected via `progress_note` into the Static Bible; a low-confidence
+answer parks the task at `awaiting_human` and emits `task_needs_clarification` over
+SSE so a human can supply the answer via `POST /api/tasks/{id}/clarify` or MCP
+`poll_task` (which reports `status: awaiting_clarification`).
+
+State transitions:
+
+```
+IN_PROGRESS -> NEEDS_CLARIFICATION -> (brain confident) -> PENDING (re-dispatch)
+                                   -> (low confidence)  -> awaiting_human -> PENDING
+```
+
+Only the **aider** harness parses the FINAL REPORT for block signals today;
+opencode/openhands parity is a planned follow-up.
+
 ## Per-Project Settings
 
 Each registered repository can be configured with:
