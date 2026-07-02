@@ -117,6 +117,22 @@ docker compose up --build                              # local mode
 docker compose --profile hosted up --build             # with Caddy
 ```
 
+## CI/CD (GitHub Actions)
+
+Workflows live in `.github/workflows/` (added 2026-07-02, all verified green on runners):
+
+| Workflow | Trigger | Does |
+|----------|---------|------|
+| `ci.yml` | push main / all PRs | `lint` job (ruff format+check, mypy) on Ubuntu; `test` matrix on **ubuntu-latest + windows-latest** (`pytest --cov-fail-under=80 --timeout=120`) |
+| `docker.yml` | `docker/**` changes | shell-checks entrypoints + builds all 4 images. **Orchestrator builds with repo-root context** (its Dockerfile copies `src/`, `web/`, `pyproject.toml` from root); the 3 agent images build from their own dir in a matrix |
+| `security.yml` | push / PR / weekly | pip-audit (on `uv export`ed lockfile) + bandit + gitleaks |
+| `codeql.yml` | push / PR / weekly | CodeQL security-and-quality |
+| `dependency-review.yml` | PRs touching deps | blocks high-severity vulnerable additions (needs repo **Dependency graph** setting on) |
+| `actionlint.yml` | `.github/workflows/**` | lints the workflows themselves |
+
+- **bandit config is in `pyproject.toml`** (`[tool.bandit]`): global `skips = ["B404","B603","B607"]` for the product's legitimate subprocess/CLI shell-outs, plus a handful of targeted inline `# nosec` at specific call sites (e.g. `verify_gate.py` B602). Result is 0 findings, so any NEW bandit hit is a real signal, keep the skip list minimal.
+- **Dependabot** (`.github/dependabot.yml`): weekly pip/github-actions/docker updates, grouped by risk tier (Actions batched into one PR; dev/linter deps grouped; runtime deps left ungrouped so a breaking prod bump is isolated).
+
 ## Task State Machine
 
 ```
