@@ -225,3 +225,44 @@ async def test_status_includes_providers(
         assert isinstance(p["cli_available"], bool)
         assert isinstance(p["authenticated"], bool)
         assert isinstance(p["login_hint"], str)
+
+
+# ---------------------------------------------------------------------------
+# Build stamp tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+async def test_health_includes_build(client: AsyncClient) -> None:
+    """GET /health includes a 'build' dict with commit and started_at."""
+    resp = await client.get("/health")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["status"] == "ok"
+    assert "build" in body
+    assert body["build"]["commit"]
+    assert body["build"]["started_at"]
+
+
+@pytest.mark.integration
+async def test_status_includes_build(
+    client: AsyncClient,
+    db: Database,
+    auth_headers: dict[str, str],
+    mocker: pytest.MonkeyPatch,
+) -> None:
+    """GET /api/status includes a 'build' key."""
+    import orchestrator.api.system as sys_mod
+
+    sys_mod._provider_probe_cache.clear()
+    await seed_user(db)
+
+    # Stub subprocess calls so probe doesn't deadlock on missing CLIs.
+    mocker.patch(
+        "asyncio.create_subprocess_exec",
+        new=mocker.AsyncMock(side_effect=OSError("not found")),
+    )
+
+    response = await client.get("/api/status", headers=auth_headers)
+    assert response.status_code == 200
+    assert "build" in response.json()
