@@ -179,6 +179,7 @@ async def test_agent_done_callback(
             "status": "completed",
             "pr_url": "https://github.com/u/a/pull/1",
         },
+        headers={"X-Praxis-Callback-Token": "test-auth"},
     )
     task = await queue.get_task(task_id)
 
@@ -200,6 +201,7 @@ async def test_agent_done_callback_without_run_id_uses_latest_run(
     response = await client.post(
         "/api/internal/agent-done",
         json={"task_id": task_id, "status": "completed"},
+        headers={"X-Praxis-Callback-Token": "test-auth"},
     )
     task = await queue.get_task(task_id)
 
