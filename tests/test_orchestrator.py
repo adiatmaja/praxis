@@ -445,6 +445,7 @@ class TestOrchestrationReview:
                 self.task_id = task_id
                 self.project = dict(project)
                 self.git = mock_git
+                self.opus = mock_opus
                 self.published = published
 
         return orch, _Mocks()
@@ -481,6 +482,54 @@ class TestOrchestrationReview:
         task = await orch._tq.get_task(mocks.task_id)
         assert task is not None
         assert task["status"] == TaskStatus.PASSED
+
+    # ------------------------------------------------------------------
+    # Verify-gate tests (Task 6)
+    # ------------------------------------------------------------------
+
+    async def test_verify_gate_failure_fails_without_brain(
+        self, db: Database, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        orch, mocks = await self._make_review_pass_orch(
+            db, auto_merge=0, base_branch="plan/x"
+        )
+        mocks.project["verify_cmd"] = "tsc --noEmit"
+
+        async def fake_run_verify(
+            checkout_dir: str, verify_cmd: str, timeout: float = 600.0
+        ) -> tuple[bool, str]:
+            return False, "tsc: error TS2554: Expected 1 arguments, but got 0."
+
+        monkeypatch.setattr(
+            "orchestrator.core.orchestrator.run_verify", fake_run_verify
+        )
+        await orch.review_task(mocks.task_id, mocks.project)
+
+        mocks.opus.review_diff.assert_not_called()
+        mocks.git.merge_pr.assert_not_called()
+        task = await orch._tq.get_task(mocks.task_id)
+        assert task is not None
+        assert task["status"] in (TaskStatus.FAILED, TaskStatus.PENDING)
+        assert "TS2554" in (task["review_feedback"] or "")
+
+    async def test_verify_gate_pass_proceeds_to_brain(
+        self, db: Database, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        orch, mocks = await self._make_review_pass_orch(
+            db, auto_merge=0, base_branch="plan/x"
+        )
+        mocks.project["verify_cmd"] = "tsc --noEmit"
+
+        async def fake_run_verify(
+            checkout_dir: str, verify_cmd: str, timeout: float = 600.0
+        ) -> tuple[bool, str]:
+            return True, "all good"
+
+        monkeypatch.setattr(
+            "orchestrator.core.orchestrator.run_verify", fake_run_verify
+        )
+        await orch.review_task(mocks.task_id, mocks.project)
+        mocks.opus.review_diff.assert_called_once()
 
 
 @pytest.mark.integration

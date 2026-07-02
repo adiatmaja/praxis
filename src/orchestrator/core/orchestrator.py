@@ -24,6 +24,7 @@ from orchestrator.core.merge_policy import auto_merge_eligible
 from orchestrator.core.progress_handover import ChecklistItem, render_handover
 from orchestrator.core.task_queue import TaskQueue
 from orchestrator.core.token_budget import ContextBudgetExceeded
+from orchestrator.core.verify_gate import run_verify
 from orchestrator.core.worker_bible import BibleSources, build_bible
 from orchestrator.models.schemas import PlanStatus, TaskStatus
 
@@ -299,15 +300,29 @@ class Orchestrator:
                 )
                 checkout = None
 
+            verify_cmd = project.get("verify_cmd")
+            review: dict[str, Any] | None = None
+            if verify_cmd and checkout is not None:
+                passed, gate_output = await run_verify(checkout, verify_cmd)
+                if not passed:
+                    review = {
+                        "verdict": "fail",
+                        "feedback": (
+                            "Automated verification failed before review "
+                            f"(`{verify_cmd}`):\n\n{gate_output}"
+                        ),
+                    }
+
             diff = await self._git.get_pr_diff(".", pr_number, repo=repo)
-            review = await self._opus.review_diff(
-                diff,
-                task["description"] or task["title"],
-                model=project.get("agent_model"),
-                effort=project.get("agent_model_effort"),
-                plan_text=plan_text_for_review,
-                cwd=checkout,
-            )
+            if review is None:
+                review = await self._opus.review_diff(
+                    diff,
+                    task["description"] or task["title"],
+                    model=project.get("agent_model"),
+                    effort=project.get("agent_model_effort"),
+                    plan_text=plan_text_for_review,
+                    cwd=checkout,
+                )
         verdict = str(review["verdict"]).lower()
         feedback = str(review.get("feedback", ""))
 
