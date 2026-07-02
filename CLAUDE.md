@@ -427,6 +427,11 @@ Tables: `users`, `projects`, `plans`, `tasks`, `agent_runs`, `opus_state`,
   copies the verbatim contract (signatures/API) into each leaf's `plan_text`, which
   `review_task` feeds to `review_diff`; without it the reviewer checked diffs against
   the task blurb and missed spec drift (e.g. a dropped `AbortSignal` param).
+- **Two names are legacy on purpose** — `core/opus_bridge.py` is the
+  provider-agnostic brain bridge (see its docstring), and `users.token_hash`
+  stores the RAW v1 auth token, not a hash (see `api/auth.py`). Renames were
+  evaluated (2026-07-02 refactor) and deliberately skipped as churn; a future
+  `token_hash` rename should ride the migration framework in `database.py`.
 
 ## Documentation
 
