@@ -694,11 +694,35 @@ class Orchestrator:
             return
 
         await self.dispatch_pending_tasks(plan_id, project)
-        for task in await self._tq.get_tasks_for_plan(plan_id):
+        tasks = await self._tq.get_tasks_for_plan(plan_id)
+        for task in tasks:
             if task["status"] == TaskStatus.REVIEWING:
                 await self.review_task(task["id"], project)
-        if await self._tq.all_tasks_done(plan_id):
+        tasks = await self._tq.get_tasks_for_plan(plan_id)
+        active = [
+            t
+            for t in tasks
+            if t["status"] in (TaskStatus.IN_PROGRESS, TaskStatus.REVIEWING)
+        ]
+        pending = [t for t in tasks if t["status"] == TaskStatus.PENDING]
+        failed = [t for t in tasks if t["status"] == TaskStatus.FAILED]
+
+        all_done = await self._tq.all_tasks_done(plan_id)
+        # A plan is also "done" when no tasks remain actionable (all are terminal:
+        # MERGED, FAILED, or PASSED/awaiting-merge) and there is at least one failure.
+        terminal_with_failures = not active and not pending and failed
+
+        if all_done or terminal_with_failures:
             await self._tq.update_plan_status(plan_id, PlanStatus.COMPLETED)
+            failed_ids = [t["id"] for t in failed]
+            if failed_ids:
+                self._bus.publish(
+                    {
+                        "type": "plan_completed_with_failures",
+                        "plan_id": plan_id,
+                        "failed_task_ids": failed_ids,
+                    }
+                )
             try:
                 await self.on_plan_completed(plan_id)
             except Exception as exc:  # noqa: BLE001 - non-fatal
@@ -710,6 +734,17 @@ class Orchestrator:
                     analysis,
                     activate=not bool(project["approval_gate"]),
                 )
+            return
+
+        if not active and pending and failed:
+            self._bus.publish(
+                {
+                    "type": "plan_stalled",
+                    "plan_id": plan_id,
+                    "pending_task_ids": [t["id"] for t in pending],
+                    "failed_task_ids": [t["id"] for t in failed],
+                }
+            )
 
     def _safe_logs(self, container_id: str) -> str:
         """Fetch full container logs, swallowing any backend errors."""

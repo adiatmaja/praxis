@@ -1282,3 +1282,133 @@ class TestApprovRejectMerge:
         task = await orch._tq.get_task(mocks.task_id)
         assert task is not None
         assert task["status"] in (TaskStatus.FAILED, TaskStatus.PENDING)
+
+
+@pytest.mark.integration
+class TestProcessPlanOnceEvents:
+    async def _setup_stalled_plan(
+        self, db: Database
+    ) -> tuple[TaskQueue, str, str, str]:
+        """One FAILED task + one PENDING task that depends on it (wedged)."""
+        await db.execute(
+            "INSERT INTO users (id, name, token_hash) VALUES (?, ?, ?)",
+            ("u2", "User2", "hash2"),
+        )
+        await db.execute(
+            """INSERT INTO projects (id, user_id, name, repo_url, model_name, max_retries)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            ("p2", "u2", "App2", "https://github.com/u/b", "deepseek", 3),
+        )
+        task_queue = TaskQueue(db)
+        plan_id = await task_queue.create_plan("p2", "Stalled plan")
+        await task_queue.activate_plan(
+            plan_id,
+            {
+                "plan_summary": "Stalled",
+                "plan_slug": "stalled",
+                "tasks": [
+                    {
+                        "title": "Task A",
+                        "slug": "task-a",
+                        "description": "First task",
+                        "depends_on": [],
+                    },
+                    {
+                        "title": "Task B",
+                        "slug": "task-b",
+                        "description": "Second task",
+                        "depends_on": ["task-a"],
+                    },
+                ],
+            },
+            "plan/2026-07-02-stalled",
+        )
+        tasks = await task_queue.get_tasks_for_plan(plan_id)
+        task_a_id = str(tasks[0]["id"])
+        task_b_id = str(tasks[1]["id"])
+        await task_queue.update_task_status(task_a_id, TaskStatus.FAILED)
+        return task_queue, plan_id, task_a_id, task_b_id
+
+    async def test_stalled_plan_emits_event(self, db: Database) -> None:
+        task_queue, plan_id, task_a_id, _task_b_id = await self._setup_stalled_plan(db)
+
+        bus = EventBus()
+        published: list[dict] = []
+        _orig_publish = bus.publish
+        bus.publish = lambda e: (published.append(e), _orig_publish(e))  # type: ignore[method-assign]
+
+        orch = Orchestrator(
+            task_queue=task_queue,
+            agent_manager=MagicMock(),
+            opus_bridge=AsyncMock(),
+            git_ops=AsyncMock(),
+            event_bus=bus,
+        )
+        # Stub dispatch so it does nothing (no docker/opus needed)
+        orch.dispatch_pending_tasks = AsyncMock()
+
+        project = await db.fetch_one("SELECT * FROM projects WHERE id = 'p2'")
+        assert project is not None
+        await orch.process_plan_once(plan_id, dict(project))
+
+        assert any(e["type"] == "plan_stalled" for e in published), published
+        stall_event = next(e for e in published if e["type"] == "plan_stalled")
+        assert stall_event["plan_id"] == plan_id
+        assert task_a_id in stall_event["failed_task_ids"]
+
+    async def test_completed_with_failures_emits_event(self, db: Database) -> None:
+        await db.execute(
+            "INSERT INTO users (id, name, token_hash) VALUES (?, ?, ?)",
+            ("u3", "User3", "hash3"),
+        )
+        await db.execute(
+            """INSERT INTO projects (id, user_id, name, repo_url, model_name, max_retries)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            ("p3", "u3", "App3", "https://github.com/u/c", "deepseek", 3),
+        )
+        task_queue = TaskQueue(db)
+        plan_id = await task_queue.create_plan("p3", "Partial plan")
+        await task_queue.activate_plan(
+            plan_id,
+            {
+                "plan_summary": "Partial",
+                "plan_slug": "partial",
+                "tasks": [
+                    {
+                        "title": "Task X",
+                        "slug": "task-x",
+                        "description": "Only task",
+                        "depends_on": [],
+                    },
+                ],
+            },
+            "plan/2026-07-02-partial",
+        )
+        tasks = await task_queue.get_tasks_for_plan(plan_id)
+        task_x_id = str(tasks[0]["id"])
+        await task_queue.update_task_status(task_x_id, TaskStatus.FAILED)
+
+        bus = EventBus()
+        published: list[dict] = []
+        _orig_publish2 = bus.publish
+        bus.publish = lambda e: (published.append(e), _orig_publish2(e))  # type: ignore[method-assign]
+
+        orch = Orchestrator(
+            task_queue=task_queue,
+            agent_manager=MagicMock(),
+            opus_bridge=AsyncMock(),
+            git_ops=AsyncMock(),
+            event_bus=bus,
+        )
+        orch.dispatch_pending_tasks = AsyncMock()
+
+        project = await db.fetch_one("SELECT * FROM projects WHERE id = 'p3'")
+        assert project is not None
+        await orch.process_plan_once(plan_id, dict(project))
+
+        assert any(e["type"] == "plan_completed_with_failures" for e in published), (
+            published
+        )
+        evt = next(e for e in published if e["type"] == "plan_completed_with_failures")
+        assert evt["plan_id"] == plan_id
+        assert task_x_id in evt["failed_task_ids"]
