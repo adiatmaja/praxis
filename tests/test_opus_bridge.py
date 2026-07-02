@@ -341,3 +341,24 @@ async def test_review_prompt_includes_plan(mocker) -> None:
         "diff", "task desc", plan_text="PLAN: restore the deleted file"
     )
     assert "PLAN: restore the deleted file" in captured["prompt"]
+
+
+@pytest.mark.unit
+async def test_answer_clarification_returns_structured_verdict(mocker) -> None:
+    captured: dict = {}
+
+    async def fake_run_claude(prompt, model=None, effort=None, cwd=None):
+        captured["prompt"] = prompt
+        return '{"resolved": true, "answer": "Use config/praxis.yaml", "confidence": 0.9}'
+
+    bridge = OpusBridge(db=mocker.MagicMock())
+    mocker.patch.object(bridge, "_run_claude", side_effect=fake_run_claude)
+    result = await bridge.answer_clarification(
+        question="Which config file?",
+        task_description="Add a setting",
+        plan_text=None,
+    )
+    assert result["resolved"] is True
+    assert result["answer"] == "Use config/praxis.yaml"
+    assert 0.0 <= result["confidence"] <= 1.0
+    assert "Which config file?" in captured["prompt"]
