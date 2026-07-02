@@ -192,6 +192,55 @@ async def test_create_project_auto_merge_defaults_false(
 
 
 @pytest.mark.integration
+async def test_create_project_verify_cmd_defaults_none(
+    client: AsyncClient,
+    db: Database,
+    auth_headers: dict[str, str],
+) -> None:
+    await seed_user(db)
+
+    resp = await client.post(
+        "/api/projects",
+        headers=auth_headers,
+        json={
+            "name": "vcrepo",
+            "repo_url": "https://github.com/user/vcrepo",
+            "model_name": "qwen3-32b",
+        },
+    )
+    assert resp.status_code == 201
+    assert resp.json()["verify_cmd"] is None
+
+
+@pytest.mark.integration
+async def test_update_project_verify_cmd(
+    client: AsyncClient,
+    db: Database,
+    auth_headers: dict[str, str],
+) -> None:
+    await seed_user(db)
+
+    created = await client.post(
+        "/api/projects",
+        headers=auth_headers,
+        json={
+            "name": "vcrepo2",
+            "repo_url": "https://github.com/user/vcrepo2",
+            "model_name": "qwen3-32b",
+        },
+    )
+    project_id = created.json()["id"]
+
+    resp = await client.patch(
+        f"/api/projects/{project_id}",
+        headers=auth_headers,
+        json={"verify_cmd": "npx tsc --noEmit && npm test"},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["verify_cmd"] == "npx tsc --noEmit && npm test"
+
+
+@pytest.mark.integration
 async def test_update_project_auto_merge(
     client: AsyncClient,
     db: Database,
