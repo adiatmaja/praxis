@@ -13,7 +13,7 @@ implementation.
 | Backend | Python 3.11, FastAPI, Uvicorn |
 | Database | SQLite (aiosqlite, raw SQL, no ORM) |
 | CLI | Typer + rich |
-| Web UI | Single-file HTML/CSS/JS (`web/index.html`) |
+| Web UI | No-build HTML/CSS/JS (`web/index.html` + `styles.css` + `app.js`) |
 | Containers | Docker SDK for Python |
 | Agent | Aider (custom Docker image) |
 | LLM (plan/review) | Claude Opus via `claude -p` (subscription) |
@@ -45,7 +45,11 @@ praxis/
 │   │   │   ├── internal.py          # /api/internal/agent-done callback
 │   │   │   └── auth.py              # Bearer token validation
 │   │   ├── core/
-│   │   │   ├── orchestrator.py      # Main loop: plan -> dispatch -> review -> improve
+│   │   │   ├── orchestrator.py          # Loop core: __init__, plan_and_activate, run_once, run_loop, shutdown
+│   │   │   ├── orchestrator_dispatch.py # DispatchMixin: dispatch_pending_tasks, _build_worker_bible
+│   │   │   ├── orchestrator_review.py   # ReviewMixin: review_task, approve/reject merge, on_plan_completed
+│   │   │   ├── orchestrator_reconcile.py# ReconcileMixin: reconcile_runs, monitor_run, _classify_pr_failure
+│   │   │   ├── orchestrator_improve.py  # ImprovementMixin: check_improvements, create_improvement_plan
 │   │   │   ├── task_queue.py        # Task state machine + scheduling
 │   │   │   ├── opus_bridge.py       # claude -p invocation + rate limit handling
 │   │   │   ├── llm_router.py        # Per-call-site {provider,model,effort} routing (Spec 3)
@@ -70,7 +74,9 @@ praxis/
 │   └── cli/
 │       └── main.py                  # Typer CLI client (entrypoint: orchestrator-cli)
 ├── web/
-│   └── index.html                   # Single-file dashboard (dark/light theme)
+│   ├── index.html                   # Dashboard HTML (no-build, dark/light theme)
+│   ├── styles.css                   # Dashboard CSS (extracted from index.html)
+│   └── app.js                       # Dashboard JS (extracted from index.html, classic script)
 ├── docker/
 │   ├── orchestrator/Dockerfile
 │   ├── aider-agent/
@@ -160,7 +166,12 @@ Tables: `users`, `projects`, `plans`, `tasks`, `agent_runs`, `opus_state`,
 
 ## Key Design Decisions
 
-- **No ORM** — raw SQL via aiosqlite, migrations as inline CREATE TABLE IF NOT EXISTS
+- **No ORM** — raw SQL via aiosqlite, baseline tables as inline CREATE TABLE IF NOT EXISTS
+  (the `CREATE_TABLE_STATEMENTS` tuple, run every startup).
+  Schema changes now go through the versioned migration list in `database.py`
+  (`MIGRATIONS` + `PRAGMA user_version`, applied at the end of `initialize()`).
+  Add a new `Migration(n, desc, fn)` instead of another ad-hoc conditional
+  rebuild; steps must be idempotent (re-run safe).
 - **Global settings layer (Spec 2)** — git-trackable defaults live in `config/praxis.yaml`
   (loaded by `core/settings_file.load_yaml_settings`); `Settings.__init__` overlays them
   beneath env vars, so precedence is **env > YAML > field default**. Keys map by uppercase
@@ -218,9 +229,13 @@ Tables: `users`, `projects`, `plans`, `tasks`, `agent_runs`, `opus_state`,
   startup. Without it, project creation returns 500 ("No user found")
 - **Windows port cleanup** — `kill -9` from bash doesn't work for Windows processes.
   Use `taskkill //PID <pid> //F` to release ports
-- **orchestrator.py contains the improvement loop** — there is no separate
-  `core/improvement.py` file. All orchestration logic (planning, dispatch, review,
-  autonomous improvement) lives in `core/orchestrator.py`
+- **Orchestrator is split across mixins** — `core/orchestrator.py` holds only the
+  loop core (`__init__`, `plan_and_activate`, `process_plan_once`, `run_once`,
+  `run_loop`, `shutdown`). Dispatch, review/merge, reconcile, and improvement live
+  in `core/orchestrator_{dispatch,review,reconcile,improve}.py` as mixins on the
+  single `Orchestrator` class. Tests patch module-level helpers (e.g. `run_verify`,
+  `clone_with_token`) on the MIXIN module that calls them, not on
+  `core.orchestrator`.
 - **SSE endpoint** at `/api/events` stays open indefinitely (long-lived connection).
   The EventBus is in-memory only — events are lost if no subscribers are connected
 - **SQLite DB file** is created at `data/orchestrator.db` relative to CWD. The `data/`
@@ -247,10 +262,12 @@ Tables: `users`, `projects`, `plans`, `tasks`, `agent_runs`, `opus_state`,
   finished within one loop interval streamed zero `agent_log` events and the dashboard
   Live Log stayed empty.
 - **Agent container names are reused, so spawn force-removes stale ones** —
-  `spawn_agent` names containers `aider-agent-{task_id[:8]}` with `auto_remove=False`.
-  Retrying/re-dispatching a task collides with the exited container from its prior run
-  (Docker 409 Conflict → agent never starts → empty Live Log). `_remove_existing_container`
-  deletes any same-named container first.
+  `spawn_agent` names containers `praxis-agent-{task_id[:8]}` (harness-neutral prefix)
+  with `auto_remove=False`. Retrying/re-dispatching a task collides with the exited
+  container from its prior run (Docker 409 Conflict → agent never starts → empty Live
+  Log). `_remove_existing_container` deletes any same-named container first.
+  `list_agent_containers` queries both `praxis-agent-` and the legacy `aider-agent-`
+  prefix so reconcile can still clean up containers spawned before the 2026-07 rename.
 - **Agent callback URL is port-derived, not hardcoded** — `Settings.callback_url()`
   builds `http://host.docker.internal:{PORT}/api/internal/agent-done` (override with
   `AGENT_CALLBACK_URL`) and is passed to `Orchestrator(callback_url=...)`. Running the
@@ -410,6 +427,11 @@ Tables: `users`, `projects`, `plans`, `tasks`, `agent_runs`, `opus_state`,
   copies the verbatim contract (signatures/API) into each leaf's `plan_text`, which
   `review_task` feeds to `review_diff`; without it the reviewer checked diffs against
   the task blurb and missed spec drift (e.g. a dropped `AbortSignal` param).
+- **Two names are legacy on purpose** — `core/opus_bridge.py` is the
+  provider-agnostic brain bridge (see its docstring), and `users.token_hash`
+  stores the RAW v1 auth token, not a hash (see `api/auth.py`). Renames were
+  evaluated (2026-07-02 refactor) and deliberately skipped as churn; a future
+  `token_hash` rename should ride the migration framework in `database.py`.
 
 ## Documentation
 

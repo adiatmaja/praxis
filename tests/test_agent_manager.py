@@ -55,7 +55,7 @@ def _mock_container(
 ) -> MagicMock:
     container = MagicMock()
     container.id = container_id
-    container.name = f"aider-agent-{container_id}"
+    container.name = f"praxis-agent-{container_id}"
     container.short_id = container_id[:12]
     container.status = status
     container.attrs = {"State": {"ExitCode": exit_code}}
@@ -173,7 +173,7 @@ async def test_spawn_agent_removes_stale_container(mock_docker: MagicMock) -> No
         callback_url="http://o/cb",
     )
 
-    mock_client.containers.get.assert_called_once_with("aider-agent-task-1xx")
+    mock_client.containers.get.assert_called_once_with("praxis-agent-task-1xx")
     stale.remove.assert_called_once_with(force=True)
     mock_client.containers.run.assert_called_once()
 
@@ -439,3 +439,23 @@ def test_list_agent_containers(mock_docker: MagicMock) -> None:
     )
 
     assert manager.list_agent_containers()[0]["id"] == "abc123"
+
+
+@pytest.mark.unit
+@patch("orchestrator.core.agent_manager.docker")
+def test_list_agent_containers_queries_both_prefixes(mock_docker: MagicMock) -> None:
+    """list_agent_containers queries both praxis-agent- and legacy aider-agent- prefixes."""
+    mock_client = MagicMock()
+    mock_docker.from_env.return_value = mock_client
+    mock_client.containers.list.return_value = []
+
+    manager = AgentManager(
+        lm_studio_url="http://host.docker.internal:1234",
+        github_token="ghp_test",
+    )
+    manager.list_agent_containers()
+
+    calls = mock_client.containers.list.call_args_list
+    filters_used = [c.kwargs["filters"] for c in calls]
+    assert {"name": "praxis-agent-"} in filters_used
+    assert {"name": "aider-agent-"} in filters_used

@@ -76,7 +76,11 @@ MCP transport cannot surface.
 
 | Module | Responsibility |
 |--------|---------------|
-| `orchestrator.py` | Main loop: plan -> dispatch -> review -> improve |
+| `orchestrator.py` | Loop core: `__init__`, `plan_and_activate`, `process_plan_once`, `run_once`, `run_loop`, `shutdown` |
+| `orchestrator_dispatch.py` | `DispatchMixin`: `dispatch_pending_tasks`, `_build_worker_bible` |
+| `orchestrator_review.py` | `ReviewMixin`: `review_task`, `approve_task_merge`, `reject_task_merge`, `on_plan_completed` |
+| `orchestrator_reconcile.py` | `ReconcileMixin`: `reconcile_runs`, `monitor_run`, `_classify_pr_failure` (8 methods total) |
+| `orchestrator_improve.py` | `ImprovementMixin`: `check_improvements`, `create_improvement_plan` |
 | `task_queue.py` | Plan/task CRUD, state machine, dependency-aware dispatch |
 | `opus_bridge.py` | Brain calls (via `llm_router`, or legacy `claude -p`), JSON parsing, rate limit tracking |
 | `llm_router.py` | Per-call-site `{provider, model, effort}` routing — CLI (`claude`/`agy`/`codex`) or LM Studio `local`. Raises `ProviderAuthError` on a dead CLI session (stderr auth-scan catches codex's exit-0/401); resolves Windows `.CMD`/`.EXE` shims via `shutil.which` |

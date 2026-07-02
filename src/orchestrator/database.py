@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 import logging
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from typing import Any
 
 import aiosqlite
@@ -14,7 +15,7 @@ logger = logging.getLogger(__name__)
 
 SQLITE_URL_PREFIX = "sqlite+aiosqlite:///"
 
-MIGRATIONS: tuple[str, ...] = (
+CREATE_TABLE_STATEMENTS: tuple[str, ...] = (
     """
     CREATE TABLE IF NOT EXISTS users (
         id TEXT PRIMARY KEY,
@@ -121,6 +122,36 @@ MIGRATIONS: tuple[str, ...] = (
 )
 
 
+@dataclass(frozen=True)
+class Migration:
+    """One ordered, idempotent schema step.
+
+    ``apply`` receives the open connection. Steps MUST be safe to re-run
+    (guard with PRAGMA table_info / IF NOT EXISTS), because a crash between
+    apply and the version bump replays the step on next startup.
+    """
+
+    version: int
+    description: str
+    apply: Callable[[aiosqlite.Connection], Awaitable[None]]
+
+
+async def _migration_0001_baseline(connection: aiosqlite.Connection) -> None:
+    """Baseline marker for databases created before versioning existed.
+
+    All tables are created by the idempotent CREATE TABLE IF NOT EXISTS block
+    in ``initialize`` and the legacy conditional rebuilds; this step only
+    exists so pre-framework databases converge on version 1.
+    """
+
+
+MIGRATIONS: list[Migration] = [
+    Migration(1, "baseline: schema as of 2026-07-02", _migration_0001_baseline),
+]
+
+CURRENT_SCHEMA_VERSION = MIGRATIONS[-1].version
+
+
 class Database:
     """Simple asynchronous SQLite wrapper for orchestrator storage."""
 
@@ -155,8 +186,8 @@ class Database:
         await connection.execute("PRAGMA journal_mode=WAL;")
         await connection.execute("PRAGMA foreign_keys=ON;")
 
-        for migration in MIGRATIONS:
-            await connection.execute(migration)
+        for statement in CREATE_TABLE_STATEMENTS:
+            await connection.execute(statement)
 
         for table, column_ddls in (
             (
@@ -239,6 +270,22 @@ class Database:
             """
         )
         await connection.commit()
+
+        cursor = await connection.execute("PRAGMA user_version")
+        row = await cursor.fetchone()
+        current = int(row[0]) if row else 0
+        for migration in MIGRATIONS:
+            if migration.version <= current:
+                continue
+            logger.info(
+                "Applying schema migration %d: %s",
+                migration.version,
+                migration.description,
+            )
+            await migration.apply(connection)
+            await connection.execute(f"PRAGMA user_version = {migration.version}")
+            await connection.commit()
+
         logger.info("Database initialized successfully")
 
     async def close(self) -> None:

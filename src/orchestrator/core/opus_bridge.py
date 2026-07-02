@@ -1,4 +1,12 @@
-"""Claude Opus CLI bridge and rate-limit state management."""
+"""Brain-call bridge (historically Opus-only, now provider-agnostic).
+
+The name is legacy: since the Spec-3 LLM router, this module routes
+plan/review/improve calls to whichever provider the call-site resolves to
+(claude / codex / local). It is kept as ``opus_bridge`` to avoid churning
+tests, docs, and operator muscle memory; treat "opus" here as "the brain".
+
+Also handles Claude CLI rate-limit state management.
+"""
 
 from __future__ import annotations
 
