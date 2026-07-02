@@ -11,6 +11,7 @@ import logging
 import re
 import time
 from collections.abc import Callable
+from pathlib import Path
 from typing import Protocol
 
 import httpx
@@ -179,3 +180,53 @@ class GitHubAppCredentialProvider:
             "Minted installation token for %s (expires %s)", slug, data["expires_at"]
         )
         return token
+
+
+def _load_private_key(value: str) -> str:
+    """Return PEM contents, reading from a file path when ``value`` is one.
+
+    A value containing a PEM header is used verbatim; otherwise, if it points at
+    an existing file, that file is read.
+    """
+    if "BEGIN" in value:
+        return value
+    path = Path(value)
+    if path.is_file():
+        return path.read_text(encoding="utf-8")
+    return value
+
+
+def build_credential_provider(settings: object) -> GitHubCredentialProvider:
+    """Choose a credential backend from settings.
+
+    Precedence: GitHub App (when ``github_app_id`` and ``github_app_private_key``
+    are both set) beats the legacy PAT. Raises when neither is configured.
+
+    Args:
+        settings: Any object exposing ``github_token``, ``github_app_id``,
+            ``github_app_private_key``, and ``github_app_installation_id``
+            attributes (missing attributes are treated as ``None``).
+
+    Returns:
+        A configured :class:`GitHubCredentialProvider`.
+
+    Raises:
+        CredentialError: If neither App nor PAT credentials are present.
+    """
+    app_id = getattr(settings, "github_app_id", None)
+    private_key = getattr(settings, "github_app_private_key", None)
+    if app_id and private_key:
+        install_id = getattr(settings, "github_app_installation_id", None)
+        return GitHubAppCredentialProvider(
+            app_id=str(app_id),
+            private_key_pem=_load_private_key(str(private_key)),
+            installation_id=install_id,
+        )
+    token = getattr(settings, "github_token", None)
+    if token:
+        return PatCredentialProvider(str(token))
+    msg = (
+        "no GitHub credentials configured: set GITHUB_TOKEN, or "
+        "GITHUB_APP_ID + GITHUB_APP_PRIVATE_KEY"
+    )
+    raise CredentialError(msg)

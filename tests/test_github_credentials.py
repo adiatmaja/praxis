@@ -132,3 +132,44 @@ async def test_app_provider_raises_on_missing_installation(monkeypatch):
 
     with pytest.raises(CredentialError):
         await provider.token_for_repo("owner/repo")
+
+
+from orchestrator.core.github_credentials import build_credential_provider  # noqa: E402
+
+
+class _Cfg:
+    def __init__(self, **kw):
+        self.github_token = kw.get("github_token")
+        self.github_app_id = kw.get("github_app_id")
+        self.github_app_private_key = kw.get("github_app_private_key")
+        self.github_app_installation_id = kw.get("github_app_installation_id")
+
+
+def test_factory_prefers_app_when_configured():
+    cfg = _Cfg(
+        github_token="ghp_x",
+        github_app_id="123",
+        github_app_private_key="-----BEGIN KEY-----\nx\n-----END KEY-----",
+    )
+    provider = build_credential_provider(cfg)
+    assert isinstance(provider, GitHubAppCredentialProvider)
+
+
+def test_factory_falls_back_to_pat():
+    cfg = _Cfg(github_token="ghp_x")
+    provider = build_credential_provider(cfg)
+    assert isinstance(provider, PatCredentialProvider)
+
+
+def test_factory_raises_when_nothing_configured():
+    with pytest.raises(CredentialError):
+        build_credential_provider(_Cfg())
+
+
+def test_factory_reads_private_key_from_file(tmp_path):
+    pem = tmp_path / "app.pem"
+    pem.write_text("-----BEGIN PRIVATE KEY-----\nfromfile\n-----END PRIVATE KEY-----")
+    cfg = _Cfg(github_app_id="123", github_app_private_key=str(pem))
+    provider = build_credential_provider(cfg)
+    assert isinstance(provider, GitHubAppCredentialProvider)
+    assert "fromfile" in provider._private_key_pem
