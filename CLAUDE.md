@@ -91,7 +91,7 @@ praxis/
 │   └── caddy/Caddyfile
 ├── config/
 │   └── praxis.yaml                  # Global orchestrator settings (env-overridable)
-├── tests/                           # 546 tests, 89% coverage
+├── tests/                           # 568 tests, 89% coverage
 ├── docker-compose.yml               # Production compose
 ├── docker-compose.local.yml         # Dev overrides (hot reload, mounted source)
 ├── pyproject.toml
