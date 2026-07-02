@@ -58,7 +58,11 @@ def _verify_callback_token(request: Request) -> None:
 
 @router.post("/agent-done")
 async def agent_done(request: Request, body: AgentDonePayload) -> dict[str, str]:
-    """Handle completion callback from an Aider agent container."""
+    """Handle completion callback from a harness agent container.
+
+    Sent by whichever harness ran the task (OpenCode by default; also Aider or
+    OpenHands).
+    """
     _verify_callback_token(request)
 
     queue = request.app.state.task_queue

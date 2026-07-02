@@ -46,7 +46,7 @@ class OpusStatus(StrEnum):
 
 
 class AgentRunStatus(StrEnum):
-    """Aider agent run status."""
+    """Harness agent run status (any harness: OpenCode/Aider/OpenHands)."""
 
     RUNNING = "running"
     COMPLETED = "completed"

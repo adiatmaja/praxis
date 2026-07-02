@@ -1,4 +1,8 @@
-"""Docker container lifecycle management for Aider agents."""
+"""Docker container lifecycle management for harness agent containers.
+
+Harness-agnostic: spawns whichever harness a project selects (OpenCode is the
+default; Aider and OpenHands are also supported).
+"""
 
 from __future__ import annotations
 
@@ -74,7 +78,7 @@ def _container_host_url(url: str) -> str:
 
 
 class AgentManager:
-    """Manage Aider agent Docker containers."""
+    """Manage harness agent Docker containers (OpenCode/Aider/OpenHands)."""
 
     def __init__(
         self,
