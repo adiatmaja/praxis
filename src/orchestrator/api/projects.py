@@ -35,9 +35,9 @@ async def create_project(request: Request, body: ProjectCreate) -> dict[str, Any
     await db.execute(
         """INSERT INTO projects
            (id, user_id, name, repo_url, default_branch, approval_gate, auto_merge,
-            confidence_threshold, max_retries, max_improvement_cycles,
+            verify_cmd, confidence_threshold, max_retries, max_improvement_cycles,
             lm_studio_url, model_name, harness, agent_model, agent_model_effort)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             project_id,
             user["id"],
@@ -46,6 +46,7 @@ async def create_project(request: Request, body: ProjectCreate) -> dict[str, Any
             body.default_branch,
             body.approval_gate,
             body.auto_merge,
+            body.verify_cmd,
             body.confidence_threshold,
             body.max_retries,
             body.max_improvement_cycles,

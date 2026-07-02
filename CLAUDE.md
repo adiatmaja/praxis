@@ -381,6 +381,19 @@ Tables: `users`, `projects`, `plans`, `tasks`, `agent_runs`, `opus_state`,
   poll and stays flagged until the user dismisses it (the poll must NOT clear a runtime
   failure, or the banner flickers). Net: the codex banner only appears once a real
   codex-routed brain call hits the 401 — not on page load.
+- **Mechanical verify gate runs before the brain**: if a project sets
+  `verify_cmd`, `review_task` runs it against the cloned PR head first
+  (`core/verify_gate.py`); a non-zero exit fails the task with the command
+  output as feedback and never spends brain tokens. Trusted operator config,
+  not taken from the PR. Harness-agnostic (runs orchestrator-side, not in the
+  agent container).
+- **Build stamp on /health + /api/status**: `core/build_info.py` exposes the
+  running commit + start time so a stale server (started before a feature merged)
+  is visible. Restart after deploy; `PRAXIS_BUILD_SHA` overrides the git-derived sha.
+- **Decomposition emits per-leaf `plan_text`**: the capability-review brain now
+  copies the verbatim contract (signatures/API) into each leaf's `plan_text`, which
+  `review_task` feeds to `review_diff`; without it the reviewer checked diffs against
+  the task blurb and missed spec drift (e.g. a dropped `AbortSignal` param).
 
 ## Documentation
 

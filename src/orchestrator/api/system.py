@@ -13,6 +13,7 @@ import httpx
 from fastapi import APIRouter, Depends, Request
 
 from orchestrator.api.auth import verify_token
+from orchestrator.core.build_info import build_stamp
 from orchestrator.core.llm_router import LOGIN_HINTS
 from orchestrator.models.schemas import OpusStateResponse
 
@@ -205,6 +206,7 @@ async def system_status(request: Request) -> dict[str, Any]:
         "subagent_model": subagent_info,
         "lm_studio_url": effective_lm_studio_url,
         "providers": providers,
+        "build": build_stamp(),
     }
 
 

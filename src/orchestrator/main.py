@@ -13,6 +13,7 @@ from fastapi.staticfiles import StaticFiles
 
 from orchestrator.config import Settings
 from orchestrator.core.agent_manager import AgentManager
+from orchestrator.core.build_info import build_stamp
 from orchestrator.core.effective_settings import EffectiveSettings
 from orchestrator.core.event_bus import EventBus
 from orchestrator.core.git_ops import GitOps
@@ -194,10 +195,10 @@ app.include_router(execute_plan_router, prefix="/api")
 
 
 @app.get("/health")
-async def health() -> dict[str, str]:
-    """Healthcheck endpoint."""
+async def health() -> dict[str, object]:
+    """Healthcheck endpoint (includes the running build stamp)."""
 
-    return {"status": "ok"}
+    return {"status": "ok", "build": build_stamp()}
 
 
 web_dir = Path(__file__).resolve().parents[2] / "web"

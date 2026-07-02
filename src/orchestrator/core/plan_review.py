@@ -37,15 +37,26 @@ Plan to decompose:
 {plan_text}
 
 Split the plan into the SMALLEST leaf tasks this local model can each complete
-on its own. For every leaf provide an ordered checklist of concrete steps. If a
-leaf cannot be split small enough for this model (too complex for its parameter
-count, or irreducibly large), set "needs_stronger_model": true for that leaf.
+on its own. For every leaf provide an ordered checklist of concrete steps.
+
+For every leaf you MUST also include "plan_text": the VERBATIM excerpt of the
+plan that defines this leaf's contract -- exact function/type signatures, API
+shapes, and named requirements. Do not paraphrase; copy the relevant lines so a
+reviewer can check the implementation against the original contract, not a summary.
+
+Set "depends_on" to the ids of any leaves whose output this leaf builds on (e.g.
+a leaf that edits a file another leaf creates, or tests that need an
+implementation). Only truly independent leaves get an empty list.
+
+If a leaf cannot be split small enough for this model (too complex for its
+parameter count, or irreducibly large), set "needs_stronger_model": true.
 
 Respond with ONLY valid JSON:
 {{
   "tasks": [
-    {{"id": "t1", "title": "...", "description": "...", "depends_on": [],
-      "checklist": [{{"text": "..."}}], "needs_stronger_model": false}}
+    {{"id": "t1", "title": "...", "description": "...", "plan_text": "...",
+      "depends_on": [], "checklist": [{{"text": "..."}}],
+      "needs_stronger_model": false}}
   ]
 }}
 """
@@ -110,6 +121,7 @@ def parse_review_response(raw: str) -> dict:
         if "id" not in t or "title" not in t:
             raise PlanReviewError(f"task missing id/title: {t}")  # noqa: EM102
         t.setdefault("description", t["title"])
+        t.setdefault("plan_text", t["description"])
         t.setdefault("depends_on", [])
         t.setdefault("checklist", [{"text": t["title"]}])
         t.setdefault("needs_stronger_model", False)

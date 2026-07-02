@@ -445,6 +445,7 @@ class TestOrchestrationReview:
                 self.task_id = task_id
                 self.project = dict(project)
                 self.git = mock_git
+                self.opus = mock_opus
                 self.published = published
 
         return orch, _Mocks()
@@ -481,6 +482,54 @@ class TestOrchestrationReview:
         task = await orch._tq.get_task(mocks.task_id)
         assert task is not None
         assert task["status"] == TaskStatus.PASSED
+
+    # ------------------------------------------------------------------
+    # Verify-gate tests (Task 6)
+    # ------------------------------------------------------------------
+
+    async def test_verify_gate_failure_fails_without_brain(
+        self, db: Database, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        orch, mocks = await self._make_review_pass_orch(
+            db, auto_merge=0, base_branch="plan/x"
+        )
+        mocks.project["verify_cmd"] = "tsc --noEmit"
+
+        async def fake_run_verify(
+            checkout_dir: str, verify_cmd: str, timeout: float = 600.0
+        ) -> tuple[bool, str]:
+            return False, "tsc: error TS2554: Expected 1 arguments, but got 0."
+
+        monkeypatch.setattr(
+            "orchestrator.core.orchestrator.run_verify", fake_run_verify
+        )
+        await orch.review_task(mocks.task_id, mocks.project)
+
+        mocks.opus.review_diff.assert_not_called()
+        mocks.git.merge_pr.assert_not_called()
+        task = await orch._tq.get_task(mocks.task_id)
+        assert task is not None
+        assert task["status"] in (TaskStatus.FAILED, TaskStatus.PENDING)
+        assert "TS2554" in (task["review_feedback"] or "")
+
+    async def test_verify_gate_pass_proceeds_to_brain(
+        self, db: Database, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        orch, mocks = await self._make_review_pass_orch(
+            db, auto_merge=0, base_branch="plan/x"
+        )
+        mocks.project["verify_cmd"] = "tsc --noEmit"
+
+        async def fake_run_verify(
+            checkout_dir: str, verify_cmd: str, timeout: float = 600.0
+        ) -> tuple[bool, str]:
+            return True, "all good"
+
+        monkeypatch.setattr(
+            "orchestrator.core.orchestrator.run_verify", fake_run_verify
+        )
+        await orch.review_task(mocks.task_id, mocks.project)
+        mocks.opus.review_diff.assert_called_once()
 
 
 @pytest.mark.integration
@@ -1282,3 +1331,206 @@ class TestApprovRejectMerge:
         task = await orch._tq.get_task(mocks.task_id)
         assert task is not None
         assert task["status"] in (TaskStatus.FAILED, TaskStatus.PENDING)
+
+
+@pytest.mark.integration
+class TestProcessPlanOnceEvents:
+    async def _setup_stalled_plan(
+        self, db: Database
+    ) -> tuple[TaskQueue, str, str, str]:
+        """One FAILED task + one PENDING task that depends on it (wedged)."""
+        await db.execute(
+            "INSERT INTO users (id, name, token_hash) VALUES (?, ?, ?)",
+            ("u2", "User2", "hash2"),
+        )
+        await db.execute(
+            """INSERT INTO projects (id, user_id, name, repo_url, model_name, max_retries)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            ("p2", "u2", "App2", "https://github.com/u/b", "deepseek", 3),
+        )
+        task_queue = TaskQueue(db)
+        plan_id = await task_queue.create_plan("p2", "Stalled plan")
+        await task_queue.activate_plan(
+            plan_id,
+            {
+                "plan_summary": "Stalled",
+                "plan_slug": "stalled",
+                "tasks": [
+                    {
+                        "title": "Task A",
+                        "slug": "task-a",
+                        "description": "First task",
+                        "depends_on": [],
+                    },
+                    {
+                        "title": "Task B",
+                        "slug": "task-b",
+                        "description": "Second task",
+                        "depends_on": ["task-a"],
+                    },
+                ],
+            },
+            "plan/2026-07-02-stalled",
+        )
+        tasks = await task_queue.get_tasks_for_plan(plan_id)
+        task_a_id = str(tasks[0]["id"])
+        task_b_id = str(tasks[1]["id"])
+        await task_queue.update_task_status(task_a_id, TaskStatus.FAILED)
+        return task_queue, plan_id, task_a_id, task_b_id
+
+    async def test_stalled_plan_emits_event(self, db: Database) -> None:
+        task_queue, plan_id, task_a_id, _task_b_id = await self._setup_stalled_plan(db)
+
+        bus = EventBus()
+        published: list[dict] = []
+        _orig_publish = bus.publish
+        bus.publish = lambda e: (published.append(e), _orig_publish(e))  # type: ignore[method-assign]
+
+        orch = Orchestrator(
+            task_queue=task_queue,
+            agent_manager=MagicMock(),
+            opus_bridge=AsyncMock(),
+            git_ops=AsyncMock(),
+            event_bus=bus,
+        )
+        # Stub dispatch so it does nothing (no docker/opus needed)
+        orch.dispatch_pending_tasks = AsyncMock()
+
+        project = await db.fetch_one("SELECT * FROM projects WHERE id = 'p2'")
+        assert project is not None
+        await orch.process_plan_once(plan_id, dict(project))
+
+        assert any(e["type"] == "plan_stalled" for e in published), published
+        stall_event = next(e for e in published if e["type"] == "plan_stalled")
+        assert stall_event["plan_id"] == plan_id
+        assert task_a_id in stall_event["failed_task_ids"]
+
+    async def test_completed_with_failures_emits_event(self, db: Database) -> None:
+        await db.execute(
+            "INSERT INTO users (id, name, token_hash) VALUES (?, ?, ?)",
+            ("u3", "User3", "hash3"),
+        )
+        await db.execute(
+            """INSERT INTO projects (id, user_id, name, repo_url, model_name, max_retries)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            ("p3", "u3", "App3", "https://github.com/u/c", "deepseek", 3),
+        )
+        task_queue = TaskQueue(db)
+        plan_id = await task_queue.create_plan("p3", "Partial plan")
+        await task_queue.activate_plan(
+            plan_id,
+            {
+                "plan_summary": "Partial",
+                "plan_slug": "partial",
+                "tasks": [
+                    {
+                        "title": "Task X",
+                        "slug": "task-x",
+                        "description": "Only task",
+                        "depends_on": [],
+                    },
+                ],
+            },
+            "plan/2026-07-02-partial",
+        )
+        tasks = await task_queue.get_tasks_for_plan(plan_id)
+        task_x_id = str(tasks[0]["id"])
+        await task_queue.update_task_status(task_x_id, TaskStatus.FAILED)
+
+        bus = EventBus()
+        published: list[dict] = []
+        _orig_publish2 = bus.publish
+        bus.publish = lambda e: (published.append(e), _orig_publish2(e))  # type: ignore[method-assign]
+
+        orch = Orchestrator(
+            task_queue=task_queue,
+            agent_manager=MagicMock(),
+            opus_bridge=AsyncMock(),
+            git_ops=AsyncMock(),
+            event_bus=bus,
+        )
+        orch.dispatch_pending_tasks = AsyncMock()
+
+        project = await db.fetch_one("SELECT * FROM projects WHERE id = 'p3'")
+        assert project is not None
+        await orch.process_plan_once(plan_id, dict(project))
+
+        assert any(e["type"] == "plan_completed_with_failures" for e in published), (
+            published
+        )
+        evt = next(e for e in published if e["type"] == "plan_completed_with_failures")
+        assert evt["plan_id"] == plan_id
+        assert task_x_id in evt["failed_task_ids"]
+
+    async def test_passed_awaiting_merge_blocks_completed_with_failures(
+        self, db: Database
+    ) -> None:
+        """A plan with one PASSED (awaiting-merge) task and one FAILED task must NOT
+        be marked COMPLETED and must NOT emit plan_completed_with_failures."""
+        await db.execute(
+            "INSERT INTO users (id, name, token_hash) VALUES (?, ?, ?)",
+            ("u4", "User4", "hash4"),
+        )
+        await db.execute(
+            """INSERT INTO projects (id, user_id, name, repo_url, model_name, max_retries)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            ("p4", "u4", "App4", "https://github.com/u/d", "deepseek", 3),
+        )
+        task_queue = TaskQueue(db)
+        plan_id = await task_queue.create_plan("p4", "Mixed plan")
+        await task_queue.activate_plan(
+            plan_id,
+            {
+                "plan_summary": "Mixed",
+                "plan_slug": "mixed",
+                "tasks": [
+                    {
+                        "title": "Task Good",
+                        "slug": "task-good",
+                        "description": "Passed task",
+                        "depends_on": [],
+                    },
+                    {
+                        "title": "Task Bad",
+                        "slug": "task-bad",
+                        "description": "Failed task",
+                        "depends_on": [],
+                    },
+                ],
+            },
+            "plan/2026-07-02-mixed",
+        )
+        tasks = await task_queue.get_tasks_for_plan(plan_id)
+        task_good_id = str(tasks[0]["id"])
+        task_bad_id = str(tasks[1]["id"])
+        # Mark task-good as PASSED (awaiting human merge approval)
+        await task_queue.mark_passed(task_good_id, "lgtm")
+        # Mark task-bad as FAILED
+        await task_queue.update_task_status(task_bad_id, TaskStatus.FAILED)
+
+        bus = EventBus()
+        published: list[dict] = []
+        _orig_publish4 = bus.publish
+        bus.publish = lambda e: (published.append(e), _orig_publish4(e))  # type: ignore[method-assign]
+
+        orch = Orchestrator(
+            task_queue=task_queue,
+            agent_manager=MagicMock(),
+            opus_bridge=AsyncMock(),
+            git_ops=AsyncMock(),
+            event_bus=bus,
+        )
+        orch.dispatch_pending_tasks = AsyncMock()
+
+        project = await db.fetch_one("SELECT * FROM projects WHERE id = 'p4'")
+        assert project is not None
+        await orch.process_plan_once(plan_id, dict(project))
+
+        # Must NOT emit plan_completed_with_failures while PASSED task awaits merge
+        assert not any(
+            e["type"] == "plan_completed_with_failures" for e in published
+        ), published
+        # Plan status must NOT have been set to COMPLETED
+        row = await db.fetch_one("SELECT status FROM plans WHERE id = ?", (plan_id,))
+        assert row is not None
+        assert row["status"] != PlanStatus.COMPLETED

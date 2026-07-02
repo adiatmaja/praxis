@@ -260,6 +260,51 @@ touches your code. The dashboard also shows live logs and lets you step in to un
 gets wedged. Leave the gate off for a fully autonomous loop, turn it on while you're learning to
 trust it.
 
+### Where agents run (and why your local files are safe)
+
+A common worry with parallel work: "if an agent edits my repo while I'm mid-change, does it clobber
+my uncommitted work?" It can't. Each coding agent runs in its **own throwaway Docker container** and
+does a fresh `git clone` **from the GitHub remote** — it never mounts, opens, or writes your local
+checkout. There is no bind mount back to your disk. The only durable output is a pushed
+`agent/{task-slug}` branch and its PR; when the container exits, its filesystem is gone.
+
+```
+  YOUR MACHINE                                    GITHUB REMOTE
+  ┌────────────────────────────┐                 ┌───────────────────────────┐
+  │  your local checkout       │                 │  origin/main               │
+  │  (edits, uncommitted work) │                 │                            │
+  │        UNTOUCHED           │                 │  agent/task-a  ──▶ PR #1    │
+  └────────────────────────────┘                 │  agent/task-b  ──▶ PR #2    │
+              ▲                                   └───────────┬───────────────┘
+              │ you pull only when                    ▲       │ clone (read)
+              │ you merge a PR                        │       │ push branch (write)
+              │                              push ────┘       ▼
+  ┌───────────┼───────────────────────────────────────────────────────────────┐
+  │  DOCKER (one container per task · no volume mount to your disk)            │
+  │                                                                            │
+  │   ┌──────────────────────────┐        ┌──────────────────────────┐        │
+  │   │ container: task-a         │        │ container: task-b         │       │
+  │   │  git clone ──▶ /home/     │        │  git clone ──▶ /home/     │       │
+  │   │     agent/workspace       │        │     agent/workspace       │       │
+  │   │  checkout -b agent/task-a │        │  checkout -b agent/task-b │       │
+  │   │  local model edits + commit        │  local model edits + commit       │
+  │   │  push branch ──▶ open PR  │        │  push branch ──▶ open PR  │       │
+  │   └──────────────────────────┘        └──────────────────────────┘        │
+  │        (filesystem discarded on exit)                                      │
+  └────────────────────────────────────────────────────────────────────────────┘
+
+  Writes land in TWO places, neither is your working tree:
+    1. the container's own filesystem  (/home/agent/workspace — ephemeral)
+    2. the GitHub remote               (new agent/<slug> branch + PR — durable)
+```
+
+This is stronger isolation than a git worktree would give: a worktree shares one `.git` object store
+on your machine, so concurrent agents (and you) contend on the same repo. A per-container clone gives
+each agent a physically separate `.git` and filesystem, and keeps the **remote** as the only shared
+surface. The one deliberate trade-off: because the agent clones from the remote, it sees only
+committed-and-pushed code, not your local uncommitted changes — pass reference context explicitly via
+`dispatch_task`'s `context` field instead.
+
 See [docs/architecture.md](docs/architecture.md), [docs/workflow.md](docs/workflow.md), and
 [docs/deployment.md](docs/deployment.md) for full documentation.
 

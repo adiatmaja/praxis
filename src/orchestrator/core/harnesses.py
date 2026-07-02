@@ -37,7 +37,7 @@ REGISTRY: dict[str, HarnessSpec] = {
         description=(
             "A lean, terminal-first pair-programming agent. Edits multiple "
             "files via diffs and commits to git automatically. Praxis's "
-            "original and default harness."
+            "original harness (OpenCode is now the default)."
         ),
         uniqueness=(
             "Native, first-class git integration: every change is an "
