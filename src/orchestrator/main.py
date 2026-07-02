@@ -104,7 +104,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     try:
         app.state.agent_manager = AgentManager(
             lm_studio_url=settings.lm_studio_url,
-            github_token=github_token,
+            credentials=github_token,
             effective_settings=effective_settings,
         )
     except Exception as exc:

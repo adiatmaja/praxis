@@ -8,6 +8,10 @@ from typing import TYPE_CHECKING, Any
 import docker.errors
 import httpx
 
+from orchestrator.core.github_credentials import (
+    GitHubCredentialProvider,
+    PatCredentialProvider,
+)
 from orchestrator.core.harnesses import REGISTRY, default_harness_id
 
 
@@ -75,12 +79,23 @@ class AgentManager:
     def __init__(
         self,
         lm_studio_url: str,
-        github_token: str,
+        github_token: str | None = None,
         effective_settings: EffectiveSettings | None = None,
+        credentials: GitHubCredentialProvider | str | None = None,
     ) -> None:
         self._lm_studio_url = lm_studio_url
-        self._github_token = github_token
         self._effective_settings = effective_settings
+        if credentials is not None:
+            if isinstance(credentials, str):
+                self._provider: GitHubCredentialProvider = PatCredentialProvider(
+                    credentials
+                )
+            else:
+                self._provider = credentials
+        elif github_token is not None:
+            self._provider = PatCredentialProvider(github_token)
+        else:
+            self._provider = PatCredentialProvider("")
         self._client = docker.from_env()  # type: ignore[attr-defined]
 
     async def spawn_agent(
@@ -107,6 +122,7 @@ class AgentManager:
         else:
             lm_studio_url = self._lm_studio_url
         container_lm_url = _container_host_url(lm_studio_url)
+        gh_token = await self._provider.token_for_repo(repo_url)
         environment = {
             "REPO_URL": repo_url,
             "BRANCH": branch,
@@ -115,7 +131,7 @@ class AgentManager:
             "OPENAI_API_BASE": f"{container_lm_url}/v1",
             "MODEL": model_name,
             "HARNESS": harness_id,
-            "GH_TOKEN": self._github_token,
+            "GH_TOKEN": gh_token,
             "CALLBACK_URL": callback_url,
             "TASK_ID": task_id,
         }
