@@ -45,7 +45,11 @@ praxis/
 │   │   │   ├── internal.py          # /api/internal/agent-done callback
 │   │   │   └── auth.py              # Bearer token validation
 │   │   ├── core/
-│   │   │   ├── orchestrator.py      # Main loop: plan -> dispatch -> review -> improve
+│   │   │   ├── orchestrator.py          # Loop core: __init__, plan_and_activate, run_once, run_loop, shutdown
+│   │   │   ├── orchestrator_dispatch.py # DispatchMixin: dispatch_pending_tasks, _build_worker_bible
+│   │   │   ├── orchestrator_review.py   # ReviewMixin: review_task, approve/reject merge, on_plan_completed
+│   │   │   ├── orchestrator_reconcile.py# ReconcileMixin: reconcile_runs, monitor_run, _classify_pr_failure
+│   │   │   ├── orchestrator_improve.py  # ImprovementMixin: check_improvements, create_improvement_plan
 │   │   │   ├── task_queue.py        # Task state machine + scheduling
 │   │   │   ├── opus_bridge.py       # claude -p invocation + rate limit handling
 │   │   │   ├── llm_router.py        # Per-call-site {provider,model,effort} routing (Spec 3)
@@ -218,9 +222,13 @@ Tables: `users`, `projects`, `plans`, `tasks`, `agent_runs`, `opus_state`,
   startup. Without it, project creation returns 500 ("No user found")
 - **Windows port cleanup** — `kill -9` from bash doesn't work for Windows processes.
   Use `taskkill //PID <pid> //F` to release ports
-- **orchestrator.py contains the improvement loop** — there is no separate
-  `core/improvement.py` file. All orchestration logic (planning, dispatch, review,
-  autonomous improvement) lives in `core/orchestrator.py`
+- **Orchestrator is split across mixins** — `core/orchestrator.py` holds only the
+  loop core (`__init__`, `plan_and_activate`, `process_plan_once`, `run_once`,
+  `run_loop`, `shutdown`). Dispatch, review/merge, reconcile, and improvement live
+  in `core/orchestrator_{dispatch,review,reconcile,improve}.py` as mixins on the
+  single `Orchestrator` class. Tests patch module-level helpers (e.g. `run_verify`,
+  `clone_with_token`) on the MIXIN module that calls them, not on
+  `core.orchestrator`.
 - **SSE endpoint** at `/api/events` stays open indefinitely (long-lived connection).
   The EventBus is in-memory only — events are lost if no subscribers are connected
 - **SQLite DB file** is created at `data/orchestrator.db` relative to CWD. The `data/`
