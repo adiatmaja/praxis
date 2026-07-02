@@ -262,10 +262,12 @@ Tables: `users`, `projects`, `plans`, `tasks`, `agent_runs`, `opus_state`,
   finished within one loop interval streamed zero `agent_log` events and the dashboard
   Live Log stayed empty.
 - **Agent container names are reused, so spawn force-removes stale ones** —
-  `spawn_agent` names containers `aider-agent-{task_id[:8]}` with `auto_remove=False`.
-  Retrying/re-dispatching a task collides with the exited container from its prior run
-  (Docker 409 Conflict → agent never starts → empty Live Log). `_remove_existing_container`
-  deletes any same-named container first.
+  `spawn_agent` names containers `praxis-agent-{task_id[:8]}` (harness-neutral prefix)
+  with `auto_remove=False`. Retrying/re-dispatching a task collides with the exited
+  container from its prior run (Docker 409 Conflict → agent never starts → empty Live
+  Log). `_remove_existing_container` deletes any same-named container first.
+  `list_agent_containers` queries both `praxis-agent-` and the legacy `aider-agent-`
+  prefix so reconcile can still clean up containers spawned before the 2026-07 rename.
 - **Agent callback URL is port-derived, not hardcoded** — `Settings.callback_url()`
   builds `http://host.docker.internal:{PORT}/api/internal/agent-done` (override with
   `AGENT_CALLBACK_URL`) and is passed to `Orchestrator(callback_url=...)`. Running the

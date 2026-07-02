@@ -125,7 +125,7 @@ class AgentManager:
         context_limit = await detect_context_limit(lm_studio_url, model_name)
         if context_limit is not None:
             environment["MODEL_CONTEXT_LIMIT"] = str(context_limit)
-        container_name = f"aider-agent-{task_id[:8]}"
+        container_name = f"praxis-agent-{task_id[:8]}"
         self._remove_existing_container(container_name)
         container = self._client.containers.run(
             image=spec.image,
@@ -198,6 +198,11 @@ class AgentManager:
 
     def list_agent_containers(self) -> list[dict[str, Any]]:
         containers = self._client.containers.list(
+            all=True,
+            filters={"name": "praxis-agent-"},
+        )
+        # Back-compat: containers spawned before the 2026-07 rename.
+        containers += self._client.containers.list(
             all=True,
             filters={"name": "aider-agent-"},
         )
