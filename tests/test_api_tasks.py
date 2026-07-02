@@ -371,3 +371,55 @@ async def test_task_response_includes_clarification_fields(
     assert "clarification_state" in task
     assert task["clarification_question"] == "Which auth helper?"
     assert task["clarification_state"] == "awaiting_human"
+
+
+@pytest.mark.integration
+async def test_clarify_endpoint_requeues_task(
+    client: AsyncClient,
+    db: Database,
+    auth_headers: dict[str, str],
+) -> None:
+    seed = await _seed_clarifying_task(client, db, auth_headers)
+    task_id = seed["id"]
+    resp = await client.post(
+        f"/api/tasks/{task_id}/clarify",
+        headers=auth_headers,
+        json={"answer": "Use the yaml loader in settings_file.py"},
+    )
+    assert resp.status_code == 200
+    task = (await client.get(f"/api/tasks/{task_id}", headers=auth_headers)).json()["task"]
+    assert task["status"] == "pending"
+    assert task["clarification_state"] == "resolved"
+
+
+@pytest.mark.integration
+async def test_clarify_rejects_non_clarifying_task(
+    client: AsyncClient,
+    db: Database,
+    auth_headers: dict[str, str],
+) -> None:
+    """A task not in NEEDS_CLARIFICATION status should return 409."""
+    await seed_user(db)
+    project = await client.post(
+        "/api/projects",
+        json={"name": "App2", "repo_url": "https://github.com/u/b", "model_name": "m"},
+        headers=auth_headers,
+    )
+    queue = client.app.state.task_queue  # type: ignore[attr-defined]
+    plan_id = await queue.create_plan(project.json()["id"], "Some plan")
+    await queue.activate_plan(
+        plan_id,
+        {
+            "plan_summary": "S",
+            "plan_slug": "s",
+            "tasks": [{"title": "T", "slug": "t", "description": "d", "depends_on": []}],
+        },
+        "plan/2026-06-01-s",
+    )
+    task_id = (await queue.get_tasks_for_plan(plan_id))[0]["id"]
+    resp = await client.post(
+        f"/api/tasks/{task_id}/clarify",
+        headers=auth_headers,
+        json={"answer": "x"},
+    )
+    assert resp.status_code == 409

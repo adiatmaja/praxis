@@ -17,6 +17,12 @@ class RejectMergeRequest(BaseModel):
     feedback: str | None = None
 
 
+class ClarifyRequest(BaseModel):
+    """Human answer to resolve a clarification request."""
+
+    answer: str
+
+
 router = APIRouter(tags=["tasks"], dependencies=[Depends(verify_token)])
 
 
@@ -165,3 +171,29 @@ async def reject_merge(
             status_code=status.HTTP_409_CONFLICT, detail=str(exc)
         ) from exc
     return {"task_id": task_id, "status": "rejected"}
+
+
+@router.post("/tasks/{task_id}/clarify")
+async def clarify_task(
+    request: Request,
+    task_id: str,
+    body: ClarifyRequest,
+) -> dict[str, str]:
+    """Accept a human answer for a NEEDS_CLARIFICATION task and re-queue it."""
+    queue = request.app.state.task_queue
+    task = await queue.get_task(task_id)
+    if task is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Task not found")
+    if task["status"] != TaskStatus.NEEDS_CLARIFICATION:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Task is not awaiting clarification",
+        )
+    answer = body.answer.strip()
+    if not answer:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="answer must not be empty",
+        )
+    await queue.record_clarification_answer(task_id, answer, state="resolved")
+    return {"status": "requeued"}
