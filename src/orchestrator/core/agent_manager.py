@@ -54,6 +54,21 @@ async def detect_context_limit(lm_studio_url: str, model_name: str) -> int | Non
     return None
 
 
+def _container_host_url(url: str) -> str:
+    """Rewrite a host-loopback URL so it is reachable from inside a bridge container.
+
+    Under host networking a container could reach the orchestrator's LM Studio on
+    ``localhost``; under bridge networking ``localhost`` is the container itself, so
+    loopback hosts must be swapped for ``host.docker.internal`` (mapped to the host
+    gateway via ``extra_hosts``). Non-loopback hosts are returned unchanged.
+    """
+    for loopback in ("localhost", "127.0.0.1"):
+        url = url.replace(f"//{loopback}:", "//host.docker.internal:").replace(
+            f"//{loopback}/", "//host.docker.internal/"
+        )
+    return url
+
+
 class AgentManager:
     """Manage Aider agent Docker containers."""
 

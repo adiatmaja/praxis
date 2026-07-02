@@ -514,3 +514,34 @@ async def test_spawn_agent_rewrites_localhost_lm_studio_url(
 
     env = mock_client.containers.run.call_args.kwargs["environment"]
     assert env["OPENAI_API_BASE"] == "http://host.docker.internal:1234/v1"
+
+
+@pytest.mark.unit
+def test_container_host_url_rewrites_localhost() -> None:
+    from orchestrator.core.agent_manager import _container_host_url
+
+    assert (
+        _container_host_url("http://localhost:1234")
+        == "http://host.docker.internal:1234"
+    )
+
+
+@pytest.mark.unit
+def test_container_host_url_rewrites_127_0_0_1() -> None:
+    from orchestrator.core.agent_manager import _container_host_url
+
+    assert (
+        _container_host_url("http://127.0.0.1:1234")
+        == "http://host.docker.internal:1234"
+    )
+
+
+@pytest.mark.unit
+def test_container_host_url_leaves_remote_untouched() -> None:
+    from orchestrator.core.agent_manager import _container_host_url
+
+    assert (
+        _container_host_url("http://host.docker.internal:1234")
+        == "http://host.docker.internal:1234"
+    )
+    assert _container_host_url("http://192.168.1.5:1234") == "http://192.168.1.5:1234"
