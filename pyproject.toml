@@ -81,3 +81,7 @@ markers = [
 # Hard per-test timeout (thread method works on Windows) so a hung test fails
 # loudly instead of wedging the whole run, as the SSE log-stream test once did.
 addopts = "-v --tb=short --timeout=120 --timeout-method=thread"
+
+[tool.bandit]
+exclude_dirs = ["tests"]
+skips = ["B404", "B603", "B607"]

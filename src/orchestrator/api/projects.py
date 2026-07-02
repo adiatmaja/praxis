@@ -109,7 +109,7 @@ async def update_project(
     if updates:
         set_clause = ", ".join(f"{key} = ?" for key in updates)
         await db.execute(
-            f"UPDATE projects SET {set_clause} WHERE id = ?",  # noqa: S608
+            f"UPDATE projects SET {set_clause} WHERE id = ?",  # noqa: S608  # nosec B608 — keys from Pydantic model, not user input
             (*updates.values(), project_id),
         )
 
