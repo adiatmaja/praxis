@@ -28,21 +28,25 @@ class AgentDonePayload(BaseModel):
 
 
 def _verify_callback_token(request: Request) -> None:
-    """Reject the request if the callback token header is missing or wrong.
+    """Reject the request unless it carries the correct callback token.
 
-    The expected secret is taken from ``app.state.internal_callback_secret``,
-    which is set during application startup (see ``main.py`` lifespan).
-    When the secret is ``None`` (not yet initialised), the check is skipped
-    with a warning so that in-process tests that bypass the full lifespan
-    still work.  In production the lifespan always sets the secret.
+    The expected secret is ``app.state.internal_callback_secret``, set during
+    application startup (see ``main.py`` lifespan) from
+    ``INTERNAL_CALLBACK_SECRET`` or the required ``AUTH_TOKEN``. If it is unset,
+    the server is misconfigured and we fail CLOSED (503) rather than accepting
+    unauthenticated callbacks. Tests that exercise the endpoint set the secret
+    on ``app.state`` via the client fixture.
     """
     expected: str | None = getattr(request.app.state, "internal_callback_secret", None)
     if expected is None:
-        logger.warning(
-            "internal_callback_secret not configured; skipping callback auth "
-            "(set INTERNAL_CALLBACK_SECRET or AUTH_TOKEN to enable)"
+        logger.error(
+            "internal_callback_secret not configured; rejecting callback "
+            "(set INTERNAL_CALLBACK_SECRET or AUTH_TOKEN)"
         )
-        return
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Callback authentication is not configured",
+        )
     provided = request.headers.get(_CALLBACK_TOKEN_HEADER, "")
     if not secrets.compare_digest(provided.encode(), expected.encode()):
         raise HTTPException(

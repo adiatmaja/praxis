@@ -92,15 +92,15 @@ async def test_callback_wrong_token_returns_401(
 
 
 @pytest.mark.integration
-async def test_callback_no_secret_configured_still_works(
+async def test_callback_no_secret_configured_fails_closed(
     client: AsyncClient,
     db: Database,
     auth_headers: dict[str, str],
 ) -> None:
-    """When internal_callback_secret is not set, the check is skipped (warn only)."""
+    """When internal_callback_secret is unset, the callback is rejected (503)."""
     from tests.test_api_tasks import _setup_plan_with_task
 
-    # Ensure the attribute is absent (mimics conftest state).
+    # Remove the secret the fixture set, to simulate a misconfigured deploy.
     if hasattr(client.app.state, "internal_callback_secret"):
         del client.app.state.internal_callback_secret  # type: ignore[attr-defined]
 
@@ -111,9 +111,11 @@ async def test_callback_no_secret_configured_still_works(
     response = await client.post(
         "/api/internal/agent-done",
         json={"task_id": task_id, "run_id": run_id, "status": "completed"},
-        # no token header — should be allowed when secret is not configured
+        headers={"X-Praxis-Callback-Token": "anything"},
     )
-    assert response.status_code == 200
+    assert response.status_code == 503
+    # The fixture sets the secret; restore it so later tests are unaffected.
+    client.app.state.internal_callback_secret = "test-auth"  # type: ignore[attr-defined]
 
 
 # ---------------------------------------------------------------------------
