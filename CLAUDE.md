@@ -13,7 +13,7 @@ implementation.
 | Backend | Python 3.11, FastAPI, Uvicorn |
 | Database | SQLite (aiosqlite, raw SQL, no ORM) |
 | CLI | Typer + rich |
-| Web UI | Single-file HTML/CSS/JS (`web/index.html`) |
+| Web UI | No-build HTML/CSS/JS (`web/index.html` + `styles.css` + `app.js`) |
 | Containers | Docker SDK for Python |
 | Agent | Aider (custom Docker image) |
 | LLM (plan/review) | Claude Opus via `claude -p` (subscription) |
@@ -74,7 +74,9 @@ praxis/
 │   └── cli/
 │       └── main.py                  # Typer CLI client (entrypoint: orchestrator-cli)
 ├── web/
-│   └── index.html                   # Single-file dashboard (dark/light theme)
+│   ├── index.html                   # Dashboard HTML (no-build, dark/light theme)
+│   ├── styles.css                   # Dashboard CSS (extracted from index.html)
+│   └── app.js                       # Dashboard JS (extracted from index.html, classic script)
 ├── docker/
 │   ├── orchestrator/Dockerfile
 │   ├── aider-agent/
