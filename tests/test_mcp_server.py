@@ -213,7 +213,8 @@ async def test_execute_plan_forwards_and_returns_summary() -> None:
 async def test_execute_plan_returns_error_on_client_failure() -> None:
     class FailingClient:
         async def post(self, path: str, json: Any = None) -> Any:
-            raise PraxisClientError("validation_error", "missing plan")
+            code = "validation_error"
+            raise PraxisClientError(code, "missing plan")
 
     result = await server.execute_plan_impl(
         FailingClient(),

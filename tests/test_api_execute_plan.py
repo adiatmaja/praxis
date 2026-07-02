@@ -106,6 +106,7 @@ def test_normalize_slugs_adds_slug_and_remaps_depends_on() -> None:
     }
     _normalize_slugs(opus_plan)
     t1, t2 = opus_plan["tasks"]
-    assert t1["slug"] and t2["slug"]
+    assert t1["slug"]
+    assert t2["slug"]
     assert t1["slug"] != t2["slug"]  # duplicate titles disambiguated
     assert t2["depends_on"] == [t1["slug"]]  # id remapped to slug

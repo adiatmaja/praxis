@@ -21,6 +21,7 @@ def test_summary_reports_pass_fail_counts_by_type():
         },
     ]
     out = summarize_outcomes(runs)
-    assert "test" in out and "refactor" in out
+    assert "test" in out
+    assert "refactor" in out
     assert "2 passed" in out or "pass: 2" in out.lower()
-    assert "refactor" in out and "fail" in out.lower()
+    assert "fail" in out.lower()
