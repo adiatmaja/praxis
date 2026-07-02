@@ -17,7 +17,7 @@ jobs:
   entrypoint-syntax:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Shell-check all entrypoints
         run: |
           for f in docker/*/entrypoint.sh; do
@@ -32,7 +32,7 @@ jobs:
       matrix:
         image: [aider-agent, opencode-agent, openhands-agent]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Build ${{ matrix.image }}
         run: |
           docker build -t praxis-ci/${{ matrix.image }} \
@@ -41,7 +41,7 @@ jobs:
   build-orchestrator:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Build orchestrator
         run: |
           docker build -t praxis-ci/orchestrator \
