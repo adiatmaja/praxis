@@ -384,11 +384,14 @@ this before exposing it beyond localhost:
 - **Treat `AUTH_TOKEN` as root on the host.** Anyone holding it can set a project's
   `verify_cmd`, which the orchestrator executes as a shell command. There is no
   privilege separation between API users in v1.
-- **Agent containers use host networking.** The coding agent runs LLM-written code in
-  a container that shares your host's network namespace: it can reach LM Studio, the
-  orchestrator, and any other localhost service. The container isolates the
-  filesystem, not the network. Don't run Praxis on a machine with sensitive
-  unauthenticated local services.
+- **Agent containers run on a bridge network, but can still reach the host.** The coding
+  agent runs LLM-written code in a container on Docker's default bridge network (not host
+  networking). It reaches LM Studio and the orchestrator callback via
+  `host.docker.internal` (mapped to the host gateway); the LM Studio URL is rewritten from
+  any `localhost`/`127.0.0.1` accordingly. This removes blanket access to every host
+  network interface, but the worker can still reach services bound on the host gateway, so
+  it reduces rather than eliminates host network exposure. Don't run Praxis on a machine
+  with sensitive unauthenticated local services.
 - **`GITHUB_TOKEN` is visible inside agent containers.** Scope it least-privilege
   (`contents:write` + `pull_requests:write` on the repos you dispatch to, never
   admin), and pair it with GitHub branch protection so the human merge gate is

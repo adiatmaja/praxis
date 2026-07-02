@@ -309,11 +309,17 @@ of the full `~/.ssh` directory:
 SSH_KEY_PATH=~/.ssh/id_praxis_deploy
 ```
 
-### Agent containers and `network_mode: host`
+### Agent container networking
 
-Agent containers run with `network_mode: host` so they can reach LM Studio on
-`localhost:1234`.  This gives each agent container full access to all host network
-interfaces and services, with no port-level isolation.
+Agent containers run on Docker's default **bridge** network with
+`extra_hosts={"host.docker.internal": "host-gateway"}`. They reach LM Studio and the
+orchestrator callback via `host.docker.internal`; a `localhost`/`127.0.0.1` LM Studio URL
+is rewritten to `host.docker.internal` for the container env (`_container_host_url`), while
+the host-side context-limit probe keeps the original URL. On native Linux the
+`host-gateway` mapping is what makes `host.docker.internal` resolve (Docker Desktop maps it
+automatically). This removes the blanket host-network access the old `network_mode: host`
+gave each container, but the worker can still reach host-gateway services, so it reduces
+rather than fully isolates network exposure.
 
 ### Auto-merge and approval gate
 

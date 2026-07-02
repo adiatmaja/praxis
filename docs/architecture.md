@@ -221,9 +221,13 @@ surface. The one deliberate trade-off: because the agent clones from the remote,
 committed-and-pushed code, not your local uncommitted changes — pass reference context explicitly via
 `dispatch_task`'s `context` field instead.
 
-Note the isolation boundary is the **filesystem, not the network**: agent containers run with host
-networking so they can reach LM Studio and the orchestrator callback. See the Security Model section
-of the README before running on a machine with sensitive unauthenticated local services.
+Note the primary isolation boundary is the **filesystem**: agent containers run on Docker's default
+**bridge** network (not host networking) with `extra_hosts={"host.docker.internal": "host-gateway"}`,
+reaching LM Studio and the orchestrator callback via `host.docker.internal` (the LM Studio URL is
+rewritten from `localhost`/`127.0.0.1` by `_container_host_url`). This drops blanket host-network
+access, but the worker can still reach host-gateway services, so network exposure is reduced, not
+eliminated. See the Security Model section of the README before running on a machine with sensitive
+unauthenticated local services.
 
 ## Deployment Modes
 
