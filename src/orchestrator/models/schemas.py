@@ -265,6 +265,9 @@ class TaskResponse(BaseModel):
     escalated_to: str | None = None
     checklist: list[dict] | None = None
     progress_note: str | None = None
+    clarification_question: str | None = None
+    clarification_answer: str | None = None
+    clarification_state: str | None = None
     created_at: str
     updated_at: str
 

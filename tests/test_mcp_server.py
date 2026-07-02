@@ -223,3 +223,24 @@ async def test_execute_plan_returns_error_on_client_failure() -> None:
         model="qwen3",
     )
     assert result["error"] == "validation_error"
+
+
+async def test_poll_task_maps_needs_clarification_to_awaiting_clarification() -> None:
+    client = FakeClient(
+        {
+            ("GET", "/api/tasks/t1"): {
+                "task": {
+                    "status": "needs_clarification",
+                    "pr_url": None,
+                    "review_feedback": None,
+                    "branch_name": None,
+                    "clarification_question": "Which auth helper?",
+                },
+                "runs": [],
+            }
+        }
+    )
+    result = await server.poll_task_impl(client, task_id="t1")
+    assert result["status"] == "awaiting_clarification"
+    assert "Which auth helper?" in result["question"]
+    assert result["task_id"] == "t1"

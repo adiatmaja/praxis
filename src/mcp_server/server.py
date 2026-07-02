@@ -102,6 +102,15 @@ async def poll_task_impl(client: Any, task_id: str) -> dict[str, Any]:
     task = data.get("task", {})
     raw_status = task.get("status")
     awaiting = raw_status == "passed"
+    if raw_status == "needs_clarification":
+        return {
+            "task_id": task_id,
+            "status": "awaiting_clarification",
+            "question": task.get("clarification_question") or "",
+            "pr_url": task.get("pr_url"),
+            "branch": task.get("branch_name"),
+            "dashboard_url": _dashboard_url(client),
+        }
     return {
         "task_id": task_id,
         "status": "awaiting_merge" if awaiting else raw_status,
