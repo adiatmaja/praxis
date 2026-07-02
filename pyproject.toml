@@ -21,6 +21,8 @@ dependencies = [
     "bcrypt>=4.0",
     "sse-starlette>=2.0",
     "mcp>=1.2",
+    "pyjwt>=2.8",
+    "cryptography>=42.0",
 ]
 
 [project.optional-dependencies]

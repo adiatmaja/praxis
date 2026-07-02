@@ -25,7 +25,9 @@ async def list_lifecycle(request: Request, project_id: str) -> list[dict[str, An
         )
 
     try:
-        docs = request.app.state.brainstorm.list_lifecycle_docs(project["repo_url"])
+        docs = await request.app.state.brainstorm.list_lifecycle_docs(
+            project["repo_url"]
+        )
     except Exception as exc:  # noqa: BLE001 - surface clone/git failure as 502
         raise HTTPException(status_code=502, detail=f"repo read failed: {exc}") from exc
 
@@ -78,7 +80,7 @@ async def get_doc_raw(request: Request, project_id: str, path: str) -> dict[str,
     if project is None:
         raise HTTPException(status_code=404, detail="Project not found")
     try:
-        content = request.app.state.brainstorm.read_doc(project["repo_url"], path)
+        content = await request.app.state.brainstorm.read_doc(project["repo_url"], path)
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except Exception as exc:  # noqa: BLE001 - clone/git failure

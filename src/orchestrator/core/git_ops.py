@@ -11,6 +11,11 @@ from typing import TYPE_CHECKING
 
 import httpx
 
+from orchestrator.core.github_credentials import (
+    GitHubCredentialProvider,
+    PatCredentialProvider,
+)
+
 
 if TYPE_CHECKING:
     from orchestrator.core.progress_handover import Commit
@@ -105,16 +110,31 @@ def flip_checklist_item(markdown: str, item_text: str) -> str:
 class GitOps:
     """Git and GitHub CLI operations for branch and PR management."""
 
-    def __init__(self, github_token: str) -> None:
-        self._github_token = github_token
+    def __init__(self, credentials: GitHubCredentialProvider | str) -> None:
+        if isinstance(credentials, str):
+            credentials = PatCredentialProvider(credentials)
+        self._provider: GitHubCredentialProvider = credentials
+
+    async def _token_for_repo(self, repo_ref: str) -> str:
+        """Resolve a token for ``repo_ref`` from the credential provider."""
+        return await self._provider.token_for_repo(repo_ref)
+
+    async def _token_for_workspace(self, workspace: str) -> str:
+        """Resolve a token for the repo whose origin is ``workspace``."""
+        origin = await self._run_checked(
+            ["git", "-C", workspace, "remote", "get-url", "origin"]
+        )
+        return await self._provider.token_for_repo(origin)
 
     async def _run_command(
         self,
         cmd: list[str],
         cwd: str | None = None,
+        token: str | None = None,
     ) -> tuple[int, str, str]:
         env = os.environ.copy()
-        env["GH_TOKEN"] = self._github_token
+        if token is not None:
+            env["GH_TOKEN"] = token
         proc = await asyncio.create_subprocess_exec(
             *cmd,
             cwd=cwd,
@@ -129,15 +149,18 @@ class GitOps:
             stderr.decode().strip(),
         )
 
-    async def _run_checked(self, cmd: list[str], cwd: str | None = None) -> str:
-        code, stdout, stderr = await self._run_command(cmd, cwd)
+    async def _run_checked(
+        self, cmd: list[str], cwd: str | None = None, token: str | None = None
+    ) -> str:
+        code, stdout, stderr = await self._run_command(cmd, cwd=cwd, token=token)
         if code != 0:
             message = f"Git command failed (exit {code}): {' '.join(cmd)}\n{stderr}"
             raise RuntimeError(message)
         return stdout
 
     async def clone_repo(self, repo_url: str, workspace: str) -> None:
-        await self._run_checked(["git", "clone", repo_url, workspace])
+        token = await self._token_for_repo(repo_url)
+        await self._run_checked(["git", "clone", repo_url, workspace], token=token)
         logger.info("Cloned %s to %s", repo_url, workspace)
 
     async def create_branch(
@@ -147,12 +170,18 @@ class GitOps:
         base: str = "main",
     ) -> None:
         await self._run_checked(["git", "checkout", base], cwd=workspace)
-        await self._run_checked(["git", "pull", "origin", base], cwd=workspace)
+        token = await self._token_for_workspace(workspace)
+        await self._run_checked(
+            ["git", "pull", "origin", base], cwd=workspace, token=token
+        )
         await self._run_checked(["git", "checkout", "-b", branch], cwd=workspace)
         logger.info("Created branch %s from %s", branch, base)
 
     async def push_branch(self, workspace: str, branch: str) -> None:
-        await self._run_checked(["git", "push", "-u", "origin", branch], cwd=workspace)
+        token = await self._token_for_workspace(workspace)
+        await self._run_checked(
+            ["git", "push", "-u", "origin", branch], cwd=workspace, token=token
+        )
         logger.info("Pushed branch %s", branch)
 
     async def create_pr(
@@ -163,6 +192,7 @@ class GitOps:
         base: str,
         head: str,
     ) -> str:
+        token = await self._token_for_workspace(workspace)
         stdout = await self._run_checked(
             [
                 "gh",
@@ -178,6 +208,7 @@ class GitOps:
                 head,
             ],
             cwd=workspace,
+            token=token,
         )
         logger.info("Created PR: %s", stdout)
         return stdout.strip()
@@ -185,6 +216,11 @@ class GitOps:
     async def merge_pr(
         self, workspace: str, pr_number: int, repo: str | None = None
     ) -> None:
+        token = (
+            await self._token_for_repo(repo)
+            if repo
+            else await self._token_for_workspace(workspace)
+        )
         await self._run_checked(
             [
                 "gh",
@@ -196,6 +232,7 @@ class GitOps:
                 *(["--repo", repo] if repo else []),
             ],
             cwd=workspace,
+            token=token,
         )
         logger.info("Merged PR #%d", pr_number)
 
@@ -206,6 +243,11 @@ class GitOps:
         comment: str,
         repo: str | None = None,
     ) -> None:
+        token = (
+            await self._token_for_repo(repo)
+            if repo
+            else await self._token_for_workspace(workspace)
+        )
         await self._run_checked(
             [
                 "gh",
@@ -217,15 +259,22 @@ class GitOps:
                 *(["--repo", repo] if repo else []),
             ],
             cwd=workspace,
+            token=token,
         )
         logger.info("Commented on PR #%d", pr_number)
 
     async def get_pr_diff(
         self, workspace: str, pr_number: int, repo: str | None = None
     ) -> str:
+        token = (
+            await self._token_for_repo(repo)
+            if repo
+            else await self._token_for_workspace(workspace)
+        )
         return await self._run_checked(
             ["gh", "pr", "diff", str(pr_number), *(["--repo", repo] if repo else [])],
             cwd=workspace,
+            token=token,
         )
 
     @staticmethod
@@ -269,6 +318,7 @@ class GitOps:
         if repo is None:
             msg = f"cannot extract repo slug from PR URL: {pr_url}"
             raise RuntimeError(msg)
+        token = await self._token_for_repo(repo)
         pr_number = await self.extract_pr_number(pr_url)
         clone_url = f"https://github.com/{repo}.git"
         cmd_clone = [
@@ -281,13 +331,14 @@ class GitOps:
             clone_url,
             dest,
         ]
-        code, _, stderr = await self._run_command(cmd_clone)
+        code, _, stderr = await self._run_command(cmd_clone, token=token)
         if code != 0:
             msg = f"clone failed (exit {code}) for {clone_url}: {stderr}"
             raise RuntimeError(msg)
         await self._run_checked(
             ["gh", "pr", "checkout", str(pr_number), "--repo", repo],
             cwd=dest,
+            token=token,
         )
         logger.info("Cloned PR #%d head into %s", pr_number, dest)
         return dest
@@ -309,6 +360,7 @@ class GitOps:
         Raises:
             RuntimeError: If the git command exits with a non-zero code.
         """
+        token = await self._token_for_repo(repo_url)
         cmd = [
             "git",
             *_token_git_args(),
@@ -317,7 +369,7 @@ class GitOps:
             repo_url,
             branch,
         ]
-        code, stdout, stderr = await self._run_command(cmd)
+        code, stdout, stderr = await self._run_command(cmd, token=token)
         if code != 0:
             msg = f"git ls-remote failed (exit {code}): {stderr}"
             raise RuntimeError(msg)
@@ -380,9 +432,10 @@ class GitOps:
         Raises:
             RuntimeError: On unexpected HTTP status or network error.
         """
+        token = await self._token_for_repo(repo_slug)
         url = f"https://api.github.com/repos/{repo_slug}/contents/{path}"
         headers = {
-            "Authorization": f"Bearer {self._github_token}",
+            "Authorization": f"Bearer {token}",
             "Accept": "application/vnd.github+json",
         }
         try:

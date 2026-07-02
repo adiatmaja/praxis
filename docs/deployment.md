@@ -252,6 +252,40 @@ does not match your expected SHA after a deploy, the old process is still runnin
 
 ---
 
+## GitHub authentication
+
+Praxis needs GitHub credentials to clone repos, push agent branches, and manage
+PRs. Two options:
+
+### Option A: Personal Access Token (legacy)
+
+Set `GITHUB_TOKEN` to a PAT with `repo` scope. Simple, but the token is
+long-lived and broadly scoped, and it is injected into every agent container.
+
+### Option B: GitHub App (recommended)
+
+Praxis mints short-lived (<=1 hour), repo-scoped installation tokens per
+operation. The App private key stays on the orchestrator and is never placed in
+a worker container.
+
+1. Create a GitHub App (Settings > Developer settings > GitHub Apps). Grant
+   repository permissions: Contents (Read and write) and Pull requests (Read and
+   write).
+2. Generate a private key (PEM) and store it as an orchestrator secret.
+3. Install the App on the repositories Praxis will operate on.
+4. Configure the orchestrator:
+   - `GITHUB_APP_ID` = the App's numeric id
+   - `GITHUB_APP_PRIVATE_KEY` = the PEM contents or a path to the PEM file
+   - `GITHUB_APP_INSTALLATION_ID` = optional; auto-resolved per repo when unset
+
+When App variables are present they take precedence over `GITHUB_TOKEN`.
+
+**Known limitation:** installation tokens expire after 1 hour. An agent run that
+exceeds an hour may fail its final push on an expired token. A future refresh
+endpoint will let a worker renew its token mid-run.
+
+---
+
 ## Security / Trust Model
 
 Praxis is designed to run as a **trusted single-operator tool**, not a multi-tenant

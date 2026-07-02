@@ -398,15 +398,15 @@ class ReviewMixin:
         if self._doc_indexer is None:
             return
 
-        # Resolve the GitHub token from the git_ops helper (set at startup).
-        # If unavailable (e.g. tests, stub objects), skip rather than corrupt
-        # the orchestrator's own docs tree.
-        github_token: str | None = getattr(self._git, "_github_token", None)
-        if not github_token:
+        # A per-repo GitHub token is resolved from git_ops' credential provider
+        # once repo_url is known (below). If the provider is unavailable
+        # (e.g. tests, stub objects), skip rather than corrupt the
+        # orchestrator's own docs tree.
+        provider = getattr(self._git, "_provider", None)
+        if provider is None:
             logger.warning(
-                "_sync_plan_checkbox: GitHub token unavailable — "
-                "checkbox sync requires target-repo clone, skipped (follow-up: "
-                "ensure git_ops._github_token is set before orchestrator starts)"
+                "_sync_plan_checkbox: credential provider unavailable, "
+                "checkbox sync requires a target-repo clone, skipped"
             )
             return
 
@@ -426,6 +426,14 @@ class ReviewMixin:
             if project is None:
                 return
             repo_url: str = project["repo_url"]
+
+            github_token = await provider.token_for_repo(repo_url)
+            if not github_token:
+                logger.warning(
+                    "_sync_plan_checkbox: no token resolved for %s, skipped",
+                    repo_url,
+                )
+                return
 
             # Find the plan file path (repo-relative) from doc_index.
             rows = await self._tq._db.fetch_all(

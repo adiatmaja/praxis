@@ -18,6 +18,11 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from orchestrator.api.auth import verify_token
 from orchestrator.core.context_scrub import scrub_context
 from orchestrator.core.git_ops import GitOps
+from orchestrator.core.github_credentials import (
+    GitHubCredentialProvider,
+    PatCredentialProvider,
+    build_credential_provider,
+)
 from orchestrator.core.harnesses import default_harness_id
 from orchestrator.models.schemas import DispatchRequest, DispatchResponse
 
@@ -65,8 +70,16 @@ async def _preflight(body: DispatchRequest, settings: Any) -> list[str]:
     # At this point branch is set (plan_path may or may not be).
     # Narrow the type: we have already handled the None case above.
     branch: str = body.branch  # type: ignore[assignment]
-    github_token = getattr(settings, "github_token", "")
-    git = GitOps(github_token)
+    github_token = getattr(settings, "github_token", "") or ""
+    has_app = bool(
+        getattr(settings, "github_app_id", None)
+        and getattr(settings, "github_app_private_key", None)
+    )
+    if has_app or github_token:
+        provider: GitHubCredentialProvider = build_credential_provider(settings)
+    else:
+        provider = PatCredentialProvider("")
+    git = GitOps(provider)
 
     # Verify the branch exists on the remote.
     try:
@@ -109,7 +122,7 @@ async def _preflight(body: DispatchRequest, settings: Any) -> list[str]:
             )
 
         token_lower = github_token.lower().strip()
-        if token_lower in _PLACEHOLDER_TOKENS:
+        if not has_app and token_lower in _PLACEHOLDER_TOKENS:
             warnings.append(
                 "plan_path existence check skipped: no GitHub token is configured. "
                 "Ensure the file exists on the remote branch before dispatching."

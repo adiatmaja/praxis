@@ -72,11 +72,11 @@ async def client(db: Database, test_settings: Settings) -> AsyncClient:
     app.state.brainstorm = BrainstormManager(
         workspace_base="/tmp/praxis-brainstorm-test",
         event_bus=app.state.event_bus,
-        github_token=test_settings.github_token,
+        credentials=test_settings.github_token or "",
     )
     app.state.context_sync = ContextSync(
         workspace_base="/tmp/praxis-context-sync-test",
-        github_token=test_settings.github_token,
+        credentials=test_settings.github_token or "",
         memory_md_path=test_settings.memory_md_path,
     )
     app.state.orchestrator = Orchestrator(

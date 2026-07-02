@@ -44,7 +44,7 @@ async def test_backfill_writes_spec_doc_and_sets_path(db, mocker):
         (plid, pid, "legacy spec body"),
     )
     fake_bs = mocker.Mock()
-    fake_bs.write_and_commit.return_value = {"status": "committed"}
+    fake_bs.write_and_commit = mocker.AsyncMock(return_value={"status": "committed"})
     count = await backfill_legacy_specs(db, fake_bs)
     assert count == 1
     row = await db.fetch_one("SELECT spec_path FROM plans WHERE id = ?", (plid,))

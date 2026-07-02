@@ -10,6 +10,10 @@ import uuid
 from pathlib import Path
 
 from orchestrator.core.git_ops import clone_with_token, commit_and_push
+from orchestrator.core.github_credentials import (
+    GitHubCredentialProvider,
+    PatCredentialProvider,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -25,15 +29,24 @@ class ContextSync:
     """Drafts and (on approval) commits CLAUDE.md / MEMORY.md updates."""
 
     def __init__(
-        self, workspace_base: str, github_token: str, memory_md_path: str
+        self,
+        workspace_base: str,
+        credentials: GitHubCredentialProvider | str,
+        memory_md_path: str,
     ) -> None:
         self._base = workspace_base
-        self._token = github_token
+        if isinstance(credentials, str):
+            self._provider: GitHubCredentialProvider = PatCredentialProvider(
+                credentials
+            )
+        else:
+            self._provider = credentials
         self._memory_path = memory_md_path
         self._drafts: dict[str, dict] = {}
 
-    def _clone_repo(self, repo_url: str, dest: str) -> None:
-        clone_with_token(repo_url, dest, self._token, depth=20)
+    async def _clone_repo(self, repo_url: str, dest: str) -> None:
+        token = await self._provider.token_for_repo(repo_url)
+        clone_with_token(repo_url, dest, token, depth=20)
 
     async def _run_revise(self, workspace: str, summary: str) -> None:
         prompt = REVISE_PROMPT.format(memory_path=self._memory_path, summary=summary)
@@ -61,7 +74,7 @@ class ContextSync:
         draft_id = uuid.uuid4().hex
         workspace = str(Path(self._base) / f"ctx-{draft_id}")
         Path(workspace).mkdir(parents=True, exist_ok=True)
-        self._clone_repo(repo_url, workspace)
+        await self._clone_repo(repo_url, workspace)
         await self._run_revise(workspace, summary)
         diff = self._git_diff(workspace)
         self._drafts[draft_id] = {
@@ -71,14 +84,16 @@ class ContextSync:
         }
         return {"draft_id": draft_id, "diff": diff}
 
-    def approve(self, draft_id: str) -> dict:
+    async def approve(self, draft_id: str) -> dict:
         draft = self._drafts.pop(draft_id)
         ws = draft["workspace"]
-        commit_and_push(ws, self._token, "docs: sync CLAUDE.md and MEMORY.md")
+        repo_url = draft["repo_url"]
+        token = await self._provider.token_for_repo(repo_url)
+        commit_and_push(ws, token, "docs: sync CLAUDE.md and MEMORY.md")
         shutil.rmtree(ws, ignore_errors=True)
         return {"status": "committed", "draft_id": draft_id}
 
-    def current(self, repo_url: str) -> dict:
+    async def current(self, repo_url: str) -> dict:
         """Return current CLAUDE.md and MEMORY.md content from the repo.
 
         Clones the repo into a temporary directory, reads the files, then
@@ -97,7 +112,7 @@ class ContextSync:
         ws = str(Path(self._base) / f"read-{draft_id}")
         Path(ws).mkdir(parents=True, exist_ok=True)
         try:
-            self._clone_repo(repo_url, ws)
+            await self._clone_repo(repo_url, ws)
 
             def _read(rel: str) -> str:
                 p = Path(ws) / rel

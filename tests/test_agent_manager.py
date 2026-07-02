@@ -543,3 +543,52 @@ def test_container_host_url_leaves_remote_untouched() -> None:
         == "http://host.docker.internal:1234"
     )
     assert _container_host_url("http://192.168.1.5:1234") == "http://192.168.1.5:1234"
+
+
+def _async_return(value):
+    async def _inner(*args, **kwargs):
+        return value
+
+    return _inner
+
+
+@pytest.mark.unit
+async def test_spawn_agent_injects_freshly_minted_token(monkeypatch) -> None:
+    import orchestrator.core.agent_manager as am
+    from orchestrator.core.github_credentials import PatCredentialProvider
+
+    captured = {}
+
+    class _FakeContainers:
+        def run(self, **kwargs):
+            captured.update(kwargs)
+
+            class _C:
+                id = "deadbeefcafe"
+
+            return _C()
+
+        def get(self, name):
+            msg = "none"
+            raise am.docker.errors.NotFound(msg)
+
+    class _FakeClient:
+        containers = _FakeContainers()
+
+    monkeypatch.setattr(am.docker, "from_env", lambda: _FakeClient())
+    monkeypatch.setattr(am, "detect_context_limit", _async_return(None))
+
+    manager = am.AgentManager(
+        lm_studio_url="http://host.docker.internal:1234",
+        credentials=PatCredentialProvider("ghs_fresh"),
+    )
+    await manager.spawn_agent(
+        task_id="task1234abcd",
+        repo_url="https://github.com/o/r",
+        branch="agent/x",
+        base_branch="main",
+        task_prompt="do the thing",
+        model_name="qwen3",
+        callback_url="http://host.docker.internal:8080/api/internal/agent-done",
+    )
+    assert captured["environment"]["GH_TOKEN"] == "ghs_fresh"

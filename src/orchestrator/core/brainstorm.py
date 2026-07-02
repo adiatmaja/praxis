@@ -12,6 +12,10 @@ from pathlib import Path
 from typing import Any
 
 from orchestrator.core.git_ops import clone_with_token, commit_and_push
+from orchestrator.core.github_credentials import (
+    GitHubCredentialProvider,
+    PatCredentialProvider,
+)
 from orchestrator.core.markdown_utils import (
     checklist_progress,
     extract_frontmatter_field,
@@ -137,22 +141,32 @@ class BrainstormManager:
     """Owns active brainstorming sessions and their cloned workspaces."""
 
     def __init__(
-        self, workspace_base: str, event_bus: object, github_token: str
+        self,
+        workspace_base: str,
+        event_bus: object,
+        credentials: GitHubCredentialProvider | str,
     ) -> None:
         self._base = workspace_base
         self._bus = event_bus
-        self._token = github_token
+        # Accept a bare str (legacy PAT) or a provider object.
+        if isinstance(credentials, str):
+            self._provider: GitHubCredentialProvider = PatCredentialProvider(
+                credentials
+            )
+        else:
+            self._provider = credentials
         self._sessions: dict[str, BrainstormSession] = {}
         self._started: dict[str, bool] = {}
 
-    def _clone_repo(self, repo_url: str, dest: str) -> None:
-        clone_with_token(repo_url, dest, self._token, depth=50)
+    async def _clone_repo(self, repo_url: str, dest: str) -> None:
+        token = await self._provider.token_for_repo(repo_url)
+        clone_with_token(repo_url, dest, token, depth=50)
 
-    def create_session(self, repo_url: str) -> str:
+    async def create_session(self, repo_url: str) -> str:
         session_id = uuid.uuid4().hex
         workspace = str(Path(self._base) / session_id)
         Path(workspace).mkdir(parents=True, exist_ok=True)
-        self._clone_repo(repo_url, workspace)
+        await self._clone_repo(repo_url, workspace)
         self._sessions[session_id] = BrainstormSession(session_id, workspace, self._bus)
         self._started[session_id] = False
         return session_id
@@ -168,7 +182,7 @@ class BrainstormManager:
         session_id = uuid.uuid4().hex
         workspace = str(Path(self._base) / session_id)
         Path(workspace).mkdir(parents=True, exist_ok=True)
-        self._clone_repo(repo_url, workspace)
+        await self._clone_repo(repo_url, workspace)
         session = BrainstormSession(session_id, workspace, self._bus)
         prompt = PLAN_BOOTSTRAP.format(spec_path=spec_path, notes=notes or "none")
         try:
@@ -177,12 +191,12 @@ class BrainstormManager:
             shutil.rmtree(workspace, ignore_errors=True)
         return {"status": "generated"}
 
-    def read_doc(self, repo_url: str, path: str) -> str:
+    async def read_doc(self, repo_url: str, path: str) -> str:
         """Clone the repo and return one doc's raw markdown."""
         session_id = uuid.uuid4().hex
         workspace = str(Path(self._base) / session_id)
         Path(workspace).mkdir(parents=True, exist_ok=True)
-        self._clone_repo(repo_url, workspace)
+        await self._clone_repo(repo_url, workspace)
         try:
             ws_root = Path(workspace).resolve()
             target = (ws_root / path).resolve()
@@ -193,12 +207,12 @@ class BrainstormManager:
         finally:
             shutil.rmtree(workspace, ignore_errors=True)
 
-    def list_lifecycle_docs(self, repo_url: str) -> list[dict]:
+    async def list_lifecycle_docs(self, repo_url: str) -> list[dict]:
         """Clone the repo and list spec/plan markdown with metadata."""
         session_id = uuid.uuid4().hex
         workspace = str(Path(self._base) / session_id)
         Path(workspace).mkdir(parents=True, exist_ok=True)
-        self._clone_repo(repo_url, workspace)
+        await self._clone_repo(repo_url, workspace)
         try:
             root = Path(workspace)
             out: list[dict] = []
@@ -222,11 +236,11 @@ class BrainstormManager:
         finally:
             shutil.rmtree(workspace, ignore_errors=True)
 
-    def write_and_commit(self, repo_url: str, path: str, content: str) -> dict:
+    async def write_and_commit(self, repo_url: str, path: str, content: str) -> dict:
         session_id = uuid.uuid4().hex
         workspace = str(Path(self._base) / session_id)
         Path(workspace).mkdir(parents=True, exist_ok=True)
-        self._clone_repo(repo_url, workspace)
+        await self._clone_repo(repo_url, workspace)
         ws_root = Path(workspace).resolve()
         target = (ws_root / path).resolve()
         if not target.is_relative_to(ws_root):
@@ -235,7 +249,8 @@ class BrainstormManager:
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(content, encoding="utf-8")
         try:
-            commit_and_push(workspace, self._token, "docs: update spec", paths=[path])
+            token = await self._provider.token_for_repo(repo_url)
+            commit_and_push(workspace, token, "docs: update spec", paths=[path])
         finally:
             shutil.rmtree(workspace, ignore_errors=True)
         return {"status": "committed", "path": path}

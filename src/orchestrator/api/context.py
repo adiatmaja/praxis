@@ -38,7 +38,7 @@ async def get_context(
     try:
         return cast(
             dict[str, Any],
-            request.app.state.context_sync.current(project["repo_url"]),
+            await request.app.state.context_sync.current(project["repo_url"]),
         )
     except subprocess.CalledProcessError as e:
         reason = (e.stderr or b"").decode(errors="replace").strip() or str(e)
@@ -100,4 +100,4 @@ async def approve_draft(
     _: None = Depends(verify_token),
 ) -> dict[str, Any]:
     """Commit an approved context draft to the repo."""
-    return cast(dict[str, Any], request.app.state.context_sync.approve(draft_id))
+    return cast(dict[str, Any], await request.app.state.context_sync.approve(draft_id))

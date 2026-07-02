@@ -17,6 +17,10 @@ from orchestrator.core.build_info import build_stamp
 from orchestrator.core.effective_settings import EffectiveSettings
 from orchestrator.core.event_bus import EventBus
 from orchestrator.core.git_ops import GitOps
+from orchestrator.core.github_credentials import (
+    PatCredentialProvider,
+    build_credential_provider,
+)
 from orchestrator.core.llm_router import LLMRouter
 from orchestrator.core.opus_bridge import OpusBridge
 from orchestrator.core.orchestrator import Orchestrator
@@ -36,6 +40,18 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Initialize and teardown shared application resources."""
 
     settings = Settings()
+    # Build ONE credential provider and thread it through every component.
+    # When no credentials are configured at all (local dev / tests), fall back
+    # to an empty-token PAT provider so startup does not raise CredentialError.
+    _has_git_creds = bool(
+        settings.github_token
+        or (settings.github_app_id and settings.github_app_private_key)
+    )
+    credential_provider = (
+        build_credential_provider(settings)
+        if _has_git_creds
+        else PatCredentialProvider("")
+    )
     database = Database(settings.database_url)
 
     db_path = Path(database.db_path)
@@ -51,15 +67,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     _brainstorm_pre = BrainstormManager(
         workspace_base=settings.brainstorm_workspace,
         event_bus=None,  # EventBus not yet created; backfill doesn't need events
-        github_token=settings.github_token,
+        credentials=credential_provider,
     )
 
     async def _before_drop() -> None:
         await backfill_legacy_specs(database, _brainstorm_pre)
 
-    # Only backfill when a GitHub token is available (brainstorm needs it to
-    # write+commit spec docs to the target repo).
-    _before_drop_cb = _before_drop if settings.github_token else None
+    # Only backfill when any GitHub credential is configured (PAT or App).
+    _before_drop_cb = _before_drop if _has_git_creds else None
 
     await database.initialize(before_drop=_before_drop_cb)
 
@@ -94,13 +109,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         effective_settings=effective_settings,
         router=router,
     )
-    git_ops = GitOps(settings.github_token)
+    git_ops = GitOps(credential_provider)
     app.state.git_ops = git_ops
     app.state.event_bus = EventBus()
     try:
         app.state.agent_manager = AgentManager(
             lm_studio_url=settings.lm_studio_url,
-            github_token=settings.github_token,
+            credentials=credential_provider,
             effective_settings=effective_settings,
         )
     except Exception as exc:
@@ -119,14 +134,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.brainstorm = BrainstormManager(
         workspace_base=settings.brainstorm_workspace,
         event_bus=app.state.event_bus,
-        github_token=settings.github_token,
+        credentials=credential_provider,
     )
 
     from orchestrator.core.context_sync import ContextSync
 
     app.state.context_sync = ContextSync(
         workspace_base=settings.brainstorm_workspace,
-        github_token=settings.github_token,
+        credentials=credential_provider,
         memory_md_path=settings.memory_md_path,
     )
 

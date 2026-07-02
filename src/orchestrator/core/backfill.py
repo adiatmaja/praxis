@@ -21,7 +21,7 @@ async def backfill_legacy_specs(db: Database, brainstorm: Any) -> int:
     for row in rows:
         path = f"docs/superpowers/specs/{row['id']}-legacy.md"
         content = f"# Legacy Spec\n\n{row['spec']}\n"
-        brainstorm.write_and_commit(row["repo_url"], path, content)
+        await brainstorm.write_and_commit(row["repo_url"], path, content)
         await db.execute(
             "UPDATE plans SET spec_path = ? WHERE id = ?", (path, row["id"])
         )
