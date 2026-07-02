@@ -499,9 +499,7 @@ async def test_spawn_agent_rewrites_localhost_lm_studio_url(
     mock_docker.from_env.return_value = mock_client
     mock_client.containers.run.return_value = _mock_container()
 
-    manager = AgentManager(
-        lm_studio_url="http://localhost:1234", github_token="ghp_x"
-    )
+    manager = AgentManager(lm_studio_url="http://localhost:1234", github_token="ghp_x")
     await manager.spawn_agent(
         task_id="net-2",
         repo_url="https://github.com/u/r.git",
