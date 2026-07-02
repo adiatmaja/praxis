@@ -441,7 +441,7 @@ Tables: `users`, `projects`, `plans`, `tasks`, `agent_runs`, `opus_state`,
   stores the RAW v1 auth token, not a hash (see `api/auth.py`). Renames were
   evaluated (2026-07-02 refactor) and deliberately skipped as churn; a future
   `token_hash` rename should ride the migration framework in `database.py`.
-- **Blocked workers ask, they don't guess** - the aider entrypoint parses the
+- **Blocked workers ask, they don't guess** - every harness entrypoint parses the
   FINAL REPORT; a `Status: BLOCKED`/`NEEDS_CONTEXT` sends the `Concerns:` text as
   a `question` in the agent-done callback and opens NO PR. The task parks at
   `NEEDS_CLARIFICATION` (does NOT burn a retry). The loop asks the brain
