@@ -8,7 +8,6 @@ from typing import TYPE_CHECKING, Any
 import docker.errors
 import httpx
 
-import docker
 from orchestrator.core.harnesses import REGISTRY, default_harness_id
 
 
