@@ -706,11 +706,13 @@ class Orchestrator:
         ]
         pending = [t for t in tasks if t["status"] == TaskStatus.PENDING]
         failed = [t for t in tasks if t["status"] == TaskStatus.FAILED]
+        passed = [t for t in tasks if t["status"] == TaskStatus.PASSED]
 
         all_done = await self._tq.all_tasks_done(plan_id)
-        # A plan is also "done" when no tasks remain actionable (all are terminal:
-        # MERGED, FAILED, or PASSED/awaiting-merge) and there is at least one failure.
-        terminal_with_failures = not active and not pending and failed
+        # A plan is also "done" when no tasks remain actionable (all are truly terminal:
+        # MERGED or FAILED — not PASSED, which is awaiting human merge approval) and
+        # there is at least one failure.
+        terminal_with_failures = not active and not pending and not passed and failed
 
         if all_done or terminal_with_failures:
             await self._tq.update_plan_status(plan_id, PlanStatus.COMPLETED)

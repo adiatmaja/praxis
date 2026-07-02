@@ -1412,3 +1412,76 @@ class TestProcessPlanOnceEvents:
         evt = next(e for e in published if e["type"] == "plan_completed_with_failures")
         assert evt["plan_id"] == plan_id
         assert task_x_id in evt["failed_task_ids"]
+
+    async def test_passed_awaiting_merge_blocks_completed_with_failures(
+        self, db: Database
+    ) -> None:
+        """A plan with one PASSED (awaiting-merge) task and one FAILED task must NOT
+        be marked COMPLETED and must NOT emit plan_completed_with_failures."""
+        await db.execute(
+            "INSERT INTO users (id, name, token_hash) VALUES (?, ?, ?)",
+            ("u4", "User4", "hash4"),
+        )
+        await db.execute(
+            """INSERT INTO projects (id, user_id, name, repo_url, model_name, max_retries)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            ("p4", "u4", "App4", "https://github.com/u/d", "deepseek", 3),
+        )
+        task_queue = TaskQueue(db)
+        plan_id = await task_queue.create_plan("p4", "Mixed plan")
+        await task_queue.activate_plan(
+            plan_id,
+            {
+                "plan_summary": "Mixed",
+                "plan_slug": "mixed",
+                "tasks": [
+                    {
+                        "title": "Task Good",
+                        "slug": "task-good",
+                        "description": "Passed task",
+                        "depends_on": [],
+                    },
+                    {
+                        "title": "Task Bad",
+                        "slug": "task-bad",
+                        "description": "Failed task",
+                        "depends_on": [],
+                    },
+                ],
+            },
+            "plan/2026-07-02-mixed",
+        )
+        tasks = await task_queue.get_tasks_for_plan(plan_id)
+        task_good_id = str(tasks[0]["id"])
+        task_bad_id = str(tasks[1]["id"])
+        # Mark task-good as PASSED (awaiting human merge approval)
+        await task_queue.mark_passed(task_good_id, "lgtm")
+        # Mark task-bad as FAILED
+        await task_queue.update_task_status(task_bad_id, TaskStatus.FAILED)
+
+        bus = EventBus()
+        published: list[dict] = []
+        _orig_publish4 = bus.publish
+        bus.publish = lambda e: (published.append(e), _orig_publish4(e))  # type: ignore[method-assign]
+
+        orch = Orchestrator(
+            task_queue=task_queue,
+            agent_manager=MagicMock(),
+            opus_bridge=AsyncMock(),
+            git_ops=AsyncMock(),
+            event_bus=bus,
+        )
+        orch.dispatch_pending_tasks = AsyncMock()
+
+        project = await db.fetch_one("SELECT * FROM projects WHERE id = 'p4'")
+        assert project is not None
+        await orch.process_plan_once(plan_id, dict(project))
+
+        # Must NOT emit plan_completed_with_failures while PASSED task awaits merge
+        assert not any(
+            e["type"] == "plan_completed_with_failures" for e in published
+        ), published
+        # Plan status must NOT have been set to COMPLETED
+        row = await db.fetch_one("SELECT status FROM plans WHERE id = ?", (plan_id,))
+        assert row is not None
+        assert row["status"] != PlanStatus.COMPLETED
