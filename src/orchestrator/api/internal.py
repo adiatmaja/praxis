@@ -25,6 +25,7 @@ class AgentDonePayload(BaseModel):
     run_id: str | None = None
     status: str
     pr_url: str | None = None
+    question: str | None = None
 
 
 def _verify_callback_token(request: Request) -> None:
@@ -84,6 +85,10 @@ async def agent_done(request: Request, body: AgentDonePayload) -> dict[str, str]
     if body.status == "completed":
         await queue.update_task_status(body.task_id, TaskStatus.REVIEWING)
         logger.info("Task %s ready for review", body.task_id)
+    elif body.status == "needs_clarification":
+        question = body.question or "Worker reported a blocker without details."
+        await queue.mark_needs_clarification(body.task_id, question)
+        logger.info("Task %s is awaiting clarification", body.task_id)
     else:
         await queue.update_task_status(body.task_id, TaskStatus.FAILED)
         logger.warning(
