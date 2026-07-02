@@ -30,7 +30,7 @@ async def verify_event_token(
     supplied = credentials.credentials if credentials is not None else token
     if supplied != expected:
         raise HTTPException(status_code=401, detail="Invalid authentication token")
-    assert supplied is not None
+    assert supplied is not None  # nosec B101 — type narrowing after the 401 guard above
     return supplied
 
 

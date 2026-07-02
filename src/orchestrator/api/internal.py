@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter(tags=["internal"])
 
 # Header name agents must include with the callback token.
-_CALLBACK_TOKEN_HEADER = "x-praxis-callback-token"
+_CALLBACK_TOKEN_HEADER = "x-praxis-callback-token"  # nosec B105 — header name, not a password
 
 
 class AgentDonePayload(BaseModel):

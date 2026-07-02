@@ -95,7 +95,7 @@ class BrainstormSession:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-        assert proc.stdout is not None
+        assert proc.stdout is not None  # nosec B101 — stdout is set via PIPE above
         async for raw in proc.stdout:
             yield raw.decode().strip()
         await proc.wait()

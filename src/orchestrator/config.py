@@ -26,7 +26,7 @@ class Settings(BaseSettings):
     lm_studio_url: str = "http://host.docker.internal:1234"
     agent_model: str = "claude-opus-4-8"
     agent_model_effort: str | None = None
-    host: str = "0.0.0.0"  # noqa: S104
+    host: str = "0.0.0.0"  # noqa: S104  # nosec B104 — intentional, overridden by compose/Caddy
     port: int = 8080
     docs_root: str = "docs"
     brainstorm_workspace: str = _default_brainstorm_workspace()
