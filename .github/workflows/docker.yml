@@ -1,0 +1,48 @@
+name: Docker
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "docker/**"
+      - "docker-compose.yml"
+      - ".github/workflows/docker.yml"
+  pull_request:
+    paths:
+      - "docker/**"
+      - "docker-compose.yml"
+      - ".github/workflows/docker.yml"
+
+jobs:
+  entrypoint-syntax:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Shell-check all entrypoints
+        run: |
+          for f in docker/*/entrypoint.sh; do
+            echo "== $f"
+            bash -n "$f"
+          done
+
+  build-agents:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        image: [aider-agent, opencode-agent, openhands-agent]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build ${{ matrix.image }}
+        run: |
+          docker build -t praxis-ci/${{ matrix.image }} \
+            -f docker/${{ matrix.image }}/Dockerfile docker/${{ matrix.image }}/
+
+  build-orchestrator:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build orchestrator
+        run: |
+          docker build -t praxis-ci/orchestrator \
+            -f docker/orchestrator/Dockerfile .
