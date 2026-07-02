@@ -21,7 +21,9 @@ def test_health_endpoint_returns_ok(monkeypatch: pytest.MonkeyPatch) -> None:
     with TestClient(app) as client:
         response = client.get("/health")
         assert response.status_code == 200
-        assert response.json() == {"status": "ok"}
+        body = response.json()
+        assert body["status"] == "ok"
+        assert "build" in body
         assert hasattr(app.state, "db")
         assert hasattr(app.state, "settings")
 
