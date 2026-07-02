@@ -45,7 +45,9 @@ async def _setup_clarifying(db: Database) -> tuple[Orchestrator, str, dict[str, 
     )
     tasks = await task_queue.get_tasks_for_plan(plan_id)
     task_id = str(tasks[0]["id"])
-    await task_queue.mark_needs_clarification(task_id, "Which config file should I use?")
+    await task_queue.mark_needs_clarification(
+        task_id, "Which config file should I use?"
+    )
 
     project_row = await db.fetch_one("SELECT * FROM projects WHERE id = 'p1'")
     project = dict(project_row)  # type: ignore[arg-type]
@@ -83,7 +85,11 @@ async def test_unresolved_answer_parks_for_human(db: Database) -> None:
     orch, task_id, project = await _setup_clarifying(db)
 
     async def fake_answer(**kwargs: Any) -> dict[str, Any]:
-        return {"resolved": False, "answer": "Needs a human decision", "confidence": 0.2}
+        return {
+            "resolved": False,
+            "answer": "Needs a human decision",
+            "confidence": 0.2,
+        }
 
     orch._opus.answer_clarification = fake_answer
     orch._opus.is_available = AsyncMock(return_value=True)

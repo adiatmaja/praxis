@@ -364,9 +364,9 @@ async def test_task_response_includes_clarification_fields(
     auth_headers: dict[str, str],
 ) -> None:
     seed = await _seed_clarifying_task(client, db, auth_headers)
-    task = (
-        await client.get(f"/api/tasks/{seed['id']}", headers=auth_headers)
-    ).json()["task"]
+    task = (await client.get(f"/api/tasks/{seed['id']}", headers=auth_headers)).json()[
+        "task"
+    ]
     assert "clarification_question" in task
     assert "clarification_state" in task
     assert task["clarification_question"] == "Which auth helper?"
@@ -387,7 +387,9 @@ async def test_clarify_endpoint_requeues_task(
         json={"answer": "Use the yaml loader in settings_file.py"},
     )
     assert resp.status_code == 200
-    task = (await client.get(f"/api/tasks/{task_id}", headers=auth_headers)).json()["task"]
+    task = (await client.get(f"/api/tasks/{task_id}", headers=auth_headers)).json()[
+        "task"
+    ]
     assert task["status"] == "pending"
     assert task["clarification_state"] == "resolved"
 
@@ -412,7 +414,9 @@ async def test_clarify_rejects_non_clarifying_task(
         {
             "plan_summary": "S",
             "plan_slug": "s",
-            "tasks": [{"title": "T", "slug": "t", "description": "d", "depends_on": []}],
+            "tasks": [
+                {"title": "T", "slug": "t", "description": "d", "depends_on": []}
+            ],
         },
         "plan/2026-06-01-s",
     )

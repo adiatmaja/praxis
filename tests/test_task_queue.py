@@ -309,7 +309,9 @@ async def test_mark_needs_clarification_parks_without_burning_attempt(
     tasks = await queue.get_tasks_for_plan(plan_id)
     task_id = tasks[0]["id"]
     before = tasks[0]["attempt"]
-    await queue.mark_needs_clarification(task_id, "Which config file holds the API base?")
+    await queue.mark_needs_clarification(
+        task_id, "Which config file holds the API base?"
+    )
     task = await queue.get_task(task_id)
     assert task is not None
     assert task["status"] == TaskStatus.NEEDS_CLARIFICATION

@@ -183,7 +183,9 @@ async def clarify_task(
     queue = request.app.state.task_queue
     task = await queue.get_task(task_id)
     if task is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Task not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Task not found"
+        )
     if task["status"] != TaskStatus.NEEDS_CLARIFICATION:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,

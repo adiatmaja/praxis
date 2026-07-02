@@ -349,7 +349,9 @@ async def test_answer_clarification_returns_structured_verdict(mocker) -> None:
 
     async def fake_run_claude(prompt, model=None, effort=None, cwd=None):
         captured["prompt"] = prompt
-        return '{"resolved": true, "answer": "Use config/praxis.yaml", "confidence": 0.9}'
+        return (
+            '{"resolved": true, "answer": "Use config/praxis.yaml", "confidence": 0.9}'
+        )
 
     bridge = OpusBridge(db=mocker.MagicMock())
     mocker.patch.object(bridge, "_run_claude", side_effect=fake_run_claude)

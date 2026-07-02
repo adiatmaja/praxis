@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 
+
 PARSE_SNIPPET = r"""
 set -euo pipefail
 OUTPUT_LOG="$1"
