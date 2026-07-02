@@ -106,12 +106,13 @@ class AgentManager:
             lm_studio_url = await self._effective_settings.lm_studio_url()
         else:
             lm_studio_url = self._lm_studio_url
+        container_lm_url = _container_host_url(lm_studio_url)
         environment = {
             "REPO_URL": repo_url,
             "BRANCH": branch,
             "BASE_BRANCH": base_branch,
             "TASK_PROMPT": task_prompt,
-            "OPENAI_API_BASE": f"{lm_studio_url}/v1",
+            "OPENAI_API_BASE": f"{container_lm_url}/v1",
             "MODEL": model_name,
             "HARNESS": harness_id,
             "GH_TOKEN": self._github_token,
@@ -147,7 +148,7 @@ class AgentManager:
             environment=environment,
             detach=True,
             auto_remove=False,
-            network_mode="host",
+            extra_hosts={"host.docker.internal": "host-gateway"},
         )
         logger.info(
             "Spawned %s container %s for task %s on branch %s",

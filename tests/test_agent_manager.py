@@ -121,7 +121,7 @@ async def test_spawn_agent_sets_correct_env(mock_docker: MagicMock) -> None:
     assert env["REPO_URL"] == "git@github.com:user/repo.git"
     assert env["BRANCH"] == "agent/signup"
     assert env["BASE_BRANCH"] == "plan/2026-06-01-auth"
-    assert env["OPENAI_API_BASE"] == "http://localhost:9999/v1"
+    assert env["OPENAI_API_BASE"] == "http://host.docker.internal:9999/v1"
     assert env["MODEL"] == "qwen3-32b"
     assert env["HARNESS"] == "opencode"
     assert (
