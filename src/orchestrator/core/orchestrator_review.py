@@ -222,14 +222,44 @@ class ReviewMixin:
             )
             plan_text = slug_to_plan_task.get(task_slug, {}).get("plan_text")
 
-        result = await self._opus.answer_clarification(
-            question=task["clarification_question"] or "",
-            task_description=task["description"] or task["title"],
-            plan_text=plan_text,
-            model=project.get("agent_model"),
-            effort=project.get("agent_model_effort"),
-            project_id=project["id"],
-        )
+        # Fix 1: cap clarification rounds to avoid an unbounded brain/worker loop.
+        max_retries: int = int(project.get("max_retries") or 3)
+        if int(task["attempt"]) >= max_retries:
+            await self._park_awaiting_human(
+                task_id,
+                task["clarification_question"],
+                "Clarification round limit reached; needs a human.",
+            )
+            return
+
+        try:
+            result = await self._opus.answer_clarification(
+                question=task["clarification_question"] or "",
+                task_description=task["description"] or task["title"],
+                plan_text=plan_text,
+                model=project.get("agent_model"),
+                effort=project.get("agent_model_effort"),
+                project_id=project["id"],
+            )
+        except (ValueError, json.JSONDecodeError) as exc:
+            # Fix 3: malformed brain output must not abort the loop pass.
+            await self._park_awaiting_human(
+                task_id,
+                task["clarification_question"],
+                f"Brain returned malformed response: {exc}",
+            )
+            return
+
+        # Fix 2: re-fetch the task; a human /clarify may have resolved it during
+        # the await.  Only proceed if the task is still in the "asked" state.
+        refetched = await self._tq.get_task(task_id)
+        if refetched is None:
+            return
+        if (
+            refetched["status"] != TaskStatus.NEEDS_CLARIFICATION
+            or refetched.get("clarification_state") != "asked"
+        ):
+            return
 
         threshold = float(project.get("confidence_threshold") or 0.7)
         resolved = bool(result.get("resolved")) and (
@@ -249,18 +279,31 @@ class ReviewMixin:
                 }
             )
         else:
-            await self._tq._db.execute(
-                "UPDATE tasks SET clarification_state = 'awaiting_human' WHERE id = ?",
-                (task_id,),
+            await self._park_awaiting_human(
+                task_id,
+                task["clarification_question"],
+                answer,
             )
-            self._bus.publish(
-                {
-                    "type": "task_needs_clarification",
-                    "task_id": task_id,
-                    "question": task["clarification_question"],
-                    "brain_note": answer,
-                }
-            )
+
+    async def _park_awaiting_human(
+        self,
+        task_id: str,
+        question: str | None,
+        brain_note: str,
+    ) -> None:
+        """Set clarification_state to awaiting_human and publish task_needs_clarification."""
+        await self._tq._db.execute(
+            "UPDATE tasks SET clarification_state = 'awaiting_human' WHERE id = ?",
+            (task_id,),
+        )
+        self._bus.publish(
+            {
+                "type": "task_needs_clarification",
+                "task_id": task_id,
+                "question": question,
+                "brain_note": brain_note,
+            }
+        )
 
     async def approve_task_merge(self, task_id: str, project: dict[str, Any]) -> None:
         """Merge a human-approved, review-passed task.

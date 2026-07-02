@@ -166,6 +166,78 @@ async def test_handle_clarification_skips_non_asked_state(db: Database) -> None:
 
 
 @pytest.mark.integration
+async def test_clarification_round_limit_parks_human(db: Database) -> None:
+    """Fix 1: when attempt >= max_retries, park awaiting_human without calling brain."""
+    orch, task_id, project = await _setup_clarifying(db)
+
+    # Bump attempt to max_retries (3)
+    await orch._tq._db.execute(
+        "UPDATE tasks SET attempt = ? WHERE id = ?",
+        (3, task_id),
+    )
+
+    called: list[bool] = []
+
+    async def should_not_be_called(**kwargs: Any) -> dict[str, Any]:
+        called.append(True)
+        msg = "answer_clarification must not be called at retry ceiling"
+        raise AssertionError(msg)
+
+    orch._opus.answer_clarification = should_not_be_called
+    orch._opus.is_available = AsyncMock(return_value=True)
+
+    await orch.handle_clarification(task_id, project)
+
+    assert not called, "brain was called despite attempt >= max_retries"
+    task = await orch._tq.get_task(task_id)
+    assert task is not None
+    assert task["clarification_state"] == "awaiting_human"
+
+
+@pytest.mark.integration
+async def test_human_race_guard_prevents_double_write(db: Database) -> None:
+    """Fix 2: if a human resolves the task mid-await, the brain answer is discarded."""
+    orch, task_id, project = await _setup_clarifying(db)
+
+    async def fake_answer_with_race(**kwargs: Any) -> dict[str, Any]:
+        # Simulate human resolving the task during the brain await.
+        await orch._tq.record_clarification_answer(
+            task_id, "human answer", state="resolved"
+        )
+        return {"resolved": True, "answer": "brain answer", "confidence": 0.95}
+
+    orch._opus.answer_clarification = fake_answer_with_race
+    orch._opus.is_available = AsyncMock(return_value=True)
+
+    await orch.handle_clarification(task_id, project)
+
+    task = await orch._tq.get_task(task_id)
+    assert task is not None
+    # Human-resolved state must win; brain must not overwrite it.
+    assert task["clarification_state"] == "resolved"
+
+
+@pytest.mark.integration
+async def test_malformed_brain_response_parks_human(db: Database) -> None:
+    """Fix 3: ValueError from answer_clarification parks task, does not propagate."""
+    orch, task_id, project = await _setup_clarifying(db)
+
+    async def bad_brain(**kwargs: Any) -> dict[str, Any]:
+        msg = "bad json"
+        raise ValueError(msg)
+
+    orch._opus.answer_clarification = bad_brain
+    orch._opus.is_available = AsyncMock(return_value=True)
+
+    # Must not raise
+    await orch.handle_clarification(task_id, project)
+
+    task = await orch._tq.get_task(task_id)
+    assert task is not None
+    assert task["clarification_state"] == "awaiting_human"
+
+
+@pytest.mark.integration
 async def test_loop_calls_handle_clarification_for_asked_tasks(db: Database) -> None:
     """process_plan_once calls handle_clarification for NEEDS_CLARIFICATION/asked tasks."""
     from orchestrator.models.schemas import PlanStatus
