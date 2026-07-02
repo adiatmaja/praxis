@@ -501,7 +501,7 @@ class TestOrchestrationReview:
             return False, "tsc: error TS2554: Expected 1 arguments, but got 0."
 
         monkeypatch.setattr(
-            "orchestrator.core.orchestrator.run_verify", fake_run_verify
+            "orchestrator.core.orchestrator_review.run_verify", fake_run_verify
         )
         await orch.review_task(mocks.task_id, mocks.project)
 
@@ -526,7 +526,7 @@ class TestOrchestrationReview:
             return True, "all good"
 
         monkeypatch.setattr(
-            "orchestrator.core.orchestrator.run_verify", fake_run_verify
+            "orchestrator.core.orchestrator_review.run_verify", fake_run_verify
         )
         await orch.review_task(mocks.task_id, mocks.project)
         mocks.opus.review_diff.assert_called_once()
@@ -974,11 +974,11 @@ class TestSyncPlanCheckbox:
 
         with (
             patch(
-                "orchestrator.core.orchestrator.clone_with_token",
+                "orchestrator.core.orchestrator_review.clone_with_token",
                 side_effect=fake_clone,
             ),
             patch(
-                "orchestrator.core.orchestrator.commit_and_push",
+                "orchestrator.core.orchestrator_review.commit_and_push",
                 side_effect=fake_commit_push,
             ),
         ):
