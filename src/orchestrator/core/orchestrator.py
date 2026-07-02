@@ -313,8 +313,11 @@ class Orchestrator:
                         ),
                     }
 
-            diff = await self._git.get_pr_diff(".", pr_number, repo=repo)
+            # Only fetch the diff / call the brain if the gate did not already
+            # fail the task; on gate failure the diff is unused (verdict is fail).
+            diff = ""
             if review is None:
+                diff = await self._git.get_pr_diff(".", pr_number, repo=repo)
                 review = await self._opus.review_diff(
                     diff,
                     task["description"] or task["title"],
