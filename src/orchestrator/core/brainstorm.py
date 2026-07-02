@@ -145,15 +145,10 @@ class BrainstormManager:
         workspace_base: str,
         event_bus: object,
         credentials: GitHubCredentialProvider | str,
-        github_token: str | None = None,
     ) -> None:
         self._base = workspace_base
         self._bus = event_bus
         # Accept a bare str (legacy PAT) or a provider object.
-        if github_token is not None and isinstance(credentials, str):
-            # Called with old github_token= positional as credentials and new kwarg
-            # not provided; treat credentials as the token string.
-            pass
         if isinstance(credentials, str):
             self._provider: GitHubCredentialProvider = PatCredentialProvider(
                 credentials

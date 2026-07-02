@@ -33,7 +33,6 @@ class ContextSync:
         workspace_base: str,
         credentials: GitHubCredentialProvider | str,
         memory_md_path: str,
-        github_token: str | None = None,
     ) -> None:
         self._base = workspace_base
         if isinstance(credentials, str):
