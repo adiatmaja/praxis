@@ -54,6 +54,21 @@ async def detect_context_limit(lm_studio_url: str, model_name: str) -> int | Non
     return None
 
 
+def _container_host_url(url: str) -> str:
+    """Rewrite a host-loopback URL so it is reachable from inside a bridge container.
+
+    Under host networking a container could reach the orchestrator's LM Studio on
+    ``localhost``; under bridge networking ``localhost`` is the container itself, so
+    loopback hosts must be swapped for ``host.docker.internal`` (mapped to the host
+    gateway via ``extra_hosts``). Non-loopback hosts are returned unchanged.
+    """
+    for loopback in ("localhost", "127.0.0.1"):
+        url = url.replace(f"//{loopback}:", "//host.docker.internal:").replace(
+            f"//{loopback}/", "//host.docker.internal/"
+        )
+    return url
+
+
 class AgentManager:
     """Manage Aider agent Docker containers."""
 
@@ -91,12 +106,13 @@ class AgentManager:
             lm_studio_url = await self._effective_settings.lm_studio_url()
         else:
             lm_studio_url = self._lm_studio_url
+        container_lm_url = _container_host_url(lm_studio_url)
         environment = {
             "REPO_URL": repo_url,
             "BRANCH": branch,
             "BASE_BRANCH": base_branch,
             "TASK_PROMPT": task_prompt,
-            "OPENAI_API_BASE": f"{lm_studio_url}/v1",
+            "OPENAI_API_BASE": f"{container_lm_url}/v1",
             "MODEL": model_name,
             "HARNESS": harness_id,
             "GH_TOKEN": self._github_token,
@@ -132,7 +148,7 @@ class AgentManager:
             environment=environment,
             detach=True,
             auto_remove=False,
-            network_mode="host",
+            extra_hosts={"host.docker.internal": "host-gateway"},
         )
         logger.info(
             "Spawned %s container %s for task %s on branch %s",

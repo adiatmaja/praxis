@@ -287,7 +287,16 @@ Tables: `users`, `projects`, `plans`, `tasks`, `agent_runs`, `opus_state`,
 - **Agent callbacks retry with backoff** — each `docker/<harness>-agent/entrypoint.sh`
   `send_callback` retries the POST to `/api/internal/agent-done` up to
   `CALLBACK_MAX_ATTEMPTS` (default 5) until HTTP 200. The orchestrator's reconciliation
-  is the backstop if all attempts fail.
+  is the backstop if all attempts fail. The `/api/internal/agent-done` endpoint now
+  **fails closed (503)** when `internal_callback_secret` is unconfigured; in practice this
+  never triggers because the secret is derived deterministically from the required
+  `AUTH_TOKEN`, so any running orchestrator always has it set.
+- **Agent containers run on Docker's default bridge network** — `spawn_agent` sets
+  `extra_hosts={"host.docker.internal": "host-gateway"}` instead of
+  `network_mode="host"`. The LM Studio URL is rewritten via `_container_host_url` so a
+  `localhost` orchestrator setting stays reachable from inside the container. The worker
+  can still reach `host.docker.internal` (needed for LM Studio and the callback
+  endpoint), so this reduces but does not eliminate host network exposure.
 - **Aider agent image is standalone — rebuild it after ANY `entrypoint.sh` change** —
   `aider-agent:latest` is not in docker-compose, so a stale image silently runs old
   entrypoint logic while the source looks current. This bit us live: a pre-callback-token

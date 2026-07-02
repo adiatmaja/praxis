@@ -121,7 +121,7 @@ async def test_spawn_agent_sets_correct_env(mock_docker: MagicMock) -> None:
     assert env["REPO_URL"] == "git@github.com:user/repo.git"
     assert env["BRANCH"] == "agent/signup"
     assert env["BASE_BRANCH"] == "plan/2026-06-01-auth"
-    assert env["OPENAI_API_BASE"] == "http://localhost:9999/v1"
+    assert env["OPENAI_API_BASE"] == "http://host.docker.internal:9999/v1"
     assert env["MODEL"] == "qwen3-32b"
     assert env["HARNESS"] == "opencode"
     assert (
@@ -459,3 +459,87 @@ def test_list_agent_containers_queries_both_prefixes(mock_docker: MagicMock) -> 
     filters_used = [c.kwargs["filters"] for c in calls]
     assert {"name": "praxis-agent-"} in filters_used
     assert {"name": "aider-agent-"} in filters_used
+
+
+@pytest.mark.unit
+@patch("orchestrator.core.agent_manager.docker")
+async def test_spawn_agent_uses_bridge_network_not_host(
+    mock_docker: MagicMock,
+) -> None:
+    """Agent containers must NOT use host networking; they use bridge + host-gateway."""
+    mock_client = MagicMock()
+    mock_docker.from_env.return_value = mock_client
+    mock_client.containers.run.return_value = _mock_container()
+
+    manager = AgentManager(
+        lm_studio_url="http://host.docker.internal:1234", github_token="ghp_x"
+    )
+    await manager.spawn_agent(
+        task_id="net-1",
+        repo_url="https://github.com/u/r.git",
+        branch="agent/x",
+        base_branch="plan/x",
+        task_prompt="p",
+        model_name="m",
+        callback_url="http://host.docker.internal:8080/api/internal/agent-done",
+    )
+
+    kwargs = mock_client.containers.run.call_args.kwargs
+    assert kwargs.get("network_mode") != "host"
+    assert kwargs["extra_hosts"] == {"host.docker.internal": "host-gateway"}
+
+
+@pytest.mark.unit
+@patch("orchestrator.core.agent_manager.docker")
+async def test_spawn_agent_rewrites_localhost_lm_studio_url(
+    mock_docker: MagicMock,
+) -> None:
+    """A localhost LM Studio URL is rewritten to host.docker.internal for the container."""
+    mock_client = MagicMock()
+    mock_docker.from_env.return_value = mock_client
+    mock_client.containers.run.return_value = _mock_container()
+
+    manager = AgentManager(lm_studio_url="http://localhost:1234", github_token="ghp_x")
+    await manager.spawn_agent(
+        task_id="net-2",
+        repo_url="https://github.com/u/r.git",
+        branch="agent/x",
+        base_branch="plan/x",
+        task_prompt="p",
+        model_name="m",
+        callback_url="http://host.docker.internal:8080/api/internal/agent-done",
+    )
+
+    env = mock_client.containers.run.call_args.kwargs["environment"]
+    assert env["OPENAI_API_BASE"] == "http://host.docker.internal:1234/v1"
+
+
+@pytest.mark.unit
+def test_container_host_url_rewrites_localhost() -> None:
+    from orchestrator.core.agent_manager import _container_host_url
+
+    assert (
+        _container_host_url("http://localhost:1234")
+        == "http://host.docker.internal:1234"
+    )
+
+
+@pytest.mark.unit
+def test_container_host_url_rewrites_127_0_0_1() -> None:
+    from orchestrator.core.agent_manager import _container_host_url
+
+    assert (
+        _container_host_url("http://127.0.0.1:1234")
+        == "http://host.docker.internal:1234"
+    )
+
+
+@pytest.mark.unit
+def test_container_host_url_leaves_remote_untouched() -> None:
+    from orchestrator.core.agent_manager import _container_host_url
+
+    assert (
+        _container_host_url("http://host.docker.internal:1234")
+        == "http://host.docker.internal:1234"
+    )
+    assert _container_host_url("http://192.168.1.5:1234") == "http://192.168.1.5:1234"
