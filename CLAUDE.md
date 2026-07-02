@@ -311,6 +311,14 @@ Tables: `users`, `projects`, `plans`, `tasks`, `agent_runs`, `opus_state`,
 - **Agent git auth uses `GH_TOKEN`** — configured via credential helper in entrypoint.
   Without it, HTTPS git operations (clone private repos, push branches) fail with
   "could not read Username"
+- **GitHub credentials go through a provider seam:** `core/github_credentials.py`
+  resolves a token per repo. With `GITHUB_APP_ID` + `GITHUB_APP_PRIVATE_KEY` set,
+  Praxis mints short-lived, repo-scoped installation tokens (App private key never
+  enters a container); otherwise it falls back to the static `GITHUB_TOKEN` PAT.
+  `GitOps`, `AgentManager`, `BrainstormManager`, and `ContextSync` all take a
+  `credentials` provider (a bare token string is still accepted and wrapped in a
+  `PatCredentialProvider`). Installation tokens cap at 1h, so a >1h agent run can
+  fail its final push (refresh endpoint is a planned follow-up).
 - **`OPENAI_API_KEY` required by Aider** — even for local LLMs via LM Studio, Aider's
   litellm backend requires a non-empty API key. The entrypoint sets a dummy value
   (`not-needed`) if not provided
