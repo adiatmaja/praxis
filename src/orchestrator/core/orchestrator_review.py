@@ -518,3 +518,18 @@ class ReviewMixin:
                 "draft_id": draft["draft_id"],
             }
         )
+        plan_branch = plan.get("plan_branch_name")
+        if plan_branch and project.get("repo_url"):
+            from orchestrator.core.git_ops import compare_url
+
+            base = project.get("default_branch") or "main"
+            self._bus.publish(
+                {
+                    "type": "plan_integration_ready",
+                    "project_id": project["id"],
+                    "plan_id": plan_id,
+                    "plan_branch": plan_branch,
+                    "base_branch": base,
+                    "compare_url": compare_url(project["repo_url"], base, plan_branch),
+                }
+            )
