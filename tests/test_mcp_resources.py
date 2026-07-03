@@ -60,3 +60,11 @@ def test_guide_mentions_execute_plan_even_before_implemented() -> None:
     """execute_plan is documented as part of the decision tree (Spec 2)."""
     text = server.load_orchestration_guide()
     assert "execute_plan" in text
+
+
+@pytest.mark.unit
+def test_guide_documents_awaiting_merge() -> None:
+    """The guide must document the human-approval parking state, not imply auto-merge."""
+    guide = server.load_orchestration_guide()
+    assert "awaiting_merge" in guide
+    assert "approve" in guide.lower()

@@ -3,7 +3,8 @@
 You are an agent connected to Praxis over MCP. Praxis is an AI agent orchestrator:
 you plan and reason, Praxis runs a local-LLM worker that implements the change in a
 one-shot Docker container (clone, implement, commit, open a PR), and Praxis's own
-brain then reviews the PR and merges it on pass (re-dispatching on fail). This guide
+brain then reviews the PR; on pass it parks the PR for human approval (or auto-merges
+if the project opts in), and re-dispatches on fail. This guide
 explains when to hand work to Praxis and how to drive its tools.
 
 For live data (which worker models exist, whether brain providers are authenticated),
@@ -54,15 +55,23 @@ or your user want to watch in a browser.
 
 The task moves through this state machine:
 
-`pending -> in_progress -> reviewing -> passed -> merged`
+`pending -> in_progress -> reviewing -> awaiting_merge -> merged`
 
 - `pending` / `in_progress` - queued or being implemented by the worker. Keep polling.
 - `reviewing` - the worker opened a PR; Praxis's brain is reviewing it. Keep polling.
-- `passed` - review passed; Praxis squash-merges. Usually transient before `merged`.
-- `merged` - done. The change is on the base branch; read `pr_url` for the record.
+- `awaiting_merge` - the PR passed review and is parked OPEN for a human to approve and
+  merge. `poll_task` returns `status="awaiting_merge"` with `verdict="pass"`, the full
+  `review`, and `pr_url`. Relay the `pr_url` to the user so they can approve the PR.
+  Praxis does NOT auto-merge by default; a project may opt in via `auto_merge`, which
+  still never applies to protected branches (`main`, `master`, `release*`).
+- `merged` - done. The PR was merged (via human approval or opted-in auto-merge). The
+  change is on the base branch; read `pr_url` for the record.
 - `failed` - a run failed review or produced no usable change. Praxis automatically
   re-dispatches up to the project's max_retries before the task goes terminal. Inspect
   with `get_task_logs` if it stays failed.
+- `awaiting_clarification` - the worker was blocked and asked a question. Praxis will
+  try to answer from the plan context; if it cannot, the task parks for human input.
+  Poll until it advances or check the dashboard.
 - `blocked` / `needs_stronger_model` (via `execute_plan`) - Praxis judged the task too
   hard for the local model and did not ship guesswork. Revise the task into smaller
   pieces, accept the project's escalation outcome, or handle it yourself.
