@@ -418,7 +418,7 @@
     .lane-meta { color: var(--text-faint); font-size: 11px; font-family: "Cascadia Mono", "SF Mono", Consolas, monospace; white-space: nowrap; }
     .lane-spec-full { padding: 0 20px 12px; font-size: 13px; line-height: 1.6; color: var(--text-muted); white-space: pre-wrap; }
 
-    .lane-cards { display: flex; gap: 10px; padding: 0 20px 14px; overflow-x: auto; }
+    .lane-cards { display: flex; flex-wrap: wrap; gap: 10px; padding: 0 20px 14px; }
     .task-card {
       min-width: 170px;
       max-width: 220px;
@@ -562,13 +562,13 @@
     .side-panel-header-badge { margin-top: 4px; }
     /* curated log line styles */
     .log-line-phase { color: var(--badge-passed-text, #2ea44f); }
-    .log-line-file { color: var(--text); }
+    .log-line-file { color: var(--log-text); }
     .log-line-commit { color: var(--badge-passed-text, #2ea44f); font-weight: 600; }
     .log-line-test-pass { color: var(--badge-passed-text, #2ea44f); }
     .log-line-test-fail { color: var(--badge-failed-text, #cf222e); }
-    .log-line-info { color: var(--text-muted); }
+    .log-line-info { color: color-mix(in srgb, var(--log-text) 70%, transparent); }
     .log-line-collapse { color: var(--text-faint); font-style: italic; }
-    .log-line-prose { color: var(--text); display: block; margin: 2px 0; }
+    .log-line-prose { color: var(--log-text); display: block; margin: 2px 0; }
     .dashboard-idle {
       display: flex;
       flex-direction: column;
@@ -581,7 +581,6 @@
 
     @media (max-width: 768px) {
       .side-panel.open { width: 100%; min-width: 0; position: absolute; top: 0; left: 0; right: 0; bottom: 0; z-index: 10; }
-      .lane-cards { flex-wrap: wrap; }
       .task-card { min-width: 140px; }
     }
     .doc-bar { width: 120px; height: 6px; background: var(--border-subtle); border-radius: 3px; overflow: hidden; }
