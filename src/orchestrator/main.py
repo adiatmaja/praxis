@@ -130,6 +130,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         callback_url=settings.callback_url(),
         callback_token=app.state.internal_callback_secret,
         effective_settings=effective_settings,
+        llm_router=app.state.llm_router,
     )
     app.state.brainstorm = BrainstormManager(
         workspace_base=settings.brainstorm_workspace,

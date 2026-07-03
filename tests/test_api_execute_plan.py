@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from unittest.mock import AsyncMock
 
 import pytest
@@ -18,42 +17,15 @@ async def seeded_user(db: Database) -> str:
     return await seed_user(db)
 
 
-async def test_execute_plan_reviews_and_activates(
+async def test_execute_plan_returns_immediately_without_brain_call(
     client: AsyncClient,
     auth_headers: dict[str, str],
     seeded_user: str,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    captured: dict = {}
-
-    async def fake_run(call_site: str, prompt: str, project_id, cwd=None) -> str:
-        captured["call_site"] = call_site
-        return json.dumps(
-            {
-                "tasks": [
-                    {
-                        "id": "t1",
-                        "title": "Add model",
-                        "description": "d",
-                        "depends_on": [],
-                        "checklist": [{"text": "write test"}],
-                        "needs_stronger_model": False,
-                    }
-                ]
-            }
-        )
-
-    async def fake_activate(plan_id, opus_plan, branch_name) -> None:
-        captured["opus_plan"] = opus_plan
-        captured["branch"] = branch_name
-
-    monkeypatch.setattr(
-        app.state,
-        "llm_router",
-        AsyncMock(run=AsyncMock(side_effect=fake_run)),
-        raising=False,
-    )
-    monkeypatch.setattr(app.state.task_queue, "activate_plan", fake_activate)
+    """Endpoint must return 201 with status=decomposing without calling the brain."""
+    router_mock = AsyncMock()
+    monkeypatch.setattr(app.state, "llm_router", router_mock, raising=False)
 
     resp = await client.post(
         "/api/execute-plan",
@@ -65,11 +37,42 @@ async def test_execute_plan_reviews_and_activates(
         },
     )
     assert resp.status_code == 201, resp.text
-    assert captured["call_site"] == "plan_review"
-    assert captured["opus_plan"]["tasks"][0]["id"] == "t1"
     body = resp.json()
-    assert body["leaves"] == ["t1"]
-    assert body["blocked"] == []
+    assert body["status"] == "decomposing"
+    assert body["plan_id"]
+    assert body["project_id"]
+    # Brain must NOT have been called in the request path.
+    router_mock.run.assert_not_called()
+
+
+async def test_execute_plan_persists_pending_plan(
+    client: AsyncClient,
+    auth_headers: dict[str, str],
+    seeded_user: str,
+    monkeypatch: pytest.MonkeyPatch,
+    db: Database,
+) -> None:
+    """The created plan row must be PENDING with pending_input set and opus_plan null."""
+    monkeypatch.setattr(app.state, "llm_router", AsyncMock(), raising=False)
+
+    resp = await client.post(
+        "/api/execute-plan",
+        headers=auth_headers,
+        json={
+            "repo_url": "https://github.com/o/r2",
+            "plan": "Add input validation",
+            "model": "qwen3",
+        },
+    )
+    assert resp.status_code == 201
+    plan_id = resp.json()["plan_id"]
+
+    row = await db.fetch_one("SELECT * FROM plans WHERE id = ?", (plan_id,))
+    assert row is not None
+    assert row["status"] == "pending"
+    assert row["source"] == "execute-plan"
+    assert row["pending_input"] is not None
+    assert row["opus_plan"] is None
 
 
 async def test_execute_plan_missing_plan_returns_422(
@@ -86,7 +89,7 @@ async def test_execute_plan_missing_plan_returns_422(
 @pytest.mark.unit
 def test_normalize_slugs_adds_slug_and_remaps_depends_on() -> None:
     """Brain ids must become slugs so TaskQueue.activate_plan can consume them."""
-    from orchestrator.api.execute_plan import _normalize_slugs
+    from orchestrator.core.execute_plan_decompose import normalize_slugs
 
     opus_plan = {
         "tasks": [
@@ -104,7 +107,7 @@ def test_normalize_slugs_adds_slug_and_remaps_depends_on() -> None:
             },
         ]
     }
-    _normalize_slugs(opus_plan)
+    normalize_slugs(opus_plan)
     t1, t2 = opus_plan["tasks"]
     assert t1["slug"]
     assert t2["slug"]
