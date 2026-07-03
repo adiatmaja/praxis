@@ -34,6 +34,7 @@ class BibleSources:
     plan_slice: str | None = None
     caller_context: str | None = None
     repo_memory: str | None = None
+    review_feedback: str | None = None
     reserve_fraction: float = 0.6
 
 
@@ -47,6 +48,16 @@ def build_bible(src: BibleSources) -> str:
     if src.caller_context:
         raw_sections.append(
             Section("caller", f"# CONTEXT\n{src.caller_context}", 3, floor=True)
+        )
+    if src.review_feedback:
+        raw_sections.append(
+            Section(
+                "feedback",
+                "# PREVIOUS ATTEMPT FEEDBACK (fix these before anything else)\n"
+                f"{src.review_feedback}",
+                3,
+                floor=True,
+            )
         )
     if src.plan_slice:
         raw_sections.append(Section("plan", f"# PLAN\n{src.plan_slice}", 4))

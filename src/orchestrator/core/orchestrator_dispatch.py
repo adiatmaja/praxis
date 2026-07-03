@@ -186,5 +186,6 @@ class DispatchMixin:
                 plan_slice=plan_task.get("plan_text"),
                 caller_context=plan_task.get("context_text"),
                 repo_memory=None,  # repo files folded in by entrypoint --read
+                review_feedback=task.get("review_feedback"),
             )
         )
