@@ -139,6 +139,11 @@
       return response.json();
     }
 
+    // Strip ANSI SGR / CSI escape sequences (opencode CLI emits colored output).
+    // eslint-disable-next-line no-control-regex
+    const ANSI_RE = /\x1b[[()#;?]*(?:[0-9]{1,4}(?:;[0-9]{0,4})*)?[0-9A-ORZcf-nqry=><]/g;
+    function stripAnsi(s) { return String(s == null ? "" : s).replace(ANSI_RE, ""); }
+
     function esc(value) {
       return String(value ?? "").replace(/[&<>"']/g, c => ({
         "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
@@ -1004,10 +1009,7 @@
       const agentDot = document.getElementById("agent-dot");
       const agentCount = Number(document.getElementById("stat-agents")?.textContent || 0);
       const queueCount = Number(document.getElementById("stat-queue")?.textContent || 0);
-      let opusStatus = "unknown";
-      if (agentDot && agentDot.classList.contains("rate_limited")) opusStatus = "rate_limited";
-      if (agentDot && agentDot.classList.contains("connected")) opusStatus = "available";
-      if (agentDot && agentDot.classList.contains("disconnected")) opusStatus = "resuming";
+      const opusStatus = window.__opusStatus || "unknown";
       const attentionBadge = attentionCount > 0 ? '<span class="health-attention">' + attentionCount + ' needs attention</span>' : "";
       return '<div class="health-bar">' +
         '<div class="health-item"><span class="health-dot ' + esc(opusStatus) + '"></span><span>Opus ' + esc(opusStatus.replace("_", " ")) + '</span></div>' +
@@ -1017,12 +1019,18 @@
       '</div>';
     }
 
+    function planLabel(plan) {
+      const raw = plan.spec || plan.plan_branch_name || plan.plan_path || plan.spec_path || "";
+      const name = String(raw).replace(/^plan\//, "").replace(/\.md$/, "");
+      return name || ("Plan " + String(plan.id || "").slice(0, 8));
+    }
+
     function renderSwimLane(plan) {
       const tasks = (dashboardTasks[plan.id] || []).slice();
       const statusOrder = { merged: 0, passed: 1, reviewing: 2, in_progress: 3, failed: 4, pending: 5 };
       tasks.sort((a, b) => (statusOrder[a.status] ?? 99) - (statusOrder[b.status] ?? 99));
       const isSpecExpanded = expandedSpecs.has(plan.id);
-      const specPreview = esc(plan.spec).slice(0, 80);
+      const specPreview = esc(planLabel(plan)).slice(0, 80);
       const approvalActions = (plan.status === "pending" && plan.source === "autonomous") ?
         '<button class="btn btn-compact btn-primary" type="button" onclick="dashboardApprove(\'' + esc(plan.id) + '\')">Approve</button>' +
         '<button class="btn btn-compact btn-danger" type="button" onclick="dashboardReject(\'' + esc(plan.id) + '\')">Reject</button>' : "";
@@ -1050,7 +1058,7 @@
       const prHref = task.pr_url ? safeHref(task.pr_url) : "";
       const prLink = prHref ?
         '<a href="' + prHref + '" target="_blank" rel="noreferrer" onclick="event.stopPropagation()">PR</a>' : "";
-      const logLine = dashboardTaskLogs[task.id] ? '<div class="card-log-line">' + esc(dashboardTaskLogs[task.id]) + '</div>' : "";
+      const logLine = dashboardTaskLogs[task.id] ? '<div class="card-log-line">' + esc(stripAnsi(dashboardTaskLogs[task.id])) + '</div>' : "";
       return '<article class="task-card status-' + esc(task.status) + (isSelected ? " selected" : "") +
         '" data-task-id="' + esc(task.id) + '" onclick="openDashboardTask(' + jsArg(task.id) + ',' + jsArg(task.plan_id) + ')">' +
         '<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;">' +
@@ -1068,7 +1076,7 @@
       const isExpanded = expandedCompletedPlans.has(plan.id);
       const tasks = dashboardTasks[plan.id] || [];
       const mergedCount = tasks.filter(task => task.status === "merged").length;
-      const specPreview = esc(plan.spec).slice(0, 80);
+      const specPreview = esc(planLabel(plan)).slice(0, 80);
       return '<section class="swim-lane completed-lane' + (isExpanded ? " expanded" : "") + '">' +
         '<div class="completed-header" onclick="toggleCompletedPlan(\'' + esc(plan.id) + '\')">' +
           '<span class="disclosure' + (isExpanded ? " open" : "") + '">></span>' +
@@ -1149,6 +1157,7 @@
     // Returns an HTML string. mode: "clean" | "raw".
     function renderCuratedLog(rawText, mode) {
       if (!rawText) return '<span style="color:var(--text-faint);font-style:italic;">Waiting for output&hellip;</span>';
+      rawText = stripAnsi(rawText);
       if (mode === "raw") {
         return esc(rawText);
       }
@@ -1395,7 +1404,7 @@
 
         const logText = String(data.logs || data.line || "");
         const lines = logText.split(/\r?\n/).map(line => line.trim()).filter(Boolean);
-        if (lines.length) dashboardTaskLogs[taskId] = lines[lines.length - 1];
+        if (lines.length) dashboardTaskLogs[taskId] = stripAnsi(lines[lines.length - 1]);
 
         document.querySelectorAll(".task-card").forEach(card => {
           if (card.dataset.taskId !== String(taskId)) return;
@@ -1410,7 +1419,16 @@
         // Side-panel log is now driven by its own dedicated SSE (sidePanelLogSource).
       });
 
-      ["plan_activated", "agent_dispatched", "review_completed", "task_completed", "task_failed", "task_retry", "improvement_proposed"].forEach(type => {
+      ["task_completed", "task_failed"].forEach(type => {
+        source.addEventListener(type, event => {
+          try {
+            const data = JSON.parse(event.data);
+            if (data && data.task_id) delete dashboardTaskLogs[data.task_id];
+          } catch (error) { /* ignore */ }
+          if (currentView === "dashboard") void loadDashboard({ skipSseReconnect: true });
+        });
+      });
+      ["plan_activated", "agent_dispatched", "review_completed", "task_retry", "improvement_proposed"].forEach(type => {
         source.addEventListener(type, () => {
           if (currentView === "dashboard") void loadDashboard({ skipSseReconnect: true });
         });
@@ -1528,6 +1546,7 @@
         if (status.lm_studio_url) effectiveLmStudioUrl = status.lm_studio_url;
         document.getElementById("stat-agents").textContent = status.active_agents;
         document.getElementById("stat-queue").textContent = status.opus_state.queued_count;
+        window.__opusStatus = status.opus_state ? status.opus_state.status : "unknown";
         setConnection("agent", status.agent_model, status.opus_state.status);
         setConnection("subagent", status.subagent_model, status.subagent_model.connected ? "connected" : "disconnected");
         updateProviderLoginBanner(status.providers);
