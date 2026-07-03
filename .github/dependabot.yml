@@ -7,6 +7,10 @@ updates:
     schedule:
       interval: "weekly"
     open-pull-requests-limit: 5
+    # Only raise a >= floor when the installed set actually requires it, so a
+    # brand-new release doesn't spawn a PR just to bump an already-satisfied
+    # minimum. Security updates still come through regardless.
+    versioning-strategy: increase-if-necessary
     groups:
       dev-dependencies:
         dependency-type: "development"
@@ -31,3 +35,9 @@ updates:
     directory: "/docker/orchestrator"
     schedule:
       interval: "weekly"
+    # Python is pinned to 3.11 project-wide (.python-version, requires-python,
+    # CI matrix); a base-image major bump must be a deliberate, coordinated
+    # upgrade, not an automated PR. Patch/minor security bumps still flow.
+    ignore:
+      - dependency-name: "python"
+        update-types: ["version-update:semver-major"]
