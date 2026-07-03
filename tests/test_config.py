@@ -139,7 +139,8 @@ def test_github_app_fields_default_none():
     assert settings.github_app_installation_id is None
 
 
-def test_github_token_optional_when_app_configured():
+def test_github_token_optional_when_app_configured(monkeypatch):
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
     from orchestrator.config import Settings
 
     settings = Settings(
