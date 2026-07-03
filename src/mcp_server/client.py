@@ -63,7 +63,7 @@ class PraxisClient:
         url = f"{self.base_url}{path}"
         try:
             async with httpx.AsyncClient(
-                transport=self._transport, timeout=30.0
+                transport=self._transport, timeout=120.0
             ) as client:
                 response = await client.request(
                     method, url, headers=self._headers(), json=json
@@ -71,6 +71,14 @@ class PraxisClient:
         except httpx.ConnectError as exc:
             msg = f"Cannot reach Praxis at {self.base_url}. Is the server running?"
             raise PraxisClientError("connection_error", msg) from exc  # noqa: EM101
+        except httpx.TimeoutException as exc:
+            msg = (
+                f"Praxis at {self.base_url} did not respond within the client "
+                f"timeout ({method} {path}). The request may still be running "
+                f"server-side; poll for its result rather than retrying. "
+                f"Detail: {exc}"
+            )
+            raise PraxisClientError("timeout", msg) from exc  # noqa: EM101
         except httpx.HTTPError as exc:
             msg = f"HTTP transport error: {exc}"
             raise PraxisClientError("connection_error", msg) from exc  # noqa: EM101
