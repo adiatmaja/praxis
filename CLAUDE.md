@@ -3,8 +3,9 @@
 ## What Is This
 
 Praxis is a Docker-based AI agent orchestrator. Claude Opus (via `claude -p` CLI, subscription)
-handles planning and code review. Local LLM (LM Studio + Aider in Docker containers) handles
-implementation.
+handles planning and code review. A local LLM (LM Studio) drives a pluggable coding harness in
+Docker containers to handle implementation (OpenCode is the default; Aider and OpenHands are
+optional alternatives).
 
 ## Tech Stack
 
@@ -15,7 +16,7 @@ implementation.
 | CLI | Typer + rich |
 | Web UI | No-build HTML/CSS/JS (`web/index.html` + `styles.css` + `app.js`) |
 | Containers | Docker SDK for Python |
-| Agent | Aider (custom Docker image) |
+| Agent | Pluggable harness — OpenCode (default), Aider, OpenHands (custom Docker images) |
 | LLM (plan/review) | Claude Opus via `claude -p` (subscription) |
 | LLM (implement) | Local model via LM Studio (OpenAI-compatible) |
 | Git/GitHub | git CLI, gh CLI |
@@ -196,7 +197,7 @@ Tables: `users`, `projects`, `plans`, `tasks`, `agent_runs`, `opus_state`,
   renders to an interactive TTY and yields no capturable stdout non-interactively (see the
   provider-auth gotcha below).
 - **Single FastAPI monolith** — no microservices for v1
-- **Docker SDK** for spawning Aider containers programmatically
+- **Docker SDK** for spawning harness agent containers programmatically
 - **`claude -p`** for all Opus interactions (planning, review, improvement analysis)
 - **Rate limit handling** — detect 5h subscription limit, queue Opus calls, auto-resume
 - **Two-tier git branching** — `plan/{date}-{slug}` groups tasks, `agent/{task-slug}` per task
