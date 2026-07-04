@@ -84,8 +84,8 @@ subscription can run the whole loop, with the local model coding for zero tokens
        │                   ▼                         │
        │        ┌──────────────────────┐            │
        │        │  CODING AGENT (Docker)│            │
-       │        │  Aider / OpenCode /   │            │
-       │        │  OpenHands            │            │
+       │        │  OpenCode (default) / │            │
+       │        │  Aider / OpenHands    │            │
        │        └──────────┬───────────┘            │
        │                   │ OpenAI-compatible       │
        │                   ▼                         │
@@ -158,7 +158,7 @@ Beyond the brain/hands split above:
 
 Three front-ends (an MCP client like Claude Code, the web dashboard, the Typer CLI) are
 all thin clients of one REST API. Behind it, a FastAPI + SQLite orchestrator farms
-code-writing out to per-task Docker agents (Aider / OpenCode / OpenHands, talking to LM
+code-writing out to per-task Docker agents (OpenCode by default, or Aider / OpenHands, talking to LM
 Studio) and sends planning/review to your subscription CLI (`claude`, `codex`, `agy`) or
 a local model, configurable per call-site.
 

@@ -24,8 +24,9 @@
                                          │               │
                           ┌──────────────┼──────┐        │
                           ▼              ▼      ▼        │
-                    aider-agent    aider-agent  ...    claude -p
-                    (Docker)       (Docker)           (subscription)
+                  harness-agent  harness-agent  ...    claude -p
+                  (Docker, e.g.  (Docker)             (subscription)
+                   opencode)
                           │              │
                           └──────┬───────┘
                                  ▼

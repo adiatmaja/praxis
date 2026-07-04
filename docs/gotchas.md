@@ -92,12 +92,13 @@ keep the CLAUDE.md index in sync.
   `localhost` orchestrator setting stays reachable from inside the container. The worker
   can still reach `host.docker.internal` (needed for LM Studio and the callback
   endpoint), so this reduces but does not eliminate host network exposure.
-- **Aider agent image is standalone — rebuild it after ANY `entrypoint.sh` change** —
-  `aider-agent:latest` is not in docker-compose, so a stale image silently runs old
+- **Harness agent images are standalone — rebuild after ANY `entrypoint.sh` change** —
+  the agent images (`opencode-agent:latest` default, plus `aider-agent`/`openhands-agent`)
+  are not in docker-compose, so a stale image silently runs old
   entrypoint logic while the source looks current. This bit us live: a pre-callback-token
   image sent an **empty** `X-Praxis-Callback-Token`, so every callback 401'd and tasks
-  never advanced past implement (only reconcile → failed). Rebuild fixes it:
-  `docker build -t aider-agent:latest -f docker/aider-agent/Dockerfile docker/aider-agent/`.
+  never advanced past implement (only reconcile → failed). Rebuild fixes it, e.g.:
+  `docker build -t opencode-agent:latest -f docker/opencode-agent/Dockerfile docker/opencode-agent/`.
   To read an image's baked-in files reliably use `docker cp <container>:/path` — NOT
   `docker run --entrypoint cat <img> /path`, which on buildkit multi-manifest images
   resolves the attestation manifest (no rootfs) and returns nothing (false negative).

@@ -11,18 +11,24 @@ package, serves FastAPI on port 8080.
 docker build -t orchestrator:latest -f docker/orchestrator/Dockerfile .
 ```
 
-### Aider Agent (`docker/aider-agent/Dockerfile`)
+### Coding Agent (`docker/opencode-agent/`, `docker/aider-agent/`, `docker/openhands-agent/`)
 
-Python 3.11-slim with git, gh CLI, and `aider-chat`. Runs as non-root `agent` user.
-Each container is a single-use worker that clones, implements, pushes, and creates a PR.
+Each harness has its own single-use worker image that clones, implements, pushes, and
+creates a PR, running as non-root `agent` user. **OpenCode is the default harness** (its
+agentic loop reads files in bounded chunks and auto-compacts, so it survives large tasks);
+Aider and OpenHands are optional alternatives. Build the one(s) you use:
 
 ```bash
+# Default harness (OpenCode)
+docker build -t opencode-agent:latest -f docker/opencode-agent/Dockerfile docker/opencode-agent/
+
+# Optional alternatives
 docker build -t aider-agent:latest -f docker/aider-agent/Dockerfile docker/aider-agent/
+docker build -t openhands-agent:latest -f docker/openhands-agent/Dockerfile docker/openhands-agent/
 ```
 
-> Other harnesses (`docker/opencode-agent/`, `docker/openhands-agent/`) build the same
-> way and honor the same entrypoint contract. AgentManager selects the image by the
-> project's `harness` column. All are standalone (not in docker-compose); build directly.
+> All harness images honor the same entrypoint contract. AgentManager selects the image by
+> the project's `harness` column. All are standalone (not in docker-compose); build directly.
 
 **Agent container environment variables** (harness-agnostic contract, set by AgentManager):
 
@@ -44,7 +50,7 @@ docker build -t aider-agent:latest -f docker/aider-agent/Dockerfile docker/aider
 
 ```
 clone repo -> checkout base branch -> create agent branch
-    -> run aider -> push -> create PR -> callback orchestrator
+    -> run harness -> push -> create PR -> callback orchestrator
 ```
 
 On failure, the trap sends a `"failed"` callback so the orchestrator can retry.
