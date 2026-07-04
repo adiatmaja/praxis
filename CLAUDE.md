@@ -105,7 +105,12 @@ praxis/
 # Setup
 uv venv && uv sync --extra dev && cp .env.example .env
 
-# Run locally
+# Run — containerized (RECOMMENDED: survives terminal exit, restart: unless-stopped)
+docker compose -f docker-compose.yml -f docker-compose.local.yml up --build -d  # dev, hot-reload
+docker compose up --build                                                         # production
+docker compose --profile hosted up --build                                        # with Caddy
+
+# Run — bare uvicorn (quick one-off only; process dies with the terminal and orphans in-flight tasks)
 uv run uvicorn orchestrator.main:app --host 127.0.0.1 --port 8080
 
 # Tests
@@ -117,10 +122,6 @@ uv run ruff check --fix src/ tests/
 
 # Type check
 uv run mypy src/orchestrator/ --ignore-missing-imports
-
-# Docker
-docker compose up --build                              # local mode
-docker compose --profile hosted up --build             # with Caddy
 ```
 
 ## CI/CD (GitHub Actions)

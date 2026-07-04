@@ -225,6 +225,85 @@ async def test_execute_plan_returns_error_on_client_failure() -> None:
     assert result["error"] == "validation_error"
 
 
+async def test_poll_plan_happy_path_maps_statuses() -> None:
+    client = FakeClient(
+        {
+            ("GET", "/api/plans/p1"): {"id": "p1", "status": "active"},
+            ("GET", "/api/plans/p1/tasks"): [
+                {
+                    "id": "t1",
+                    "title": "Add auth",
+                    "status": "passed",
+                    "pr_url": "https://github.com/u/r/pull/1",
+                },
+                {
+                    "id": "t2",
+                    "title": "Write tests",
+                    "status": "in_progress",
+                    "pr_url": None,
+                },
+                {
+                    "id": "t3",
+                    "title": "Refactor",
+                    "status": "needs_clarification",
+                    "pr_url": None,
+                },
+            ],
+        }
+    )
+    result = await server.poll_plan_impl(client, plan_id="p1")
+    assert result["plan_id"] == "p1"
+    assert result["status"] == "active"
+    assert result["task_count"] == 3
+    tasks = {t["task_id"]: t for t in result["tasks"]}
+    assert tasks["t1"]["status"] == "awaiting_merge"
+    assert tasks["t1"]["pr_url"] == "https://github.com/u/r/pull/1"
+    assert tasks["t2"]["status"] == "in_progress"
+    assert tasks["t3"]["status"] == "awaiting_clarification"
+    assert "dashboard_url" in result
+
+
+async def test_poll_plan_plan_get_error_returns_error() -> None:
+    class FailPlanClient:
+        async def get(self, path: str) -> Any:
+            code = "not_found"
+            raise PraxisClientError(code, "plan not found")  # noqa: EM101
+
+    result = await server.poll_plan_impl(FailPlanClient(), plan_id="p99")  # type: ignore[arg-type]
+    assert result["error"] == "not_found"
+    assert "plan not found" in result["message"]
+
+
+async def test_poll_plan_tasks_get_error_returns_error() -> None:
+    class FailTasksClient:
+        def __init__(self) -> None:
+            self._call_count = 0
+
+        async def get(self, path: str) -> Any:
+            self._call_count += 1
+            if self._call_count == 1:
+                return {"id": "p1", "status": "active"}
+            code = "server_error"
+            raise PraxisClientError(code, "tasks unavailable")  # noqa: EM101
+
+    result = await server.poll_plan_impl(FailTasksClient(), plan_id="p1")  # type: ignore[arg-type]
+    assert result["error"] == "server_error"
+    assert "tasks unavailable" in result["message"]
+
+
+async def test_poll_plan_empty_task_list() -> None:
+    client = FakeClient(
+        {
+            ("GET", "/api/plans/p2"): {"id": "p2", "status": "pending"},
+            ("GET", "/api/plans/p2/tasks"): [],
+        }
+    )
+    result = await server.poll_plan_impl(client, plan_id="p2")
+    assert result["task_count"] == 0
+    assert result["tasks"] == []
+    assert result["status"] == "pending"
+
+
 async def test_poll_task_maps_needs_clarification_to_awaiting_clarification() -> None:
     client = FakeClient(
         {

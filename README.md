@@ -187,20 +187,28 @@ them off one at a time:
 git clone https://github.com/adiatmaja/praxis.git
 cd praxis
 
-uv venv && uv sync --extra dev
 cp .env.example .env
 # Edit .env: set AUTH_TOKEN (any secret) and GITHUB_TOKEN (GitHub PAT)
 
-uv run uvicorn orchestrator.main:app --port 12323
+# Start the orchestrator in a container (restart: unless-stopped keeps it alive across
+# terminal exits and reboots; bare uvicorn dies with the session and orphans in-flight tasks)
+docker compose up --build -d
 # Dashboard: http://localhost:12323
 # API docs:  http://localhost:12323/docs
+
+# Dev mode with hot-reload (src/ and web/ mounted):
+docker compose -f docker-compose.yml -f docker-compose.local.yml up --build -d
+
+# Hosted mode with Caddy auto-HTTPS:
+DOMAIN=praxis.example.com docker compose --profile hosted up --build -d
 ```
 
-Or with Docker:
+No Docker? Use bare uvicorn for quick local iteration, but note the process dies with
+the terminal session:
 
 ```bash
-docker compose up --build                                    # local mode
-DOMAIN=praxis.example.com docker compose --profile hosted up --build   # hosted (Caddy auto-HTTPS)
+uv venv && uv sync --extra dev
+uv run uvicorn orchestrator.main:app --port 12323
 ```
 
 Build the coding-agent image for the harness you'll use (they are **not** built by

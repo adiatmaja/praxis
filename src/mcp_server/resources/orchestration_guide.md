@@ -32,6 +32,10 @@ calls: nothing streams to you, so you must poll.
   over a multi-task plan.
 - `list_providers` - call first to see available worker models and brain/provider auth
   status before dispatching.
+- `poll_plan` - watch a whole `execute_plan` submission. Given the `plan_id` returned by
+  `execute_plan`, it returns the plan's `status` plus a one-line summary of every task
+  (`task_id`, `title`, `status`, `pr_url`) as decomposition creates them. Use it when you
+  handed over a plan and do not yet know the individual task ids.
 - `poll_task`, `get_task_logs`, `cancel_task` - lifecycle and triage (sections 4 and 6).
 
 ## 3. What context to pass
@@ -50,6 +54,11 @@ tight loop: work typically takes minutes (clone, implement, review). Each poll r
 the current `status`, the `pr_url` once a PR exists, the `review` feedback once reviewed,
 and a `dashboard_url`. The `dashboard_url` is the rich human view with live logs if you
 or your user want to watch in a browser.
+
+After `execute_plan`, poll `poll_plan(plan_id)` instead: decomposition runs asynchronously,
+so the individual task ids do not exist yet. `poll_plan` returns the plan `status` and a
+per-task summary (including `awaiting_merge` tasks parked for human approval) as the tasks
+appear, then drill into any one with `poll_task(task_id)`.
 
 ## 5. Reading statuses
 

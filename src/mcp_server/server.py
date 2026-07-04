@@ -122,6 +122,40 @@ async def poll_task_impl(client: Any, task_id: str) -> dict[str, Any]:
     }
 
 
+_TASK_STATUS_MAP: dict[str, str] = {
+    "passed": "awaiting_merge",
+    "needs_clarification": "awaiting_clarification",
+}
+
+
+async def poll_plan_impl(client: Any, plan_id: str) -> dict[str, Any]:
+    """Return the plan status plus a one-line summary of every task in the plan."""
+    try:
+        plan_data = await client.get(f"/api/plans/{plan_id}")
+    except PraxisClientError as exc:
+        return _error(exc)
+    try:
+        tasks_data = await client.get(f"/api/plans/{plan_id}/tasks")
+    except PraxisClientError as exc:
+        return _error(exc)
+    tasks: list[dict[str, Any]] = tasks_data if isinstance(tasks_data, list) else []
+    return {
+        "plan_id": plan_id,
+        "status": plan_data.get("status"),
+        "task_count": len(tasks),
+        "tasks": [
+            {
+                "task_id": t["id"],
+                "title": t.get("title"),
+                "status": _TASK_STATUS_MAP.get(t.get("status", ""), t.get("status")),
+                "pr_url": t.get("pr_url"),
+            }
+            for t in tasks
+        ],
+        "dashboard_url": _dashboard_url(client),
+    }
+
+
 async def list_providers_impl(client: Any) -> dict[str, Any]:
     """List brain providers and the worker models available to dispatch to."""
     try:
@@ -238,6 +272,23 @@ async def poll_task(task_id: str) -> dict[str, Any]:
     ``pr_url`` to the user so they can approve and merge the PR themselves.
     """
     return await poll_task_impl(PraxisClient.from_env(), task_id=task_id)
+
+
+@mcp.tool()
+async def poll_plan(plan_id: str) -> dict[str, Any]:
+    """Get the status of a plan and a one-line summary of each of its tasks.
+
+    Returns the plan's current status and a list of task summaries, each
+    containing task_id, title, status, and pr_url.  Tasks with status
+    ``awaiting_merge`` have passed review and are parked for human PR approval;
+    relay the pr_url to the user so they can approve and merge.  Tasks with
+    status ``awaiting_clarification`` are blocked on a question.
+
+    Use this tool to watch an ``execute_plan`` submission progress: call with
+    the plan_id returned by execute_plan and poll until the plan status is
+    ``completed`` or all tasks are in a terminal state.
+    """
+    return await poll_plan_impl(PraxisClient.from_env(), plan_id=plan_id)
 
 
 @mcp.tool()

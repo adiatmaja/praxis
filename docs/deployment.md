@@ -66,12 +66,48 @@ docker compose up --build
 ### Local Dev (hot reload)
 
 ```bash
-docker compose -f docker-compose.yml -f docker-compose.local.yml up --build
+docker compose -f docker-compose.yml -f docker-compose.local.yml up --build -d
+docker logs -f orchestrator   # tail logs while working
 ```
 
 - Source code mounted (`src/`, `web/`) for live reload
 - `--reload` flag on uvicorn
 - Default dev tokens if env vars not set
+- `restart: unless-stopped` inherited from the base file (see below)
+
+### Default dev/run story: containerized, not bare uvicorn
+
+**Run the orchestrator in its own container** (`restart: unless-stopped`) as the default
+development and production story.  Do not rely on `uv run uvicorn ...` as the primary
+run path.
+
+**Why:** a bare uvicorn process is tied to the operator's terminal session.  When the
+session ends (logout, SSH drop, Ctrl-C) the process dies.  At that point:
+
+- Agent containers that were mid-run keep running and eventually POST their completion
+  callback to an address with no listener.
+- The reconciler that would mark timed-out or exited containers as failed is gone.
+- Tasks wedge in `in_progress` until the orchestrator comes back and reconciles.
+
+Agent containers and callback retries already tolerate a brief orchestrator restart
+(containers keep running, callbacks retry with backoff, reconcile catches any that slip
+through).  The control plane itself is the weak link when it is a bare host process.
+
+The compose orchestrator service has `restart: unless-stopped` in `docker-compose.yml`.
+`docker-compose.local.yml` (the dev override) does not repeat the key; it inherits the
+base file's restart policy when both files are merged with `-f`.  The comment in
+`docker-compose.local.yml` documents this explicitly.
+
+**One-liner to start the dev orchestrator and leave it running:**
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.local.yml up --build -d
+```
+
+**Bare uvicorn** (`uv run uvicorn ...`) remains useful for rapid unit-level iteration
+where no agents will actually be dispatched (e.g. running a single API test against a
+live DB), but it should not be used for any session where real agent tasks may be
+in-flight.
 
 ### Hosted (with Caddy)
 

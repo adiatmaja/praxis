@@ -3,6 +3,11 @@ services:
     build:
       context: .
       dockerfile: docker/orchestrator/Dockerfile
+    # restart: unless-stopped is inherited from docker-compose.yml (the base file).
+    # Compose merges the two files; the base restart policy applies here without
+    # needing to repeat it.  Keep it that way: the control plane must outlive the
+    # operator's terminal session.  A bare uvicorn process dies with the shell that
+    # started it and orphans any in-flight agent tasks; a restarting container does not.
     volumes:
       - ./src:/app/src
       - ./web:/app/web
