@@ -23,9 +23,10 @@ htmlcov/
 .coverage
 .pytest_cache/
 
-data/*.db
-data/*.db-shm
-data/*.db-wal
+# Local runtime + E2E artifacts (DBs, logs, run logs, scratch JSON). Keep the
+# directory itself via .gitkeep so the app can create data/orchestrator.db.
+data/*
+!data/.gitkeep
 
 .superpowers/
 .worktrees/

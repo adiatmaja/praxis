@@ -11,6 +11,7 @@ and the strict response parsing (a malformed response must never pass silently).
 from __future__ import annotations
 
 import json
+import re
 
 from orchestrator.models.schemas import CapabilityProfile
 
@@ -122,11 +123,17 @@ def parse_review_response(raw: str) -> dict:
         PlanReviewError: on invalid JSON, missing/empty tasks, or bad shape.
     """
     raw = raw.strip()
-    # Tolerate a ```json fence if the brain added one.
-    if raw.startswith("```"):
-        raw = raw.split("```", 2)[1]
-        raw = raw[len("json") :] if raw.lstrip().startswith("json") else raw
-        raw = raw.strip().rstrip("`").strip()
+    # The brain (esp. Sonnet under --effort high) often prepends a sentence of
+    # reasoning before the JSON and/or wraps it in a ```json fence. Extract the
+    # JSON object robustly regardless of surrounding prose: prefer a fenced
+    # block anywhere, else slice from the first "{" to the last "}".
+    fence = re.search(r"```(?:json)?\s*(\{.*\})\s*```", raw, re.DOTALL)
+    if fence:
+        raw = fence.group(1).strip()
+    elif not raw.startswith("{"):
+        start, end = raw.find("{"), raw.rfind("}")
+        if start != -1 and end > start:
+            raw = raw[start : end + 1]
     try:
         data = json.loads(raw)
     except (ValueError, IndexError) as exc:
