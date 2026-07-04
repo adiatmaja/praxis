@@ -47,3 +47,23 @@ def test_none_sources_are_skipped():
     bible = build_bible(src)
     assert "# GOAL" in bible
     assert "# PROGRESS" in bible
+
+
+@pytest.mark.unit
+def test_bible_includes_review_feedback_as_floor_section():
+    src = BibleSources(
+        goal="do it",
+        handover="# PROGRESS",
+        context_window=8192,
+        review_feedback="ruff F401: 'Awaitable' imported but unused",
+    )
+    out = build_bible(src)
+    assert "PREVIOUS ATTEMPT FEEDBACK" in out
+    assert "F401" in out
+
+
+@pytest.mark.unit
+def test_bible_omits_feedback_section_when_absent():
+    src = BibleSources(goal="do it", handover="# PROGRESS", context_window=8192)
+    out = build_bible(src)
+    assert "PREVIOUS ATTEMPT FEEDBACK" not in out

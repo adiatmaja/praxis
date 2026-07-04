@@ -145,8 +145,21 @@ async def _migration_0001_baseline(connection: aiosqlite.Connection) -> None:
     """
 
 
+async def _migration_0002_pending_input(connection: aiosqlite.Connection) -> None:
+    """Add plans.pending_input: raw decomposition inputs for async execute-plan."""
+    cursor = await connection.execute("PRAGMA table_info(plans)")
+    cols = {row[1] for row in await cursor.fetchall()}
+    if "pending_input" not in cols:
+        await connection.execute("ALTER TABLE plans ADD COLUMN pending_input TEXT")
+
+
 MIGRATIONS: list[Migration] = [
     Migration(1, "baseline: schema as of 2026-07-02", _migration_0001_baseline),
+    Migration(
+        2,
+        "add plans.pending_input for async execute-plan",
+        _migration_0002_pending_input,
+    ),
 ]
 
 CURRENT_SCHEMA_VERSION = MIGRATIONS[-1].version

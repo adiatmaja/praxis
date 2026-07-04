@@ -92,6 +92,21 @@ def commit_and_push(
     logger.info("Committed and pushed in %s", workspace)
 
 
+def compare_url(repo_url: str, base: str, head: str) -> str:
+    """Build a GitHub compare URL for base...head (no network call).
+
+    Args:
+        repo_url: Full GitHub repository URL (HTTPS or with .git suffix).
+        base: Base branch name.
+        head: Head branch name.
+
+    Returns:
+        A GitHub compare URL with ``?expand=1`` to pre-fill a PR description.
+    """
+    slug = repo_url.rstrip("/").removesuffix(".git").split("github.com/")[-1]
+    return f"https://github.com/{slug}/compare/{base}...{head}?expand=1"
+
+
 def flip_checklist_item(markdown: str, item_text: str) -> str:
     """Mark the matching ``- [ ]`` checklist line as done.
 

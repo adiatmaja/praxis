@@ -35,6 +35,7 @@ class PlanStatus(StrEnum):
     ACTIVE = "active"
     COMPLETED = "completed"
     REJECTED = "rejected"
+    FAILED = "failed"
 
 
 class OpusStatus(StrEnum):
@@ -472,14 +473,14 @@ class ExecutePlanRequest(BaseModel):
 
 
 class ExecutePlanResponse(BaseModel):
-    """Response for an ingested-and-activated plan.
+    """Response for an accepted execute-plan (async decomposition in the loop).
 
-    ``leaves`` are task ids the local model is expected to handle; ``blocked``
-    are tasks the review brain flagged as too hard (``needs_stronger_model``).
+    The endpoint returns immediately with ``status="decomposing"``. The brain
+    decomposition runs asynchronously in the orchestration loop; tasks appear
+    on the plan shortly after.
     """
 
     plan_id: str
     project_id: str
     dashboard_url: str
-    leaves: list[str] = Field(default_factory=list)
-    blocked: list[str] = Field(default_factory=list)
+    status: str = "decomposing"

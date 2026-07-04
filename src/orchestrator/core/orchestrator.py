@@ -37,6 +37,7 @@ class Orchestrator(DispatchMixin, ReviewMixin, ReconcileMixin, ImprovementMixin)
         callback_url: str = "http://host.docker.internal:8080/api/internal/agent-done",
         callback_token: str | None = None,
         effective_settings: Any = None,
+        llm_router: Any = None,
     ) -> None:
         self._tq = task_queue
         self._agents = agent_manager
@@ -48,6 +49,7 @@ class Orchestrator(DispatchMixin, ReviewMixin, ReconcileMixin, ImprovementMixin)
         # Resolves the escalation policy (block | brain | paid_fallback) for a
         # failing leaf. Optional so tests/older callers can omit it.
         self._effective_settings = effective_settings
+        self._llm_router = llm_router
         # Where agent containers POST completion; must match the orchestrator's
         # listening port (a wrong port makes every callback 404 -> reconcile).
         self._callback_url = callback_url
@@ -94,6 +96,58 @@ class Orchestrator(DispatchMixin, ReviewMixin, ReconcileMixin, ImprovementMixin)
             }
         )
 
+    async def decompose_pending_execute_plan(
+        self, plan_id: str, project: dict[str, Any]
+    ) -> None:
+        """Run the brain decomposition for a pending execute-plan, then activate."""
+        import json as _json
+
+        from orchestrator.core.execute_plan_decompose import decompose_plan
+        from orchestrator.core.plan_review import PlanReviewError
+
+        plan = await self._tq.get_plan(plan_id)
+        if plan is None or not plan.get("pending_input"):
+            return
+
+        if self._opus is not None and not await self._opus.is_available():
+            await self._opus.queue_action(
+                {
+                    "action": "execute_plan",
+                    "plan_id": plan_id,
+                    "project_id": project["id"],
+                }
+            )
+            self._bus.publish({"type": "opus_queued", "action": "execute_plan"})
+            return
+
+        payload = _json.loads(plan["pending_input"])
+        try:
+            opus_plan = await decompose_plan(
+                plan=payload["plan"],
+                model=payload["model"],
+                context=payload.get("context"),
+                router=self._llm_router,
+                effective_settings=self._effective_settings,
+                project_id=project["id"],
+            )
+        except PlanReviewError as exc:
+            await self._tq.update_plan_status(plan_id, PlanStatus.FAILED)
+            self._bus.publish(
+                {"type": "plan_failed", "plan_id": plan_id, "reason": str(exc)}
+            )
+            logger.error("execute-plan decomposition failed for %s: %s", plan_id, exc)
+            return
+
+        await self._tq.activate_plan(plan_id, opus_plan, payload["branch"])
+        self._bus.publish(
+            {
+                "type": "plan_activated",
+                "plan_id": plan_id,
+                "branch": payload["branch"],
+                "task_count": len(opus_plan["tasks"]),
+            }
+        )
+
     async def process_plan_once(
         self,
         plan_id: str,
@@ -103,6 +157,13 @@ class Orchestrator(DispatchMixin, ReviewMixin, ReconcileMixin, ImprovementMixin)
 
         plan = await self._tq.get_plan(plan_id)
         if plan is None:
+            return
+        if (
+            plan["status"] == PlanStatus.PENDING
+            and plan["source"] == "execute-plan"
+            and plan["opus_plan"] is None
+        ):
+            await self.decompose_pending_execute_plan(plan_id, project)
             return
         if (
             plan["status"] == PlanStatus.PENDING

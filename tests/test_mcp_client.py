@@ -123,3 +123,20 @@ def test_from_env_missing_token_raises(monkeypatch: pytest.MonkeyPatch) -> None:
     with pytest.raises(PraxisClientError) as exc:
         PraxisClient.from_env()
     assert exc.value.code == "config_error"
+
+
+class _TimeoutTransport(httpx.AsyncBaseTransport):
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        msg = "timed out"
+        raise httpx.ReadTimeout(msg, request=request)
+
+
+async def test_read_timeout_maps_to_timeout_code_with_message() -> None:
+    client = PraxisClient(
+        base_url="http://test", token="t", transport=_TimeoutTransport()
+    )
+    with pytest.raises(PraxisClientError) as excinfo:
+        await client.get("/api/status")
+    assert excinfo.value.code == "timeout"
+    assert excinfo.value.message  # non-empty, actionable
+    assert "timed out" in excinfo.value.message.lower()

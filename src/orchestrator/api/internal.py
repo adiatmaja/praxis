@@ -94,10 +94,32 @@ async def agent_done(request: Request, body: AgentDonePayload) -> dict[str, str]
         await queue.mark_needs_clarification(body.task_id, question)
         logger.info("Task %s is awaiting clarification", body.task_id)
     else:
-        await queue.update_task_status(body.task_id, TaskStatus.FAILED)
-        logger.warning(
-            "Task %s agent finished with status %s", body.task_id, body.status
-        )
+        # Consume the retry budget exactly like a review/gate failure so that
+        # a single lost/failed callback does not wedge the plan forever.
+        plan = await queue.get_plan(task["plan_id"])
+        project = await queue.get_project(plan["project_id"]) if plan else None
+        max_retries = int(project["max_retries"]) if project else 0
+        feedback = body.question or f"Agent finished with status {body.status}"
+        if int(task["attempt"]) < max_retries:
+            await queue.retry_task(body.task_id)
+            request.app.state.event_bus.publish(
+                {
+                    "type": "task_retry",
+                    "task_id": body.task_id,
+                    "attempt": int(task["attempt"]) + 1,
+                }
+            )
+            logger.info("Task %s failed callback; retrying", body.task_id)
+        else:
+            await queue.fail_task(body.task_id, feedback)
+            request.app.state.event_bus.publish(
+                {"type": "task_failed", "task_id": body.task_id, "feedback": feedback}
+            )
+            logger.warning(
+                "Task %s agent finished with status %s; retries exhausted",
+                body.task_id,
+                body.status,
+            )
 
     if agent_manager is not None:
         agent_manager.cleanup_container(run["container_id"])

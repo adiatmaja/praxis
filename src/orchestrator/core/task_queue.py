@@ -94,6 +94,21 @@ class TaskQueue:
             )
         logger.info("Activated plan %s with %d tasks", plan_id, len(opus_plan["tasks"]))
 
+    async def create_pending_execute_plan(
+        self, project_id: str, pending_input: str
+    ) -> str:
+        """Persist a PENDING execute-plan whose decomposition runs in the loop."""
+        plan_id = str(uuid.uuid4())
+        await self._db.execute(
+            """INSERT INTO plans (id, project_id, source, status, pending_input)
+               VALUES (?, ?, 'execute-plan', 'pending', ?)""",
+            (plan_id, project_id, pending_input),
+        )
+        logger.info(
+            "Created pending execute-plan %s for project %s", plan_id, project_id
+        )
+        return plan_id
+
     async def update_plan_status(self, plan_id: str, status: PlanStatus) -> None:
         await self._db.execute(
             "UPDATE plans SET status = ? WHERE id = ?",

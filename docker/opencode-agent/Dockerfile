@@ -17,6 +17,10 @@ RUN apt-get update \
 # Install OpenCode CLI globally
 RUN npm install -g opencode-ai
 
+# Dev toolchain so the worker can self-lint/test what the verify gate lints
+# (ruff/mypy/pytest via uv). Installed to /usr/local/bin (root-writable here).
+RUN curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=/usr/local/bin sh
+
 # Non-root agent user; workspace under its home (matches aider-agent pattern)
 RUN useradd -m -s /bin/bash agent
 USER agent

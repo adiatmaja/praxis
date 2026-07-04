@@ -254,6 +254,7 @@ def test_status_enums_have_expected_values() -> None:
         "active",
         "completed",
         "rejected",
+        "failed",
     ]
     assert OpusStatus.AVAILABLE.value == "available"
     assert OpusStatus.RATE_LIMITED.value == "rate_limited"
