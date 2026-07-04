@@ -36,8 +36,25 @@ Hard limit: each leaf task's full context must fit ~{per_leaf_token_budget} toke
 Plan to decompose:
 {plan_text}
 
-Split the plan into the SMALLEST leaf tasks this local model can each complete
-on its own. For every leaf provide an ordered checklist of concrete steps.
+Use the FEWEST leaves that each fit the per-leaf token budget and the model's
+capability. A leaf must be a cohesive, independently-reviewable unit of work,
+NOT the smallest mechanical fragment possible. For every leaf provide an ordered
+checklist of concrete steps.
+
+Sizing rules (apply in order):
+1. Keep an implementation and its tests TOGETHER in the same leaf whenever they
+   fit the budget. Do NOT create separate test-only leaves for code defined in
+   another leaf -- this causes duplicate/overlapping tests and
+   tests-without-implementation lint failures.
+2. Do not split a single small module or class across multiple leaves just to
+   make each leaf tiny. Group tightly-coupled edits to the same file or type
+   into one leaf when they fit the budget.
+3. Do not create "skeleton/scaffold" leaves whose imports or stubs only make
+   sense once a later leaf lands -- this causes unused-import lint failures
+   (F401) that the verify gate will reject.
+4. Only split when a unit genuinely exceeds the token budget, exceeds the
+   model's max complexity, or when parts are truly independent (different
+   subsystems, no shared state).
 
 For every leaf you MUST also include "plan_text": the VERBATIM excerpt of the
 plan that defines this leaf's contract -- exact function/type signatures, API
@@ -45,11 +62,11 @@ shapes, and named requirements. Do not paraphrase; copy the relevant lines so a
 reviewer can check the implementation against the original contract, not a summary.
 
 Set "depends_on" to the ids of any leaves whose output this leaf builds on (e.g.
-a leaf that edits a file another leaf creates, or tests that need an
-implementation). Only truly independent leaves get an empty list.
+a leaf that edits a file another leaf creates). Only truly independent leaves get
+an empty list.
 
-If a leaf cannot be split small enough for this model (too complex for its
-parameter count, or irreducibly large), set "needs_stronger_model": true.
+If a leaf cannot be completed by this model (too complex for its parameter count,
+or irreducibly large), set "needs_stronger_model": true.
 
 Respond with ONLY valid JSON:
 {{

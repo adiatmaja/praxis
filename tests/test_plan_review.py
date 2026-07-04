@@ -107,6 +107,14 @@ def test_parser_defaults_plan_text_to_description():
     assert plan["tasks"][0]["plan_text"] == "do A"
 
 
+def test_prompt_uses_fewest_leaves_and_keeps_tests_with_impl():
+    prompt = build_review_prompt("PLAN BODY", _profile(), "no history", 12000)
+    assert "FEWEST" in prompt or "fewest" in prompt
+    assert "TOGETHER" in prompt or "together" in prompt or "same leaf" in prompt
+    # Old "SMALLEST" wording must not appear
+    assert "SMALLEST" not in prompt
+
+
 def test_parser_preserves_supplied_plan_text():
     raw = (
         '{"tasks": [{"id": "t1", "title": "A", "description": "do A", '
