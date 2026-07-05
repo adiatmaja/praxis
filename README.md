@@ -237,19 +237,57 @@ the dashboard at `http://localhost:12323`.
 Local model quality is the single biggest factor in whether Praxis saves you money or
 burns planner review cycles on retries. The failure mode of a too-small model is
 specific: it replies *with* code in chat instead of following the agent's edit
-format, so nothing is committed and the run fails. Rough guidance from live runs:
+format, so nothing is committed and the run fails.
 
-| Model class | Example | Result |
-|-------------|---------|--------|
-| Small chat models (< ~14B) | `qwen3.5-9b` | Fails: can't follow the edit format, no commits |
-| Mid-size coding models (~27B+) | `qwen3.6-27b` | Works: mergeable diffs, passes review |
-| MoE coding models | `qwen3.6-35b-a3b` | Works |
+### Why decomposed plans lower the bar
 
-Pick a coding-oriented instruct model of roughly 27B or larger (or an equivalent MoE),
-load it in LM Studio with as much context as your hardware allows, and verify the
-loaded context window is at least ~32K. Praxis detects the loaded context length per
-model and budgets prompts against it, so a model loaded with a tiny window will be
-rejected up front rather than silently truncated.
+Because the brain breaks every spec into small, single-responsibility tasks, the worker
+model **does not need to plan, architect, or review** — it only needs to read existing code,
+understand a narrowly-scoped instruction, and produce a correct patch in the agent's edit
+format. This means a mid-size coder model is sufficient where a monolithic workflow would
+demand a frontier-class model.
+
+> **Key insight:** Coder-specialized models dramatically outperform general-purpose models
+> of the same parameter count on agentic coding tasks. Edit-format compliance matters more
+> than raw intelligence for workers — a coder-specialized 14B model matches or beats a
+> general-purpose 31B on structured code editing.
+
+### Model tiers
+
+Pick the tier that matches your hardware. For the full ranked list with benchmark
+scores, see [docs/open-weight-models-complete.md](docs/open-weight-models-complete.md).
+
+| Tier | VRAM | Capabilities & Trade-offs | Examples |
+|------|------|---------------------------|----------|
+| **1 — Frontier** | Multi-GPU (80 GB+/GPU) | Overkill for workers — these shine as **brains**. Use if you want one open-weight model for both planning and coding on server hardware. | Qwen3-Coder-480B-A35B, DeepSeek V4 Pro, GLM-5.2 |
+| **2 — High-Perf** | 24–48 GB | **Sweet spot for workers.** Reliably follow edit formats, first-pass success on most decomposed tasks. Look for dense 27B+ coders or large MoE with low active params. | Qwen3.6-27B, Qwen2.5-Coder-32B, Qwen3.6-35B-A3B |
+| **3 — Mid-Size** | 12–16 GB | **Accessibility sweet spot.** Runs on mainstream consumer GPUs. Coder-specialized 14B is the recommended minimum. ~1.5 retries/task. | Qwen2.5-Coder-14B, Phi-4 14B, DeepSeek-R1-Distill-Qwen-14B |
+| **4 — Small** | 4–8 GB | **Small coders.** ⚠️ High-risk but viable. Needs ultra-fine decomposition (single-function patches), higher retry limits (4–5), verify gate. ~2.5 retries/task, ~45% first-pass. | Qwen2.5-Coder-7B, Qwen3-8B, IBM Granite 4.1 8B |
+| **5 — Failures** | — | ❌ **General-purpose chat models.** These consistently fail agentic requirements: chat-style output instead of diffs, tool-call schema violations, infinite agent loops. Prefer any coder model over these. | Gemma 4 31B IT, Llama 3.x-8B, StarCoder2, Mistral 7B |
+
+### Hardware guidance
+
+| Your GPU | Recommended Tier | Quantization | Expected Quality |
+|----------|-----------------|-------------|------------------|
+| RTX 4090 / A6000 (24 GB+) | Tier 2 — dense 27B+ coder | Q4_K_M | ⭐⭐⭐⭐⭐ Excellent — first-pass success |
+| RTX 4080 / 4070 Ti Super (16 GB) | Tier 2 or 3 — MoE 35B or dense 14B coder | Q4_K_M | ⭐⭐⭐⭐ Very Good |
+| RTX 4070 / 4060 Ti 16 GB (12 GB) | Tier 3 — coder 14B | Q5_K_M | ⭐⭐⭐ Good — single-file scope |
+| RTX 4060 / GTX 1080 (8 GB) | Tier 4 — coder 7B | Q4_K_M | ⭐⭐ Fair — single-function scope, 2–3 retries |
+| Apple M2/M3 (32 GB unified) | Tier 2 — dense 27B+ coder | Q4_K_M | ⭐⭐⭐⭐ Very Good |
+| Apple M1/M2 (16 GB unified) | Tier 3 — coder 14B | Q4_K_M | ⭐⭐⭐ Good |
+| Apple M1 (8 GB unified) | Tier 4 — coder 7B | Q4_K_M | ⭐⭐ Fair |
+| CPU only (16 GB+ RAM) | Tier 4 — coder 7B | Q3_K_S | ⚠️ Slow but functional |
+
+Pick a coding-oriented instruct model, load it in LM Studio with as much context as your
+hardware allows, and verify the loaded context window is at least ~32K. Praxis detects the
+loaded context length per model and budgets prompts against it, so a model loaded with a
+tiny window will be rejected up front rather than silently truncated.
+
+> **Full model reference:** for detailed benchmark scores, Hugging Face links, harness
+> compatibility, retry-rate estimates, and the complete ranked list (including server-class
+> and sub-7B models), see
+> [docs/open-weight-models-lmstudio.md](docs/open-weight-models-lmstudio.md) and
+> [docs/open-weight-models-complete.md](docs/open-weight-models-complete.md).
 
 ## Configuration
 
