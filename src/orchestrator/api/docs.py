@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Any, cast
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 
 from orchestrator.api.auth import verify_token
 from orchestrator.models.schemas import DocResponse
@@ -52,9 +53,19 @@ async def raw_doc(
     _: None = Depends(verify_token),
 ) -> dict[str, Any]:
     """Return raw markdown content for a doc by relative path."""
+    if not re.match(r"^(?:[a-zA-Z0-9_-]+/)*[a-zA-Z0-9_-]+\.[a-zA-Z0-9_.-]+$", path):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid path format"
+        )
+    db = request.app.state.db
+    row = await db.fetch_one("SELECT path FROM doc_index WHERE path = ?", (path,))
+    if not row:
+        raise HTTPException(status_code=404, detail="doc not found")
+    safe_path = row["path"]
+
     settings = request.app.state.settings
     root = Path(settings.docs_root).parent.resolve()
-    target = (root / path).resolve()
+    target = (root / safe_path).resolve()
     if not target.is_relative_to(root) or not target.is_file():
         raise HTTPException(status_code=404, detail="doc not found")
     return {"path": path, "content": target.read_text(encoding="utf-8")}

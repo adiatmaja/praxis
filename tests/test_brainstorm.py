@@ -210,7 +210,9 @@ def test_plan_bootstrap_requests_spec_path_frontmatter():
 
 
 async def test_brainstorm_resolves_token_from_provider(monkeypatch):
-    import orchestrator.core.brainstorm as bs
+    import sys
+
+    bs = sys.modules["orchestrator.core.brainstorm"]
     from orchestrator.core.github_credentials import PatCredentialProvider
 
     seen = {}

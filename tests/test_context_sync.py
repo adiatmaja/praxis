@@ -94,7 +94,9 @@ async def test_current_cleans_up_workspace_on_clone_failure(mocker, tmp_path):
 
 
 async def test_context_sync_resolves_token_from_provider(monkeypatch):
-    import orchestrator.core.context_sync as cs
+    import sys
+
+    cs = sys.modules["orchestrator.core.context_sync"]
     from orchestrator.core.github_credentials import PatCredentialProvider
 
     seen = {}

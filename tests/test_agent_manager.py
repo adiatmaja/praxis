@@ -554,7 +554,9 @@ def _async_return(value):
 
 @pytest.mark.unit
 async def test_spawn_agent_injects_freshly_minted_token(monkeypatch) -> None:
-    import orchestrator.core.agent_manager as am
+    import sys
+
+    am = sys.modules["orchestrator.core.agent_manager"]
     from orchestrator.core.github_credentials import PatCredentialProvider
 
     captured = {}

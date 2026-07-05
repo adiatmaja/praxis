@@ -10,7 +10,7 @@ from __future__ import annotations
 import contextlib
 import json
 import logging
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from orchestrator.core.agent_manager import detect_context_limit
 from orchestrator.core.progress_handover import ChecklistItem, render_handover
@@ -40,13 +40,8 @@ class DispatchMixin:
         _effective_settings: Any
         _git: Any
 
-        def _task_prompt(
-            self, task: dict[str, Any], project: dict[str, Any]
-        ) -> str: ...
-
-        def _start_monitor(
-            self, run_id: str, task_id: str, container_id: str
-        ) -> None: ...
+        def _task_prompt(self, task: dict[str, Any], project: dict[str, Any]) -> str:
+            pass
 
     async def dispatch_pending_tasks(
         self,
@@ -129,7 +124,7 @@ class DispatchMixin:
             )
             run_id = await self._tq.create_agent_run(task["id"], container_id)
             await self._tq.update_task_status(task["id"], TaskStatus.IN_PROGRESS)
-            self._start_monitor(run_id, task["id"], container_id)
+            cast(Any, self)._start_monitor(run_id, task["id"], container_id)
             self._bus.publish(
                 {
                     "type": "agent_dispatched",

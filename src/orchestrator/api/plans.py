@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from datetime import UTC, datetime
 from typing import Any, cast
 
@@ -19,6 +20,7 @@ from orchestrator.models.schemas import (
 )
 
 
+logger = logging.getLogger(__name__)
 router = APIRouter(tags=["plans"], dependencies=[Depends(verify_token)])
 
 
@@ -223,6 +225,12 @@ async def approve_merges(request: Request, plan_id: str) -> dict[str, Any]:
         try:
             await orchestrator.approve_task_merge(task["id"], project)
             approved += 1
-        except Exception as exc:  # noqa: BLE001 - collect, keep going
-            errors.append({"task_id": task["id"], "error": str(exc)})
+        except ValueError as exc:
+            msg = exc.args[0] if exc.args else "Validation error"
+            errors.append({"task_id": task["id"], "error": msg})
+        except Exception:  # noqa: BLE001 - collect, keep going
+            logger.exception("Failed to approve task merge for task %s", task["id"])
+            errors.append(
+                {"task_id": task["id"], "error": "Internal error during merge"}
+            )
     return {"plan_id": plan_id, "approved": approved, "errors": errors}

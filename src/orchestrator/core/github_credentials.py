@@ -8,12 +8,12 @@ App backend that mints short-lived, repo-scoped installation tokens.
 from __future__ import annotations
 
 import logging
-import re
 import time
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Protocol
+from urllib.parse import urlparse
 
 import httpx
 import jwt
@@ -37,13 +37,36 @@ def repo_slug_from_url(repo_url: str) -> str:
         CredentialError: If no ``owner/repo`` can be extracted.
     """
     text = repo_url.strip()
-    if text.endswith(".git"):
-        text = text[: -len(".git")]
-    match = re.search(r"github\.com[/:]([^/]+/[^/]+?)(?:/|$)", text)
-    if match:
-        return match.group(1)
-    if re.fullmatch(r"[^/\s]+/[^/\s]+", text):
-        return text
+
+    url_str = text
+    if url_str.startswith("git@github.com:"):
+        url_str = "ssh://" + url_str.replace("git@github.com:", "git@github.com/")
+    elif "://" not in url_str:
+        url_str = "https://" + url_str
+
+    try:
+        parsed = urlparse(url_str)
+    except Exception as e:
+        msg = f"cannot extract owner/repo from: {repo_url!r}"
+        raise CredentialError(msg) from e
+
+    if parsed.hostname == "github.com":
+        path = parsed.path.lstrip("/")
+        parts = path.split("/")
+        if len(parts) >= 2 and parts[0] and parts[1]:
+            repo = parts[1]
+            if repo.endswith(".git"):
+                repo = repo[:-4]
+            return f"{parts[0]}/{repo}"
+
+    # Fallback to bare owner/repo format if the hostname isn't github.com (e.g. https://owner/repo)
+    parts = text.split("/")
+    if len(parts) == 2 and parts[0] and parts[1] and " " not in text:
+        repo = parts[1]
+        if repo.endswith(".git"):
+            repo = repo[:-4]
+        return f"{parts[0]}/{repo}"
+
     msg = f"cannot extract owner/repo from: {repo_url!r}"
     raise CredentialError(msg)
 
@@ -53,7 +76,6 @@ class GitHubCredentialProvider(Protocol):
 
     async def token_for_repo(self, repo_url: str) -> str:
         """Return a token authorized for ``repo_url``."""
-        ...
 
 
 class PatCredentialProvider:

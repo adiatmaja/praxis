@@ -5,9 +5,9 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-import re
 import subprocess
 from typing import TYPE_CHECKING
+from urllib.parse import urlparse
 
 import httpx
 
@@ -295,8 +295,29 @@ class GitOps:
     @staticmethod
     def repo_slug(repo_url: str) -> str | None:
         """Extract an ``owner/name`` slug from a GitHub repo or PR URL."""
-        match = re.search(r"github\.com[/:]([^/]+/[^/]+?)(?:\.git)?(?:/|$)", repo_url)
-        return match.group(1) if match else None
+        url_str = repo_url.strip()
+        if url_str.startswith("git@github.com:"):
+            url_str = "ssh://" + url_str.replace("git@github.com:", "git@github.com/")
+        elif "://" not in url_str:
+            url_str = "https://" + url_str
+
+        try:
+            parsed = urlparse(url_str)
+        except Exception:
+            return None
+
+        if parsed.hostname != "github.com":
+            return None
+
+        path = parsed.path.lstrip("/")
+        parts = path.split("/")
+        if len(parts) < 2:
+            return None
+        owner = parts[0]
+        repo = parts[1]
+        if repo.endswith(".git"):
+            repo = repo[:-4]
+        return f"{owner}/{repo}"
 
     async def get_changed_files(
         self,

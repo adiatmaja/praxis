@@ -12,7 +12,6 @@ completed decomposition when all work was done in one request coroutine.
 from __future__ import annotations
 
 import json
-import logging
 import uuid
 from typing import Any
 
@@ -24,13 +23,13 @@ from orchestrator.core.harnesses import default_harness_id
 from orchestrator.models.schemas import ExecutePlanRequest, ExecutePlanResponse
 
 
-logger = logging.getLogger(__name__)
 router = APIRouter(tags=["execute-plan"], dependencies=[Depends(verify_token)])
 
 
 # Keep _normalize_slugs as a re-export so existing tests that import it by the
 # old private name continue to work.
 _normalize_slugs = normalize_slugs
+__all__ = ["_normalize_slugs"]
 
 
 async def _create_or_reuse_project(

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import logging
 from datetime import UTC, datetime
 from typing import Any
@@ -246,9 +245,8 @@ class Orchestrator(DispatchMixin, ReviewMixin, ReconcileMixin, ImprovementMixin)
         monitors = list(self._monitors.values())
         for task in monitors:
             task.cancel()
-        for task in monitors:
-            with contextlib.suppress(asyncio.CancelledError, Exception):
-                await task
+        if monitors:
+            await asyncio.gather(*monitors, return_exceptions=True)
         self._monitors.clear()
 
     async def run_once(self) -> None:

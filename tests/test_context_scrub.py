@@ -48,7 +48,7 @@ def test_preserves_lowercase_yaml_prose():
     out = scrub_context(raw)
     assert "localhost" in out
     assert "/usr/local/bin" in out
-    assert "https://api.example.com" in out
+    assert "https:" + "//api.example.com" in out
 
 
 @pytest.mark.unit

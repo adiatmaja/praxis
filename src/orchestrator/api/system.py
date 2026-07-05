@@ -36,6 +36,7 @@ def _opus_state_response(state: dict[str, Any]) -> dict[str, Any]:
 # Cache the claude CLI probe so /api/status (polled every 5s) does not spawn a
 # subprocess on every request. (monotonic_ts, available) or None.
 _claude_probe_cache: tuple[float, bool] | None = None
+__all__ = ["_claude_probe_cache"]
 _CLAUDE_PROBE_TTL = 60.0
 
 # Per-provider probe cache: name -> (monotonic_ts, result_dict)

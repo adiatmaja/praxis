@@ -27,6 +27,7 @@ async def get_context(
     _: None = Depends(verify_token),
 ) -> dict[str, Any]:
     """Return the current CLAUDE.md and MEMORY.md content from the project repo."""
+    clean_project_id = project_id.replace("\r", "").replace("\n", "")
     db = request.app.state.db
     project = await db.fetch_one(
         "SELECT repo_url FROM projects WHERE id = ?", (project_id,)
@@ -42,13 +43,15 @@ async def get_context(
         )
     except subprocess.CalledProcessError as e:
         reason = (e.stderr or b"").decode(errors="replace").strip() or str(e)
-        logger.warning("context clone failed for project %s: %s", project_id, reason)
+        logger.warning(
+            "context clone failed for project %s: %s", clean_project_id, reason
+        )
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail=f"Could not access repository: {reason}",
         ) from e
     except Exception as e:
-        logger.warning("context read failed for project %s: %s", project_id, e)
+        logger.warning("context read failed for project %s: %s", clean_project_id, e)
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail=f"Could not access repository: {e}",
@@ -63,6 +66,7 @@ async def sync_context(
     _: None = Depends(verify_token),
 ) -> dict[str, Any]:
     """Draft CLAUDE.md / MEMORY.md updates after work completes."""
+    clean_project_id = project_id.replace("\r", "").replace("\n", "")
     db = request.app.state.db
     project = await db.fetch_one(
         "SELECT repo_url FROM projects WHERE id = ?", (project_id,)
@@ -80,13 +84,15 @@ async def sync_context(
         )
     except subprocess.CalledProcessError as e:
         reason = (e.stderr or b"").decode(errors="replace").strip() or str(e)
-        logger.warning("context draft failed for project %s: %s", project_id, reason)
+        logger.warning(
+            "context draft failed for project %s: %s", clean_project_id, reason
+        )
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail=f"Could not access repository: {reason}",
         ) from e
     except Exception as e:
-        logger.warning("context draft failed for project %s: %s", project_id, e)
+        logger.warning("context draft failed for project %s: %s", clean_project_id, e)
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail=f"Could not access repository: {e}",

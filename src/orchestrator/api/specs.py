@@ -29,7 +29,8 @@ async def _run_turn_safely(
     try:
         await mgr.send(session_id, message)
     except Exception as exc:  # noqa: BLE001 - surface to the UI instead of swallowing
-        logger.warning("Brainstorm turn failed for %s: %s", session_id, exc)
+        clean_session_id = session_id.replace("\r", "").replace("\n", "")
+        logger.warning("Brainstorm turn failed for %s: %s", clean_session_id, exc)
         if event_bus is not None:
             event_bus.publish(
                 {

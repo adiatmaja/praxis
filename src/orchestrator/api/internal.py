@@ -65,6 +65,10 @@ async def agent_done(request: Request, body: AgentDonePayload) -> dict[str, str]
     """
     _verify_callback_token(request)
 
+    # Sanitize inputs to prevent log injection
+    task_id = body.task_id.replace("\r", "").replace("\n", "")
+    status_str = body.status.replace("\r", "").replace("\n", "")
+
     queue = request.app.state.task_queue
     task = await queue.get_task(body.task_id)
     run = await queue.get_agent_run(body.run_id) if body.run_id else None
@@ -88,11 +92,11 @@ async def agent_done(request: Request, body: AgentDonePayload) -> dict[str, str]
 
     if body.status == "completed":
         await queue.update_task_status(body.task_id, TaskStatus.REVIEWING)
-        logger.info("Task %s ready for review", body.task_id)
+        logger.info("Task %s ready for review", task_id)
     elif body.status == "needs_clarification":
         question = body.question or "Worker reported a blocker without details."
         await queue.mark_needs_clarification(body.task_id, question)
-        logger.info("Task %s is awaiting clarification", body.task_id)
+        logger.info("Task %s is awaiting clarification", task_id)
     else:
         # Consume the retry budget exactly like a review/gate failure so that
         # a single lost/failed callback does not wedge the plan forever.
@@ -109,7 +113,7 @@ async def agent_done(request: Request, body: AgentDonePayload) -> dict[str, str]
                     "attempt": int(task["attempt"]) + 1,
                 }
             )
-            logger.info("Task %s failed callback; retrying", body.task_id)
+            logger.info("Task %s failed callback; retrying", task_id)
         else:
             await queue.fail_task(body.task_id, feedback)
             request.app.state.event_bus.publish(
@@ -117,8 +121,8 @@ async def agent_done(request: Request, body: AgentDonePayload) -> dict[str, str]
             )
             logger.warning(
                 "Task %s agent finished with status %s; retries exhausted",
-                body.task_id,
-                body.status,
+                task_id,
+                status_str,
             )
 
     if agent_manager is not None:

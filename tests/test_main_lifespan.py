@@ -5,8 +5,11 @@ from __future__ import annotations
 import pytest
 from fastapi.testclient import TestClient
 
+import orchestrator.main as main_mod
 from orchestrator.core.doc_indexer import DocIndexer
-from orchestrator.main import app
+
+
+app = main_mod.app
 
 
 @pytest.mark.unit
@@ -24,7 +27,6 @@ def test_lifespan_builds_app_credential_provider(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """build_credential_provider is called at startup and selects App backend."""
-    import orchestrator.main as main_mod
     from orchestrator.core.github_credentials import GitHubAppCredentialProvider
 
     built: dict[str, str] = {}
