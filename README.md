@@ -1,7 +1,7 @@
 <h1 align="center">Praxis</h1>
 
 <p align="center">
-  <strong>A self-hostable engine that plans, writes, reviews, and merges code for you &mdash; planning<br>on the AI subscription you already pay for, coding on a free local model.</strong>
+  <strong>A developer tool to delegate token-heavy coding tasks from paid AI subscriptions to open-weight models</strong>
 </p>
 
 <p align="center">
