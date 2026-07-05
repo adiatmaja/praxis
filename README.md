@@ -1,4 +1,10 @@
-<h1 align="center">Praxis</h1>
+<div align="center">
+<pre>
+█▀█ █▀▄ █▀█ █ █ █ █▀▀
+█▀▀ █▀▄ █▀█ ▄▀▄ █ ▄██
+▀   ▀ ▀ ▀ ▀ ▀ ▀ ▀ ▀▀▀
+</pre>
+</div>
 
 <p align="center">
   <strong>A developer tool to delegate token-heavy coding tasks from paid AI subscriptions to open-weight models</strong>
