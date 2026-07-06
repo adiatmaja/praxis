@@ -200,3 +200,21 @@ async def test_approve_merges_batch(
     assert resp.status_code == 200
     assert sorted(approved) == sorted(passed_ids)
     assert resp.json()["approved"] == 2
+
+
+@pytest.mark.integration
+async def test_get_plan_returns_error_reason(
+    client: AsyncClient,
+    db: Database,
+    auth_headers: dict[str, str],
+) -> None:
+    await seed_user(db)
+    project_id = await _create_project(client, auth_headers)
+    queue = client.app.state.task_queue  # type: ignore[attr-defined]
+    plan_id = await queue.create_plan(project_id, "Build things")
+    await queue.set_plan_error(plan_id, "review response not valid JSON")
+
+    resp = await client.get(f"/api/plans/{plan_id}", headers=auth_headers)
+
+    assert resp.status_code == 200
+    assert resp.json()["error"] == "review response not valid JSON"

@@ -304,6 +304,18 @@ async def test_poll_plan_empty_task_list() -> None:
     assert result["status"] == "pending"
 
 
+async def test_poll_plan_surfaces_error() -> None:
+    client = FakeClient(
+        {
+            ("GET", "/api/plans/p1"): {"id": "p1", "status": "failed", "error": "boom"},
+            ("GET", "/api/plans/p1/tasks"): [],
+        }
+    )
+    result = await server.poll_plan_impl(client, plan_id="p1")
+    assert result["status"] == "failed"
+    assert result["error"] == "boom"
+
+
 async def test_poll_task_maps_needs_clarification_to_awaiting_clarification() -> None:
     client = FakeClient(
         {

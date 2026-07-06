@@ -130,6 +130,7 @@ class Orchestrator(DispatchMixin, ReviewMixin, ReconcileMixin, ImprovementMixin)
                 project_id=project["id"],
             )
         except PlanReviewError as exc:
+            await self._tq.set_plan_error(plan_id, str(exc))
             await self._tq.update_plan_status(plan_id, PlanStatus.FAILED)
             self._bus.publish(
                 {"type": "plan_failed", "plan_id": plan_id, "reason": str(exc)}
