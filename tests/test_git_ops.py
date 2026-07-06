@@ -440,3 +440,30 @@ async def test_remote_branch_exists_resolves_repo_token(
     assert result is True
     assert provider.seen == ["https://github.com/o/r"]
     assert captured["token"] == "ghs_scoped"
+
+
+@pytest.mark.unit
+@patch("orchestrator.core.git_ops.GitOps._run_command")
+async def test_open_integration_pr_shells_gh_with_repo(mock_run: AsyncMock) -> None:
+    mock_run.return_value = (0, "https://github.com/o/r/pull/42", "")
+    git = GitOps("ghp_test")
+
+    url = await git.open_integration_pr(
+        repo_url="https://github.com/o/r",
+        base="main",
+        head="plan/feature-x",
+        title="Integrate plan/feature-x",
+        body="Auto-opened by Praxis on plan completion.",
+    )
+
+    assert url == "https://github.com/o/r/pull/42"
+    cmd = mock_run.call_args.args[0]
+    flat = " ".join(cmd)
+    assert "pr" in flat
+    assert "create" in flat
+    assert "--repo" in flat
+    assert "o/r" in flat
+    assert "--base" in flat
+    assert "main" in flat
+    assert "--head" in flat
+    assert "plan/feature-x" in flat
