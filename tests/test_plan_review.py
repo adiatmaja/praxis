@@ -122,3 +122,29 @@ def test_parser_preserves_supplied_plan_text():
     )
     plan = parse_review_response(raw)
     assert "AbortSignal" in plan["tasks"][0]["plan_text"]
+
+
+def test_parse_tolerates_leading_prose_before_fenced_json():
+    raw = (
+        "Good, asyncio_mode is already set. Now I have all the context I need.\n\n"
+        '```json\n{"tasks": [{"id": "t1", "title": "A", "description": "d"}]}\n```'
+    )
+    out = parse_review_response(raw)
+    assert out["tasks"][0]["title"] == "A"
+
+
+def test_parse_tolerates_prose_without_fence():
+    raw = 'Here is the plan: {"tasks": [{"id": "t1", "title": "B", "description": "d"}]} done.'
+    out = parse_review_response(raw)
+    assert out["tasks"][0]["title"] == "B"
+
+
+def test_parse_still_accepts_bare_json():
+    raw = '{"tasks": [{"id": "t1", "title": "C", "description": "d"}]}'
+    out = parse_review_response(raw)
+    assert out["tasks"][0]["title"] == "C"
+
+
+def test_parse_raises_planreviewerror_on_garbage():
+    with pytest.raises(PlanReviewError):
+        parse_review_response("this is not json at all, no braces")
