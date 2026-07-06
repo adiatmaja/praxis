@@ -429,6 +429,27 @@ async def test_dispatch_without_expected_base_sha_is_unchanged(
     assert resp.status_code == 201, resp.text
 
 
+async def test_dispatch_rejects_empty_expected_base_sha(
+    client: AsyncClient, auth_headers: dict[str, str], seeded_user: str
+) -> None:
+    with patch("orchestrator.api.dispatch.GitOps") as mock_git_cls:
+        inst = mock_git_cls.return_value
+        inst.remote_branch_exists = AsyncMock(return_value=True)
+        inst.remote_head_sha = AsyncMock(return_value="origin999")
+        resp = await client.post(
+            "/api/dispatch",
+            headers=auth_headers,
+            json={
+                "repo_url": "https://github.com/o/r",
+                "instructions": "do it",
+                "model": "m",
+                "branch": "main",
+                "expected_base_sha": "   ",
+            },
+        )
+    assert resp.status_code == 422, resp.text
+
+
 @pytest.mark.integration
 async def test_dispatch_scrubs_and_stores_context(
     client: AsyncClient,

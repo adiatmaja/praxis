@@ -62,7 +62,12 @@ async def _guard_base_sha(body: DispatchRequest, settings: Any, branch: str) -> 
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=f"branch '{branch}' not found on remote for base-sha check",
         )
-    expected = body.expected_base_sha or ""
+    expected = (body.expected_base_sha or "").strip()
+    if not expected:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="expected_base_sha must not be empty",
+        )
     if not (origin_sha.startswith(expected) or expected.startswith(origin_sha)):
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
