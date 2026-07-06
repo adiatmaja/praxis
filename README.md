@@ -428,6 +428,24 @@ planner providers and worker models Praxis can see, which confirms the server is
 >   branch and opens a new PR; it cannot push follow-up commits onto an existing
 >   PR. Re-dispatching always creates a fresh PR. (Continue-on-PR mode is planned.)
 
+### Praxis works from `origin`, not your local checkout
+
+Every Praxis worker clones your repository from its **remote (`origin`)**.
+Commits that exist only on your machine are invisible to Praxis: the worker
+will plan and implement against stale code, and its PR diff is computed against
+the wrong base.
+
+**Always `git push` before dispatching.** As backstops:
+
+- The MCP orchestration guide requires the brain to run a git ahead/behind
+  pre-flight (`git rev-list --left-right --count origin/<base>...HEAD`) and
+  refuse to dispatch when your local branch is ahead of origin.
+- `dispatch_task` / `execute_plan` accept an optional `expected_base_sha`; the
+  server rejects the dispatch (HTTP 409) if it does not match the current
+  `origin/<base>` head.
+- The dashboard sidebar shows the current `origin` head per project so you can
+  eyeball whether your local checkout matches.
+
 ## Security Model
 
 Praxis is designed for a **single trusted operator on hardware they control**. Read
