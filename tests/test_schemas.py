@@ -407,3 +407,30 @@ def test_dispatch_request_context_defaults_none() -> None:
 def test_needs_clarification_status_exists():
     assert TaskStatus.NEEDS_CLARIFICATION == "needs_clarification"
     assert TaskStatus.NEEDS_CLARIFICATION != TaskStatus.FAILED
+
+
+from orchestrator.models.schemas import ExecutePlanRequest  # noqa: E402
+
+
+def test_dispatch_request_expected_base_sha_defaults_none():
+    req = DispatchRequest(
+        repo_url="https://github.com/o/r", instructions="do it", model="m"
+    )
+    assert req.expected_base_sha is None
+
+
+def test_dispatch_request_accepts_expected_base_sha():
+    req = DispatchRequest(
+        repo_url="https://github.com/o/r",
+        instructions="do it",
+        model="m",
+        expected_base_sha="abc1234",
+    )
+    assert req.expected_base_sha == "abc1234"
+
+
+def test_execute_plan_request_expected_base_sha_defaults_none():
+    req = ExecutePlanRequest(
+        repo_url="https://github.com/o/r", plan="# plan", model="m"
+    )
+    assert req.expected_base_sha is None
