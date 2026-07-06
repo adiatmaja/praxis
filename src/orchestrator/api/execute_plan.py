@@ -19,6 +19,8 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 
 from orchestrator.api.auth import verify_token
 from orchestrator.core.execute_plan_decompose import branch_slug, normalize_slugs
+from orchestrator.core.git_ops import GitOps
+from orchestrator.core.github_credentials import build_credential_provider
 from orchestrator.core.harnesses import default_harness_id
 from orchestrator.models.schemas import ExecutePlanRequest, ExecutePlanResponse
 
@@ -90,6 +92,32 @@ async def execute_plan(request: Request, body: ExecutePlanRequest) -> dict[str, 
     db = state.db
     queue = state.task_queue
     settings = state.settings
+
+    if body.expected_base_sha is not None:
+        base = body.branch or "main"
+        git = GitOps(build_credential_provider(settings))
+        try:
+            origin_sha = await git.remote_head_sha(body.repo_url, base)
+        except RuntimeError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=f"could not resolve origin base sha: {exc}",
+            ) from exc
+        if origin_sha is None:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"branch '{base}' not found on remote for base-sha check",
+            )
+        expected = body.expected_base_sha
+        if not (origin_sha.startswith(expected) or expected.startswith(origin_sha)):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    f"expected base sha '{expected}' does not match "
+                    f"origin/{base} ('{origin_sha}'). Push your local commits "
+                    "or refetch origin, then retry."
+                ),
+            )
 
     harness = body.harness or default_harness_id()
     project_id = await _create_or_reuse_project(

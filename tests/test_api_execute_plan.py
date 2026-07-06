@@ -86,6 +86,55 @@ async def test_execute_plan_missing_plan_returns_422(
     assert resp.status_code == 422
 
 
+async def test_execute_plan_rejects_stale_expected_base_sha(
+    client: AsyncClient,
+    auth_headers: dict[str, str],
+    seeded_user: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """409 when expected_base_sha differs from origin head."""
+    from unittest.mock import patch
+
+    monkeypatch.setattr(app.state, "llm_router", AsyncMock(), raising=False)
+
+    with patch("orchestrator.api.execute_plan.GitOps") as mock_git_cls:
+        mock_git_cls.return_value.remote_head_sha = AsyncMock(return_value="origin999")
+        resp = await client.post(
+            "/api/execute-plan",
+            headers=auth_headers,
+            json={
+                "repo_url": "https://github.com/o/r",
+                "plan": "# plan\n- do a thing",
+                "model": "m",
+                "branch": "main",
+                "expected_base_sha": "local111",
+            },
+        )
+    assert resp.status_code == 409
+    assert "does not match" in resp.json()["detail"]
+
+
+async def test_execute_plan_without_expected_base_sha_is_unchanged(
+    client: AsyncClient,
+    auth_headers: dict[str, str],
+    seeded_user: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No expected_base_sha => guard is skipped, plan is accepted as before."""
+    monkeypatch.setattr(app.state, "llm_router", AsyncMock(), raising=False)
+
+    resp = await client.post(
+        "/api/execute-plan",
+        headers=auth_headers,
+        json={
+            "repo_url": "https://github.com/o/r",
+            "plan": "# plan\n- do a thing",
+            "model": "m",
+        },
+    )
+    assert resp.status_code == 201
+
+
 @pytest.mark.unit
 def test_normalize_slugs_adds_slug_and_remaps_depends_on() -> None:
     """Brain ids must become slugs so TaskQueue.activate_plan can consume them."""
