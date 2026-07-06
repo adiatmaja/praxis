@@ -249,6 +249,43 @@ async def test_remote_branch_exists_no_partial_match(
 
 
 # ---------------------------------------------------------------------------
+# remote_head_sha
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+@patch("orchestrator.core.git_ops.GitOps._run_command")
+async def test_remote_head_sha_returns_sha(mock_run: AsyncMock) -> None:
+    mock_run.return_value = (0, "abc1234def5678\trefs/heads/main", "")
+    git = GitOps("ghp_test")
+    sha = await git.remote_head_sha("https://github.com/o/r", "main")
+    assert sha == "abc1234def5678"
+    cmd = mock_run.call_args.args[0]
+    assert "ls-remote" in cmd
+    assert "--heads" in cmd
+    assert "main" in cmd
+
+
+@pytest.mark.unit
+@patch("orchestrator.core.git_ops.GitOps._run_command")
+async def test_remote_head_sha_missing_branch_returns_none(
+    mock_run: AsyncMock,
+) -> None:
+    mock_run.return_value = (0, "", "")
+    git = GitOps("ghp_test")
+    assert await git.remote_head_sha("https://github.com/o/r", "nope") is None
+
+
+@pytest.mark.unit
+@patch("orchestrator.core.git_ops.GitOps._run_command")
+async def test_remote_head_sha_raises_on_git_error(mock_run: AsyncMock) -> None:
+    mock_run.return_value = (128, "", "fatal: repository not found")
+    git = GitOps("ghp_test")
+    with pytest.raises(RuntimeError, match="git ls-remote failed"):
+        await git.remote_head_sha("https://github.com/o/r", "main")
+
+
+# ---------------------------------------------------------------------------
 # remote_file_exists
 # ---------------------------------------------------------------------------
 
