@@ -323,3 +323,53 @@ async def test_poll_task_maps_needs_clarification_to_awaiting_clarification() ->
     assert result["status"] == "awaiting_clarification"
     assert "Which auth helper?" in result["question"]
     assert result["task_id"] == "t1"
+
+
+async def test_dispatch_impl_includes_expected_base_sha_when_set() -> None:
+    client = FakeClient({("POST", "/api/dispatch"): {"ok": True}})
+    await server.dispatch_task_impl(
+        client,
+        repo_url="https://github.com/o/r",
+        instructions="do it",
+        model="m",
+        expected_base_sha="abc1234",
+    )
+    _, _, body = client.calls[0]
+    assert body["expected_base_sha"] == "abc1234"
+
+
+async def test_dispatch_impl_omits_expected_base_sha_when_none() -> None:
+    client = FakeClient({("POST", "/api/dispatch"): {"ok": True}})
+    await server.dispatch_task_impl(
+        client,
+        repo_url="https://github.com/o/r",
+        instructions="do it",
+        model="m",
+    )
+    _, _, body = client.calls[0]
+    assert "expected_base_sha" not in body
+
+
+async def test_execute_plan_impl_includes_expected_base_sha_when_set() -> None:
+    client = FakeClient({("POST", "/api/execute-plan"): {"ok": True}})
+    await server.execute_plan_impl(
+        client,
+        repo_url="https://github.com/o/r",
+        plan="step 1\nstep 2",
+        model="m",
+        expected_base_sha="def5678",
+    )
+    _, _, body = client.calls[0]
+    assert body["expected_base_sha"] == "def5678"
+
+
+async def test_execute_plan_impl_omits_expected_base_sha_when_none() -> None:
+    client = FakeClient({("POST", "/api/execute-plan"): {"ok": True}})
+    await server.execute_plan_impl(
+        client,
+        repo_url="https://github.com/o/r",
+        plan="step 1\nstep 2",
+        model="m",
+    )
+    _, _, body = client.calls[0]
+    assert "expected_base_sha" not in body

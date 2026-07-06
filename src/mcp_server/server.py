@@ -41,6 +41,7 @@ async def dispatch_task_impl(
     harness: str | None = None,
     branch: str | None = None,
     context: str | None = None,
+    expected_base_sha: str | None = None,
 ) -> dict[str, Any]:
     """Dispatch a single implementation task to a non-Anthropic worker model."""
     payload: dict[str, Any] = {
@@ -54,6 +55,8 @@ async def dispatch_task_impl(
         payload["branch"] = branch
     if context is not None:
         payload["context"] = context
+    if expected_base_sha is not None:
+        payload["expected_base_sha"] = expected_base_sha
     try:
         return cast(dict[str, Any], await client.post("/api/dispatch", payload))
     except PraxisClientError as exc:
@@ -68,6 +71,7 @@ async def execute_plan_impl(
     harness: str | None = None,
     branch: str | None = None,
     context: str | None = None,
+    expected_base_sha: str | None = None,
 ) -> dict[str, Any]:
     """Submit a full, externally-authored plan for capability-aware execution."""
     payload: dict[str, Any] = {
@@ -81,6 +85,8 @@ async def execute_plan_impl(
         payload["branch"] = branch
     if context is not None:
         payload["context"] = context
+    if expected_base_sha is not None:
+        payload["expected_base_sha"] = expected_base_sha
     try:
         return cast(dict[str, Any], await client.post("/api/execute-plan", payload))
     except PraxisClientError as exc:
@@ -209,6 +215,7 @@ async def dispatch_task(
     harness: str | None = None,
     branch: str | None = None,
     context: str | None = None,
+    expected_base_sha: str | None = None,
 ) -> dict[str, Any]:
     """Dispatch an implementation task to a non-Anthropic worker model inside Praxis.
 
@@ -220,6 +227,8 @@ async def dispatch_task(
     Pass a focused slice, not your whole memory tree. Do NOT include secrets,
     tokens, or .env values - they are redacted server-side, but keep them out
     anyway.
+
+    expected_base_sha: origin base sha you validated locally; server rejects a mismatch.
     """
     return await dispatch_task_impl(
         PraxisClient.from_env(),
@@ -229,6 +238,7 @@ async def dispatch_task(
         harness=harness,
         branch=branch,
         context=context,
+        expected_base_sha=expected_base_sha,
     )
 
 
@@ -240,6 +250,7 @@ async def execute_plan(
     harness: str | None = None,
     branch: str | None = None,
     context: str | None = None,
+    expected_base_sha: str | None = None,
 ) -> dict[str, Any]:
     """Execute a full, externally-authored implementation plan on a repo.
 
@@ -251,6 +262,8 @@ async def execute_plan(
     dispatch_task) when you already have a multi-step plan.
 
     context: Optional curated, secret-scrubbed reference text for the worker.
+
+    expected_base_sha: origin base sha you validated locally; server rejects a mismatch.
     """
     return await execute_plan_impl(
         PraxisClient.from_env(),
@@ -260,6 +273,7 @@ async def execute_plan(
         harness=harness,
         branch=branch,
         context=context,
+        expected_base_sha=expected_base_sha,
     )
 
 
