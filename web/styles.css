@@ -1046,7 +1046,7 @@
 .card-actions { display: flex; gap: 8px; margin-top: 8px; }
 .btn-approve, .btn-reject {
   font-size: 12px; padding: 4px 10px; border-radius: 6px; cursor: pointer;
-  border: 1px solid var(--border); background: var(--surface); color: var(--text);
+  border: 1px solid var(--border); background: var(--panel); color: var(--text);
 }
 .btn-approve { border-color: #16a34a; color: #16a34a; }
 .btn-reject { border-color: #dc2626; color: #dc2626; }
