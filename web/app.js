@@ -303,6 +303,31 @@
         .concat(projects.map(p => '<option value="' + esc(p.id) + '">' + esc(p.name) + '</option>'))
         .join("");
       sel.value = globalProjectFilter;
+      refreshGitState(globalProjectFilter);
+    }
+
+    async function refreshGitState(projectId) {
+      const el = document.getElementById("git-state-line");
+      if (!el) return;
+      if (!projectId || projectId === "all") {
+        el.textContent = "—";
+        el.title = "";
+        return;
+      }
+      try {
+        const gs = await api("GET", "/api/projects/" + projectId + "/git-state");
+        if (!gs.available) {
+          el.textContent = "origin/" + (gs.base || "main") + " · unavailable";
+          el.title = gs.detail || "";
+          return;
+        }
+        const when = gs.committed_at ? " · " + gs.committed_at.slice(0, 10) : "";
+        el.textContent = "origin/" + gs.base + " · " + (gs.short_sha || "") + when;
+        el.title = (gs.subject || "") + (gs.sha ? " (" + gs.sha + ")" : "");
+      } catch (e) {
+        el.textContent = "origin · error";
+        el.title = String(e);
+      }
     }
 
     function onGlobalProjectChange() {
@@ -312,6 +337,7 @@
       selectedPlanId = null;
       selectedTaskId = null;
       selectedDashboardTaskId = null;
+      refreshGitState(globalProjectFilter);
       switchView(currentView);
     }
 
