@@ -108,7 +108,12 @@ async def execute_plan(request: Request, body: ExecutePlanRequest) -> dict[str, 
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail=f"branch '{base}' not found on remote for base-sha check",
             )
-        expected = body.expected_base_sha
+        expected = (body.expected_base_sha or "").strip()
+        if not expected:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="expected_base_sha must not be empty",
+            )
         if not (origin_sha.startswith(expected) or expected.startswith(origin_sha)):
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,

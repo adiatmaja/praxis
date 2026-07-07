@@ -135,6 +135,34 @@ async def test_execute_plan_without_expected_base_sha_is_unchanged(
     assert resp.status_code == 201
 
 
+async def test_execute_plan_rejects_empty_expected_base_sha(
+    client: AsyncClient,
+    auth_headers: dict[str, str],
+    seeded_user: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """422 when expected_base_sha is present but empty/whitespace."""
+    from unittest.mock import patch
+
+    monkeypatch.setattr(app.state, "llm_router", AsyncMock(), raising=False)
+
+    with patch("orchestrator.api.execute_plan.GitOps") as mock_git_cls:
+        mock_git_cls.return_value.remote_head_sha = AsyncMock(return_value="origin999")
+        resp = await client.post(
+            "/api/execute-plan",
+            headers=auth_headers,
+            json={
+                "repo_url": "https://github.com/o/r",
+                "plan": "# plan\n- do a thing",
+                "model": "m",
+                "branch": "main",
+                "expected_base_sha": "   ",
+            },
+        )
+    assert resp.status_code == 422
+    assert "expected_base_sha" in resp.json()["detail"]
+
+
 @pytest.mark.unit
 def test_normalize_slugs_adds_slug_and_remaps_depends_on() -> None:
     """Brain ids must become slugs so TaskQueue.activate_plan can consume them."""
