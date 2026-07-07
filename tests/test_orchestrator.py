@@ -963,7 +963,9 @@ class TestContextSyncOnPlanCompletion:
         bus.publish = lambda e: (published.append(e), _orig(e))
 
         mock_git = AsyncMock()
-        mock_git.open_integration_pr = AsyncMock(side_effect=RuntimeError("gh auth fail"))
+        mock_git.open_integration_pr = AsyncMock(
+            side_effect=RuntimeError("gh auth fail")
+        )
         mock_git.repo_slug = MagicMock(return_value="u/a")
 
         orch = Orchestrator(

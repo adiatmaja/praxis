@@ -475,7 +475,10 @@ class GitOps:
         Raises:
             RuntimeError: If the ``gh`` command exits with a non-zero code.
         """
-        slug = self.repo_slug(repo_url) or repo_url.rstrip("/").removesuffix(".git").split("github.com/")[-1]
+        slug = (
+            self.repo_slug(repo_url)
+            or repo_url.rstrip("/").removesuffix(".git").split("github.com/")[-1]
+        )
         token = await self._token_for_repo(slug)
         stdout = await self._run_checked(
             [

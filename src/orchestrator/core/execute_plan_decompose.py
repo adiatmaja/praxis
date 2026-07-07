@@ -101,8 +101,12 @@ async def decompose_plan(
                 exc,
             )
     else:
-        raise last_exc if last_exc is not None else PlanReviewError(  # noqa: EM101
-            "decomposition failed with no parseable output"
+        raise (
+            last_exc
+            if last_exc is not None
+            else PlanReviewError(  # noqa: EM101
+                "decomposition failed with no parseable output"
+            )
         )
     normalize_slugs(opus_plan)
 
