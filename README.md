@@ -21,31 +21,27 @@
 
 **You give Praxis a description of what you want; it writes the code and hands you reviewed, ready-to-merge PRs.**
 Plenty of tools can pass a single prompt to a model. Praxis runs the whole engineering loop you'd
-otherwise do by hand:
+otherwise do by hand: a planner model breaks your spec into separate tasks, a coding agent implements
+each one in its own Docker container and opens a pull request, and the planner reviews every PR before
+it can merge. Passing PRs are parked for your approval (opt in to auto-merge per project, never into a
+protected branch); failures retry automatically (up to 3); a crashed or hung agent is noticed and
+re-dispatched, so nothing gets stuck. You stay in control of what lands: Praxis does the work and the
+review, you keep the merge button. ([How It Works](#how-it-works) walks through each step.)
 
-1. A smart "planner" model reads your spec and breaks it into separate tasks.
-2. For each task it spins up a coding agent in its own Docker container, on its own git branch.
-3. Each agent writes the code, commits, and opens a pull request.
-4. The planner reviews every PR. By default it **parks the ones that pass for you to approve and
-   merge** (opt in to auto-merge per project — never into a protected branch), and sends the
-   failures back for another attempt (up to 3).
-5. If an agent crashes or hangs, Praxis notices and retries it, so nothing gets stuck forever.
-
-You stay in control of what lands: Praxis does the work and the review, you keep the merge button.
-
-The trick that makes this cheap — and the reason Praxis exists — is in the next section. Drive the
-whole loop three ways (all clients of one engine): **MCP** (from Claude Code), the **dashboard**, or
-the **CLI**.
+The trick that makes this cheap, and the reason Praxis exists, is in the next section. Drive the whole
+loop three ways (all clients of one engine): **MCP** (from Claude Code), the **dashboard**, or the
+**CLI**.
 
 ## Table of Contents
 
 - [The one thing Praxis is really for](#the-one-thing-praxis-is-really-for)
+- [What else you get](#what-else-you-get)
 - [Architecture](#architecture)
+- [How It Works](#how-it-works)
 - [Prerequisites](#prerequisites)
 - [Quick Start](#quick-start)
 - [Choosing a worker model](#choosing-a-worker-model)
 - [Configuration](#configuration)
-- [How It Works](#how-it-works)
 - [MCP Control Surface](#mcp-control-surface)
 - [Security Model](#security-model)
 - [Troubleshooting](#troubleshooting)
@@ -124,40 +120,23 @@ subscription can run the whole loop, with the local model coding for zero tokens
 
 ### Why this is different from Aider / Roo Code / Cline / OpenHands
 
-Those tools can already pair a strong planner with a cheaper implementer — but
-they assume a **metered API** for the planner, and none lets a *provider-locked
-assistant delegate to a local worker from inside that assistant*. Praxis's
-distinct combination:
+Those tools can already pair a strong planner with a cheaper implementer, but they assume a
+**metered API** for the planner, and none lets a *provider-locked assistant delegate to a local
+worker from inside that assistant*. Praxis's distinct combination:
 
-- **Subscription-CLI arbitrage** — planning/review bill against your flat-rate
-  plan (`claude -p`, `codex`, `agy`), not a per-token API.
-- **Provider escape hatch via MCP** — route Claude → local worker without leaving
-  Claude Code.
-- **Functional fleet dashboard** — live SSE logs of N agents on N branches, plus
-  a human window to unstick wedged tasks (MCP is request/response and can't show
-  long-running async work; the dashboard covers that).
-- **GitHub-native PR loop** — real, inspectable PRs with a review gate, not blind
-  auto-commit.
+- **Subscription-CLI arbitrage:** planning/review bill against your flat-rate plan (`claude -p`,
+  `codex`, `agy`), not a per-token API.
+- **Provider escape hatch via MCP:** route Claude to a local worker without leaving Claude Code.
+- **Functional fleet dashboard:** live SSE logs of N agents on N branches, plus a human window to
+  unstick wedged tasks.
+- **GitHub-native PR loop:** real, inspectable PRs with a review gate, not blind auto-commit.
 
-### Honest tradeoffs
-
-Praxis is opinionated about being upfront. The control surface (MCP + dashboard)
-is solid; these caveats are about the economic foundation:
-
-- **Subscription-CLI dependence.** Driving a subscription CLI programmatically is
-  a usage pattern providers may change; it's not a foundation Praxis controls.
-- **Local model quality is the bottleneck.** "Free coding" only holds if your
-  local model can follow an edit format and produce mergeable diffs. Weak models
-  reply *with* code instead of editing, and a high retry rate consumes planner
-  review cycles — which means the savings can invert. Pick a mid-size,
-  coding-oriented model.
-- **Self-review caveat.** The planner reviews its own plan's PRs; real
-  correctness still leans on your repo having CI/tests.
-
-See [docs/positioning.md](docs/positioning.md) for the full rationale, including a
-code-grounded [Why not just run OpenCode against a local model yourself?](docs/positioning.md#why-not-just-run-opencode-against-a-local-model-yourself)
-walkthrough of what Praxis adds (the loop, the review gate, the handoff, the capability
-gate, and the MCP surface).
+**Honest about the tradeoffs, too:** driving a subscription CLI programmatically is a usage pattern
+providers may change, and the "free coding" claim only holds if your local model is good enough that
+retries don't eat your planner review budget. The full rationale and caveats (including the
+self-review blind spot) plus a code-grounded
+[Why not just run OpenCode against a local model yourself?](docs/positioning.md#why-not-just-run-opencode-against-a-local-model-yourself)
+walkthrough are in [docs/positioning.md](docs/positioning.md).
 
 **Who it's for:** solo developers and small teams who already pay for an AI assistant subscription
 and want to put it to work on real, multi-file changes without running up a metered API bill. You
@@ -170,9 +149,9 @@ and the dashboard gives you a live window to step in when a task gets stuck.
 
 Beyond the brain/hands split above:
 
-- **It does the git plumbing for you.** A `plan/{date}-{slug}` branch groups the work, each task gets
-  its own `agent/{task-slug}` branch and PR, passing PRs are squash-merged, and a final integration
-  PR lands on `main` — all normal GitHub PRs you can inspect, with parallel-branch race handling.
+- **It does the git plumbing for you.** Grouping and per-task branches, squash-merges, and a final
+  integration PR to `main`: all normal GitHub PRs you can inspect, with parallel-branch race handling
+  (see [How It Works](#how-it-works)).
 - **Fully configurable per call-site.** Mix and match in **Settings → Models**: e.g. Claude to plan,
   a local model to implement, Gemini to review.
 - **One engine, many clients.** A REST API is the single source of truth; the MCP server, dashboard,
@@ -187,6 +166,37 @@ Studio) and sends planning/review to your subscription CLI (`claude`, `codex`, `
 a local model, configurable per call-site.
 
 Full component diagrams and design rationale: [docs/architecture.md](docs/architecture.md).
+
+## How It Works
+
+Driven from the dashboard or CLI, the full autonomous loop runs as follows.
+
+1. Provide a spec. Write your own, or generate one with the built-in Create-Spec chat.
+2. The planner brain breaks the spec into tasks with a dependency graph.
+3. Praxis creates a `plan/{date}-{slug}` branch.
+4. Coding agents implement tasks on `agent/{task-slug}` branches.
+5. The planner reviews each PR diff. Pass: park for your approval (or auto-merge if opted in); fail: retry (max 3).
+6. All tasks merged → integration PR to main.
+7. Optional: the planner proposes improvements when confidence ≥ threshold.
+
+**Staying in control.** You don't have to let it run unattended. Each project has an approval gate:
+turn it on and Praxis pauses after planning so you can review and approve the plan before any agent
+touches your code. The dashboard also shows live logs and lets you step in to unstick a task that
+gets wedged. Leave the gate off for a fully autonomous loop, turn it on while you're learning to
+trust it.
+
+### Where agents run (and why your local files are safe)
+
+Each coding agent runs in its **own throwaway Docker container** and does a fresh
+`git clone` **from the GitHub remote** — it never mounts, opens, or writes your local
+checkout, so it cannot clobber uncommitted work. The only durable output is a pushed
+`agent/{task-slug}` branch and its PR; when the container exits, its filesystem is
+gone. The one trade-off: the agent sees only committed-and-pushed code, so pass local
+reference context explicitly via `dispatch_task`'s `context` field.
+
+Full isolation diagram and the worktree comparison:
+[docs/architecture.md](docs/architecture.md#agent-isolation-model). See also
+[docs/workflow.md](docs/workflow.md) and [docs/deployment.md](docs/deployment.md).
 
 ## Prerequisites
 
@@ -321,37 +331,6 @@ tiny window will be rejected up front rather than silently truncated.
 | `AGENT_MODEL` | No | `claude-opus-4-8` | Default planner model (per-call-site overrides in **Settings → Models**) |
 | `HOST` | No | `0.0.0.0` | Bind address |
 | `PORT` | No | `12323` | Host port (uncommon by design to avoid 8080 collisions; MCP `PRAXIS_BASE_URL` and agent callbacks must match it) |
-
-## How It Works
-
-Driven from the dashboard or CLI, the full autonomous loop runs as follows.
-
-1. Provide a spec. Write your own, or generate one with the built-in Create-Spec chat.
-2. The planner brain breaks the spec into tasks with a dependency graph.
-3. Praxis creates a `plan/{date}-{slug}` branch.
-4. Coding agents implement tasks on `agent/{task-slug}` branches.
-5. The planner reviews each PR diff. Pass: park for your approval (or auto-merge if opted in); fail: retry (max 3).
-6. All tasks merged → integration PR to main.
-7. Optional: the planner proposes improvements when confidence ≥ threshold.
-
-**Staying in control.** You don't have to let it run unattended. Each project has an approval gate:
-turn it on and Praxis pauses after planning so you can review and approve the plan before any agent
-touches your code. The dashboard also shows live logs and lets you step in to unstick a task that
-gets wedged. Leave the gate off for a fully autonomous loop, turn it on while you're learning to
-trust it.
-
-### Where agents run (and why your local files are safe)
-
-Each coding agent runs in its **own throwaway Docker container** and does a fresh
-`git clone` **from the GitHub remote** — it never mounts, opens, or writes your local
-checkout, so it cannot clobber uncommitted work. The only durable output is a pushed
-`agent/{task-slug}` branch and its PR; when the container exits, its filesystem is
-gone. The one trade-off: the agent sees only committed-and-pushed code, so pass local
-reference context explicitly via `dispatch_task`'s `context` field.
-
-Full isolation diagram and the worktree comparison:
-[docs/architecture.md](docs/architecture.md#agent-isolation-model). See also
-[docs/workflow.md](docs/workflow.md) and [docs/deployment.md](docs/deployment.md).
 
 ## MCP Control Surface
 
