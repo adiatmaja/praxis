@@ -177,10 +177,13 @@ def test_main_callable_and_registers_tools() -> None:
     tool_names = {t.name for t in mcp._tool_manager.list_tools()}
     assert {
         "dispatch_task",
+        "execute_plan",
         "poll_task",
+        "poll_plan",
         "list_providers",
         "get_task_logs",
         "cancel_task",
+        "get_project",
     } <= tool_names
 
 
@@ -335,6 +338,62 @@ async def test_poll_task_maps_needs_clarification_to_awaiting_clarification() ->
     assert result["status"] == "awaiting_clarification"
     assert "Which auth helper?" in result["question"]
     assert result["task_id"] == "t1"
+
+
+async def test_get_project_found_maps_model_name_to_model() -> None:
+    client = FakeClient(
+        {
+            ("GET", "/api/projects"): [
+                {
+                    "id": "pr1",
+                    "name": "alpha",
+                    "repo_url": "https://github.com/o/other",
+                    "model_name": "old-model",
+                    "harness": "aider",
+                    "default_branch": "main",
+                    "approval_gate": True,
+                },
+                {
+                    "id": "pr2",
+                    "name": "beta",
+                    "repo_url": "https://github.com/u/target",
+                    "model_name": "qwen3-32b",
+                    "harness": "opencode",
+                    "default_branch": "main",
+                    "approval_gate": False,
+                },
+            ]
+        }
+    )
+    result = await server.get_project_impl(
+        client,
+        repo_url="https://github.com/u/target",
+    )
+    assert result["project_id"] == "pr2"
+    assert result["name"] == "beta"
+    assert result["model"] == "qwen3-32b"
+    assert result["harness"] == "opencode"
+    assert result["default_branch"] == "main"
+    assert result["approval_gate"] is False
+
+
+async def test_get_project_missing_returns_null_not_error() -> None:
+    client = FakeClient({("GET", "/api/projects"): []})
+    result = await server.get_project_impl(client, repo_url="https://github.com/u/none")
+    assert result == {"project": None}
+
+
+async def test_get_project_client_error_returns_error_shape() -> None:
+    class ErrClient:
+        async def get(self, path: str) -> Any:
+            raise PraxisClientError("connection_error", "unreachable")  # noqa: EM101
+
+    result = await server.get_project_impl(  # type: ignore[arg-type]
+        ErrClient(),
+        repo_url="https://github.com/u/x",
+    )
+    assert result["error"] == "connection_error"
+    assert "unreachable" in result["message"]
 
 
 async def test_dispatch_impl_includes_expected_base_sha_when_set() -> None:
