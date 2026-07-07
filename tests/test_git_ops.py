@@ -477,3 +477,54 @@ async def test_remote_branch_exists_resolves_repo_token(
     assert result is True
     assert provider.seen == ["https://github.com/o/r"]
     assert captured["token"] == "ghs_scoped"
+
+
+# ---------------------------------------------------------------------------
+# remote_commit_meta
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+async def test_remote_commit_meta_returns_subject_and_date(monkeypatch):
+    import httpx
+
+    from orchestrator.core.git_ops import GitOps
+
+    git = GitOps("placeholder")
+
+    async def fake_token(_repo):
+        return "tok"
+
+    monkeypatch.setattr(git, "_token_for_repo", fake_token)
+
+    class FakeResp:
+        status_code = 200
+
+        def json(self):
+            return {
+                "commit": {
+                    "message": "security: fix CodeQL\n\nbody",
+                    "committer": {"date": "2026-07-06T05:19:58Z"},
+                }
+            }
+
+    class FakeClient:
+        def __init__(self, *a, **k):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def get(self, url, headers=None):
+            return FakeResp()
+
+    monkeypatch.setattr(httpx, "AsyncClient", FakeClient)
+
+    meta = await git.remote_commit_meta("o/r", "abc1234")
+    assert meta == {
+        "subject": "security: fix CodeQL",
+        "committed_at": "2026-07-06T05:19:58Z",
+    }

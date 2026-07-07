@@ -492,3 +492,15 @@ class ExecutePlanResponse(BaseModel):
     project_id: str
     dashboard_url: str
     status: str = "decomposing"
+
+
+class GitStateResponse(BaseModel):
+    """Origin HEAD state for a project's base branch (dashboard visualization)."""
+
+    base: str
+    sha: str | None = None
+    short_sha: str | None = None
+    subject: str | None = None
+    committed_at: str | None = None
+    available: bool = True
+    detail: str | None = None

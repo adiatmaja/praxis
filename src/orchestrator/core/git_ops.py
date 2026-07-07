@@ -527,3 +527,42 @@ class GitOps:
             f" for {repo_slug}/{path}@{branch}"
         )
         raise RuntimeError(msg)
+
+    async def remote_commit_meta(self, repo_slug: str, sha: str) -> dict[str, str]:
+        """Return ``{subject, committed_at}`` for a commit via the GitHub API.
+
+        Uses ``GET /repos/{slug}/commits/{sha}``. The subject is the first line
+        of the commit message.
+
+        Args:
+            repo_slug: GitHub ``owner/repo`` slug.
+            sha: Commit sha to look up.
+
+        Returns:
+            Dict with ``subject`` and ``committed_at`` (ISO-8601 string).
+
+        Raises:
+            RuntimeError: On unexpected HTTP status or network error.
+        """
+        token = await self._token_for_repo(repo_slug)
+        url = f"https://api.github.com/repos/{repo_slug}/commits/{sha}"
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/vnd.github+json",
+        }
+        try:
+            async with httpx.AsyncClient(timeout=15) as client:
+                resp = await client.get(url, headers=headers)
+        except httpx.HTTPError as exc:
+            msg = f"network error fetching commit meta: {exc}"
+            raise RuntimeError(msg) from exc
+        if resp.status_code != 200:
+            msg = (
+                f"unexpected GitHub API status {resp.status_code} for {repo_slug}@{sha}"
+            )
+            raise RuntimeError(msg)
+        commit = resp.json().get("commit", {})
+        message = commit.get("message", "")
+        subject = message.splitlines()[0] if message else ""
+        committed_at = commit.get("committer", {}).get("date", "")
+        return {"subject": subject, "committed_at": committed_at}
