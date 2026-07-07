@@ -3,6 +3,8 @@ services:
     build:
       context: .
       dockerfile: docker/orchestrator/Dockerfile
+      args:
+        PRAXIS_BUILD_SHA: ${PRAXIS_BUILD_SHA:-dev}
     # restart: unless-stopped is inherited from docker-compose.yml (the base file).
     # Compose merges the two files; the base restart policy applies here without
     # needing to repeat it.  Keep it that way: the control plane must outlive the
