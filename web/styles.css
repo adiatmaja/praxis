@@ -1050,3 +1050,13 @@
 }
 .btn-approve { border-color: #16a34a; color: #16a34a; }
 .btn-reject { border-color: #dc2626; color: #dc2626; }
+
+/* Sidebar git-state widget */
+.sidebar-git { padding: 8px 12px; }
+.git-state-line {
+  font-size: 11px;
+  color: var(--text-muted, #8a8f98);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}

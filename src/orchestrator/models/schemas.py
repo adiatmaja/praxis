@@ -398,6 +398,11 @@ class DispatchRequest(BaseModel):
     """Curated, task-relevant context for the worker (memory, conventions,
     architecture notes). Scrubbed of secrets and size-capped server-side. NOT
     a place for secret values - those are redacted on arrival."""
+    expected_base_sha: str | None = None
+    """Optional origin base sha the caller believes it is dispatching against.
+    When set, the server rejects the dispatch if it does not match the current
+    ``origin/<branch>`` head (defense-in-depth against dispatching stale code
+    when local commits were never pushed). Read-only remote compare."""
 
     @field_validator("repo_url")
     @classmethod
@@ -471,6 +476,9 @@ class ExecutePlanRequest(BaseModel):
     harness: str | None = None
     branch: str | None = None
     context: str | None = None
+    expected_base_sha: str | None = None
+    """Optional origin base sha the caller believes it is dispatching against.
+    Rejected server-side if it does not match ``origin/<branch>`` head."""
 
 
 class ExecutePlanResponse(BaseModel):
@@ -485,3 +493,15 @@ class ExecutePlanResponse(BaseModel):
     project_id: str
     dashboard_url: str
     status: str = "decomposing"
+
+
+class GitStateResponse(BaseModel):
+    """Origin HEAD state for a project's base branch (dashboard visualization)."""
+
+    base: str
+    sha: str | None = None
+    short_sha: str | None = None
+    subject: str | None = None
+    committed_at: str | None = None
+    available: bool = True
+    detail: str | None = None

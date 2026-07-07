@@ -412,6 +412,44 @@ class GitOps:
         ref = f"refs/heads/{branch}"
         return any(ref == line.split("\t")[-1] for line in stdout.splitlines() if line)
 
+    async def remote_head_sha(self, repo_url: str, branch: str) -> str | None:
+        """Return the commit sha at ``refs/heads/<branch>`` on the remote.
+
+        Runs ``git ls-remote --heads <repo_url> <branch>`` (read-only, no
+        clone) via the token-auth credential helper.
+
+        Args:
+            repo_url: HTTPS or SSH URL of the remote repository.
+            branch: Branch name (without the ``refs/heads/`` prefix).
+
+        Returns:
+            The commit sha, or None if the branch is absent.
+
+        Raises:
+            RuntimeError: If the git command exits non-zero.
+        """
+        token = await self._token_for_repo(repo_url)
+        cmd = [
+            "git",
+            *_token_git_args(),
+            "ls-remote",
+            "--heads",
+            repo_url,
+            branch,
+        ]
+        code, stdout, stderr = await self._run_command(cmd, token=token)
+        if code != 0:
+            msg = f"git ls-remote failed (exit {code}): {stderr}"
+            raise RuntimeError(msg)
+        ref = f"refs/heads/{branch}"
+        for line in stdout.splitlines():
+            if not line:
+                continue
+            parts = line.split("\t")
+            if len(parts) == 2 and parts[1] == ref:
+                return parts[0]
+        return None
+
     async def branch_commit_log(
         self, cwd: str, base_branch: str, branch: str
     ) -> list[Commit]:
@@ -541,3 +579,42 @@ class GitOps:
             f" for {repo_slug}/{path}@{branch}"
         )
         raise RuntimeError(msg)
+
+    async def remote_commit_meta(self, repo_slug: str, sha: str) -> dict[str, str]:
+        """Return ``{subject, committed_at}`` for a commit via the GitHub API.
+
+        Uses ``GET /repos/{slug}/commits/{sha}``. The subject is the first line
+        of the commit message.
+
+        Args:
+            repo_slug: GitHub ``owner/repo`` slug.
+            sha: Commit sha to look up.
+
+        Returns:
+            Dict with ``subject`` and ``committed_at`` (ISO-8601 string).
+
+        Raises:
+            RuntimeError: On unexpected HTTP status or network error.
+        """
+        token = await self._token_for_repo(repo_slug)
+        url = f"https://api.github.com/repos/{repo_slug}/commits/{sha}"
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/vnd.github+json",
+        }
+        try:
+            async with httpx.AsyncClient(timeout=15) as client:
+                resp = await client.get(url, headers=headers)
+        except httpx.HTTPError as exc:
+            msg = f"network error fetching commit meta: {exc}"
+            raise RuntimeError(msg) from exc
+        if resp.status_code != 200:
+            msg = (
+                f"unexpected GitHub API status {resp.status_code} for {repo_slug}@{sha}"
+            )
+            raise RuntimeError(msg)
+        commit = resp.json().get("commit", {})
+        message = commit.get("message", "")
+        subject = message.splitlines()[0] if message else ""
+        committed_at = commit.get("committer", {}).get("date", "")
+        return {"subject": subject, "committed_at": committed_at}

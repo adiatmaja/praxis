@@ -1,5 +1,31 @@
 # Praxis Orchestration Guide
 
+## MANDATORY pre-flight: verify local is not ahead of origin
+
+Praxis workers clone your repository from **origin**. Commits that live only
+in your local checkout are invisible to them. Before EVERY `dispatch_task` or
+`execute_plan`, run this check in the target repo's local working copy:
+
+    git fetch origin <base>
+    git rev-list --left-right --count origin/<base>...HEAD
+
+Interpret the two counts as `<behind>  <ahead>`:
+
+- ahead > 0  -> STOP. Do not dispatch. Tell the user their local <base> is
+  ahead of origin by N commits and that Praxis only sees origin, so they must
+  `git push` first, then retry.
+- behind > 0 only -> safe to proceed (origin is newer than local; the worker
+  is not stale).
+- both > 0 (diverged) -> STOP. Ask the user to push or reconcile first.
+- 0  0 -> in sync, proceed.
+
+When you proceed, resolve the local base sha (`git rev-parse HEAD`) and pass it
+as `expected_base_sha` to `dispatch_task`/`execute_plan`. The server does a
+read-only compare against `origin/<base>` and rejects a mismatch as a second
+line of defense.
+
+---
+
 You are an agent connected to Praxis over MCP. Praxis is an AI agent orchestrator:
 you plan and reason, Praxis runs a local-LLM worker that implements the change in a
 one-shot Docker container (clone, implement, commit, open a PR), and Praxis's own

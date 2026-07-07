@@ -366,6 +366,90 @@ async def test_dispatch_plan_path_and_plan_text_stored_in_opus_plan(
     assert task["plan_text"] == "# Plan\n- step 1\n- step 2"
 
 
+# ---------------------------------------------------------------------------
+# expected_base_sha guard tests
+# ---------------------------------------------------------------------------
+
+
+async def test_dispatch_rejects_stale_expected_base_sha(
+    client: AsyncClient, auth_headers: dict[str, str], seeded_user: str
+) -> None:
+    with patch("orchestrator.api.dispatch.GitOps") as mock_git:
+        inst = mock_git.return_value
+        inst.remote_branch_exists = AsyncMock(return_value=True)
+        inst.remote_head_sha = AsyncMock(return_value="origin999")
+        resp = await client.post(
+            "/api/dispatch",
+            headers=auth_headers,
+            json={
+                "repo_url": "https://github.com/o/r",
+                "instructions": "do it",
+                "model": "m",
+                "branch": "main",
+                "expected_base_sha": "local111",
+            },
+        )
+    assert resp.status_code == 409, resp.text
+    assert "does not match" in resp.json()["detail"]
+
+
+async def test_dispatch_accepts_matching_expected_base_sha(
+    client: AsyncClient, auth_headers: dict[str, str], seeded_user: str
+) -> None:
+    with patch("orchestrator.api.dispatch.GitOps") as mock_git:
+        inst = mock_git.return_value
+        inst.remote_branch_exists = AsyncMock(return_value=True)
+        inst.remote_head_sha = AsyncMock(return_value="same777")
+        resp = await client.post(
+            "/api/dispatch",
+            headers=auth_headers,
+            json={
+                "repo_url": "https://github.com/o/r",
+                "instructions": "do it",
+                "model": "m",
+                "branch": "main",
+                "expected_base_sha": "same777",
+            },
+        )
+    assert resp.status_code == 201, resp.text
+
+
+async def test_dispatch_without_expected_base_sha_is_unchanged(
+    client: AsyncClient, auth_headers: dict[str, str], seeded_user: str
+) -> None:
+    resp = await client.post(
+        "/api/dispatch",
+        headers=auth_headers,
+        json={
+            "repo_url": "https://github.com/o/r",
+            "instructions": "do it",
+            "model": "m",
+        },
+    )
+    assert resp.status_code == 201, resp.text
+
+
+async def test_dispatch_rejects_empty_expected_base_sha(
+    client: AsyncClient, auth_headers: dict[str, str], seeded_user: str
+) -> None:
+    with patch("orchestrator.api.dispatch.GitOps") as mock_git_cls:
+        inst = mock_git_cls.return_value
+        inst.remote_branch_exists = AsyncMock(return_value=True)
+        inst.remote_head_sha = AsyncMock(return_value="origin999")
+        resp = await client.post(
+            "/api/dispatch",
+            headers=auth_headers,
+            json={
+                "repo_url": "https://github.com/o/r",
+                "instructions": "do it",
+                "model": "m",
+                "branch": "main",
+                "expected_base_sha": "   ",
+            },
+        )
+    assert resp.status_code == 422, resp.text
+
+
 @pytest.mark.integration
 async def test_dispatch_scrubs_and_stores_context(
     client: AsyncClient,

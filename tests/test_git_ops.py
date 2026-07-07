@@ -249,6 +249,43 @@ async def test_remote_branch_exists_no_partial_match(
 
 
 # ---------------------------------------------------------------------------
+# remote_head_sha
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+@patch("orchestrator.core.git_ops.GitOps._run_command")
+async def test_remote_head_sha_returns_sha(mock_run: AsyncMock) -> None:
+    mock_run.return_value = (0, "abc1234def5678\trefs/heads/main", "")
+    git = GitOps("ghp_test")
+    sha = await git.remote_head_sha("https://github.com/o/r", "main")
+    assert sha == "abc1234def5678"
+    cmd = mock_run.call_args.args[0]
+    assert "ls-remote" in cmd
+    assert "--heads" in cmd
+    assert "main" in cmd
+
+
+@pytest.mark.unit
+@patch("orchestrator.core.git_ops.GitOps._run_command")
+async def test_remote_head_sha_missing_branch_returns_none(
+    mock_run: AsyncMock,
+) -> None:
+    mock_run.return_value = (0, "", "")
+    git = GitOps("ghp_test")
+    assert await git.remote_head_sha("https://github.com/o/r", "nope") is None
+
+
+@pytest.mark.unit
+@patch("orchestrator.core.git_ops.GitOps._run_command")
+async def test_remote_head_sha_raises_on_git_error(mock_run: AsyncMock) -> None:
+    mock_run.return_value = (128, "", "fatal: repository not found")
+    git = GitOps("ghp_test")
+    with pytest.raises(RuntimeError, match="git ls-remote failed"):
+        await git.remote_head_sha("https://github.com/o/r", "main")
+
+
+# ---------------------------------------------------------------------------
 # remote_file_exists
 # ---------------------------------------------------------------------------
 
@@ -467,3 +504,54 @@ async def test_open_integration_pr_shells_gh_with_repo(mock_run: AsyncMock) -> N
     assert "main" in flat
     assert "--head" in flat
     assert "plan/feature-x" in flat
+
+
+# ---------------------------------------------------------------------------
+# remote_commit_meta
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+async def test_remote_commit_meta_returns_subject_and_date(monkeypatch):
+    import httpx
+
+    from orchestrator.core.git_ops import GitOps
+
+    git = GitOps("placeholder")
+
+    async def fake_token(_repo):
+        return "tok"
+
+    monkeypatch.setattr(git, "_token_for_repo", fake_token)
+
+    class FakeResp:
+        status_code = 200
+
+        def json(self):
+            return {
+                "commit": {
+                    "message": "security: fix CodeQL\n\nbody",
+                    "committer": {"date": "2026-07-06T05:19:58Z"},
+                }
+            }
+
+    class FakeClient:
+        def __init__(self, *a, **k):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def get(self, url, headers=None):
+            return FakeResp()
+
+    monkeypatch.setattr(httpx, "AsyncClient", FakeClient)
+
+    meta = await git.remote_commit_meta("o/r", "abc1234")
+    assert meta == {
+        "subject": "security: fix CodeQL",
+        "committed_at": "2026-07-06T05:19:58Z",
+    }

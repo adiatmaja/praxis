@@ -39,6 +39,46 @@ def _slugify(text: str) -> str:
     return f"{base}-{uuid.uuid4().hex[:6]}"
 
 
+async def _guard_base_sha(body: DispatchRequest, settings: Any, branch: str) -> None:
+    """Reject the dispatch if ``expected_base_sha`` != current origin head.
+
+    Read-only remote compare (``git ls-remote``). Guards against dispatching a
+    worker against stale origin code when local commits were never pushed.
+
+    Raises:
+        HTTPException: 409 on mismatch, 502 on remote-communication failure.
+    """
+    provider = build_credential_provider(settings)
+    git = GitOps(provider)
+    try:
+        origin_sha = await git.remote_head_sha(body.repo_url, branch)
+    except RuntimeError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"could not resolve origin base sha: {exc}",
+        ) from exc
+    if origin_sha is None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"branch '{branch}' not found on remote for base-sha check",
+        )
+    expected = (body.expected_base_sha or "").strip()
+    if not expected:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="expected_base_sha must not be empty",
+        )
+    if not (origin_sha.startswith(expected) or expected.startswith(origin_sha)):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"expected base sha '{expected}' does not match "
+                f"origin/{branch} ('{origin_sha}'). Push your local commits "
+                "or refetch origin, then retry."
+            ),
+        )
+
+
 async def _preflight(body: DispatchRequest, settings: Any) -> list[str]:
     """Validate remote state before writing any DB rows.
 
@@ -54,6 +94,8 @@ async def _preflight(body: DispatchRequest, settings: Any) -> list[str]:
     """
     # No branch and no plan_path: nothing to validate (fresh-branch flow).
     if body.branch is None and body.plan_path is None:
+        if body.expected_base_sha is not None:
+            await _guard_base_sha(body, settings, "main")
         return []
 
     # plan_path without branch: we cannot know which remote ref to check.
@@ -147,6 +189,9 @@ async def _preflight(body: DispatchRequest, settings: Any) -> list[str]:
                         "Praxis reads only from GitHub: push the file first, then retry."
                     ),
                 )
+
+    if body.expected_base_sha is not None:
+        await _guard_base_sha(body, settings, branch)
 
     return warnings
 
