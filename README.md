@@ -61,6 +61,21 @@ spent on token-heavy file editing. Praxis splits those two jobs across two cost
 tiers so each runs where it's cheapest — in practice, one entry-level (~$20/month)
 subscription can run the whole loop, with the local model coding for zero tokens.
 
+```
+  ┌─────────────────────────────────────────────────────────────┐
+  │  1. The Brain (Paid AI Subscription)                         │
+  │     Plans architecture, breaks down tasks, reviews PRs.     │
+  │     (Requires high judgment, but uses low token volume)     │
+  └───────────────┬─────────────────────────────────────────────┘
+                  │ MCP tool-dispatch
+                  ▼
+  ┌─────────────────────────────────────────────────────────────┐
+  │  2. The Hands (Local / Open-Weight LLMs)                    │
+  │     Performs token-heavy edits and file rewrites.            │
+  │     (Free local tokens, e.g., LM Studio)                    │
+  └─────────────────────────────────────────────────────────────┘
+```
+
 > **The bridge that makes it work: Praxis ships an MCP server, so an assistant
 > locked to one provider (e.g. Claude Code on a flat-rate subscription) can
 > dispatch real implementation work to a local LLM through a normal tool call.**
