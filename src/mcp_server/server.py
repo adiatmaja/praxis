@@ -198,6 +198,27 @@ async def get_project_impl(client: Any, repo_url: str) -> dict[str, Any]:
     return {"project": None}
 
 
+async def list_projects_impl(client: Any) -> dict[str, Any]:
+    """Return a slim list of all configured projects."""
+    try:
+        projects = await client.get("/api/projects")
+    except PraxisClientError as exc:
+        return _error(exc)
+    rows = projects if isinstance(projects, list) else []
+    return {
+        "projects": [
+            {
+                "id": row["id"],
+                "name": row["name"],
+                "repo_url": row["repo_url"],
+                "model": row["model_name"],
+                "harness": row["harness"],
+            }
+            for row in rows
+        ]
+    }
+
+
 async def get_task_logs_impl(client: Any, task_id: str) -> dict[str, Any]:
     """Return concatenated agent-run logs for a task (inline failure triage)."""
     try:
@@ -348,6 +369,12 @@ async def cancel_task(task_id: str) -> dict[str, Any]:
 async def get_project(repo_url: str) -> dict[str, Any]:
     """Read a repo's configured worker model, harness, and settings (or null if unknown)."""
     return await get_project_impl(PraxisClient.from_env(), repo_url=repo_url)
+
+
+@mcp.tool()
+async def list_projects() -> dict[str, Any]:
+    """List all repos Praxis knows, each with its configured model + harness."""
+    return await list_projects_impl(PraxisClient.from_env())
 
 
 @mcp.resource("praxis://guide/orchestration")
