@@ -449,6 +449,58 @@ class GitOps:
             commits.append(Commit(sha=sha, subject=subject))
         return commits
 
+    async def open_integration_pr(
+        self,
+        repo_url: str,
+        base: str,
+        head: str,
+        title: str,
+        body: str,
+    ) -> str:
+        """Open a plan-branch to default-branch PR without a local clone.
+
+        Uses ``gh pr create --repo <slug>`` so no workspace is needed. Returns
+        the PR URL. Raises on failure; callers wrap this best-effort.
+
+        Args:
+            repo_url: Full GitHub repository URL (HTTPS or with .git suffix).
+            base: Base branch name (merge target, e.g. ``"main"``).
+            head: Head branch name (plan branch to merge from).
+            title: PR title.
+            body: PR body text.
+
+        Returns:
+            The GitHub pull request URL.
+
+        Raises:
+            RuntimeError: If the ``gh`` command exits with a non-zero code.
+        """
+        slug = (
+            self.repo_slug(repo_url)
+            or repo_url.rstrip("/").removesuffix(".git").split("github.com/")[-1]
+        )
+        token = await self._token_for_repo(slug)
+        stdout = await self._run_checked(
+            [
+                "gh",
+                "pr",
+                "create",
+                "--repo",
+                slug,
+                "--base",
+                base,
+                "--head",
+                head,
+                "--title",
+                title,
+                "--body",
+                body,
+            ],
+            token=token,
+        )
+        logger.info("Opened integration PR: %s", stdout.strip())
+        return stdout.strip()
+
     async def remote_file_exists(self, repo_slug: str, branch: str, path: str) -> bool:
         """Check whether ``path`` exists on ``branch`` in a GitHub repo.
 

@@ -142,6 +142,7 @@ async def poll_plan_impl(client: Any, plan_id: str) -> dict[str, Any]:
     return {
         "plan_id": plan_id,
         "status": plan_data.get("status"),
+        "error": plan_data.get("error"),
         "task_count": len(tasks),
         "tasks": [
             {

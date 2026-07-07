@@ -1041,3 +1041,12 @@
 .clarification-q { margin: 0 0 4px; font-size: 13px; }
 .clarification-note { margin: 0 0 6px; font-size: 12px; opacity: 0.8; }
 .clarification-banner textarea { width: 100%; min-height: 3em; box-sizing: border-box; }
+
+/* Merge-gate Approve/Reject buttons on task cards */
+.card-actions { display: flex; gap: 8px; margin-top: 8px; }
+.btn-approve, .btn-reject {
+  font-size: 12px; padding: 4px 10px; border-radius: 6px; cursor: pointer;
+  border: 1px solid var(--border); background: var(--panel); color: var(--text);
+}
+.btn-approve { border-color: #16a34a; color: #16a34a; }
+.btn-reject { border-color: #dc2626; color: #dc2626; }

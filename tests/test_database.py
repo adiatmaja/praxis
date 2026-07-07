@@ -312,3 +312,10 @@ async def test_tasks_table_has_clarification_columns(tmp_path) -> None:
         } <= cols
     finally:
         await db.close()
+
+
+@pytest.mark.integration
+async def test_plans_has_error_column(db: Database) -> None:
+    rows = await db.fetch_all("PRAGMA table_info(plans)")
+    cols = {r["name"] for r in rows}
+    assert "error" in cols

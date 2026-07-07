@@ -3,6 +3,10 @@ services:
     build:
       context: .
       dockerfile: docker/orchestrator/Dockerfile
+      args:
+        # Set by the operator: `PRAXIS_BUILD_SHA=$(git rev-parse --short HEAD)`.
+        # Stamps /health + /api/status so a stale image is visible.
+        PRAXIS_BUILD_SHA: ${PRAXIS_BUILD_SHA:-dev}
     container_name: orchestrator
     ports:
       - "${PORT:-12323}:8080"

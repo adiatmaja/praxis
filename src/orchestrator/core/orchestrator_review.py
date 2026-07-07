@@ -499,30 +499,34 @@ class ReviewMixin:
             )
 
     async def on_plan_completed(self, plan_id: str) -> None:
-        """Draft a context sync when all tasks in a plan have merged."""
-
-        if self._context_sync is None:
-            return
+        """Open a best-effort integration PR and signal readiness, then draft a context sync."""
         plan = await self._tq.get_plan(plan_id)
         if plan is None:
             return
         project = await self._tq.get_project(plan["project_id"])
         if project is None:
             return
-        summary = f"Completed plan: {plan.get('plan_branch_name') or plan_id}"
-        draft = await self._context_sync.draft(project["repo_url"], summary)
-        self._bus.publish(
-            {
-                "type": "context_draft_ready",
-                "project_id": project["id"],
-                "draft_id": draft["draft_id"],
-            }
-        )
+
         plan_branch = plan.get("plan_branch_name")
-        if plan_branch and project.get("repo_url"):
+        repo_url = project.get("repo_url")
+        if plan_branch and repo_url:
             from orchestrator.core.git_ops import compare_url
 
             base = project.get("default_branch") or "main"
+            pr_url: str | None = None
+            try:
+                pr_url = await self._git.open_integration_pr(
+                    repo_url=repo_url,
+                    base=base,
+                    head=plan_branch,
+                    title=f"Integrate {plan_branch}",
+                    body=(
+                        "Auto-opened by Praxis: every task in this plan merged to "
+                        f"`{plan_branch}`. Review and merge to `{base}` to integrate."
+                    ),
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Integration PR open failed for %s: %s", plan_id, exc)
             self._bus.publish(
                 {
                     "type": "plan_integration_ready",
@@ -530,6 +534,19 @@ class ReviewMixin:
                     "plan_id": plan_id,
                     "plan_branch": plan_branch,
                     "base_branch": base,
-                    "compare_url": compare_url(project["repo_url"], base, plan_branch),
+                    "pr_url": pr_url,
+                    "compare_url": compare_url(repo_url, base, plan_branch),
                 }
             )
+
+        if self._context_sync is None:
+            return
+        summary = f"Completed plan: {plan_branch or plan_id}"
+        draft = await self._context_sync.draft(repo_url, summary)
+        self._bus.publish(
+            {
+                "type": "context_draft_ready",
+                "project_id": project["id"],
+                "draft_id": draft["draft_id"],
+            }
+        )

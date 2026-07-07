@@ -1058,6 +1058,12 @@
       const prHref = task.pr_url ? safeHref(task.pr_url) : "";
       const prLink = prHref ?
         '<a href="' + prHref + '" target="_blank" rel="noreferrer" onclick="event.stopPropagation()">PR</a>' : "";
+      const mergeActions = task.status === "passed"
+        ? '<div class="card-actions" onclick="event.stopPropagation()">' +
+          '<button class="btn-approve" onclick="approveMerge(' + jsArg(task.id) + ')">Approve merge</button>' +
+          '<button class="btn-reject" onclick="rejectTask(' + jsArg(task.id) + ')">Reject</button>' +
+          '</div>'
+        : "";
       const logLine = dashboardTaskLogs[task.id] ? '<div class="card-log-line">' + esc(stripAnsi(dashboardTaskLogs[task.id])) + '</div>' : "";
       return '<article class="task-card status-' + esc(task.status) + (isSelected ? " selected" : "") +
         '" data-task-id="' + esc(task.id) + '" onclick="openDashboardTask(' + jsArg(task.id) + ',' + jsArg(task.plan_id) + ')">' +
@@ -1068,6 +1074,7 @@
         '<div class="card-title">' + esc(task.title) + '</div>' +
         '<div class="card-meta">' + esc(task.branch_name || "-") + '</div>' +
         '<div class="card-meta" style="display:flex;align-items:center;gap:8px;margin-top:6px;">' + retryAction + prLink + '</div>' +
+        mergeActions +
         logLine +
       '</article>';
     }
@@ -1539,6 +1546,37 @@
       renderDashboard();
     }
 
+    async function approveMerge(taskId) {
+      try {
+        const res = await fetch("/api/tasks/" + taskId + "/approve-merge", {
+          method: "POST",
+          headers: { Authorization: "Bearer " + token },
+        });
+        if (!res.ok) throw new Error("approve failed: " + res.status);
+        void loadDashboard({ skipSseReconnect: true });
+      } catch (err) {
+        alert("Approve failed: " + err.message);
+      }
+    }
+
+    async function rejectTask(taskId) {
+      const feedback = prompt("Reject reason (optional):") || "Rejected from dashboard";
+      try {
+        const res = await fetch("/api/tasks/" + taskId + "/reject-merge", {
+          method: "POST",
+          headers: {
+            Authorization: "Bearer " + token,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ feedback: feedback }),
+        });
+        if (!res.ok) throw new Error("reject failed: " + res.status);
+        void loadDashboard({ skipSseReconnect: true });
+      } catch (err) {
+        alert("Reject failed: " + err.message);
+      }
+    }
+
     async function pollStatus() {
       if (!token) return;
       try {
@@ -1547,6 +1585,15 @@
         document.getElementById("stat-agents").textContent = status.active_agents;
         document.getElementById("stat-queue").textContent = status.opus_state.queued_count;
         window.__opusStatus = status.opus_state ? status.opus_state.status : "unknown";
+        // Re-render the opus pill in-place so it reflects the fresh status without
+        // waiting for the next full dashboard reload.
+        const _opusDot = document.querySelector(".health-bar .health-dot");
+        if (_opusDot) {
+          const _s = window.__opusStatus;
+          _opusDot.className = "health-dot " + _s;
+          const _opusTxt = _opusDot.nextElementSibling;
+          if (_opusTxt) _opusTxt.textContent = "Opus " + _s.replace("_", " ");
+        }
         setConnection("agent", status.agent_model, status.opus_state.status);
         setConnection("subagent", status.subagent_model, status.subagent_model.connected ? "connected" : "disconnected");
         updateProviderLoginBanner(status.providers);

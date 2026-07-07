@@ -115,6 +115,12 @@ class TaskQueue:
             (status, plan_id),
         )
 
+    async def set_plan_error(self, plan_id: str, error: str) -> None:
+        """Persist the reason a plan went terminal (surfaced via the API + poll_plan)."""
+        await self._db.execute(
+            "UPDATE plans SET error = ? WHERE id = ?", (error, plan_id)
+        )
+
     async def get_task(self, task_id: str) -> dict[str, Any] | None:
         return await self._db.fetch_one("SELECT * FROM tasks WHERE id = ?", (task_id,))
 

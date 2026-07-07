@@ -153,12 +153,25 @@ async def _migration_0002_pending_input(connection: aiosqlite.Connection) -> Non
         await connection.execute("ALTER TABLE plans ADD COLUMN pending_input TEXT")
 
 
+async def _migration_0003_plan_error(connection: aiosqlite.Connection) -> None:
+    """Add plans.error: the reason a plan went terminal (e.g. decomposition failure)."""
+    cursor = await connection.execute("PRAGMA table_info(plans)")
+    cols = {row[1] for row in await cursor.fetchall()}
+    if "error" not in cols:
+        await connection.execute("ALTER TABLE plans ADD COLUMN error TEXT")
+
+
 MIGRATIONS: list[Migration] = [
     Migration(1, "baseline: schema as of 2026-07-02", _migration_0001_baseline),
     Migration(
         2,
         "add plans.pending_input for async execute-plan",
         _migration_0002_pending_input,
+    ),
+    Migration(
+        3,
+        "add plans.error for terminal-failure reasons",
+        _migration_0003_plan_error,
     ),
 ]
 

@@ -912,6 +912,78 @@ class TestContextSyncOnPlanCompletion:
         assert evt["plan_branch"] == "plan/2026-06-01-auth"
         assert "compare" in evt["compare_url"]
 
+    async def test_on_plan_completed_opens_integration_pr_without_context_sync(
+        self, db: Database
+    ) -> None:
+        task_queue, plan_id, task_id = await _setup(db)
+        await task_queue.update_task_status(task_id, TaskStatus.MERGED)
+
+        published: list[dict] = []
+        bus = EventBus()
+        _orig = bus.publish
+        bus.publish = lambda e: (published.append(e), _orig(e))
+
+        mock_git = AsyncMock()
+        mock_git.open_integration_pr = AsyncMock(
+            return_value="https://github.com/u/a/pull/5"
+        )
+        mock_git.repo_slug = MagicMock(return_value="u/a")
+
+        orch = Orchestrator(
+            task_queue=task_queue,
+            agent_manager=MagicMock(),
+            opus_bridge=AsyncMock(),
+            git_ops=mock_git,
+            event_bus=bus,
+            context_sync=None,
+        )
+
+        await orch.on_plan_completed(plan_id=plan_id)
+
+        mock_git.open_integration_pr.assert_awaited_once()
+        call_kwargs = mock_git.open_integration_pr.call_args
+        assert call_kwargs.kwargs["head"] == "plan/2026-06-01-auth"
+        assert call_kwargs.kwargs["base"] == "main"
+
+        types = [e["type"] for e in published]
+        assert "plan_integration_ready" in types
+        evt = next(e for e in published if e["type"] == "plan_integration_ready")
+        assert evt["pr_url"] == "https://github.com/u/a/pull/5"
+        assert "context_draft_ready" not in types
+
+    async def test_on_plan_completed_integration_pr_failure_is_best_effort(
+        self, db: Database
+    ) -> None:
+        task_queue, plan_id, task_id = await _setup(db)
+        await task_queue.update_task_status(task_id, TaskStatus.MERGED)
+
+        published: list[dict] = []
+        bus = EventBus()
+        _orig = bus.publish
+        bus.publish = lambda e: (published.append(e), _orig(e))
+
+        mock_git = AsyncMock()
+        mock_git.open_integration_pr = AsyncMock(
+            side_effect=RuntimeError("gh auth fail")
+        )
+        mock_git.repo_slug = MagicMock(return_value="u/a")
+
+        orch = Orchestrator(
+            task_queue=task_queue,
+            agent_manager=MagicMock(),
+            opus_bridge=AsyncMock(),
+            git_ops=mock_git,
+            event_bus=bus,
+            context_sync=None,
+        )
+
+        await orch.on_plan_completed(plan_id=plan_id)
+
+        types = [e["type"] for e in published]
+        assert "plan_integration_ready" in types
+        evt = next(e for e in published if e["type"] == "plan_integration_ready")
+        assert evt["pr_url"] is None
+
 
 def test_flip_checkbox_marks_task_done():
     from orchestrator.core.git_ops import flip_checklist_item

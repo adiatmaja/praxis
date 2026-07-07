@@ -25,7 +25,11 @@ RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Claude CLI (claude -p is used by opus_bridge.py for planning/review).
-RUN npm install -g @anthropic-ai/claude-code
+# --include=optional is REQUIRED: the claude CLI's platform-native binary
+# (@anthropic-ai/claude-code-linux-x64) is an OPTIONAL npm dep. Without this
+# flag the launcher installs but `claude --version` fails at runtime with
+# "native binary not installed", and every brain call (plan/review) dies.
+RUN npm install -g --include=optional @anthropic-ai/claude-code
 
 # Install superpowers skills for in-product brainstorming/writing-plans.
 # NOTE: 'claude plugin install' subcommand is version-sensitive — verify it
@@ -43,9 +47,20 @@ RUN git config --global credential.helper \
 
 WORKDIR /app
 
+# Stamp the build commit so /health and /api/status show a real SHA instead of
+# "unknown" (the image has no .git for build_info.py to derive it from). Passed
+# as a build arg by docker-compose; core/build_info.py reads PRAXIS_BUILD_SHA first.
+ARG PRAXIS_BUILD_SHA=unknown
+ENV PRAXIS_BUILD_SHA=${PRAXIS_BUILD_SHA}
+
 COPY pyproject.toml uv.lock README.md ./
 COPY src/ src/
 COPY web/ web/
+# config/praxis.yaml holds the capability defaults (parameter_count_b,
+# context_window) that EffectiveSettings.capability_profile reads at CWD-relative
+# "config/praxis.yaml". Without it, execute-plan decomposition raises a
+# CapabilityProfile ValidationError every loop and the plan hangs at "pending".
+COPY config/ config/
 RUN uv pip install --system -e ".[dev]" --no-cache
 
 RUN mkdir -p /app/data
