@@ -154,7 +154,10 @@ is solid; these caveats are about the economic foundation:
 - **Self-review caveat.** The planner reviews its own plan's PRs; real
   correctness still leans on your repo having CI/tests.
 
-See [docs/positioning.md](docs/positioning.md) for the full rationale.
+See [docs/positioning.md](docs/positioning.md) for the full rationale, including a
+code-grounded [Why not just run OpenCode against a local model yourself?](docs/positioning.md#why-not-just-run-opencode-against-a-local-model-yourself)
+walkthrough of what Praxis adds (the loop, the review gate, the handoff, the capability
+gate, and the MCP surface).
 
 **Who it's for:** solo developers and small teams who already pay for an AI assistant subscription
 and want to put it to work on real, multi-file changes without running up a metered API bill. You
