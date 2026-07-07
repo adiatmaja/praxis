@@ -293,18 +293,8 @@ scores, see [docs/open-weight-models-complete.md](docs/open-weight-models-comple
 | **4 — Small** | 4–8 GB | **Small coders.** ⚠️ High-risk but viable. Needs ultra-fine decomposition (single-function patches), higher retry limits (4–5), verify gate. ~2.5 retries/task, ~45% first-pass. | Qwen2.5-Coder-7B, Qwen3-8B, IBM Granite 4.1 8B |
 | **5 — Failures** | — | ❌ **General-purpose chat models.** These consistently fail agentic requirements: chat-style output instead of diffs, tool-call schema violations, infinite agent loops. Prefer any coder model over these. | Gemma 4 31B IT, Llama 3.x-8B, StarCoder2, Mistral 7B |
 
-### Hardware guidance
-
-| Your GPU | Recommended Tier | Quantization | Expected Quality |
-|----------|-----------------|-------------|------------------|
-| RTX 4090 / A6000 (24 GB+) | Tier 2 — dense 27B+ coder | Q4_K_M | ⭐⭐⭐⭐⭐ Excellent — first-pass success |
-| RTX 4080 / 4070 Ti Super (16 GB) | Tier 2 or 3 — MoE 35B or dense 14B coder | Q4_K_M | ⭐⭐⭐⭐ Very Good |
-| RTX 4070 / 4060 Ti 16 GB (12 GB) | Tier 3 — coder 14B | Q5_K_M | ⭐⭐⭐ Good — single-file scope |
-| RTX 4060 / GTX 1080 (8 GB) | Tier 4 — coder 7B | Q4_K_M | ⭐⭐ Fair — single-function scope, 2–3 retries |
-| Apple M2/M3 (32 GB unified) | Tier 2 — dense 27B+ coder | Q4_K_M | ⭐⭐⭐⭐ Very Good |
-| Apple M1/M2 (16 GB unified) | Tier 3 — coder 14B | Q4_K_M | ⭐⭐⭐ Good |
-| Apple M1 (8 GB unified) | Tier 4 — coder 7B | Q4_K_M | ⭐⭐ Fair |
-| CPU only (16 GB+ RAM) | Tier 4 — coder 7B | Q3_K_S | ⚠️ Slow but functional |
+For a GPU-by-GPU recommendation (which tier and quantization to run on your card),
+see the [Selection Guide by Hardware](docs/open-weight-models-complete.md#selection-guide-by-hardware).
 
 Pick a coding-oriented instruct model, load it in LM Studio with as much context as your
 hardware allows, and verify the loaded context window is at least ~32K. Praxis detects the
