@@ -192,8 +192,11 @@ them off one at a time:
 
 - **Python 3.11+** and **[uv](https://docs.astral.sh/uv/)** (the package manager used here), or
   **Docker** if you prefer the container route.
-- **A GitHub account + a Personal Access Token** with `repo` scope. Praxis pushes branches and
-  opens PRs on your behalf, so it needs this.
+- **A GitHub account + credentials for git operations.** Praxis pushes branches and opens PRs on
+  your behalf, so it needs one of these. Recommended: a **GitHub App** (App ID + installation ID +
+  private key), which mints short-lived, repo-scoped installation tokens. Fallback: a **Personal
+  Access Token** with `repo` scope (a single broad token used everywhere). See
+  [Configuration](#configuration) for the exact variables.
 - **[LM Studio](https://lmstudio.ai/)** running locally with a coding-capable model loaded (this is
   the free "worker" that writes the code). Small chat models do not work well here, they tend to
   reply with the code instead of editing files, so nothing gets committed. Pick a mid-size,
@@ -209,7 +212,8 @@ git clone https://github.com/adiatmaja/praxis.git
 cd praxis
 
 cp .env.example .env
-# Edit .env: set AUTH_TOKEN (any secret) and GITHUB_TOKEN (GitHub PAT)
+# Edit .env: set AUTH_TOKEN (any secret) and GitHub credentials (a GitHub App is
+# recommended; GITHUB_TOKEN PAT works as a fallback). See Configuration below.
 
 # Start the orchestrator in a container (restart: unless-stopped keeps it alive across
 # terminal exits and reboots; bare uvicorn dies with the session and orphans in-flight tasks)
@@ -315,7 +319,10 @@ tiny window will be rejected up front rather than silently truncated.
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
 | `AUTH_TOKEN` | Yes | n/a | Bearer token for API auth |
-| `GITHUB_TOKEN` | Yes | n/a | GitHub PAT (`repo` scope) |
+| `GITHUB_APP_ID` | Recommended | n/a | GitHub App id. With `GITHUB_APP_PRIVATE_KEY`, Praxis mints short-lived, repo-scoped installation tokens (preferred over `GITHUB_TOKEN`) |
+| `GITHUB_APP_PRIVATE_KEY` | Recommended | n/a | GitHub App private key: PEM contents or a path to the PEM file |
+| `GITHUB_APP_INSTALLATION_ID` | No | n/a | GitHub App installation id; auto-resolved per repo when unset |
+| `GITHUB_TOKEN` | Fallback | n/a | GitHub PAT (`repo` scope). Used only when no GitHub App is configured |
 | `DATABASE_URL` | No | `sqlite+aiosqlite:///data/orchestrator.db` | SQLite path |
 | `LM_STUDIO_URL` | No | `http://host.docker.internal:1234` | LM Studio endpoint |
 | `AGENT_MODEL` | No | `claude-opus-4-8` | Default planner model (per-call-site overrides in **Settings → Models**) |
@@ -477,14 +484,17 @@ this before exposing it beyond localhost:
   network interface, but the worker can still reach services bound on the host gateway, so
   it reduces rather than eliminates host network exposure. Don't run Praxis on a machine
   with sensitive unauthenticated local services.
-- **`GITHUB_TOKEN` is visible inside agent containers.** Scope it least-privilege
+- **Prefer a GitHub App over a broad PAT.** A GitHub App mints short-lived,
+  repo-scoped installation tokens, so a leaked token is narrow and expires within
+  the hour. A `GITHUB_TOKEN` PAT, by contrast, is a single long-lived token visible
+  inside agent containers. If you use the PAT fallback, scope it least-privilege
   (`contents:write` + `pull_requests:write` on the repos you dispatch to, never
-  admin), and pair it with GitHub branch protection so the human merge gate is
-  enforced server-side even if the orchestrator is bypassed.
+  admin). Either way, pair it with GitHub branch protection so the human merge gate
+  is enforced server-side even if the orchestrator is bypassed.
 - **Merge gate is on by default.** Reviewed PRs are parked for your approval;
   auto-merge is per-project opt-in and never targets protected branches
   (`main`/`master`/`release*`).
-- Never commit real `AUTH_TOKEN` or `GITHUB_TOKEN` values; `.env` is gitignored and
+- Never commit real `AUTH_TOKEN`, `GITHUB_TOKEN`, or GitHub App private key values; `.env` is gitignored and
   `.env.example` ships placeholders only.
 
 Found a vulnerability? Report it privately, see [SECURITY.md](SECURITY.md).

@@ -223,12 +223,12 @@ Interactive docs available at `/docs` (Swagger UI) when the server is running.
 | Docker | Agent spawning | Docker socket must be accessible |
 | LM Studio | Implementer agents + local brain calls (`derive_tasks`) | Running on `localhost:1234` (or configured URL) |
 | Claude Code CLI | Default brain call-sites (planning/review/classify) | `claude -p` must be available in PATH |
-| GitHub CLI (`gh`) | PR operations | Authenticated via `GITHUB_TOKEN` |
+| GitHub CLI (`gh`) | PR operations | Authenticated via GitHub App installation token (recommended) or `GITHUB_TOKEN` PAT fallback |
 | `codex` (optional) | Alt brain provider (GPT) | Only if routed in Settings → Models. Requires `codex login`; a dead session raises `ProviderAuthError` and shows a dashboard login banner. Verified working 2026-06-23. |
 | `agy` (not usable) | Alt brain provider (Gemini) | Detected/launchable, but `--print` only renders to an interactive TTY → no capturable output non-interactively. Not usable as a brain until that's resolved. |
 
 Global orchestrator settings load from `config/praxis.yaml` (overridable via `PRAXIS_*`
-env vars); secrets (`AUTH_TOKEN`, `GITHUB_TOKEN`) stay in env / `.env`.
+env vars); secrets (`AUTH_TOKEN`, GitHub App private key or `GITHUB_TOKEN`) stay in env / `.env`.
 
 > **Callback URL ↔ `PORT`.** Agent containers POST completion to
 > `http://host.docker.internal:{PORT}/api/internal/agent-done`, derived from `PORT` by
@@ -297,18 +297,14 @@ does not match your expected SHA after a deploy, the old process is still runnin
 ## GitHub authentication
 
 Praxis needs GitHub credentials to clone repos, push agent branches, and manage
-PRs. Two options:
+PRs. Configure one of the two options below. When both are present, the GitHub
+App takes precedence over `GITHUB_TOKEN`.
 
-### Option A: Personal Access Token (legacy)
-
-Set `GITHUB_TOKEN` to a PAT with `repo` scope. Simple, but the token is
-long-lived and broadly scoped, and it is injected into every agent container.
-
-### Option B: GitHub App (recommended)
+### Option A: GitHub App (recommended)
 
 Praxis mints short-lived (<=1 hour), repo-scoped installation tokens per
 operation. The App private key stays on the orchestrator and is never placed in
-a worker container.
+a worker container, so a leaked worker token is narrow and expires within the hour.
 
 1. Create a GitHub App (Settings > Developer settings > GitHub Apps). Grant
    repository permissions: Contents (Read and write) and Pull requests (Read and
@@ -320,7 +316,11 @@ a worker container.
    - `GITHUB_APP_PRIVATE_KEY` = the PEM contents or a path to the PEM file
    - `GITHUB_APP_INSTALLATION_ID` = optional; auto-resolved per repo when unset
 
-When App variables are present they take precedence over `GITHUB_TOKEN`.
+### Option B: Personal Access Token (fallback)
+
+Set `GITHUB_TOKEN` to a PAT with `repo` scope. Simple, but the token is
+long-lived and broadly scoped, and it is injected into every agent container.
+Used only when no GitHub App is configured.
 
 **Known limitation:** installation tokens expire after 1 hour. An agent run that
 exceeds an hour may fail its final push on an expired token. A future refresh
@@ -430,10 +430,12 @@ protected branch (the project default branch, or any `main` / `master` / `releas
 branch): the rule lives in `core/merge_policy.py` and an unknown base branch is treated as
 protected (fail safe).
 
-**Defense in depth.**  Scope `GITHUB_TOKEN` least-privilege (`contents:write` +
-`pull_requests:write` only; no admin or branch-protection-bypass) and enable GitHub
-branch protection on your default branch, so the merge gate is enforced by GitHub even if
-orchestrator logic is bypassed.
+**Defense in depth.**  Prefer a GitHub App, whose short-lived, repo-scoped installation
+tokens (`contents:write` + `pull_requests:write`) limit the blast radius of a leaked
+worker token. If you use the `GITHUB_TOKEN` PAT fallback, scope it least-privilege
+(`contents:write` + `pull_requests:write` only; no admin or branch-protection-bypass).
+Either way, enable GitHub branch protection on your default branch, so the merge gate is
+enforced by GitHub even if orchestrator logic is bypassed.
 
 ### Prompt injection via PR diffs
 
