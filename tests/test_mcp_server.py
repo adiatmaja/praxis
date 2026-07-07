@@ -373,3 +373,13 @@ async def test_execute_plan_impl_omits_expected_base_sha_when_none() -> None:
     )
     _, _, body = client.calls[0]
     assert "expected_base_sha" not in body
+
+
+def test_orchestration_guide_mandates_git_state_preflight() -> None:
+    from mcp_server.server import load_orchestration_guide
+
+    text = load_orchestration_guide()
+    lowered = text.lower()
+    assert "git rev-list" in lowered
+    assert "expected_base_sha" in lowered
+    assert "push" in lowered
