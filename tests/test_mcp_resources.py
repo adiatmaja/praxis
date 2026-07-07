@@ -68,3 +68,14 @@ def test_guide_documents_awaiting_merge() -> None:
     guide = server.load_orchestration_guide()
     assert "awaiting_merge" in guide
     assert "approve" in guide.lower()
+
+
+@pytest.mark.unit
+def test_guide_documents_resolve_model_flow() -> None:
+    """The guide must teach reading the configured model before dispatching."""
+    guide = server.load_orchestration_guide()
+    assert "Resolve the worker model" in guide
+    assert "get_project" in guide
+    assert "list_projects" in guide
+    # The fallback path when no project is configured yet.
+    assert "list_providers" in guide
