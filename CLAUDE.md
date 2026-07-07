@@ -252,7 +252,10 @@ the relevant subsystem. Condensed index:
 - **Create-Spec chat needs the SSE stream open** (`openSpecChat` re-opens it); errors via `brainstorm_error`.
 - **Provider auth is detected, never automated** — `ProviderAuthError` on dead session; codex exits 0 on
   401 (stderr-scanned); Windows shims resolved via `shutil.which`; agy unusable as a brain.
-- **MCP server is a separate package** (`src/mcp_server/`); only engine addition is `POST /api/dispatch`.
+- **MCP server is a separate package** (`src/mcp_server/`); read-back tools
+  `get_project`/`list_projects` wrap `GET /api/projects` client-side (no new REST
+  endpoint). Orchestrators resolve a repo's configured worker `model` via
+  `get_project` before `execute_plan`/`dispatch_task` (see the orchestration guide).
 - **`dispatch` `branch` is always a base**, never a target (re-dispatch = new PR).
 - **`execute_plan` bridges brain ids → slugs** (`_normalize_slugs`) or the dispatch loop `KeyError`s.
 - **Login banner is SSE-driven** (`provider_auth_required`), not just poll (`codex login status` lies).
