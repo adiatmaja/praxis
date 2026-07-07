@@ -184,6 +184,7 @@ def test_main_callable_and_registers_tools() -> None:
         "get_task_logs",
         "cancel_task",
         "get_project",
+        "list_projects",
     } <= tool_names
 
 
@@ -444,6 +445,50 @@ async def test_execute_plan_impl_omits_expected_base_sha_when_none() -> None:
     )
     _, _, body = client.calls[0]
     assert "expected_base_sha" not in body
+
+
+async def test_list_projects_returns_slim_rows() -> None:
+    client = FakeClient(
+        {
+            ("GET", "/api/projects"): [
+                {
+                    "id": "pr1",
+                    "name": "telegram",
+                    "repo_url": "https://github.com/u/telegram",
+                    "model_name": "qwen3-32b",
+                    "harness": "opencode",
+                    "default_branch": "main",
+                    "approval_gate": True,
+                },
+            ]
+        }
+    )
+    result = await server.list_projects_impl(client)
+    assert result["projects"] == [
+        {
+            "id": "pr1",
+            "name": "telegram",
+            "repo_url": "https://github.com/u/telegram",
+            "model": "qwen3-32b",
+            "harness": "opencode",
+        }
+    ]
+
+
+async def test_list_projects_empty() -> None:
+    client = FakeClient({("GET", "/api/projects"): []})
+    result = await server.list_projects_impl(client)
+    assert result == {"projects": []}
+
+
+async def test_list_projects_client_error_returns_error_shape() -> None:
+    class ErrClient:
+        async def get(self, path: str) -> Any:
+            raise PraxisClientError("auth_error", "bad token")  # noqa: EM101
+
+    result = await server.list_projects_impl(ErrClient())  # type: ignore[arg-type]
+    assert result["error"] == "auth_error"
+    assert result["message"] == "bad token"
 
 
 def test_orchestration_guide_mandates_git_state_preflight() -> None:

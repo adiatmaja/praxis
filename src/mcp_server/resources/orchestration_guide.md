@@ -64,6 +64,7 @@ calls: nothing streams to you, so you must poll.
   handed over a plan and do not yet know the individual task ids.
 - `poll_task`, `get_task_logs`, `cancel_task` - lifecycle and triage (sections 4 and 6).
 - `get_project` — read a repo's configured worker model + harness (or null if unknown).
+- `list_projects` — list repos Praxis knows, each with its configured model + harness.
 
 ## 3. What context to pass
 
