@@ -6,6 +6,7 @@ orchestration loop (async path) run one identical implementation.
 
 from __future__ import annotations
 
+import logging
 import re
 import uuid
 from typing import Any
@@ -14,13 +15,21 @@ from orchestrator.core.capability_history import summarize_outcomes
 from orchestrator.core.context_scrub import scrub_context
 from orchestrator.core.plan_derive import slugify
 from orchestrator.core.plan_review import (
+    PlanReviewError,
     build_review_prompt,
     parse_review_response,
 )
 
 
+logger = logging.getLogger(__name__)
+
 # Fraction of the model's context window reserved for a single leaf's context.
 _LEAF_BUDGET_FRACTION = 0.4
+
+# Total brain-decomposition attempts. High-effort models occasionally emit
+# unparseable output; one retry self-heals a stochastic bad draw. The brain is
+# a subscription CLI call (no per-call dollar cost), so a single retry is cheap.
+_DECOMPOSE_ATTEMPTS = 2
 
 
 def normalize_slugs(opus_plan: dict[str, Any]) -> None:
@@ -77,8 +86,24 @@ async def decompose_plan(
     history = summarize_outcomes([])
     prompt = build_review_prompt(plan, profile, history, per_leaf_budget)
 
-    raw = await router.run("plan_review", prompt, project_id=project_id)
-    opus_plan = parse_review_response(raw)
+    last_exc: PlanReviewError | None = None
+    for attempt in range(1, _DECOMPOSE_ATTEMPTS + 1):
+        raw = await router.run("plan_review", prompt, project_id=project_id)
+        try:
+            opus_plan = parse_review_response(raw)
+            break
+        except PlanReviewError as exc:
+            last_exc = exc
+            logger.warning(
+                "Decomposition parse failed (attempt %d/%d): %s",
+                attempt,
+                _DECOMPOSE_ATTEMPTS,
+                exc,
+            )
+    else:
+        raise last_exc if last_exc is not None else PlanReviewError(  # noqa: EM101
+            "decomposition failed with no parseable output"
+        )
     normalize_slugs(opus_plan)
 
     scrubbed_context = scrub_context(context)
