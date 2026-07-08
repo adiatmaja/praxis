@@ -343,3 +343,16 @@ def test_normalize_slugs_adds_slug_and_remaps_depends_on() -> None:
     assert t2["slug"]
     assert t1["slug"] != t2["slug"]  # duplicate titles disambiguated
     assert t2["depends_on"] == [t1["slug"]]  # id remapped to slug
+
+
+@pytest.mark.unit
+def test_execute_plan_request_accepts_local_context() -> None:
+    from orchestrator.models.schemas import ExecutePlanRequest
+
+    req = ExecutePlanRequest(
+        repo_url="https://github.com/u/r",
+        plan="# plan\n- do a thing",
+        model="qwen3",
+        local_context="config lives in config/local.yaml (keys: host, port)",
+    )
+    assert req.local_context == "config lives in config/local.yaml (keys: host, port)"

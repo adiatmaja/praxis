@@ -398,6 +398,12 @@ class DispatchRequest(BaseModel):
     """Curated, task-relevant context for the worker (memory, conventions,
     architecture notes). Scrubbed of secrets and size-capped server-side. NOT
     a place for secret values - those are redacted on arrival."""
+    local_context: str | None = None
+    """Minimum-blocking, secret-scrubbed manifest of NON-COMMITTED context the
+    worker cannot see from a git clone (gitignored config shapes, user-scope
+    conventions). Self-contained inline text, never a "read file X" pointer.
+    Threaded onto each leaf's droppable repo_memory Bible slot. Include env var
+    NAMES/shapes over live values; the worker writes code, it does not run it."""
     expected_base_sha: str | None = None
     """Optional origin base sha the caller believes it is dispatching against.
     When set, the server rejects the dispatch if it does not match the current
@@ -476,6 +482,12 @@ class ExecutePlanRequest(BaseModel):
     harness: str | None = None
     branch: str | None = None
     context: str | None = None
+    local_context: str | None = None
+    """Minimum-blocking, secret-scrubbed manifest of NON-COMMITTED context the
+    worker cannot see from a git clone (gitignored config shapes, user-scope
+    conventions). Self-contained inline text, never a "read file X" pointer.
+    Threaded onto each leaf's droppable repo_memory Bible slot. Include env var
+    NAMES/shapes over live values; the worker writes code, it does not run it."""
     expected_base_sha: str | None = None
     """Optional origin base sha the caller believes it is dispatching against.
     Rejected server-side if it does not match ``origin/<branch>`` head."""
