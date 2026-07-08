@@ -41,6 +41,7 @@ async def dispatch_task_impl(
     harness: str | None = None,
     branch: str | None = None,
     context: str | None = None,
+    local_context: str | None = None,
     expected_base_sha: str | None = None,
 ) -> dict[str, Any]:
     """Dispatch a single implementation task to a non-Anthropic worker model."""
@@ -55,6 +56,8 @@ async def dispatch_task_impl(
         payload["branch"] = branch
     if context is not None:
         payload["context"] = context
+    if local_context is not None:
+        payload["local_context"] = local_context
     if expected_base_sha is not None:
         payload["expected_base_sha"] = expected_base_sha
     try:
@@ -79,6 +82,7 @@ async def execute_plan_impl(
     harness: str | None = None,
     branch: str | None = None,
     context: str | None = None,
+    local_context: str | None = None,
     expected_base_sha: str | None = None,
 ) -> dict[str, Any]:
     """Submit a full, externally-authored plan for capability-aware execution."""
@@ -93,6 +97,8 @@ async def execute_plan_impl(
         payload["branch"] = branch
     if context is not None:
         payload["context"] = context
+    if local_context is not None:
+        payload["local_context"] = local_context
     if expected_base_sha is not None:
         payload["expected_base_sha"] = expected_base_sha
     try:
@@ -280,6 +286,7 @@ async def dispatch_task(
     harness: str | None = None,
     branch: str | None = None,
     context: str | None = None,
+    local_context: str | None = None,
     expected_base_sha: str | None = None,
 ) -> dict[str, Any]:
     """Dispatch an implementation task to a non-Anthropic worker model inside Praxis.
@@ -293,6 +300,11 @@ async def dispatch_task(
     tokens, or .env values - they are redacted server-side, but keep them out
     anyway.
 
+    local_context: Optional NON-committed context the worker cannot see from a
+    git clone (gitignored config shapes, user-scope conventions). Self-contained
+    inline text, never a "read file X" pointer. Prefer env var NAMES/shapes over
+    live values: the worker writes code, it does not run it.
+
     expected_base_sha: origin base sha you validated locally; server rejects a mismatch.
     """
     return await dispatch_task_impl(
@@ -303,6 +315,7 @@ async def dispatch_task(
         harness=harness,
         branch=branch,
         context=context,
+        local_context=local_context,
         expected_base_sha=expected_base_sha,
     )
 
@@ -315,6 +328,7 @@ async def execute_plan(
     harness: str | None = None,
     branch: str | None = None,
     context: str | None = None,
+    local_context: str | None = None,
     expected_base_sha: str | None = None,
 ) -> dict[str, Any]:
     """Execute a full, externally-authored implementation plan on a repo.
@@ -328,6 +342,11 @@ async def execute_plan(
 
     context: Optional curated, secret-scrubbed reference text for the worker.
 
+    local_context: Optional NON-committed context the worker cannot see from a
+    git clone (gitignored config shapes, user-scope conventions). Self-contained
+    inline text, never a "read file X" pointer. Prefer env var NAMES/shapes over
+    live values: the worker writes code, it does not run it.
+
     expected_base_sha: origin base sha you validated locally; server rejects a mismatch.
     """
     return await execute_plan_impl(
@@ -338,6 +357,7 @@ async def execute_plan(
         harness=harness,
         branch=branch,
         context=context,
+        local_context=local_context,
         expected_base_sha=expected_base_sha,
     )
 
