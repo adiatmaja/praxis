@@ -221,7 +221,7 @@ Interactive docs available at `/docs` (Swagger UI) when the server is running.
 |------------|-------------|-------|
 | Python 3.11+ | Local dev | Via uv |
 | Docker | Agent spawning | Docker socket must be accessible |
-| LM Studio | Implementer agents + local brain calls (`derive_tasks`) | Running on `localhost:1234` (or configured URL) |
+| An OpenAI-compatible model endpoint | Implementer agents + local brain calls (`derive_tasks`) | LM Studio (default) on `localhost:1234`, or any OpenAI-compatible endpoint (Ollama, hosted) via `LM_STUDIO_URL` |
 | Claude Code CLI | Default brain call-sites (planning/review/classify) | `claude -p` must be available in PATH |
 | GitHub CLI (`gh`) | PR operations | Authenticated via GitHub App installation token (recommended) or `GITHUB_TOKEN` PAT fallback |
 | `codex` (optional) | Alt brain provider (GPT) | Only if routed in Settings → Models. Requires `codex login`; a dead session raises `ProviderAuthError` and shows a dashboard login banner. Verified working 2026-06-23. |

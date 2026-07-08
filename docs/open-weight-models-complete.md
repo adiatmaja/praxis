@@ -8,7 +8,8 @@
 ## Context: Why This List Exists
 
 Praxis splits work into two tiers: a **brain** (planning + review) and **hands** (coding
-implementation). The hands tier runs on a local model via LM Studio. Because the brain
+implementation). The hands tier runs on an open-weight model served over an OpenAI-compatible
+endpoint (LM Studio by default; Ollama or a hosted endpoint work too). Because the brain
 decomposes plans into small, focused, single-responsibility tasks, the minimum capability
 bar for the coding model is *lower* than if the model had to do everything itself. The
 worker only needs to:

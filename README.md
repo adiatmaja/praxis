@@ -107,7 +107,7 @@ command verifies. Any of these can change without touching the others.
 | Role | Interchangeable examples |
 |------|--------------------------|
 | Planner | Claude · GLM · Codex · an open-weight model |
-| Implementer | an open-weight model served by LM Studio · Ollama · any OpenAI-compatible endpoint |
+| Implementer | an open-weight model over any OpenAI-compatible endpoint (LM Studio · Ollama · a hosted endpoint like z.ai) |
 | Reviewer | Claude · GLM · GPT · an open-weight model |
 
 **GitHub is the one platform contract.** Every unit of work becomes a real branch and a real
@@ -145,8 +145,9 @@ docker build -t opencode-agent:latest -f docker/opencode-agent/Dockerfile docker
 ```
 
 Point at least one planner CLI (`claude`, `codex`, or `agy`) at your subscription by logging
-in, and run a coding-capable model in [LM Studio](https://lmstudio.ai/) for the implementer
-seat. Then drive the engine from an MCP client, the dashboard, or the CLI.
+in, and serve a coding-capable open-weight model over an OpenAI-compatible endpoint for the
+implementer seat ([LM Studio](https://lmstudio.ai/) is the default; Ollama or a hosted endpoint
+work too). Then drive the engine from an MCP client, the dashboard, or the CLI.
 
 Full setup, prerequisites, model selection, MCP wiring, and deployment modes:
 [docs/deployment.md](docs/deployment.md).

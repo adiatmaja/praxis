@@ -3,8 +3,8 @@
 Praxis ships an [MCP](https://modelcontextprotocol.io/) server, so an AI assistant that
 speaks MCP (like Claude Code) can drive Praxis through normal tool calls. You stay in your
 assistant and say "use praxis to do X on this repo," and your assistant hands the actual
-coding off to the implementer role (an open-weight model served by LM Studio by default). It is
-the primary way to route real work from a provider-locked assistant to a different worker model.
+coding off to the implementer role (an open-weight model over any OpenAI-compatible endpoint). It
+is the primary way to route real work from a provider-locked assistant to a different worker model.
 
 The MCP server is a small adapter that talks to the running Praxis REST API, so the Praxis
 server must be up first (see [deployment.md](deployment.md)). It is one of three clients of the
@@ -82,7 +82,9 @@ Not sure the connection is working? Ask your assistant to run `list_providers`, 
 planner providers and worker models Praxis can see, which confirms the server is reachable.
 
 > **Not in v1:** `dispatch_task` always runs review (`review=false` opt-out planned);
-> `submit_spec` / `poll_plan` deferred; worker models are LM-Studio-served only.
+> `submit_spec` / `poll_plan` deferred; worker models are served over the single configured
+> OpenAI-compatible endpoint (`LM_STUDIO_URL`, which can point at LM Studio, Ollama, or a hosted
+> endpoint), not a per-dispatch endpoint.
 
 > **Limitations (by design):**
 > - **The worker reads only from GitHub.** Local and gitignored files (`.env`, data dirs,
