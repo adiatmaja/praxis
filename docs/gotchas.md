@@ -254,5 +254,10 @@ keep the CLAUDE.md index in sync.
   injected via `progress_note` (-> Static Bible), otherwise the task parks
   `awaiting_human` (SSE `task_needs_clarification`, `POST /api/tasks/{id}/clarify`,
   MCP `poll_task` -> `awaiting_clarification`). All three harnesses (aider, opencode, openhands)
-  parse the FINAL REPORT and send `needs_clarification` when the report ends
-  with `Status: BLOCKED` or `Status: NEEDS_CONTEXT`.
+   parse the FINAL REPORT and send `needs_clarification` when the report ends
+   with `Status: BLOCKED` or `Status: NEEDS_CONTEXT`.
+- **Remote preflight is shared** — `core/preflight.py` runs cheap, read-only remote
+  checks before every container spawn. Non-GitHub URL, auth failure, missing branch
+  or file return 422. Unreachable remote returns 502. Base-SHA mismatch returns 409.
+  Without a configured credential, checks are skipped with a warning so local-only
+  experimentation still works.

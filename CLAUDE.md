@@ -265,6 +265,11 @@ the relevant subsystem. Condensed index:
 - **`opus_bridge.py` + `users.token_hash` are legacy names on purpose** (renames deferred as churn).
 - **Blocked workers ask, they don't guess** — `Status: BLOCKED`/`NEEDS_CONTEXT` → `NEEDS_CLARIFICATION`
   (no retry burned) → brain `answer_clarification` → re-dispatch or human gate. All three harnesses parse it.
+- **Remote preflight is shared** (`core/preflight.py`) — every dispatch path runs
+  cheap, read-only remote checks before spawning a container. Non-GitHub URL, auth
+  failure, missing branch or file return 422. Unreachable remote returns 502. Base-SHA
+  mismatch returns 409. Without a configured credential, checks are skipped with a
+  warning so local-only experimentation still works.
 
 ## Documentation
 
