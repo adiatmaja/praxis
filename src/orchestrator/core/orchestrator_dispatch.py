@@ -62,7 +62,8 @@ class DispatchMixin:
             return
 
         # Build a slug -> plan-task lookup so we can read per-task plan hints
-        # (plan_path, plan_text, context_text) stored in the opus_plan by the dispatch endpoint.
+        # (plan_path, plan_text, context_text, repo_memory) stored in the
+        # opus_plan by the dispatch endpoint.
         slug_to_plan_task: dict[str, dict[str, Any]] = {}
         with contextlib.suppress(json.JSONDecodeError, TypeError):
             opus_plan_raw = plan.get("opus_plan")
@@ -198,7 +199,10 @@ class DispatchMixin:
                 context_window=context_window,
                 plan_slice=plan_task.get("plan_text"),
                 caller_context=plan_task.get("context_text"),
-                repo_memory=None,  # repo files folded in by entrypoint --read
+                # Client-gathered manifest of NON-committed context (gitignored
+                # config shapes, user-scope conventions). Committed repo files
+                # are still folded in separately by the entrypoint --read.
+                repo_memory=plan_task.get("repo_memory"),
                 review_feedback=task.get("review_feedback"),
             )
         )
