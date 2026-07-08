@@ -6,25 +6,36 @@ reference for keeping the README and marketing aligned with reality.
 
 ## The core reason Praxis exists
 
-**Efficiently split an AI coding workflow across two cost tiers:**
+**Software engineering is not one act.** Praxis treats it as four independent
+roles, planning, implementation, review, and verification, and lets each role
+choose its own AI provider, model, execution environment, and coding harness.
+Changing who fills a seat does not change the architecture around it. GitHub is
+the single intentional platform dependency, because Git-native pull requests are
+the substrate the whole loop is built on.
 
-- **Planning / "main brain" → the flat-rate AI subscription you already pay for**
-  (Claude Code `claude -p`, GPT `codex`, Gemini `agy`). This is the part that
-  needs strong judgment: reading a spec, decomposing it into tasks, and
-  reviewing diffs before merge.
-- **Implementation / token-heavy editing → a free local model via LM Studio**,
-  driven by a containerized coding agent (Aider / OpenCode / OpenHands).
+Each role has different requirements, so each is filled by the system best suited
+to it, judged on capability, cost, latency, privacy, availability, or plain
+preference:
 
-The single most important user-facing capability that delivers this:
+- **Planning** rewards judgment: read a spec, decompose it to match the worker's
+  capability, order the tasks.
+- **Implementation** is high-volume, mechanical, and cheap to parallelize.
+- **Review** rewards judgment again: inspect the diff against intent, gate the merge.
+- **Verification** is deterministic (a shell command).
+
+**Cost efficiency is a consequence of this, not the motivation.** Because
+implementation is the token-heavy role, it can run on a free local model while
+judgment-heavy roles run on a capable hosted one. The flagship deployment of that
+idea:
 
 > **Praxis ships an MCP server, so an AI assistant locked to one provider
-> (e.g. Claude Code on a subscription) can dispatch real implementation work to
-> a local LLM through a normal tool call.** Claude Code subagents are
-> Claude-only by design — Praxis is the bridge that lets the subscription brain
-> hand the coding off to a free local worker.
+> (e.g. Claude Code on a flat-rate subscription) can dispatch real implementation
+> work to a local LLM through a normal tool call.** Claude Code subagents are
+> Claude-only by design — Praxis is the bridge that lets a subscription brain hand
+> the coding off to a free local worker.
 
-Everything else (dashboard, CLI, autonomous PR loop) is built around that one
-idea.
+That is one configuration of the role-separation architecture, the most economically
+striking one, not the whole of what Praxis is.
 
 ## What is genuinely unique (vs Aider / Roo Code / Cline / OpenHands)
 
@@ -59,12 +70,13 @@ of what ships, not a pitch:
    state machine), and `core/orchestrator_reconcile.py` (`reconcile_runs`). Running
    OpenCode yourself is step 3 of that loop, done manually, once.
 
-2. **Two cost tiers, split by call-site.** Planning and review run on the paid
-   subscription brain (`core/opus_bridge.py`, a `claude -p` CLI call); the
-   token-heavy editing runs on the free local model in LM Studio. `core/llm_router.py`
-   (`CALL_SITE_DEFAULTS`) is the tiering policy that decides which model each brain
-   call-site uses. Doing this by hand means paying attention to which model you feed
-   which job, every time.
+2. **Roles routed independently, per call-site.** Each role resolves to its own
+   `{provider, model, effort}` — planning and review can run on a hosted subscription
+   brain (`core/opus_bridge.py`, a `claude -p` CLI call) while token-heavy editing runs
+   on a free local model in LM Studio. `core/llm_router.py` (`CALL_SITE_DEFAULTS`) is
+   the routing policy that decides which system each call-site uses; the two-cost-tier
+   split is one configuration of it. Doing this by hand means paying attention to which
+   model you feed which job, every time.
 
 3. **Capability-gated decomposition.** Before dispatch, the brain reviews the plan
    against the *actual* local worker: `core/execute_plan_decompose.py`
@@ -125,8 +137,12 @@ about the engine's economic foundation.
 
 ## Positioning guidance
 
-Lead with the **MCP / subscription→local bridge** as the primary value, not the
+Lead with **provider-agnostic role separation** as the category (planning /
+implementation / review / verification, each independently configurable), not the
 generic "autonomous PR engine" framing — platform-native subagents (e.g. Claude
-Code's own fan-out) are absorbing generic orchestration, but they are Claude-only.
-Praxis's defensible niche is exactly *non-Claude / local worker + cost
-efficiency*.
+Code's own fan-out) are absorbing generic orchestration, but they are single-provider
+by design. Present the **MCP / subscription→local bridge** and the two-cost-tier
+split as the flagship *deployment* of that architecture (the most economically
+striking configuration), not as the identity. Praxis's defensible niche is exactly
+*any provider per role + local worker + the resulting cost efficiency*. Keep cost
+framed as a consequence of separating the roles, never as the motivation.

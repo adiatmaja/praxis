@@ -237,6 +237,21 @@ env vars); secrets (`AUTH_TOKEN`, GitHub App private key or `GITHUB_TOKEN`) stay
 > 404s and tasks only finish via the reconcile backstop (and may be marked failed even
 > when the agent succeeded).
 
+## Configuration
+
+| Variable | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `AUTH_TOKEN` | Yes | n/a | Bearer token for API auth |
+| `GITHUB_APP_ID` | Recommended | n/a | GitHub App id. With `GITHUB_APP_PRIVATE_KEY`, Praxis mints short-lived, repo-scoped installation tokens (preferred over `GITHUB_TOKEN`) |
+| `GITHUB_APP_PRIVATE_KEY` | Recommended | n/a | GitHub App private key: PEM contents or a path to the PEM file |
+| `GITHUB_APP_INSTALLATION_ID` | No | n/a | GitHub App installation id; auto-resolved per repo when unset |
+| `GITHUB_TOKEN` | Fallback | n/a | GitHub PAT (`repo` scope). Used only when no GitHub App is configured |
+| `DATABASE_URL` | No | `sqlite+aiosqlite:///data/orchestrator.db` | SQLite path |
+| `LM_STUDIO_URL` | No | `http://host.docker.internal:1234` | LM Studio endpoint (implementer / local brain calls) |
+| `AGENT_MODEL` | No | `claude-opus-4-8` | Default planner model (per-call-site overrides in **Settings → Models**) |
+| `HOST` | No | `0.0.0.0` | Bind address |
+| `PORT` | No | `12323` | Host port (uncommon by design to avoid 8080 collisions; MCP `PRAXIS_BASE_URL` and agent callbacks must match it) |
+
 ---
 
 ## Verification Gate and Build Visibility
@@ -446,3 +461,17 @@ commit message, attempting to influence the LLM verdict (prompt-injection).
 Mitigation: keep `approval_gate` enabled so a human sees the diff before any merge
 occurs.  Do not point Praxis at repositories with untrusted external contributors
 unless you review diffs independently of the LLM verdict.
+
+---
+
+## Troubleshooting
+
+| Symptom | Likely cause and fix |
+|---------|---------------------|
+| Task stuck at "implementing", then marked failed by reconcile | Stale agent image sending a bad callback. Rebuild the harness image (see [Docker Images](#docker-images)). |
+| Every task fails with no commits, agent log shows the model chatting code | Worker model too small for the edit format. Use a mid-size coding model (see [open-weight-models-complete.md](open-weight-models-complete.md)). |
+| Agent callbacks 404, tasks only finish via reconcile | Orchestrator running on a non-default port without `AGENT_CALLBACK_URL` set. Keep `PORT`, `PRAXIS_BASE_URL`, and callbacks in sync. |
+| MCP tools error or hang | Praxis server not running, or `PRAXIS_BASE_URL` points at the wrong port. Ask your assistant to run `list_providers` to test connectivity. |
+| Planner shows unavailable | `claude` CLI not installed or not logged in on the orchestrator host (`claude --version`, then log in). |
+| Dispatch fails with a Docker image error | The harness image for the project isn't built. Build it per [Docker Images](#docker-images). |
+| No models in the New Project dropdown | LM Studio isn't running or isn't reachable at `LM_STUDIO_URL`. |
