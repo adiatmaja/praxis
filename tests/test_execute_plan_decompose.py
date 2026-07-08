@@ -135,3 +135,49 @@ async def test_decompose_raises_after_all_retries_exhausted():
             project_id=None,
         )
     assert router.calls == 2  # attempted twice, then gave up
+
+
+async def test_decompose_threads_local_context_as_repo_memory():
+    raw = '{"tasks":[{"id":"t1","title":"X","description":"d","depends_on":[]}]}'
+    router = _FakeRouter(raw)
+    opus_plan = await decompose_plan(
+        plan="do something",
+        model="qwen3.6-27b",
+        context=None,
+        router=router,
+        effective_settings=_FakeEffective(),
+        project_id=None,
+        local_context="local notes",
+    )
+    assert opus_plan["tasks"][0].get("repo_memory") == "local notes"
+
+
+async def test_decompose_no_local_context_skips_repo_memory():
+    raw = '{"tasks":[{"id":"t1","title":"X","description":"d","depends_on":[]}]}'
+    router = _FakeRouter(raw)
+    opus_plan = await decompose_plan(
+        plan="do something",
+        model="qwen3.6-27b",
+        context=None,
+        router=router,
+        effective_settings=_FakeEffective(),
+        project_id=None,
+    )
+    assert "repo_memory" not in opus_plan["tasks"][0]
+
+
+async def test_decompose_scrubs_local_context_server_side():
+    raw = '{"tasks":[{"id":"t1","title":"X","description":"d","depends_on":[]}]}'
+    router = _FakeRouter(raw)
+    opus_plan = await decompose_plan(
+        plan="do something",
+        model="qwen3.6-27b",
+        context=None,
+        router=router,
+        effective_settings=_FakeEffective(),
+        project_id=None,
+        local_context="token: ghp_abc123secret4567890abcdef",
+    )
+    assert "ghp_abc123secret4567890abcdef" not in opus_plan["tasks"][0].get(
+        "repo_memory", ""
+    )

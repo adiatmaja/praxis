@@ -657,3 +657,63 @@ async def test_dispatch_scrubs_and_stores_context(
     task = opus_plan["tasks"][0]
     assert "Use ruff." in task["context_text"]
     assert "ghp_abcdef" not in task["context_text"]
+
+
+# ---------------------------------------------------------------------------
+# local_context field tests
+# ---------------------------------------------------------------------------
+
+
+def test_dispatch_request_accepts_local_context() -> None:
+    from orchestrator.models.schemas import DispatchRequest
+
+    req = DispatchRequest(
+        repo_url="https://github.com/u/r",
+        instructions="add input validation",
+        model="qwen3-32b",
+        local_context="REDIS_URL = cache connection string",
+    )
+    assert req.local_context == "REDIS_URL = cache connection string"
+
+
+def test_dispatch_request_local_context_defaults_none() -> None:
+    from orchestrator.models.schemas import DispatchRequest
+
+    req = DispatchRequest(
+        repo_url="https://github.com/u/r",
+        instructions="add input validation",
+        model="qwen3-32b",
+    )
+    assert req.local_context is None
+
+
+async def test_dispatch_threads_local_context_as_repo_memory(
+    client: AsyncClient,
+    auth_headers: dict[str, str],
+    seeded_user: str,
+    db: Database,
+) -> None:
+    """local_context is scrubbed and stored as repo_memory in opus_plan."""
+    with patch("orchestrator.api.dispatch.GitOps") as mock_git:
+        mock_git.return_value.remote_head_sha = AsyncMock(return_value="abcdef")
+        resp = await client.post(
+            "/api/dispatch",
+            headers=auth_headers,
+            json={
+                "repo_url": "https://github.com/o/r",
+                "instructions": "do x",
+                "model": "qwen3",
+                "local_context": "Use ruff.\nAPI_KEY=ghp_abcdef1234567890abcdef1234567890abcd",
+            },
+        )
+    assert resp.status_code == 201, resp.text
+    plan_id = resp.json()["plan_id"]
+
+    plan_row = await db.fetch_one(
+        "SELECT opus_plan FROM plans WHERE id = ?", (plan_id,)
+    )
+    assert plan_row is not None
+    opus_plan = json.loads(plan_row["opus_plan"])
+    task = opus_plan["tasks"][0]
+    assert "Use ruff." in task["repo_memory"]
+    assert "ghp_abcdef" not in task["repo_memory"]

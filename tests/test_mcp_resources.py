@@ -79,3 +79,11 @@ def test_guide_documents_resolve_model_flow() -> None:
     assert "list_projects" in guide
     # The fallback path when no project is configured yet.
     assert "list_providers" in guide
+
+
+@pytest.mark.unit
+def test_guide_has_gather_local_context_section() -> None:
+    """The guide must document the local_context flow for non-committed context."""
+    guide = server.load_orchestration_guide()
+    assert "Gather local context before dispatching" in guide
+    assert "does not run it" in guide

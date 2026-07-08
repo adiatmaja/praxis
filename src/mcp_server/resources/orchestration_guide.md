@@ -53,6 +53,28 @@ will implement it, so pass the right `model`. Resolve it in this order:
 Use `list_projects` to discover which repos Praxis already knows instead of
 guessing a `repo_url`.
 
+## Gather local context before dispatching
+
+The worker runs in a fresh clone and does not run it against your local
+filesystem, so uncommitted changes are invisible unless you pass them.
+Use the `local_context` parameter on `dispatch_task` or `execute_plan` to
+fill the worker's `repo_memory` Bible slot with client-gathered context.
+
+Rules for `local_context`:
+
+- **Self-contained** -- the worker cannot reach back to you. Everything it
+  needs must be in the string you pass.
+- **Minimum-blocking only** -- include only what the worker would block on
+  without it. Omit noise.
+- **Names and shapes over values** -- describe file paths, config schemas,
+  and conventions. Do not paste large file contents.
+- **No secrets you do not need** -- the worker has its own credentials.
+  Passing tokens is unnecessary and wasteful.
+
+Flow: resolve the worker model with `get_project`, then call
+`execute_plan` or `dispatch_task` with both `context` and `local_context`,
+then poll until terminal.
+
 ## 1. When to delegate to Praxis
 
 Delegate implementation that is bulk, parallelizable, or lower-novelty: it runs on the

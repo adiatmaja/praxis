@@ -67,3 +67,16 @@ def test_bible_omits_feedback_section_when_absent():
     src = BibleSources(goal="do it", handover="# PROGRESS", context_window=8192)
     out = build_bible(src)
     assert "PREVIOUS ATTEMPT FEEDBACK" not in out
+
+
+@pytest.mark.unit
+def test_repo_memory_section_present_when_provided():
+    src = BibleSources(
+        goal="do it",
+        handover="# PROGRESS",
+        context_window=8192,
+        repo_memory="some repo memory content",
+    )
+    out = build_bible(src)
+    assert "# REPO MEMORY" in out
+    assert "some repo memory content" in out
