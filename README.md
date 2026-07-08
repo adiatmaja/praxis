@@ -448,6 +448,15 @@ the wrong base.
 - The dashboard sidebar shows the current `origin` head per project so you can
   eyeball whether your local checkout matches.
 
+### Fail-fast preflight for GitHub repos
+
+Before spawning any worker container, Praxis runs a cheap, read-only remote preflight
+(`core/preflight.py`) that rejects doomed dispatches up front. A non-GitHub URL,
+missing or expired credentials, a missing base branch, or a missing plan file returns
+HTTP 422. An unreachable remote (network failure) returns HTTP 502. A base-SHA mismatch
+returns HTTP 409. If no GitHub credential is configured, the remote checks are skipped
+with a warning rather than failing, so local-only experimentation still works.
+
 ## Security Model
 
 Praxis is designed for a **single trusted operator on hardware they control**. Read
