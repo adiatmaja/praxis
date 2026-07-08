@@ -11,9 +11,12 @@ description = "Allowlist documentation fixtures and example secrets"
 
 # The superpowers plan docs are design/TDD documents whose test snippets
 # deliberately embed fake tokens (e.g. `ghp_abcdef123...`) to exercise
-# secret-scrubbing logic. They contain no live credentials.
+# secret-scrubbing logic. Test modules under tests/ do the same: they embed
+# synthetic credential-shaped fixtures to assert the scrubber strips them.
+# Neither contains live credentials.
 paths = [
   '''docs/superpowers/plans/.*\.md''',
+  '''tests/.*\.py''',
 ]
 
 # Well-known placeholder/example secrets used across docs and tests.
