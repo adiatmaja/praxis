@@ -43,8 +43,8 @@ own AI provider, model, execution environment, and coding harness.
       └───────┬───────┘           └───────┬───────┘           └───────┬───────┘
               │                           │                           │
        any provider                any harness +                any provider
-       (Claude · GLM ·             any worker model             (Claude · GLM ·
-        Codex · local)             (LM Studio · Ollama ·         GPT · local)
+       (Claude · GLM ·             any open-weight model        (Claude · GLM ·
+        Codex · open-weight)       (LM Studio · Ollama ·         GPT · open-weight)
               │                     OpenAI-compatible)                  │
               └──────────────────────────┬────────────────────────────┘
                                          ▼
@@ -55,7 +55,7 @@ own AI provider, model, execution environment, and coding harness.
 ```
 
 Each role is a swappable seat. Changing who fills a seat, a frontier hosted model, a free
-local one, a different vendor's CLI, does not change the architecture around it. GitHub is
+open-weight one, a different vendor's CLI, does not change the architecture around it. GitHub is
 the single intentional platform dependency, because Git-native pull requests are the
 substrate the whole loop is built on.
 
@@ -76,12 +76,12 @@ right tool is the whole idea.
 Separating the seats also lets them adapt to each other. The planner does not just split a
 spec into tasks, it sizes those tasks to the implementer that will run them, breaking work
 down further for a weaker worker and leaving it coarser for a stronger one. This
-**capability-aware task decomposition** is why a modest local model can produce quality
+**capability-aware task decomposition** is why a modest open-weight model can produce quality
 patches: it is never asked to plan or architect, only to fill in a task scoped small enough
 that it can succeed.
 
 Cost efficiency falls out of this rather than driving it. Because implementation is the
-token-heavy role and can run on a free local model while judgment-heavy roles run on a
+token-heavy role and can run on a free open-weight model while judgment-heavy roles run on a
 capable hosted one, a modest setup can drive the full loop, but that is a *consequence* of
 separating the roles, not the reason to.
 
@@ -94,21 +94,21 @@ seats. The engine coordinates them; it is not itself the intelligence.
 quality, not just to schedule work. The planner adjusts task granularity to the chosen
 worker's capability, so complexity per task stays within what that worker can implement
 correctly. Weaker worker, finer-grained tasks; stronger worker, coarser ones. Praxis gates
-the resulting plan against the local model before dispatch and escalates when a task exceeds
-its reach.
+the resulting plan against the open-weight model before dispatch and escalates when a task
+exceeds its reach.
 
 **Every seat is independently configurable.** Provider, model, execution environment, and
 harness are set per role (and per project) in **Settings → Models**. A typical arrangement:
-a hosted model plans, a local model implements, a different hosted model reviews, a shell
+a hosted model plans, an open-weight model implements, a different hosted model reviews, a shell
 command verifies. Any of these can change without touching the others.
 
 **Providers are interchangeable examples, not the design.**
 
 | Role | Interchangeable examples |
 |------|--------------------------|
-| Planner | Claude · GLM · Codex · a local model |
-| Implementer | LM Studio · OpenCode · Ollama · any OpenAI-compatible endpoint |
-| Reviewer | Claude · GLM · GPT · a local model |
+| Planner | Claude · GLM · Codex · an open-weight model |
+| Implementer | an open-weight model served by LM Studio · Ollama · any OpenAI-compatible endpoint |
+| Reviewer | Claude · GLM · GPT · an open-weight model |
 
 **GitHub is the one platform contract.** Every unit of work becomes a real branch and a real
 pull request. Implementers push, the reviewer gates the PR, and you keep the merge button.

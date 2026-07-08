@@ -24,15 +24,15 @@ preference:
 - **Verification** is deterministic (a shell command).
 
 **Cost efficiency is a consequence of this, not the motivation.** Because
-implementation is the token-heavy role, it can run on a free local model while
+implementation is the token-heavy role, it can run on a free open-weight model while
 judgment-heavy roles run on a capable hosted one. The flagship deployment of that
 idea:
 
 > **Praxis ships an MCP server, so an AI assistant locked to one provider
 > (e.g. Claude Code on a flat-rate subscription) can dispatch real implementation
-> work to a local LLM through a normal tool call.** Claude Code subagents are
-> Claude-only by design — Praxis is the bridge that lets a subscription brain hand
-> the coding off to a free local worker.
+> work to an open-weight model through a normal tool call.** Claude Code subagents
+> are Claude-only by design — Praxis is the bridge that lets a subscription brain
+> hand the coding off to a free open-weight worker (e.g. self-hosted via LM Studio).
 
 That is one configuration of the role-separation architecture, the most economically
 striking one, not the whole of what Praxis is.
@@ -123,8 +123,8 @@ about the engine's economic foundation.
 1. **Subscription-CLI ToS fragility.** Driving `claude -p` / `codex`
    programmatically to avoid API billing is a usage pattern providers may
    restrict. It works today; it is not a foundation Praxis controls.
-2. **Local model quality is the bottleneck.** The "free coding" claim depends on
-   a local model good enough to follow an edit format *and* produce mergeable
+2. **Open-weight model quality is the bottleneck.** The "free coding" claim depends on
+   an open-weight model good enough to follow an edit format *and* produce mergeable
    multi-file diffs. Small chat models reply *with* code instead of editing, so
    nothing commits. A high failure rate means more retries → more *planner
    review cycles*, which DO consume subscription quota — the savings can invert.
@@ -144,5 +144,5 @@ Code's own fan-out) are absorbing generic orchestration, but they are single-pro
 by design. Present the **MCP / subscription→local bridge** and the two-cost-tier
 split as the flagship *deployment* of that architecture (the most economically
 striking configuration), not as the identity. Praxis's defensible niche is exactly
-*any provider per role + local worker + the resulting cost efficiency*. Keep cost
+*any provider per role + open-weight worker + the resulting cost efficiency*. Keep cost
 framed as a consequence of separating the roles, never as the motivation.

@@ -3,8 +3,8 @@
 Praxis ships an [MCP](https://modelcontextprotocol.io/) server, so an AI assistant that
 speaks MCP (like Claude Code) can drive Praxis through normal tool calls. You stay in your
 assistant and say "use praxis to do X on this repo," and your assistant hands the actual
-coding off to the implementer role (a local model in LM Studio by default). It is the primary
-way to route real work from a provider-locked assistant to a different worker model.
+coding off to the implementer role (an open-weight model served by LM Studio by default). It is
+the primary way to route real work from a provider-locked assistant to a different worker model.
 
 The MCP server is a small adapter that talks to the running Praxis REST API, so the Praxis
 server must be up first (see [deployment.md](deployment.md)). It is one of three clients of the
