@@ -22,6 +22,12 @@ from orchestrator.core.execute_plan_decompose import branch_slug, normalize_slug
 from orchestrator.core.git_ops import GitOps
 from orchestrator.core.github_credentials import build_credential_provider
 from orchestrator.core.harnesses import default_harness_id
+from orchestrator.core.preflight import (
+    PreflightError,
+    credential_configured,
+    preflight_remote,
+    status_and_detail,
+)
 from orchestrator.models.schemas import ExecutePlanRequest, ExecutePlanResponse
 
 
@@ -94,35 +100,27 @@ async def execute_plan(request: Request, body: ExecutePlanRequest) -> dict[str, 
     settings = state.settings
 
     if body.expected_base_sha is not None:
-        base = body.branch or "main"
-        git = GitOps(build_credential_provider(settings))
-        try:
-            origin_sha = await git.remote_head_sha(body.repo_url, base)
-        except RuntimeError as exc:
-            raise HTTPException(
-                status_code=status.HTTP_502_BAD_GATEWAY,
-                detail=f"could not resolve origin base sha: {exc}",
-            ) from exc
-        if origin_sha is None:
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail=f"branch '{base}' not found on remote for base-sha check",
-            )
         expected = (body.expected_base_sha or "").strip()
         if not expected:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail="expected_base_sha must not be empty",
             )
-        if not (origin_sha.startswith(expected) or expected.startswith(origin_sha)):
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail=(
-                    f"expected base sha '{expected}' does not match "
-                    f"origin/{base} ('{origin_sha}'). Push your local commits "
-                    "or refetch origin, then retry."
-                ),
+        base = body.branch or "main"
+        git = GitOps(build_credential_provider(settings))
+        try:
+            await preflight_remote(
+                git,
+                body.repo_url,
+                base=base,
+                expected_base_sha=expected,
+                credential_configured=credential_configured(settings),
             )
+        except PreflightError as exc:
+            raise HTTPException(
+                status_code=status_and_detail(exc)[0],
+                detail=status_and_detail(exc)[1],
+            ) from exc
 
     harness = body.harness or default_harness_id()
     project_id = await _create_or_reuse_project(
