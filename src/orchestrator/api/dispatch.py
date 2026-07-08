@@ -24,13 +24,16 @@ from orchestrator.core.github_credentials import (
     build_credential_provider,
 )
 from orchestrator.core.harnesses import default_harness_id
+from orchestrator.core.preflight import (
+    PreflightError,
+    credential_configured,
+    preflight_remote,
+    status_and_detail,
+)
 from orchestrator.models.schemas import DispatchRequest, DispatchResponse
 
 
 router = APIRouter(tags=["dispatch"], dependencies=[Depends(verify_token)])
-
-# Tokens that indicate no real GitHub token is configured.
-_PLACEHOLDER_TOKENS: frozenset[str] = frozenset({"placeholder", ""})
 
 
 def _slugify(text: str) -> str:
@@ -39,48 +42,11 @@ def _slugify(text: str) -> str:
     return f"{base}-{uuid.uuid4().hex[:6]}"
 
 
-async def _guard_base_sha(body: DispatchRequest, settings: Any, branch: str) -> None:
-    """Reject the dispatch if ``expected_base_sha`` != current origin head.
-
-    Read-only remote compare (``git ls-remote``). Guards against dispatching a
-    worker against stale origin code when local commits were never pushed.
-
-    Raises:
-        HTTPException: 409 on mismatch, 502 on remote-communication failure.
-    """
-    provider = build_credential_provider(settings)
-    git = GitOps(provider)
-    try:
-        origin_sha = await git.remote_head_sha(body.repo_url, branch)
-    except RuntimeError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=f"could not resolve origin base sha: {exc}",
-        ) from exc
-    if origin_sha is None:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=f"branch '{branch}' not found on remote for base-sha check",
-        )
-    expected = (body.expected_base_sha or "").strip()
-    if not expected:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="expected_base_sha must not be empty",
-        )
-    if not (origin_sha.startswith(expected) or expected.startswith(origin_sha)):
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=(
-                f"expected base sha '{expected}' does not match "
-                f"origin/{branch} ('{origin_sha}'). Push your local commits "
-                "or refetch origin, then retry."
-            ),
-        )
-
-
 async def _preflight(body: DispatchRequest, settings: Any) -> list[str]:
     """Validate remote state before writing any DB rows.
+
+    Delegates read-only remote checks to the shared :func:`preflight_remote`
+    and maps :class:`PreflightError` kinds to HTTP statuses.
 
     Args:
         body: The incoming dispatch request.
@@ -92,12 +58,6 @@ async def _preflight(body: DispatchRequest, settings: Any) -> list[str]:
     Raises:
         HTTPException: On validation failure or upstream communication error.
     """
-    # No branch and no plan_path: nothing to validate (fresh-branch flow).
-    if body.branch is None and body.plan_path is None:
-        if body.expected_base_sha is not None:
-            await _guard_base_sha(body, settings, "main")
-        return []
-
     # plan_path without branch: we cannot know which remote ref to check.
     if body.plan_path is not None and body.branch is None:
         raise HTTPException(
@@ -109,89 +69,44 @@ async def _preflight(body: DispatchRequest, settings: Any) -> list[str]:
             ),
         )
 
-    # At this point branch is set (plan_path may or may not be).
-    # Narrow the type: we have already handled the None case above.
-    branch: str = body.branch  # type: ignore[assignment]
-    github_token = getattr(settings, "github_token", "") or ""
-    has_app = bool(
-        getattr(settings, "github_app_id", None)
-        and getattr(settings, "github_app_private_key", None)
-    )
-    if has_app or github_token:
+    # Empty expected_base_sha guard (preserved from original behavior).
+    if body.expected_base_sha is not None:
+        expected = body.expected_base_sha.strip()
+        if not expected:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="expected_base_sha must not be empty",
+            )
+
+    cred_configured = credential_configured(settings)
+
+    if cred_configured:
         provider: GitHubCredentialProvider = build_credential_provider(settings)
     else:
         provider = PatCredentialProvider("")
     git = GitOps(provider)
 
-    # Verify the branch exists on the remote.
     try:
-        branch_exists = await git.remote_branch_exists(body.repo_url, branch)
+        warnings = await preflight_remote(
+            git,
+            body.repo_url,
+            base="main",
+            branch=body.branch,
+            plan_path=body.plan_path,
+            expected_base_sha=body.expected_base_sha,
+            credential_configured=cred_configured,
+        )
+    except PreflightError as exc:
+        http_status, detail = status_and_detail(exc)
+        raise HTTPException(
+            status_code=http_status,
+            detail=detail,
+        ) from exc
     except RuntimeError as exc:
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=f"could not verify branch on remote: {exc}",
+            detail=f"remote preflight failed: {exc}",
         ) from exc
-
-    if not branch_exists:
-        if body.plan_path is not None:
-            detail = (
-                f"branch '{branch}' was not found on the remote. "
-                "Praxis reads only from GitHub: push the plan branch first, "
-                "then retry."
-            )
-        else:
-            detail = (
-                f"branch '{branch}' was not found on the remote. "
-                "Push it first, or omit 'branch' to let Praxis create a fresh "
-                "branch from the default branch."
-            )
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=detail,
-        )
-
-    warnings: list[str] = []
-
-    if body.plan_path is not None:
-        repo_slug = GitOps.repo_slug(body.repo_url)
-        if repo_slug is None:
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail=(
-                    "plan_path validation is only supported for github.com repositories. "
-                    "Supply a github.com repo_url or omit plan_path."
-                ),
-            )
-
-        token_lower = github_token.lower().strip()
-        if not has_app and token_lower in _PLACEHOLDER_TOKENS:
-            warnings.append(
-                "plan_path existence check skipped: no GitHub token is configured. "
-                "Ensure the file exists on the remote branch before dispatching."
-            )
-        else:
-            try:
-                file_exists = await git.remote_file_exists(
-                    repo_slug, branch, body.plan_path
-                )
-            except RuntimeError as exc:
-                raise HTTPException(
-                    status_code=status.HTTP_502_BAD_GATEWAY,
-                    detail=f"could not verify plan_path on remote: {exc}",
-                ) from exc
-
-            if not file_exists:
-                raise HTTPException(
-                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                    detail=(
-                        f"plan_path '{body.plan_path}' was not found on branch "
-                        f"'{branch}' in '{repo_slug}'. "
-                        "Praxis reads only from GitHub: push the file first, then retry."
-                    ),
-                )
-
-    if body.expected_base_sha is not None:
-        await _guard_base_sha(body, settings, branch)
 
     return warnings
 
