@@ -178,6 +178,9 @@ async def dispatch_task(request: Request, body: DispatchRequest) -> dict[str, An
     scrubbed_context = scrub_context(body.context)
     if scrubbed_context is not None:
         task_dict["context_text"] = scrubbed_context
+    scrubbed_local = scrub_context(body.local_context)
+    if scrubbed_local is not None:
+        task_dict["repo_memory"] = scrubbed_local
 
     opus_plan = {"tasks": [task_dict]}
     branch_name = body.branch or f"plan/mcp-{slug}"
