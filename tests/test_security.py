@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+from unittest.mock import AsyncMock
+
 import pytest
 from fastapi import HTTPException
 from fastapi.security import HTTPAuthorizationCredentials
@@ -13,6 +15,13 @@ from orchestrator.api.auth import verify_token
 from orchestrator.config import Settings
 from orchestrator.database import Database
 from orchestrator.models.schemas import ProjectCreate
+
+
+@pytest.fixture(autouse=True)
+def _mock_preflight(monkeypatch: pytest.MonkeyPatch) -> AsyncMock:
+    m = AsyncMock(return_value=[])
+    monkeypatch.setattr("orchestrator.api.projects.preflight_remote", m)
+    return m
 
 
 # ---------------------------------------------------------------------------

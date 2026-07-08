@@ -1,6 +1,15 @@
 from unittest.mock import AsyncMock, patch
 
+import pytest
+
 from tests.conftest import seed_user
+
+
+@pytest.fixture(autouse=True)
+def _mock_preflight(monkeypatch: pytest.MonkeyPatch) -> AsyncMock:
+    m = AsyncMock(return_value=[])
+    monkeypatch.setattr("orchestrator.api.projects.preflight_remote", m)
+    return m
 
 
 async def _make_project(client, auth_headers, db=None):
