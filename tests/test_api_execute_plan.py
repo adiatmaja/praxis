@@ -97,8 +97,13 @@ async def test_execute_plan_rejects_stale_expected_base_sha(
 
     monkeypatch.setattr(app.state, "llm_router", AsyncMock(), raising=False)
 
-    with patch("orchestrator.api.execute_plan.GitOps") as mock_git_cls:
-        mock_git_cls.return_value.remote_head_sha = AsyncMock(return_value="origin999")
+    with patch("orchestrator.api.execute_plan.preflight_remote") as mock_preflight:
+        from orchestrator.core.preflight import PreflightError, PreflightKind
+
+        mock_preflight.side_effect = PreflightError(
+            PreflightKind.BASE_SHA_MISMATCH,
+            "expected base SHA 'local111' does not match remote head 'origin999'",
+        )
         resp = await client.post(
             "/api/execute-plan",
             headers=auth_headers,
@@ -142,12 +147,72 @@ async def test_execute_plan_rejects_empty_expected_base_sha(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """422 when expected_base_sha is present but empty/whitespace."""
+    monkeypatch.setattr(app.state, "llm_router", AsyncMock(), raising=False)
+
+    resp = await client.post(
+        "/api/execute-plan",
+        headers=auth_headers,
+        json={
+            "repo_url": "https://github.com/o/r",
+            "plan": "# plan\n- do a thing",
+            "model": "m",
+            "branch": "main",
+            "expected_base_sha": "   ",
+        },
+    )
+    assert resp.status_code == 422
+    assert "expected_base_sha" in resp.json()["detail"]
+
+
+async def test_execute_plan_preflight_non_github_rejected(
+    client: AsyncClient,
+    auth_headers: dict[str, str],
+    seeded_user: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """422 when preflight detects a non-GitHub repository URL."""
     from unittest.mock import patch
 
     monkeypatch.setattr(app.state, "llm_router", AsyncMock(), raising=False)
 
-    with patch("orchestrator.api.execute_plan.GitOps") as mock_git_cls:
-        mock_git_cls.return_value.remote_head_sha = AsyncMock(return_value="origin999")
+    with patch("orchestrator.api.execute_plan.preflight_remote") as mock_preflight:
+        from orchestrator.core.preflight import PreflightError, PreflightKind
+
+        mock_preflight.side_effect = PreflightError(
+            PreflightKind.NOT_GITHUB,
+            "non-GitHub repository URL: https://gitlab.com/o/r",
+        )
+        resp = await client.post(
+            "/api/execute-plan",
+            headers=auth_headers,
+            json={
+                "repo_url": "https://gitlab.com/o/r",
+                "plan": "# plan\n- do a thing",
+                "model": "m",
+                "expected_base_sha": "abc123",
+            },
+        )
+    assert resp.status_code == 422
+
+
+async def test_execute_plan_preflight_auth_error(
+    client: AsyncClient,
+    auth_headers: dict[str, str],
+    seeded_user: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """422 when preflight detects an authentication failure."""
+    from unittest.mock import patch
+
+    monkeypatch.setattr(app.state, "llm_router", AsyncMock(), raising=False)
+
+    with patch("orchestrator.api.execute_plan.preflight_remote") as mock_preflight:
+        from orchestrator.core.preflight import PreflightError, PreflightKind
+
+        mock_preflight.side_effect = PreflightError(
+            PreflightKind.AUTH,
+            "fatal: Authentication failed",
+        )
         resp = await client.post(
             "/api/execute-plan",
             headers=auth_headers,
@@ -155,12 +220,100 @@ async def test_execute_plan_rejects_empty_expected_base_sha(
                 "repo_url": "https://github.com/o/r",
                 "plan": "# plan\n- do a thing",
                 "model": "m",
-                "branch": "main",
-                "expected_base_sha": "   ",
+                "expected_base_sha": "abc123",
             },
         )
     assert resp.status_code == 422
-    assert "expected_base_sha" in resp.json()["detail"]
+
+
+async def test_execute_plan_preflight_network_error(
+    client: AsyncClient,
+    auth_headers: dict[str, str],
+    seeded_user: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """502 when preflight detects a network/unreachability failure."""
+    from unittest.mock import patch
+
+    monkeypatch.setattr(app.state, "llm_router", AsyncMock(), raising=False)
+
+    with patch("orchestrator.api.execute_plan.preflight_remote") as mock_preflight:
+        from orchestrator.core.preflight import PreflightError, PreflightKind
+
+        mock_preflight.side_effect = PreflightError(
+            PreflightKind.NETWORK,
+            "fatal: unable to access: Connection timed out",
+        )
+        resp = await client.post(
+            "/api/execute-plan",
+            headers=auth_headers,
+            json={
+                "repo_url": "https://github.com/o/r",
+                "plan": "# plan\n- do a thing",
+                "model": "m",
+                "expected_base_sha": "abc123",
+            },
+        )
+    assert resp.status_code == 502
+
+
+async def test_execute_plan_preflight_missing_base_branch(
+    client: AsyncClient,
+    auth_headers: dict[str, str],
+    seeded_user: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """422 when preflight detects the base branch does not exist on remote."""
+    from unittest.mock import patch
+
+    monkeypatch.setattr(app.state, "llm_router", AsyncMock(), raising=False)
+
+    with patch("orchestrator.api.execute_plan.preflight_remote") as mock_preflight:
+        from orchestrator.core.preflight import PreflightError, PreflightKind
+
+        mock_preflight.side_effect = PreflightError(
+            PreflightKind.MISSING_BRANCH,
+            "base branch not found on remote: main",
+        )
+        resp = await client.post(
+            "/api/execute-plan",
+            headers=auth_headers,
+            json={
+                "repo_url": "https://github.com/o/r",
+                "plan": "# plan\n- do a thing",
+                "model": "m",
+                "expected_base_sha": "abc123",
+            },
+        )
+    assert resp.status_code == 422
+
+
+async def test_execute_plan_preflight_success_allows_plan(
+    client: AsyncClient,
+    auth_headers: dict[str, str],
+    seeded_user: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When preflight passes, the plan is accepted and returns 201."""
+    from unittest.mock import patch
+
+    monkeypatch.setattr(app.state, "llm_router", AsyncMock(), raising=False)
+
+    with patch("orchestrator.api.execute_plan.preflight_remote") as mock_preflight:
+        mock_preflight.return_value = []
+        resp = await client.post(
+            "/api/execute-plan",
+            headers=auth_headers,
+            json={
+                "repo_url": "https://github.com/o/r",
+                "plan": "# plan\n- do a thing",
+                "model": "m",
+                "branch": "develop",
+                "expected_base_sha": "abcdef1234567890",
+            },
+        )
+    assert resp.status_code == 201
+    assert resp.json()["status"] == "decomposing"
 
 
 @pytest.mark.unit

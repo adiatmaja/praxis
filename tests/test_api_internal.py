@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from unittest.mock import AsyncMock
+
 import pytest
 from httpx import AsyncClient
 
@@ -9,6 +11,13 @@ from orchestrator.core.task_queue import TaskQueue
 from orchestrator.database import Database
 from orchestrator.models.schemas import TaskStatus
 from tests.conftest import seed_user
+
+
+@pytest.fixture(autouse=True)
+def _mock_preflight(monkeypatch: pytest.MonkeyPatch) -> AsyncMock:
+    m = AsyncMock(return_value=[])
+    monkeypatch.setattr("orchestrator.api.projects.preflight_remote", m)
+    return m
 
 
 async def _setup_plan_with_task(

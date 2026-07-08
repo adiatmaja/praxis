@@ -9,6 +9,14 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import Response
 
 from orchestrator.api.auth import verify_token
+from orchestrator.core.git_ops import GitOps
+from orchestrator.core.github_credentials import build_credential_provider
+from orchestrator.core.preflight import (
+    PreflightError,
+    credential_configured,
+    preflight_remote,
+    status_and_detail,
+)
 from orchestrator.models.schemas import ProjectCreate, ProjectResponse, ProjectUpdate
 
 
@@ -30,6 +38,21 @@ async def create_project(request: Request, body: ProjectCreate) -> dict[str, Any
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="No user found. Seed a user first.",
         )
+
+    # Preflight: validate remote reachability before inserting a project row.
+    settings = request.app.state.settings
+    provider = build_credential_provider(settings)
+    git = GitOps(provider)
+    try:
+        await preflight_remote(
+            git,
+            body.repo_url,
+            base=body.default_branch,
+            credential_configured=credential_configured(settings),
+        )
+    except PreflightError as exc:
+        sc, detail = status_and_detail(exc)
+        raise HTTPException(status_code=sc, detail=detail) from exc
 
     project_id = str(uuid.uuid4())
     await db.execute(
