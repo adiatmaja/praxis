@@ -62,6 +62,7 @@ async def decompose_plan(
     router: Any,
     effective_settings: Any,
     project_id: str | None,
+    local_context: str | None = None,
 ) -> dict[str, Any]:
     """Capability-review a plan into a normalized opus_plan task graph.
 
@@ -73,6 +74,7 @@ async def decompose_plan(
         effective_settings: Object with ``capability_profile(project_id, model)``
             returning a profile with a ``context_window`` attribute.
         project_id: Project id for router routing context; may be None.
+        local_context: Optional local context to thread onto each leaf as repo_memory.
 
     Returns:
         A normalized ``{"tasks": [...]}`` dict where each task has a ``slug``
@@ -114,4 +116,8 @@ async def decompose_plan(
     if scrubbed_context is not None:
         for task in opus_plan["tasks"]:
             task.setdefault("context_text", scrubbed_context)
+    scrubbed_local = scrub_context(local_context)
+    if scrubbed_local is not None:
+        for task in opus_plan["tasks"]:
+            task.setdefault("repo_memory", scrubbed_local)
     return opus_plan
