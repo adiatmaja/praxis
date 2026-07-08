@@ -132,6 +132,7 @@ async def execute_plan(request: Request, body: ExecutePlanRequest) -> dict[str, 
             "plan": body.plan,
             "model": body.model,
             "context": body.context,
+            "local_context": body.local_context,
             "branch": branch_name,
         }
     )
