@@ -169,15 +169,23 @@ Full component diagrams and design rationale: [docs/architecture.md](docs/archit
 
 ## How It Works
 
-Driven from the dashboard or CLI, the full autonomous loop runs as follows.
+Driven by your AI assistant (Brain) via MCP, the full autonomous loop runs as follows.
 
-1. Provide a spec. Write your own, or generate one with the built-in Create-Spec chat.
-2. The planner brain breaks the spec into tasks with a dependency graph.
-3. Praxis creates a `plan/{date}-{slug}` branch.
-4. Coding agents implement tasks on `agent/{task-slug}` branches.
-5. The planner reviews each PR diff. Pass: park for your approval (or auto-merge if opted in); fail: retry (max 3).
-6. All tasks merged → integration PR to main.
-7. Optional: the planner proposes improvements when confidence ≥ threshold.
+1. **You push your latest `main` to origin** so agents always clone a fresh source of truth.
+2. **You tell your Brain** (e.g. Claude Code): *"use Praxis to implement `plan.md` on `my-repo` with `<local-model>`"*.
+3. **The Brain reads `plan.md`**, decomposes it into a dependency-ordered task graph, and calls `execute_plan()` or `dispatch_task()` via the Praxis MCP server.
+4. **Praxis creates a `plan/{date}-{slug}` branch** on origin and dispatches tasks in dependency order (parallel where possible).
+5. **Each coding agent** (OpenCode / Aider / OpenHands + local LLM) runs in an isolated Docker container, clones from origin, works on an `agent/{task-slug}` branch, commits, and opens a PR.
+6. **The Brain reviews each PR diff** (`review_diff`). Pass → squash-merge into the plan branch; fail → retry with review feedback (max 3 attempts).
+7. **All tasks merged** → Praxis opens an integration PR from the plan branch to `main`.
+8. **You review and merge** the PR on GitHub. `git pull` whenever you're ready — your local checkout is never touched automatically.
+9. Optional: the Brain proposes improvements when plan confidence ≥ threshold.
+
+### Workflow Diagram
+
+The full swimlane diagram — scoped by **User · Brain · Praxis Orchestrator · Coding Agent ·
+Local Git · Origin Git** — is in [`docs/workflow-diagram.md`](docs/workflow-diagram.md).
+Open it in a monospace-rendered viewer (GitHub, VS Code) for proper alignment.
 
 **Staying in control.** You don't have to let it run unattended. Each project has an approval gate:
 turn it on and Praxis pauses after planning so you can review and approve the plan before any agent
