@@ -32,6 +32,11 @@ class Settings(BaseSettings):
     agent_model_effort: str | None = None
     host: str = "0.0.0.0"  # noqa: S104  # nosec B104 — intentional, overridden by compose/Caddy
     port: int = 8080
+    # Git author identity agent containers commit under. Kept neutral (no Praxis
+    # footprint in the commit profile); override via GIT_AUTHOR_NAME /
+    # GIT_AUTHOR_EMAIL env. Defaults to the operator's own identity.
+    git_author_name: str = "Johannes Baptista Adiatmaja Pambudi"
+    git_author_email: str = "adi@pambudi.com"
     docs_root: str = "docs"
     brainstorm_workspace: str = _default_brainstorm_workspace()
     memory_md_path: str = "docs/MEMORY.md"

@@ -384,6 +384,33 @@ async def test_get_project_missing_returns_null_not_error() -> None:
     assert result == {"project": None}
 
 
+async def test_get_project_malformed_row_does_not_raise() -> None:
+    # A matching row missing expected keys must return null fields, never raise
+    # (MCP tools only surface PraxisClientError, not KeyError).
+    client = FakeClient(
+        {("GET", "/api/projects"): [{"repo_url": "https://github.com/u/target"}]}
+    )
+    result = await server.get_project_impl(
+        client, repo_url="https://github.com/u/target"
+    )
+    assert result["project_id"] is None
+    assert result["name"] is None
+
+
+async def test_list_projects_malformed_row_does_not_raise() -> None:
+    client = FakeClient({("GET", "/api/projects"): [{"name": "only-name"}]})
+    result = await server.list_projects_impl(client)
+    assert result["projects"] == [
+        {
+            "id": None,
+            "name": "only-name",
+            "repo_url": None,
+            "model": None,
+            "harness": None,
+        }
+    ]
+
+
 async def test_get_project_client_error_returns_error_shape() -> None:
     class ErrClient:
         async def get(self, path: str) -> Any:
@@ -445,6 +472,52 @@ async def test_execute_plan_impl_omits_expected_base_sha_when_none() -> None:
     )
     _, _, body = client.calls[0]
     assert "expected_base_sha" not in body
+
+
+async def test_dispatch_overrides_dashboard_url_from_client_base_url() -> None:
+    # The API returns its own bind-port URL; the MCP client's base_url is the
+    # externally reachable one and must win (issue #4).
+    client = FakeClient(
+        {
+            ("POST", "/api/dispatch"): {
+                "task_id": "t1",
+                "dashboard_url": "http://localhost:8080/",
+            }
+        }
+    )
+    client.base_url = "http://praxis.example:12323"  # type: ignore[attr-defined]
+    result = await server.dispatch_task_impl(
+        client, repo_url="https://github.com/u/r", instructions="x", model="m"
+    )
+    assert result["dashboard_url"] == "http://praxis.example:12323/"
+
+
+async def test_execute_plan_overrides_dashboard_url_from_client_base_url() -> None:
+    client = FakeClient(
+        {
+            ("POST", "/api/execute-plan"): {
+                "plan_id": "p1",
+                "dashboard_url": "http://localhost:8080/",
+            }
+        }
+    )
+    client.base_url = "http://praxis.example:12323"  # type: ignore[attr-defined]
+    result = await server.execute_plan_impl(
+        client, repo_url="https://github.com/u/r", plan="do", model="m"
+    )
+    assert result["dashboard_url"] == "http://praxis.example:12323/"
+
+
+async def test_dispatch_keeps_api_dashboard_url_without_client_base_url() -> None:
+    # When the client exposes no base_url, keep the API's value rather than
+    # blanking it.
+    client = FakeClient(
+        {("POST", "/api/dispatch"): {"dashboard_url": "http://localhost:8080/"}}
+    )
+    result = await server.dispatch_task_impl(
+        client, repo_url="https://github.com/u/r", instructions="x", model="m"
+    )
+    assert result["dashboard_url"] == "http://localhost:8080/"
 
 
 async def test_list_projects_returns_slim_rows() -> None:

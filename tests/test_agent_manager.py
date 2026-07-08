@@ -404,6 +404,63 @@ async def test_spawn_agent_sets_bible_env(
 @pytest.mark.unit
 @patch("orchestrator.core.agent_manager.detect_context_limit", new_callable=AsyncMock)
 @patch("orchestrator.core.agent_manager.docker")
+async def test_spawn_agent_injects_git_author_identity(
+    mock_docker: MagicMock, mock_detect: AsyncMock
+) -> None:
+    mock_client = MagicMock()
+    mock_docker.from_env.return_value = mock_client
+    mock_client.containers.run.return_value = _mock_container()
+    mock_detect.return_value = None
+
+    manager = AgentManager(
+        lm_studio_url="http://localhost:1234",
+        github_token="ghp_x",
+        git_author_name="Jane Dev",
+        git_author_email="jane@example.com",
+    )
+    await manager.spawn_agent(
+        task_id="abcd1234",
+        repo_url="https://github.com/o/r",
+        branch="agent/x",
+        base_branch="main",
+        task_prompt="do x",
+        model_name="qwen3",
+        callback_url="http://cb/",
+    )
+    env = mock_client.containers.run.call_args.kwargs["environment"]
+    assert env["GIT_AUTHOR_NAME"] == "Jane Dev"
+    assert env["GIT_AUTHOR_EMAIL"] == "jane@example.com"
+
+
+@pytest.mark.unit
+@patch("orchestrator.core.agent_manager.detect_context_limit", new_callable=AsyncMock)
+@patch("orchestrator.core.agent_manager.docker")
+async def test_spawn_agent_omits_git_author_when_unset(
+    mock_docker: MagicMock, mock_detect: AsyncMock
+) -> None:
+    mock_client = MagicMock()
+    mock_docker.from_env.return_value = mock_client
+    mock_client.containers.run.return_value = _mock_container()
+    mock_detect.return_value = None
+
+    manager = AgentManager(lm_studio_url="http://localhost:1234", github_token="ghp_x")
+    await manager.spawn_agent(
+        task_id="abcd1234",
+        repo_url="https://github.com/o/r",
+        branch="agent/x",
+        base_branch="main",
+        task_prompt="do x",
+        model_name="qwen3",
+        callback_url="http://cb/",
+    )
+    env = mock_client.containers.run.call_args.kwargs["environment"]
+    assert "GIT_AUTHOR_NAME" not in env
+    assert "GIT_AUTHOR_EMAIL" not in env
+
+
+@pytest.mark.unit
+@patch("orchestrator.core.agent_manager.detect_context_limit", new_callable=AsyncMock)
+@patch("orchestrator.core.agent_manager.docker")
 async def test_spawn_omits_context_limit_when_undetected(
     mock_docker: MagicMock, mock_detect: AsyncMock
 ) -> None:

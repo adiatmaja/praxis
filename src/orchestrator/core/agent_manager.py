@@ -86,9 +86,13 @@ class AgentManager:
         github_token: str | None = None,
         effective_settings: EffectiveSettings | None = None,
         credentials: GitHubCredentialProvider | str | None = None,
+        git_author_name: str | None = None,
+        git_author_email: str | None = None,
     ) -> None:
         self._lm_studio_url = lm_studio_url
         self._effective_settings = effective_settings
+        self._git_author_name = git_author_name
+        self._git_author_email = git_author_email
         if credentials is not None:
             if isinstance(credentials, str):
                 self._provider: GitHubCredentialProvider = PatCredentialProvider(
@@ -139,6 +143,12 @@ class AgentManager:
             "CALLBACK_URL": callback_url,
             "TASK_ID": task_id,
         }
+        # Commit author identity for the worker's git config (neutral, no Praxis
+        # footprint). Omitted -> entrypoint falls back to its own default.
+        if self._git_author_name:
+            environment["GIT_AUTHOR_NAME"] = self._git_author_name
+        if self._git_author_email:
+            environment["GIT_AUTHOR_EMAIL"] = self._git_author_email
         if callback_token is not None:
             environment["CALLBACK_TOKEN"] = callback_token
         if plan_path is not None:

@@ -21,8 +21,26 @@ printf 'STATUS=%s\n' "$STATUS"
 printf 'QUESTION=%s\n' "$QUESTION"
 """
 
-_BASH = shutil.which("bash")
-pytestmark = pytest.mark.skipif(_BASH is None, reason="bash unavailable")
+
+def _check_bash() -> str | None:
+    bash_path = shutil.which("bash")
+    if not bash_path:
+        return None
+    try:
+        res = subprocess.run(
+            [bash_path, "-c", "echo 1"], capture_output=True, text=True, timeout=2
+        )
+        if res.returncode == 0:
+            return bash_path
+    except Exception:
+        pass
+    return None
+
+
+_BASH = _check_bash()
+pytestmark = pytest.mark.skipif(
+    _BASH is None, reason="bash unavailable or non-functional"
+)
 
 
 def _to_posix(p: Path) -> str:
@@ -106,11 +124,10 @@ def test_entrypoint_has_question_in_payload(harness):
 @pytest.mark.parametrize("harness", ["opencode", "openhands"])
 def test_entrypoint_syntax_valid(harness):
     """bash -n syntax check on each entrypoint."""
-    bash = shutil.which("bash")
-    if bash is None:
-        pytest.skip("bash unavailable")
+    if _BASH is None:
+        pytest.skip("bash unavailable or non-functional")
     path = REPO_ROOT / "docker" / f"{harness}-agent" / "entrypoint.sh"
-    result = subprocess.run([bash, "-n", str(path)], capture_output=True, text=True)
+    result = subprocess.run([_BASH, "-n", str(path)], capture_output=True, text=True)
     assert result.returncode == 0, (
         f"{harness} entrypoint failed bash -n: {result.stderr}"
     )

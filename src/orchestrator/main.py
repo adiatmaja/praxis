@@ -117,6 +117,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             lm_studio_url=settings.lm_studio_url,
             credentials=credential_provider,
             effective_settings=effective_settings,
+            git_author_name=settings.git_author_name,
+            git_author_email=settings.git_author_email,
         )
     except Exception as exc:
         logger.warning("Agent manager unavailable during startup: %s", exc)

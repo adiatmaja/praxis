@@ -58,9 +58,17 @@ async def dispatch_task_impl(
     if expected_base_sha is not None:
         payload["expected_base_sha"] = expected_base_sha
     try:
-        return cast(dict[str, Any], await client.post("/api/dispatch", payload))
+        result = cast(dict[str, Any], await client.post("/api/dispatch", payload))
     except PraxisClientError as exc:
         return _error(exc)
+    # The API derives dashboard_url from its own bind port, which is not the
+    # externally reachable URL. The MCP client's base_url is authoritative, so
+    # override it here (consistent with poll_task/poll_plan). Only override when
+    # the client exposes a base_url; otherwise keep the API's value.
+    dash = _dashboard_url(client)
+    if dash and isinstance(result, dict) and "dashboard_url" in result:
+        result["dashboard_url"] = dash
+    return result
 
 
 async def execute_plan_impl(
@@ -88,9 +96,16 @@ async def execute_plan_impl(
     if expected_base_sha is not None:
         payload["expected_base_sha"] = expected_base_sha
     try:
-        return cast(dict[str, Any], await client.post("/api/execute-plan", payload))
+        result = cast(dict[str, Any], await client.post("/api/execute-plan", payload))
     except PraxisClientError as exc:
         return _error(exc)
+    # See dispatch_task_impl: the API's dashboard_url uses its bind port, not the
+    # externally reachable URL. Override with the MCP client's authoritative base
+    # when known; otherwise keep the API's value.
+    dash = _dashboard_url(client)
+    if dash and isinstance(result, dict) and "dashboard_url" in result:
+        result["dashboard_url"] = dash
+    return result
 
 
 async def poll_task_impl(client: Any, task_id: str) -> dict[str, Any]:
@@ -100,6 +115,11 @@ async def poll_task_impl(client: Any, task_id: str) -> dict[str, Any]:
     as ``awaiting_merge`` (mapped from the internal ``passed`` state) and
     ``verdict`` is set to ``"pass"``.  The caller should surface the ``pr_url``
     to a human for final merge approval.
+
+    Note: this ``awaiting_merge`` alias is an MCP-surface convenience. The raw
+    REST endpoint ``GET /api/tasks/{id}`` reports the underlying DB status
+    ``passed`` for the same state, so a caller polling REST directly must match
+    on ``passed`` (not ``awaiting_merge``). Prefer the MCP tools for consistency.
     """
     try:
         data = await client.get(f"/api/tasks/{task_id}")
@@ -152,7 +172,7 @@ async def poll_plan_impl(client: Any, plan_id: str) -> dict[str, Any]:
         "task_count": len(tasks),
         "tasks": [
             {
-                "task_id": t["id"],
+                "task_id": t.get("id"),
                 "title": t.get("title"),
                 "status": _TASK_STATUS_MAP.get(t.get("status", ""), t.get("status")),
                 "pr_url": t.get("pr_url"),
@@ -187,13 +207,15 @@ async def get_project_impl(client: Any, repo_url: str) -> dict[str, Any]:
     rows = projects if isinstance(projects, list) else []
     for row in rows:
         if row.get("repo_url") == repo_url:
+            # Defensive .get(): MCP tools must never raise on a malformed row
+            # (only PraxisClientError is caught), so a missing key returns null.
             return {
-                "project_id": row["id"],
-                "name": row["name"],
-                "model": row["model_name"],
-                "harness": row["harness"],
-                "default_branch": row["default_branch"],
-                "approval_gate": row["approval_gate"],
+                "project_id": row.get("id"),
+                "name": row.get("name"),
+                "model": row.get("model_name"),
+                "harness": row.get("harness"),
+                "default_branch": row.get("default_branch"),
+                "approval_gate": row.get("approval_gate"),
             }
     return {"project": None}
 
@@ -207,12 +229,13 @@ async def list_projects_impl(client: Any) -> dict[str, Any]:
     rows = projects if isinstance(projects, list) else []
     return {
         "projects": [
+            # Defensive .get(): a malformed row must not raise out of an MCP tool.
             {
-                "id": row["id"],
-                "name": row["name"],
-                "repo_url": row["repo_url"],
-                "model": row["model_name"],
-                "harness": row["harness"],
+                "id": row.get("id"),
+                "name": row.get("name"),
+                "repo_url": row.get("repo_url"),
+                "model": row.get("model_name"),
+                "harness": row.get("harness"),
             }
             for row in rows
         ]
