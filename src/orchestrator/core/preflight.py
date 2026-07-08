@@ -12,12 +12,21 @@ isolation.
 from __future__ import annotations
 
 from enum import Enum
+from typing import Protocol
 
 from orchestrator.core.git_ops import GitOps
 
 
 # Token values that mean "no real GitHub credential is configured".
 _PLACEHOLDER_TOKENS: frozenset[str] = frozenset({"placeholder", ""})
+
+
+class _GitOpsProtocol(Protocol):
+    """Minimal interface required by :func:`preflight_remote`."""
+
+    async def remote_head_sha(self, repo_url: str, branch: str) -> str | None: ...
+    async def remote_branch_exists(self, repo_url: str, branch: str) -> bool: ...
+    async def remote_file_exists(self, slug: str, branch: str, path: str) -> bool: ...
 
 
 class PreflightKind(Enum):
@@ -94,7 +103,7 @@ def credential_configured(settings: object) -> bool:
 
 
 async def preflight_remote(
-    git: object,
+    git: _GitOpsProtocol,
     repo_url: str,
     *,
     base: str,
