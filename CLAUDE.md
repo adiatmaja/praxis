@@ -270,6 +270,9 @@ the relevant subsystem. Condensed index:
   failure, missing branch or file return 422. Unreachable remote returns 502. Base-SHA
   mismatch returns 409. Without a configured credential, checks are skipped with a
   warning so local-only experimentation still works.
+- **`local_context` fills the worker's `repo_memory` Bible slot** with client-gathered
+  non-committed context (gitignored config shapes, user-scope conventions); minimum-blocking,
+  names/shapes over values, never a "read file X" pointer. Threaded like `context_text`.
 
 ## Documentation
 
