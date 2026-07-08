@@ -657,3 +657,31 @@ async def test_dispatch_scrubs_and_stores_context(
     task = opus_plan["tasks"][0]
     assert "Use ruff." in task["context_text"]
     assert "ghp_abcdef" not in task["context_text"]
+
+
+# ---------------------------------------------------------------------------
+# local_context field tests
+# ---------------------------------------------------------------------------
+
+
+def test_dispatch_request_accepts_local_context() -> None:
+    from orchestrator.models.schemas import DispatchRequest
+
+    req = DispatchRequest(
+        repo_url="https://github.com/u/r",
+        instructions="add input validation",
+        model="qwen3-32b",
+        local_context="REDIS_URL = cache connection string",
+    )
+    assert req.local_context == "REDIS_URL = cache connection string"
+
+
+def test_dispatch_request_local_context_defaults_none() -> None:
+    from orchestrator.models.schemas import DispatchRequest
+
+    req = DispatchRequest(
+        repo_url="https://github.com/u/r",
+        instructions="add input validation",
+        model="qwen3-32b",
+    )
+    assert req.local_context is None
