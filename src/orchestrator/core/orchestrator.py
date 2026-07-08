@@ -128,6 +128,7 @@ class Orchestrator(DispatchMixin, ReviewMixin, ReconcileMixin, ImprovementMixin)
                 router=self._llm_router,
                 effective_settings=self._effective_settings,
                 project_id=project["id"],
+                local_context=payload.get("local_context"),
             )
         except PlanReviewError as exc:
             await self._tq.set_plan_error(plan_id, str(exc))
