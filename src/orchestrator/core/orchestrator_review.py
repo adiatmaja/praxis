@@ -130,11 +130,20 @@ class ReviewMixin:
         feedback = str(review.get("feedback", ""))
 
         flagged = destructive_deletions(diff)
-        if flagged and verdict == "pass":
-            verdict = "fail"
+        if flagged and verdict == "fail":
+            # Gate already failed; annotate so the reviewer's feedback includes
+            # the specific files with large net deletions.
+            feedback = f"Large net deletions in {flagged} — verify intentional. " + (
+                feedback or ""
+            )
+        elif flagged and verdict == "pass":
+            # Brain said PASS; treat the guard as advisory — surface the flagged
+            # files as a warning in the feedback rather than overriding the
+            # reviewer's verdict. The human can still reject at the approval gate.
             feedback = (
-                "Hard-blocked: large deletions from existing file(s) "
-                f"{flagged} not justified by the task. " + (feedback or "")
+                f"[diff-guard] Warning: large net deletions in {flagged}. "
+                "Brain review said PASS; confirm the deletions are intentional "
+                "before merging. " + (feedback or "")
             )
 
         if verdict == "pass":

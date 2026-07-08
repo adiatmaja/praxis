@@ -7,6 +7,7 @@ default; Aider and OpenHands are also supported).
 from __future__ import annotations
 
 import logging
+import shutil
 from typing import TYPE_CHECKING, Any
 
 import docker.errors
@@ -17,6 +18,17 @@ from orchestrator.core.github_credentials import (
     PatCredentialProvider,
 )
 from orchestrator.core.harnesses import REGISTRY, default_harness_id
+
+
+# Minimum free disk space (in bytes) required before spawning an agent container.
+# Three parallel clones of even a moderate repo can easily consume 1-3 GB of
+# Docker graph-driver space; 2 GB gives a reasonable safety buffer.
+_MIN_FREE_DISK_BYTES: int = 2 * 1024 * 1024 * 1024  # 2 GiB
+
+# Maximum number of concurrently running praxis-agent-* containers. Parallel
+# clones exhaust disk and stall the Docker daemon when this is unconstrained.
+# Override via the ``max_agent_concurrency`` constructor param.
+_DEFAULT_MAX_AGENT_CONCURRENCY: int = 3
 
 
 if TYPE_CHECKING:
@@ -88,11 +100,15 @@ class AgentManager:
         credentials: GitHubCredentialProvider | str | None = None,
         git_author_name: str | None = None,
         git_author_email: str | None = None,
+        max_agent_concurrency: int = _DEFAULT_MAX_AGENT_CONCURRENCY,
+        min_free_disk_bytes: int = _MIN_FREE_DISK_BYTES,
     ) -> None:
         self._lm_studio_url = lm_studio_url
         self._effective_settings = effective_settings
         self._git_author_name = git_author_name
         self._git_author_email = git_author_email
+        self._max_agent_concurrency = max_agent_concurrency
+        self._min_free_disk_bytes = min_free_disk_bytes
         if credentials is not None:
             if isinstance(credentials, str):
                 self._provider: GitHubCredentialProvider = PatCredentialProvider(
@@ -125,6 +141,40 @@ class AgentManager:
     ) -> str:
         harness_id = harness or default_harness_id()
         spec = REGISTRY[harness_id]
+
+        # --- Host-disk headroom preflight ---
+        # Three parallel agent clones can exhaust the Docker graph-driver volume
+        # and wedge the daemon. Fail fast with a clear message when disk is low.
+        # Use tempfile.gettempdir() as a cross-platform proxy for the data volume.
+        import tempfile
+
+        disk = shutil.disk_usage(tempfile.gettempdir())
+        if disk.free < self._min_free_disk_bytes:
+            free_gb = disk.free / (1024**3)
+            needed_gb = self._min_free_disk_bytes / (1024**3)
+            msg = (
+                f"Insufficient host disk space: {free_gb:.1f} GiB free, "
+                f"{needed_gb:.1f} GiB required. Free disk space before "
+                "spawning more agent containers."
+            )
+            logger.error(msg)
+            raise RuntimeError(msg)
+
+        # --- Concurrent-agent cap ---
+        # Count currently running praxis-agent-* containers to prevent
+        # simultaneous clones from saturating disk and RAM.
+        running_count = sum(
+            1 for c in self._client.containers.list(filters={"name": "praxis-agent-"})
+        )
+        if running_count >= self._max_agent_concurrency:
+            msg = (
+                f"Concurrent agent cap reached ({running_count} of "
+                f"{self._max_agent_concurrency} running). Task will be "
+                "re-dispatched when a slot opens."
+            )
+            logger.warning(msg)
+            raise RuntimeError(msg)
+
         if self._effective_settings is not None:
             lm_studio_url = await self._effective_settings.lm_studio_url()
         else:

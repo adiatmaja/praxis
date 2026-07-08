@@ -106,22 +106,40 @@ class DispatchMixin:
                 )
                 continue
 
-            container_id = await self._agents.spawn_agent(
-                task_id=task["id"],
-                repo_url=project["repo_url"],
-                branch=task["branch_name"],
-                base_branch=base_branch,
-                task_prompt=prompt,
-                model_name=project["model_name"],
-                harness=project.get("harness"),
-                callback_url=self._callback_url,
-                callback_token=self._callback_token,
-                plan_path=plan_path,
-                plan_text=plan_text,
-                context_text=context_text,
-                bible_text=bible,
-                task_summary=f"{task['title']}\n\n{task['description']}",
-            )
+            try:
+                container_id = await self._agents.spawn_agent(
+                    task_id=task["id"],
+                    repo_url=project["repo_url"],
+                    branch=task["branch_name"],
+                    base_branch=base_branch,
+                    task_prompt=prompt,
+                    model_name=project["model_name"],
+                    harness=project.get("harness"),
+                    callback_url=self._callback_url,
+                    callback_token=self._callback_token,
+                    plan_path=plan_path,
+                    plan_text=plan_text,
+                    context_text=context_text,
+                    bible_text=bible,
+                    task_summary=f"{task['title']}\n\n{task['description']}",
+                )
+            except RuntimeError as exc:
+                # Disk-headroom or concurrency-cap preflight failed. Leave the
+                # task in PENDING so the next loop tick retries the spawn (the
+                # condition is transient: disk freed or a slot opened).
+                logger.warning(
+                    "Spawn preflight for task %s rejected: %s — will retry next loop tick",
+                    task["id"],
+                    exc,
+                )
+                self._bus.publish(
+                    {
+                        "type": "agent_spawn_deferred",
+                        "task_id": task["id"],
+                        "reason": str(exc),
+                    }
+                )
+                continue
             run_id = await self._tq.create_agent_run(task["id"], container_id)
             await self._tq.update_task_status(task["id"], TaskStatus.IN_PROGRESS)
             cast(Any, self)._start_monitor(run_id, task["id"], container_id)

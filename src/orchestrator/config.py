@@ -34,9 +34,10 @@ class Settings(BaseSettings):
     port: int = 8080
     # Git author identity agent containers commit under. Kept neutral (no Praxis
     # footprint in the commit profile); override via GIT_AUTHOR_NAME /
-    # GIT_AUTHOR_EMAIL env. Defaults to the operator's own identity.
-    git_author_name: str = "Johannes Baptista Adiatmaja Pambudi"
-    git_author_email: str = "adi@pambudi.com"
+    # GIT_AUTHOR_EMAIL env. Defaults to a generic bot identity so AI-generated
+    # commits are never mis-attributed to the repo owner.
+    git_author_name: str = "praxis-agent"
+    git_author_email: str = "praxis-agent@users.noreply.github.com"
     docs_root: str = "docs"
     brainstorm_workspace: str = _default_brainstorm_workspace()
     memory_md_path: str = "docs/MEMORY.md"

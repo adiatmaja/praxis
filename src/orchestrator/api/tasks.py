@@ -173,6 +173,75 @@ async def reject_merge(
     return {"task_id": task_id, "status": "rejected"}
 
 
+class ForceStatusRequest(BaseModel):
+    """Payload for the operator force-status override."""
+
+    status: str
+    reason: str | None = None
+
+
+@router.post("/tasks/{task_id}/force-status")
+async def force_task_status(
+    request: Request,
+    task_id: str,
+    body: ForceStatusRequest,
+) -> dict[str, Any]:
+    """Operator override: set a task to an explicit status without running the normal gate.
+
+    This is the escape hatch for cases such as:
+    - A false-positive deletion guard that blocked a legitimate refactor.
+    - A PR manually merged via ``gh pr merge --admin`` whose DB row needs updating.
+    - Unsticking a task wedged in a transient state after a Docker incident.
+
+    Supported target statuses: ``merged``, ``passed``, ``failed``, ``pending``.
+
+    The task row is updated directly; no git operations are performed. The caller
+    is responsible for ensuring the PR is in the correct state on GitHub before
+    marking it ``merged``.
+
+    Args:
+        task_id: ID of the task to override.
+        body: ``status`` (required) and optional ``reason`` logged for audit.
+
+    Raises:
+        404: Task not found.
+        422: Requested status is not a supported override target.
+    """
+    allowed = {"merged", "passed", "failed", "pending"}
+    if body.status not in allowed:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"status must be one of {sorted(allowed)}",
+        )
+    queue = request.app.state.task_queue
+    task = await queue.get_task(task_id)
+    if task is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Task not found"
+        )
+    reason = body.reason or f"Operator override to {body.status}"
+    if body.status == "merged":
+        await queue.mark_merged(task_id)
+    elif body.status == "passed":
+        await queue.mark_passed(task_id, reason)
+    elif body.status == "failed":
+        await queue.fail_task(task_id, reason)
+    elif body.status == "pending":
+        await queue.retry_task(task_id)
+
+    event_bus = request.app.state.event_bus
+    event_bus.publish(
+        {
+            "type": "task_force_status",
+            "task_id": task_id,
+            "status": body.status,
+            "reason": reason,
+        }
+    )
+    updated = await queue.get_task(task_id)
+    return {"task_id": task_id, "status": body.status, "task": updated}
+
+
 @router.post("/tasks/{task_id}/clarify")
 async def clarify_task(
     request: Request,

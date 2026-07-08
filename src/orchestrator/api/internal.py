@@ -98,13 +98,40 @@ async def agent_done(request: Request, body: AgentDonePayload) -> dict[str, str]
         await queue.mark_needs_clarification(body.task_id, question)
         logger.info("Task %s is awaiting clarification", task_id)
     else:
-        # Consume the retry budget exactly like a review/gate failure so that
-        # a single lost/failed callback does not wedge the plan forever.
+        from orchestrator.core.orchestrator_reconcile import ReconcileMixin
+
         plan = await queue.get_plan(task["plan_id"])
         project = await queue.get_project(plan["project_id"]) if plan else None
         max_retries = int(project["max_retries"]) if project else 0
         feedback = body.question or f"Agent finished with status {body.status}"
-        if int(task["attempt"]) < max_retries:
+
+        # Transient provider/gateway errors (403/429/5xx/connection) must not
+        # consume the task's retry budget. Reset to PENDING without touching attempt.
+        if logs and ReconcileMixin.is_provider_error(logs):
+            from datetime import UTC as _UTC
+            from datetime import datetime as _datetime
+
+            now = _datetime.now(_UTC).isoformat()
+            await queue._db.execute(
+                "UPDATE tasks SET status = ?, review_feedback = ?, updated_at = ? "
+                "WHERE id = ?",
+                (TaskStatus.PENDING, feedback, now, body.task_id),
+            )
+            request.app.state.event_bus.publish(
+                {
+                    "type": "worker_provider_error",
+                    "task_id": body.task_id,
+                    "reason": feedback,
+                }
+            )
+            logger.warning(
+                "Task %s worker provider/gateway error; re-queued without "
+                "consuming a retry attempt: %s",
+                task_id,
+                feedback,
+            )
+        elif int(task["attempt"]) < max_retries:
+            # Normal failure: consume a retry.
             await queue.retry_task(body.task_id)
             request.app.state.event_bus.publish(
                 {

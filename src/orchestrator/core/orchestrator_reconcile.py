@@ -9,7 +9,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
+
+from orchestrator.models.schemas import TaskStatus
 
 
 if TYPE_CHECKING:
@@ -152,8 +155,9 @@ class ReconcileMixin:
         if logs and ("No commits between" in logs or "no commits" in logs.lower()):
             reason = self._classify_pr_failure(logs)
         # Docker is available on this path (we observed the container exit),
-        # so a fresh dispatch can succeed — allow a bounded retry.
-        await self._resolve_failed_run(run, reason, logs=logs, can_retry=True)
+        # so a fresh dispatch can succeed — allow a bounded retry. However,
+        # provider/gateway errors are transient and must not burn the budget.
+        await self._resolve_failed_run_or_pause(run, reason, logs=logs, can_retry=True)
 
     async def _fail_orphan(self, run: dict[str, Any], reason: str) -> None:
         """Resolve an unmonitorable running run (and its task).
@@ -261,3 +265,91 @@ class ReconcileMixin:
                 f"Original error: {raw.strip()}"
             )
         return raw.strip()
+
+    @staticmethod
+    def is_provider_error(logs: str) -> bool:
+        """Return True when logs indicate a transient worker-side provider/gateway error.
+
+        These are errors from the model endpoint (403 Forbidden, 429 Too Many
+        Requests, 5xx server errors, connection refused) rather than genuine task
+        failures. They should NOT count against the task's retry budget.
+
+        Args:
+            logs: Full container log text.
+
+        Returns:
+            True when the logs reveal a provider/gateway error, False otherwise.
+        """
+        provider_signals = (
+            # Cloudflare / reverse-proxy blocks
+            "Forbidden: request was blocked by a gateway or proxy",
+            "Error: Forbidden",
+            # HTTP status codes in log output
+            "HTTP 403",
+            "HTTP 429",
+            "HTTP 502",
+            "HTTP 503",
+            "HTTP 504",
+            # LM Studio / OpenAI-SDK error patterns
+            "rate_limit_exceeded",
+            "Too Many Requests",
+            "Service Unavailable",
+            "Bad Gateway",
+            "Gateway Timeout",
+            # Connection-level failures
+            "Connection refused",
+            "ECONNREFUSED",
+            "ECONNRESET",
+            "connect ENOENT",
+        )
+        return any(signal in logs for signal in provider_signals)
+
+    async def _resolve_failed_run_or_pause(
+        self,
+        run: dict[str, Any],
+        reason: str,
+        *,
+        can_retry: bool,
+        logs: str | None = None,
+    ) -> None:
+        """Like ``_resolve_failed_run`` but pauses on provider/gateway errors.
+
+        When the container logs reveal a transient provider error (403/429/5xx,
+        connection refused) the run is marked failed but the task is re-queued
+        WITHOUT consuming a retry attempt, and a ``worker_provider_error`` event
+        is emitted so the dashboard can surface it.
+
+        Args:
+            run: Agent run dict (must have ``id``, ``task_id``, ``container_id``).
+            reason: Human-readable failure reason.
+            can_retry: Whether a normal bounded retry is allowed.
+            logs: Container log text (fetched if None).
+        """
+        log_text = logs if logs is not None else self._safe_logs(run["container_id"])
+        if log_text and self.is_provider_error(log_text):
+            # Transient provider error: do NOT consume a retry. Mark the run
+            # failed but reset the task to PENDING without touching attempt.
+            await self._tq.complete_agent_run(run["id"], "failed", log_text or reason)
+            task = await self._tq.get_task(run["task_id"])
+            if task is not None:
+                now = datetime.now(UTC).isoformat()
+                await self._tq._db.execute(
+                    "UPDATE tasks SET status = ?, review_feedback = ?, updated_at = ? "
+                    "WHERE id = ?",
+                    (TaskStatus.PENDING, reason, now, run["task_id"]),
+                )
+                self._bus.publish(
+                    {
+                        "type": "worker_provider_error",
+                        "task_id": run["task_id"],
+                        "reason": reason,
+                    }
+                )
+                logger.warning(
+                    "Worker provider/gateway error for task %s; re-queued without "
+                    "consuming a retry attempt: %s",
+                    run["task_id"],
+                    reason,
+                )
+            return
+        await self._resolve_failed_run(run, reason, can_retry=can_retry, logs=log_text)

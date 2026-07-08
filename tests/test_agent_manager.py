@@ -631,6 +631,9 @@ async def test_spawn_agent_injects_freshly_minted_token(monkeypatch) -> None:
             msg = "none"
             raise am.docker.errors.NotFound(msg)
 
+        def list(self, **kwargs):
+            return []
+
     class _FakeClient:
         containers = _FakeContainers()
 
