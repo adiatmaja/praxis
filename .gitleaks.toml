@@ -1,0 +1,24 @@
+# Gitleaks config for Praxis.
+# Extends the built-in default ruleset and adds allowlists for synthetic
+# secrets that appear in documentation (TDD plan examples, redaction-test
+# fixtures). These are not real credentials.
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Allowlist documentation fixtures and example secrets"
+
+# The superpowers plan docs are design/TDD documents whose test snippets
+# deliberately embed fake tokens (e.g. `ghp_abcdef123...`) to exercise
+# secret-scrubbing logic. They contain no live credentials.
+paths = [
+  '''docs/superpowers/plans/.*\.md''',
+]
+
+# Well-known placeholder/example secrets used across docs and tests.
+regexes = [
+  '''ghp_abcdef1234567890abcdef1234567890abcd''',
+  '''AKIAIOSFODNN7EXAMPLE''',
+  '''sk-ABCDEFGHIJKLMNOPQRSTUVWX''',
+]
