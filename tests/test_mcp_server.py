@@ -564,6 +564,44 @@ async def test_list_projects_client_error_returns_error_shape() -> None:
     assert result["message"] == "bad token"
 
 
+async def test_dispatch_task_impl_forwards_local_context() -> None:
+    client = FakeClient({("POST", "/api/dispatch"): {"ok": True}})
+    await server.dispatch_task_impl(
+        client,
+        repo_url="https://github.com/o/r",
+        instructions="do it",
+        model="m",
+        local_context="some context",
+    )
+    _, _, body = client.calls[0]
+    assert body["local_context"] == "some context"
+
+
+async def test_execute_plan_impl_forwards_local_context() -> None:
+    client = FakeClient({("POST", "/api/execute-plan"): {"ok": True}})
+    await server.execute_plan_impl(
+        client,
+        repo_url="https://github.com/o/r",
+        plan="step 1\nstep 2",
+        model="m",
+        local_context="some context",
+    )
+    _, _, body = client.calls[0]
+    assert body["local_context"] == "some context"
+
+
+async def test_dispatch_task_impl_omits_local_context_when_none() -> None:
+    client = FakeClient({("POST", "/api/dispatch"): {"ok": True}})
+    await server.dispatch_task_impl(
+        client,
+        repo_url="https://github.com/o/r",
+        instructions="do it",
+        model="m",
+    )
+    _, _, body = client.calls[0]
+    assert "local_context" not in body
+
+
 def test_orchestration_guide_mandates_git_state_preflight() -> None:
     from mcp_server.server import load_orchestration_guide
 
