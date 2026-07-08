@@ -36,6 +36,23 @@ explains when to hand work to Praxis and how to drive its tools.
 For live data (which worker models exist, whether brain providers are authenticated),
 call `list_providers`. This guide is static and does not embed that state.
 
+## Resolve the worker model before dispatching
+
+Praxis decomposes and gates a plan against the SPECIFIC local worker model that
+will implement it, so pass the right `model`. Resolve it in this order:
+
+1. Call `get_project(repo_url)`.
+2. If it returns a `model`, reuse that value — the project is already configured.
+3. If it returns `{"project": null}` (Praxis has never seen this repo), call
+   `list_providers` to see the available worker models and ask the user which to
+   use. Do not invent a model name.
+4. Pass the resolved `model` to `execute_plan` (for a full plan) or
+   `dispatch_task` (for a single task).
+5. Watch progress with `poll_plan` (or `poll_task`) until terminal.
+
+Use `list_projects` to discover which repos Praxis already knows instead of
+guessing a `repo_url`.
+
 ## 1. When to delegate to Praxis
 
 Delegate implementation that is bulk, parallelizable, or lower-novelty: it runs on the
@@ -63,6 +80,8 @@ calls: nothing streams to you, so you must poll.
   (`task_id`, `title`, `status`, `pr_url`) as decomposition creates them. Use it when you
   handed over a plan and do not yet know the individual task ids.
 - `poll_task`, `get_task_logs`, `cancel_task` - lifecycle and triage (sections 4 and 6).
+- `get_project` — read a repo's configured worker model + harness (or null if unknown).
+- `list_projects` — list repos Praxis knows, each with its configured model + harness.
 
 ## 3. What context to pass
 
