@@ -8,6 +8,7 @@ returned as ``{"error": code, "message": ...}`` so the brain can react.
 
 from __future__ import annotations
 
+import json
 from importlib import resources
 from typing import Any, cast
 
@@ -159,9 +160,213 @@ _TASK_STATUS_MAP: dict[str, str] = {
     "needs_clarification": "awaiting_clarification",
 }
 
+# Statuses that are gated (passed review but not yet merged into the base branch).
+_GATED_STATUSES: frozenset[str] = frozenset({"passed", "awaiting_merge"})
+
+# Terminal statuses that cannot progress further without intervention.
+_TERMINAL_STATUSES: frozenset[str] = frozenset({"failed", "merged"})
+
+
+def derive_plan_blocked_state(
+    opus_plan_json: str | None,
+    tasks: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Derive a machine-readable summary of any merge-gate stall in a plan.
+
+    Cross-references the ``depends_on`` graph from the serialized ``opus_plan``
+    against the live task statuses to find tasks that are pending solely because
+    their dependencies are gated at ``passed``/``awaiting_merge`` (i.e. passed
+    review but awaiting a human ``approve-merge`` call).
+
+    Args:
+        opus_plan_json: The ``plans.opus_plan`` column value (JSON string), or
+            ``None`` when the plan is still being decomposed.
+        tasks: Ordered list of task rows from ``GET /api/plans/{id}/tasks``.
+
+    Returns:
+        A dict with:
+
+        - ``gated_task_ids``: list of task ids sitting at ``passed``/
+          ``awaiting_merge``.
+        - ``blocked_by_gate``: list of ``{task_id, title, blocked_by}`` for
+          pending tasks whose every unmet dependency is gated (not merely
+          absent).
+        - ``action_required``: ``"approve_merge"`` when at least one pending
+          task is blocked purely by gated deps, else ``None``.
+        - ``hint``: human-readable explanation string, or ``None``.
+    """
+    if not opus_plan_json or not tasks:
+        return {
+            "gated_task_ids": [],
+            "blocked_by_gate": [],
+            "action_required": None,
+            "hint": None,
+        }
+
+    try:
+        opus_plan = json.loads(opus_plan_json)
+    except (ValueError, TypeError):
+        return {
+            "gated_task_ids": [],
+            "blocked_by_gate": [],
+            "action_required": None,
+            "hint": None,
+        }
+
+    plan_tasks: list[dict[str, Any]] = opus_plan.get("tasks", [])
+
+    # Build slug -> task-row mapping (ordered by rowid, same order as opus_plan).
+    slug_to_row: dict[str, dict[str, Any]] = {}
+    for index, plan_task in enumerate(plan_tasks):
+        slug = plan_task.get("slug", "")
+        if index < len(tasks):
+            slug_to_row[slug] = tasks[index]
+
+    # Identify gated tasks: passed review but not yet merged.
+    gated_task_ids: list[str] = [
+        row["id"]
+        for row in slug_to_row.values()
+        if row.get("status") in _GATED_STATUSES and row.get("id")
+    ]
+    gated_slugs: set[str] = {
+        slug
+        for slug, row in slug_to_row.items()
+        if row.get("status") in _GATED_STATUSES
+    }
+
+    # Find pending tasks blocked exclusively by gated deps (not failed/missing deps).
+    blocked_by_gate: list[dict[str, Any]] = []
+    for plan_task in plan_tasks:
+        slug = plan_task.get("slug", "")
+        row = slug_to_row.get(slug)
+        if row is None or row.get("status") != "pending":
+            continue
+        deps: list[str] = plan_task.get("depends_on") or []
+        if not deps:
+            continue
+        unmet_deps = [
+            d for d in deps if slug_to_row.get(d, {}).get("status") != "merged"
+        ]
+        if not unmet_deps:
+            continue
+        # Only flag as "blocked by gate" when ALL unmet deps are gated (not failed/missing).
+        all_gated = all(d in gated_slugs for d in unmet_deps)
+        if all_gated:
+            blocking_ids = [
+                slug_to_row[d]["id"] for d in unmet_deps if d in slug_to_row
+            ]
+            blocking_prs = [
+                slug_to_row[d].get("pr_url")
+                for d in unmet_deps
+                if d in slug_to_row and slug_to_row[d].get("pr_url")
+            ]
+            blocked_by_gate.append(
+                {
+                    "task_id": row.get("id"),
+                    "title": row.get("title"),
+                    "blocked_by_task_ids": blocking_ids,
+                    "blocked_by_pr_urls": blocking_prs,
+                }
+            )
+
+    action_required: str | None = None
+    hint: str | None = None
+    if blocked_by_gate:
+        action_required = "approve_merge"
+        ids_str = ", ".join(b["task_id"] for b in blocked_by_gate if b.get("task_id"))
+        gate_ids_str = ", ".join(gated_task_ids)
+        hint = (
+            f"{len(blocked_by_gate)} task(s) are pending because their dependencies "
+            f"({gate_ids_str}) passed review but have not been merged yet. "
+            f"Blocked tasks: {ids_str}. "
+            f"Call approve-merge on the gated tasks (or POST /api/plans/{{plan_id}}/approve-merges) "
+            f"to unblock the next wave."
+        )
+
+    return {
+        "gated_task_ids": gated_task_ids,
+        "blocked_by_gate": blocked_by_gate,
+        "action_required": action_required,
+        "hint": hint,
+    }
+
+
+def derive_terminal_incomplete_state(
+    plan_status: str | None,
+    tasks: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Detect when a plan is terminal but not fully merged (some tasks failed).
+
+    When at least one task has failed and no tasks are still in progress, the
+    plan is effectively stalled. If the plan has a ``plan_branch_name`` the
+    orchestrator may have already opened an integration PR for successfully
+    merged tasks; the caller should check the dashboard for that URL.
+
+    Args:
+        plan_status: Current plan status string (e.g. ``"active"``, ``"failed"``).
+        tasks: Task rows for the plan.
+
+    Returns:
+        A dict with:
+
+        - ``terminal_incomplete``: ``True`` when some tasks failed and none are
+          actively making progress.
+        - ``failed_count``: number of tasks with ``status="failed"``.
+        - ``merged_count``: number of tasks with ``status="merged"``.
+        - ``hint``: human-readable explanation, or ``None``.
+    """
+    if not tasks:
+        return {
+            "terminal_incomplete": False,
+            "failed_count": 0,
+            "merged_count": 0,
+            "hint": None,
+        }
+
+    failed_count = sum(1 for t in tasks if t.get("status") == "failed")
+    merged_count = sum(1 for t in tasks if t.get("status") == "merged")
+    in_progress_count = sum(
+        1
+        for t in tasks
+        if t.get("status") in {"in_progress", "reviewing", "needs_clarification"}
+    )
+
+    terminal_incomplete = (
+        failed_count > 0 and in_progress_count == 0 and merged_count > 0
+    )
+
+    hint: str | None = None
+    if terminal_incomplete:
+        hint = (
+            f"{failed_count} task(s) failed; {merged_count} task(s) merged. "
+            "The orchestrator may have opened an integration PR for the merged tasks. "
+            "Check the dashboard_url for the integration PR and consider merging partial "
+            "progress, then re-plan the failed tasks."
+        )
+
+    return {
+        "terminal_incomplete": terminal_incomplete,
+        "failed_count": failed_count,
+        "merged_count": merged_count,
+        "hint": hint,
+    }
+
 
 async def poll_plan_impl(client: Any, plan_id: str) -> dict[str, Any]:
-    """Return the plan status plus a one-line summary of every task in the plan."""
+    """Return the plan status plus a one-line summary of every task in the plan.
+
+    The response is enriched with two diagnostic fields:
+
+    - ``merge_gate``: populated when pending tasks are stalled because their
+      dependencies passed review but have not been merged yet.  Contains
+      ``action_required="approve_merge"``, ``gated_task_ids``, ``blocked_by_gate``
+      (list of blocked task summaries), and a human-readable ``hint``.
+
+    - ``terminal_incomplete``: populated when some tasks failed while others
+      merged successfully (partial plan completion).  Contains ``failed_count``,
+      ``merged_count``, and a ``hint`` suggesting the operator check for an
+      integration PR on the dashboard.
+    """
     try:
         plan_data = await client.get(f"/api/plans/{plan_id}")
     except PraxisClientError as exc:
@@ -171,6 +376,9 @@ async def poll_plan_impl(client: Any, plan_id: str) -> dict[str, Any]:
     except PraxisClientError as exc:
         return _error(exc)
     tasks: list[dict[str, Any]] = tasks_data if isinstance(tasks_data, list) else []
+    opus_plan_json: str | None = plan_data.get("opus_plan")
+    merge_gate = derive_plan_blocked_state(opus_plan_json, tasks)
+    term = derive_terminal_incomplete_state(plan_data.get("status"), tasks)
     return {
         "plan_id": plan_id,
         "status": plan_data.get("status"),
@@ -185,6 +393,8 @@ async def poll_plan_impl(client: Any, plan_id: str) -> dict[str, Any]:
             }
             for t in tasks
         ],
+        "merge_gate": merge_gate,
+        "terminal_incomplete": term,
         "dashboard_url": _dashboard_url(client),
     }
 

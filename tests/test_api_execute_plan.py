@@ -377,6 +377,42 @@ def test_normalize_slugs_adds_slug_and_remaps_depends_on() -> None:
     assert t2["depends_on"] == [t1["slug"]]  # id remapped to slug
 
 
+async def test_execute_plan_dashboard_url_reflects_configured_port(
+    client: AsyncClient,
+    auth_headers: dict[str, str],
+    seeded_user: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """dashboard_url in execute-plan response uses settings.dashboard_url(), not a hardcoded port.
+
+    The test verifies that the response URL contains the port configured on
+    settings (test default is 8080); the important invariant is that the
+    implementation calls settings.dashboard_url() rather than hardcoding 8080
+    independent of the settings object, which is covered by the Settings unit
+    tests (test_dashboard_url_uses_public_url_when_set).
+    """
+    monkeypatch.setattr(app.state, "llm_router", AsyncMock(), raising=False)
+
+    resp = await client.post(
+        "/api/execute-plan",
+        headers=auth_headers,
+        json={
+            "repo_url": "https://github.com/o/r-port-test",
+            "plan": "Fix the dashboard URL",
+            "model": "qwen3",
+        },
+    )
+    assert resp.status_code == 201, resp.text
+    body = resp.json()
+    # The URL must end with "/" and start with "http://localhost:".
+    assert body["dashboard_url"].startswith("http://localhost:"), body["dashboard_url"]
+    assert body["dashboard_url"].endswith("/")
+    # The port in the URL must match settings.port (not a different hardcoded value).
+    configured_port = app.state.settings.port
+    expected_url = f"http://localhost:{configured_port}/"
+    assert body["dashboard_url"] == expected_url
+
+
 @pytest.mark.unit
 def test_execute_plan_request_accepts_local_context() -> None:
     from orchestrator.models.schemas import ExecutePlanRequest

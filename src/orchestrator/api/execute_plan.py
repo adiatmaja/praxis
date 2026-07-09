@@ -138,10 +138,9 @@ async def execute_plan(request: Request, body: ExecutePlanRequest) -> dict[str, 
     )
     plan_id = await queue.create_pending_execute_plan(project_id, pending_input)
 
-    base_url = f"http://localhost:{getattr(settings, 'port', 8080)}/"
     return {
         "plan_id": plan_id,
         "project_id": project_id,
-        "dashboard_url": base_url,
+        "dashboard_url": settings.dashboard_url(),
         "status": "decomposing",
     }

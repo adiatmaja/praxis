@@ -53,6 +53,23 @@ class Settings(BaseSettings):
     # Set explicitly (e.g. via INTERNAL_CALLBACK_SECRET env var) to use a
     # dedicated secret instead.
     internal_callback_secret: str | None = None
+    # Human-reachable base URL for the dashboard (e.g. when the container's
+    # internal port differs from the Docker-host-mapped port).  When set,
+    # REST responses use this value for ``dashboard_url`` instead of
+    # ``http://localhost:{port}/``.  The MCP client already overrides
+    # ``dashboard_url`` with its own ``PRAXIS_BASE_URL``, so this is mainly
+    # needed when callers consume the REST API directly.
+    public_url: str | None = None
+
+    def dashboard_url(self) -> str:
+        """Return the human-reachable dashboard URL for use in API responses.
+
+        Prefers ``public_url`` when configured (e.g. ``PUBLIC_URL`` env var),
+        and falls back to ``http://localhost:{port}/``.
+        """
+        if self.public_url:
+            return self.public_url.rstrip("/") + "/"
+        return f"http://localhost:{self.port}/"
 
     def callback_url(self) -> str:
         """Resolve the agent-done callback URL (port-derived when unset)."""

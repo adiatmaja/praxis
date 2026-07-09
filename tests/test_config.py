@@ -153,6 +153,28 @@ def test_github_token_optional_when_app_configured(monkeypatch):
     assert settings.github_app_id == "12345"
 
 
+def test_dashboard_url_defaults_to_localhost_port() -> None:
+    """dashboard_url returns http://localhost:{port}/ when public_url is not set."""
+    settings = Settings(auth_token="t", port=9999, _env_file=None)
+    assert settings.dashboard_url() == "http://localhost:9999/"
+
+
+def test_dashboard_url_uses_public_url_when_set() -> None:
+    """dashboard_url returns public_url (trailing-slash-normalised) when configured."""
+    settings = Settings(
+        auth_token="t", public_url="https://praxis.example.com", _env_file=None
+    )
+    assert settings.dashboard_url() == "https://praxis.example.com/"
+
+
+def test_dashboard_url_normalises_trailing_slash() -> None:
+    """dashboard_url always ends with a single slash."""
+    settings = Settings(
+        auth_token="t", public_url="https://praxis.example.com/", _env_file=None
+    )
+    assert settings.dashboard_url() == "https://praxis.example.com/"
+
+
 def test_yaml_provides_defaults(tmp_path, monkeypatch):
     cfg = tmp_path / "praxis.yaml"
     cfg.write_text("loop_interval: 7\n", encoding="utf-8")
