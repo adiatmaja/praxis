@@ -160,22 +160,25 @@ Full setup, prerequisites, model selection, MCP wiring, and deployment modes:
 At a high level, one turn of the engine:
 
 ```
-  decompose  ──▶  dispatch  ──▶  implement  ──▶  open PR  ──▶  review  ──▶  merge gate
-   (planner)      (per task,      (harness +      (branch)     (reviewer)   (park for
-                   parallel)       worker)                                   approval)
-                                                                 │ fail
-                                                                 ▼
+  decompose ──▶ dispatch ──▶ implement ──▶ open PR ──▶ verify ──▶ review ──▶ merge gate
+  (planner)    (parallel)     (worker)     (branch)    (gate)   (reviewer)     (park)
+                                                                    │ fail
+                                                                    ▼
                                                           retry ×3 with feedback
 ```
 
-1. The **planner** turns a spec or `plan.md` into a dependency-ordered task graph.
+1. The **planner** turns a spec or `plan.md` into a dependency-ordered task graph, sizing
+   each task to the chosen worker's capability.
 2. Praxis cuts a `plan/{date}-{slug}` branch and **dispatches** tasks in order, parallel
    where dependencies allow.
 3. Each **implementer** runs in an isolated container, works on an `agent/{task-slug}`
    branch, commits, and opens a PR.
-4. The **reviewer** inspects each PR diff. Pass squash-merges into the plan branch; fail
-   retries with feedback (up to 3). A mechanical **verify** gate can run before the reviewer.
-5. When all tasks land, Praxis opens an integration PR to `main`. **You** review and merge.
+4. When configured, a mechanical **verify** gate runs deterministic checks (tests, lint,
+   build) against the change first. A non-zero exit fails the task cheaply, before any
+   model reviews it.
+5. The **reviewer** inspects each PR diff. Pass squash-merges into the plan branch; fail
+   retries with feedback (up to 3).
+6. When all tasks land, Praxis opens an integration PR to `main`. **You** review and merge.
 
 A per-project approval gate can pause the loop after planning for your sign-off; leave it off
 for a fully autonomous run. Full workflow, orchestration cycle, and the swimlane diagram:
