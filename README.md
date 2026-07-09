@@ -31,30 +31,29 @@ roles, planning, implementation, review, and verification, and lets each role ch
 own AI provider, model, execution environment, and coding harness.
 
 ```
-                                ┌──────────────────────────────┐
-   spec / plan ────────────────►│         PRAXIS ENGINE        │
-                                │   (FastAPI · SQLite · Git)   │
-                                └───┬─────┬───────────┬────────┘
-                                    │     │           │
-              ┌─────────────────────┘     │           └───────────────┐
-              ▼                           ▼                           ▼
-      ┌───────────────┐           ┌───────────────┐           ┌───────────────┐
-      │    PLANNER    │           │ IMPLEMENTER   │           │   REVIEWER    │
-      │ decompose to  │           │  write the    │           │  inspect the  │
-      │ match worker  │           │ code, open a  │           │  PR, gate the │
-      │  capability   │           │ pull request  │           │     merge     │
-      └───────┬───────┘           └───────┬───────┘           └───────┬───────┘
-              │                           │                           │
-        any provider                any harness +                any provider
-      (Claude · GLM ·          any open-weight model          (Claude · GLM ·
-    Codex · open-weight)        (LM Studio · Ollama ·        GPT · open-weight)
-              │                  OpenAI-compatible)                   │
-              └───────────────────────────┬───────────────────────────┘
-                                          ▼
-                            ┌───────────────────────────────┐
-                            │    GitHub · branches + PRs    │
-                            │  (the one platform contract)  │
-                            └───────────────────────────────┘
+                           ┌───────────────────────────┐
+   spec / plan ───────────►│       PRAXIS ENGINE       │
+                           │  (FastAPI · SQLite · Git) │
+                           └─────────────┬─────────────┘
+                                         │
+          ┌────────────────────┬─────────┴──────────┬────────────────────┐
+          ▼                    ▼                    ▼                    ▼
+  ┌───────────────┐    ┌───────────────┐    ┌───────────────┐    ┌───────────────┐
+  │    PLANNER    │    │  IMPLEMENTER  │    │    VERIFIER   │    │    REVIEWER   │
+  │  decompose to │    │   write the   │    │    run the    │    │  inspect the  │
+  │  match worker │    │  code, open a │    │   mechanical  │    │  PR, gate the │
+  │   capability  │    │  pull request │    │      gate     │    │     merge     │
+  └───────┬───────┘    └───────┬───────┘    └───────┬───────┘    └───────┬───────┘
+          │                    │                    │                    │
+     any provider        any harness +         any command          any provider
+   (Claude · GLM ·     open-weight model     (tests · lint ·      (Claude · GLM ·
+    Codex · local)      (LM Studio · …)           build)            GPT · local)
+          └────────────────────┴─────────┬──────────┴────────────────────┘
+                                         ▼
+                         ┌───────────────────────────────┐
+                         │    GitHub · branches + PRs    │
+                         │  (the one platform contract)  │
+                         └───────────────────────────────┘
 ```
 
 Each role is a swappable seat. Changing who fills a seat, a frontier hosted model, a free
@@ -111,6 +110,7 @@ command verifies. Any of these can change without touching the others.
 |------|--------------------------|
 | Planner | Claude · GLM · Codex · an open-weight model |
 | Implementer | an open-weight model over any OpenAI-compatible endpoint (LM Studio · Ollama · a hosted endpoint like z.ai) |
+| Verifier | any shell command — `pytest`, `ruff`, `npm test`, a build script (deterministic, not a model) |
 | Reviewer | Claude · GLM · GPT · an open-weight model |
 
 **GitHub is the one platform contract.** Every unit of work becomes a real branch and a real
