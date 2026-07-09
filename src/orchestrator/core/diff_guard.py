@@ -20,7 +20,6 @@ import re
 
 
 _OLD = re.compile(r"^--- a/(.+)$")
-_NEW = re.compile(r"^\+\+\+ b/(.+)$")
 
 
 def destructive_deletions(diff: str, threshold: int = 40) -> list[str]:

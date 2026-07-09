@@ -173,3 +173,21 @@ def test_factory_reads_private_key_from_file(tmp_path):
     provider = build_credential_provider(cfg)
     assert isinstance(provider, GitHubAppCredentialProvider)
     assert "fromfile" in provider._private_key_pem
+
+
+def test_repo_slug_validation_invalid():
+    with pytest.raises(CredentialError, match="cannot extract owner/repo"):
+        repo_slug_from_url("owner/repo/sub/path")
+
+    with pytest.raises(CredentialError, match="cannot extract owner/repo"):
+        repo_slug_from_url("owner/repo/../path")
+
+
+@pytest.mark.asyncio
+async def test_app_provider_installation_id_validation_raises():
+    provider = GitHubAppCredentialProvider(
+        app_id="123",
+        private_key_pem="-----BEGIN PRIVATE KEY-----\nx\n-----END PRIVATE KEY-----",
+    )
+    with pytest.raises(CredentialError, match="Invalid repository slug"):
+        await provider._installation_id_for("invalid/slug/path")

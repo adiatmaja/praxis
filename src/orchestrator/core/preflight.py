@@ -24,9 +24,14 @@ _PLACEHOLDER_TOKENS: frozenset[str] = frozenset({"placeholder", ""})
 class _GitOpsProtocol(Protocol):
     """Minimal interface required by :func:`preflight_remote`."""
 
-    async def remote_head_sha(self, repo_url: str, branch: str) -> str | None: ...
-    async def remote_branch_exists(self, repo_url: str, branch: str) -> bool: ...
-    async def remote_file_exists(self, slug: str, branch: str, path: str) -> bool: ...
+    async def remote_head_sha(self, repo_url: str, branch: str) -> str | None:
+        pass
+
+    async def remote_branch_exists(self, repo_url: str, branch: str) -> bool:
+        pass
+
+    async def remote_file_exists(self, slug: str, branch: str, path: str) -> bool:
+        pass
 
 
 class PreflightKind(Enum):

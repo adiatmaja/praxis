@@ -8,6 +8,7 @@ App backend that mints short-lived, repo-scoped installation tokens.
 from __future__ import annotations
 
 import logging
+import re
 import time
 from collections.abc import Callable
 from datetime import UTC, datetime
@@ -50,6 +51,7 @@ def repo_slug_from_url(repo_url: str) -> str:
         msg = f"cannot extract owner/repo from: {repo_url!r}"
         raise CredentialError(msg) from e
 
+    slug = None
     if parsed.hostname == "github.com":
         path = parsed.path.lstrip("/")
         parts = path.split("/")
@@ -57,15 +59,20 @@ def repo_slug_from_url(repo_url: str) -> str:
             repo = parts[1]
             if repo.endswith(".git"):
                 repo = repo[:-4]
-            return f"{parts[0]}/{repo}"
+            slug = f"{parts[0]}/{repo}"
 
     # Fallback to bare owner/repo format if the hostname isn't github.com (e.g. https://owner/repo)
-    parts = text.split("/")
-    if len(parts) == 2 and parts[0] and parts[1] and " " not in text:
-        repo = parts[1]
-        if repo.endswith(".git"):
-            repo = repo[:-4]
-        return f"{parts[0]}/{repo}"
+    if slug is None:
+        parts = text.split("/")
+        if len(parts) == 2 and parts[0] and parts[1] and " " not in text:
+            repo = parts[1]
+            if repo.endswith(".git"):
+                repo = repo[:-4]
+            slug = f"{parts[0]}/{repo}"
+
+    # Validate slug to prevent SSRF and path traversal
+    if slug is not None and re.match(r"^[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+$", slug):
+        return slug
 
     msg = f"cannot extract owner/repo from: {repo_url!r}"
     raise CredentialError(msg)
@@ -145,6 +152,9 @@ class GitHubAppCredentialProvider:
             return self._fixed_installation_id
         if slug in self._install_ids:
             return self._install_ids[slug]
+        if not re.match(r"^[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+$", slug):
+            msg = f"Invalid repository slug: {slug}"
+            raise CredentialError(msg)
         async with self._client(self._app_jwt()) as client:
             resp = await client.get(f"/repos/{slug}/installation")
         if resp.status_code != 200:
@@ -206,8 +216,11 @@ class GitHubAppCredentialProvider:
         token = str(data["token"])
         expiry = self._parse_expiry(data["expires_at"])
         self._token_cache[slug] = (token, expiry)
+        safe_slug = slug.replace("\r", "").replace("\n", "")
         logger.info(
-            "Minted installation token for %s (expires %s)", slug, data["expires_at"]
+            "Minted installation token for %s (expires %s)",
+            safe_slug,
+            data["expires_at"],
         )
         return token
 

@@ -555,3 +555,20 @@ async def test_remote_commit_meta_returns_subject_and_date(monkeypatch):
         "subject": "security: fix CodeQL",
         "committed_at": "2026-07-06T05:19:58Z",
     }
+
+
+@pytest.mark.unit
+async def test_git_ops_remote_validation_raises():
+    git = GitOps("placeholder")
+
+    # Invalid repo_slug
+    with pytest.raises(ValueError, match="Invalid repository slug format"):
+        await git.remote_file_exists("invalid/slug/path", "main", "file.txt")
+
+    # Invalid path (directory traversal)
+    with pytest.raises(ValueError, match="Invalid repository-relative path format"):
+        await git.remote_file_exists("owner/repo", "main", "../traversal.txt")
+
+    # Invalid sha
+    with pytest.raises(ValueError, match="Invalid commit sha format"):
+        await git.remote_commit_meta("owner/repo", "not-a-sha-123")

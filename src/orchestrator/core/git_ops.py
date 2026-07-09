@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
 import subprocess
 from typing import TYPE_CHECKING
 from urllib.parse import urlparse
@@ -558,6 +559,20 @@ class GitOps:
         Raises:
             RuntimeError: On unexpected HTTP status or network error.
         """
+        if not re.match(r"^[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+$", repo_slug):
+            msg = f"Invalid repository slug format: {repo_slug}"
+            raise ValueError(msg)
+        path_parts = path.replace("\\", "/").split("/")
+        if (
+            "." in path_parts
+            or ".." in path_parts
+            or not re.match(r"^[a-zA-Z0-9_.-]+(/[a-zA-Z0-9_.-]+)*$", path)
+        ):
+            msg = f"Invalid repository-relative path format: {path}"
+            raise ValueError(msg)
+        if not re.match(r"^[a-zA-Z0-9_.-]+(/[a-zA-Z0-9_.-]+)*$", branch):
+            msg = f"Invalid branch format: {branch}"
+            raise ValueError(msg)
         token = await self._token_for_repo(repo_slug)
         url = f"https://api.github.com/repos/{repo_slug}/contents/{path}"
         headers = {
@@ -596,6 +611,12 @@ class GitOps:
         Raises:
             RuntimeError: On unexpected HTTP status or network error.
         """
+        if not re.match(r"^[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+$", repo_slug):
+            msg = f"Invalid repository slug format: {repo_slug}"
+            raise ValueError(msg)
+        if not re.match(r"^[a-fA-F0-9]+$", sha):
+            msg = f"Invalid commit sha format: {sha}"
+            raise ValueError(msg)
         token = await self._token_for_repo(repo_slug)
         url = f"https://api.github.com/repos/{repo_slug}/commits/{sha}"
         headers = {

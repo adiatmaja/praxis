@@ -124,11 +124,13 @@ async def agent_done(request: Request, body: AgentDonePayload) -> dict[str, str]
                     "reason": feedback,
                 }
             )
+            safe_task_id = str(task_id).replace("\r", "").replace("\n", "")
+            safe_feedback = feedback.replace("\r", "").replace("\n", "")
             logger.warning(
                 "Task %s worker provider/gateway error; re-queued without "
                 "consuming a retry attempt: %s",
-                task_id,
-                feedback,
+                safe_task_id,
+                safe_feedback,
             )
         elif int(task["attempt"]) < max_retries:
             # Normal failure: consume a retry.

@@ -33,6 +33,7 @@ def _check_bash() -> str | None:
         if res.returncode == 0:
             return bash_path
     except Exception:
+        # Bash might be missing or non-functional, safely fallback to None
         pass
     return None
 

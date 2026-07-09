@@ -42,7 +42,9 @@ async def get_git_state(request: Request, project_id: str) -> GitStateResponse:
     try:
         sha = await git.remote_head_sha(repo_url, base)
     except RuntimeError as exc:
-        logger.info("git-state unavailable for %s: %s", project_id, exc)
+        safe_project_id = str(project_id).replace("\r", "").replace("\n", "")
+        safe_exc = str(exc).replace("\r", "").replace("\n", "")
+        logger.info("git-state unavailable for %s: %s", safe_project_id, safe_exc)
         return GitStateResponse(
             base=base, available=False, detail=str(exc.args[0] if exc.args else exc)
         )
@@ -61,7 +63,13 @@ async def get_git_state(request: Request, project_id: str) -> GitStateResponse:
             subject = meta.get("subject")
             committed_at = meta.get("committed_at")
         except RuntimeError as exc:
-            logger.info("git-state commit meta unavailable for %s: %s", project_id, exc)
+            safe_project_id = str(project_id).replace("\r", "").replace("\n", "")
+            safe_exc = str(exc).replace("\r", "").replace("\n", "")
+            logger.info(
+                "git-state commit meta unavailable for %s: %s",
+                safe_project_id,
+                safe_exc,
+            )
 
     return GitStateResponse(
         base=base,
