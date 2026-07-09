@@ -19,6 +19,12 @@ from orchestrator.database import Database
 from orchestrator.main import app
 
 
+# Canonical fake GitHub token reused across all test fixtures that need a
+# credential-shaped string to exercise secret-scrubbing logic. The value is
+# already allowlisted in .gitleaks.toml so it never trips the CI secret scan.
+FAKE_GITHUB_TOKEN = "ghp_abcdef1234567890abcdef1234567890abcd"
+
+
 @pytest.fixture
 def test_settings(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Settings:
     db_path = tmp_path / "test.db"

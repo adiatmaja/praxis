@@ -6,8 +6,12 @@ from typing import Any
 
 import pytest
 
-from orchestrator.core.execute_plan_decompose import decompose_plan
+from orchestrator.core.execute_plan_decompose import (
+    decompose_plan,
+    drop_verification_only_leaves,
+)
 from orchestrator.core.plan_review import PlanReviewError
+from tests.conftest import FAKE_GITHUB_TOKEN
 
 
 class _FakeRouter:
@@ -167,6 +171,7 @@ async def test_decompose_no_local_context_skips_repo_memory():
 
 
 async def test_decompose_scrubs_local_context_server_side():
+    """Secret tokens in local_context are scrubbed before threading onto tasks."""
     raw = '{"tasks":[{"id":"t1","title":"X","description":"d","depends_on":[]}]}'
     router = _FakeRouter(raw)
     opus_plan = await decompose_plan(
@@ -176,8 +181,134 @@ async def test_decompose_scrubs_local_context_server_side():
         router=router,
         effective_settings=_FakeEffective(),
         project_id=None,
-        local_context="token: ghp_abc123secret4567890abcdef",
+        local_context=f"token: {FAKE_GITHUB_TOKEN}",
     )
-    assert "ghp_abc123secret4567890abcdef" not in opus_plan["tasks"][0].get(
-        "repo_memory", ""
-    )
+    assert FAKE_GITHUB_TOKEN not in opus_plan["tasks"][0].get("repo_memory", "")
+
+
+# ---------------------------------------------------------------------------
+# drop_verification_only_leaves unit tests (Fix 1)
+# ---------------------------------------------------------------------------
+
+
+def _make_task(
+    slug: str,
+    title: str,
+    description: str = "",
+    plan_text: str = "",
+    depends_on: list[str] | None = None,
+) -> dict[str, Any]:
+    return {
+        "slug": slug,
+        "title": title,
+        "description": description,
+        "plan_text": plan_text,
+        "depends_on": depends_on or [],
+    }
+
+
+def test_drop_verification_only_leaves_removes_verify_leaf_and_rewrites_depends_on():
+    """A verification-only leaf is dropped; dangling depends_on refs are removed."""
+    tasks = [
+        _make_task("impl", "Implement feature X", "Add the new endpoint"),
+        _make_task(
+            "verify",
+            "Run the test suite",
+            "Run pytest and commit only if formatting changed",
+            depends_on=["impl"],
+        ),
+        _make_task("docs", "Update docs", "Write changelog", depends_on=["verify"]),
+    ]
+    opus_plan: dict[str, Any] = {"tasks": tasks}
+    result = drop_verification_only_leaves(opus_plan)
+    slugs = [t["slug"] for t in result["tasks"]]
+    assert "verify" not in slugs
+    assert "impl" in slugs
+    assert "docs" in slugs
+    # The dangling dep on the dropped leaf must be gone
+    docs_task = next(t for t in result["tasks"] if t["slug"] == "docs")
+    assert "verify" not in docs_task["depends_on"]
+
+
+def test_drop_verification_only_leaves_all_real_leaves_untouched():
+    """A plan with only real implementation leaves passes through unchanged."""
+    tasks = [
+        _make_task("feat-a", "Add validation logic", "Validate user input"),
+        _make_task(
+            "feat-b",
+            "Add tests",
+            "Write unit tests for validation",
+            depends_on=["feat-a"],
+        ),
+    ]
+    opus_plan: dict[str, Any] = {"tasks": list(tasks)}
+    result = drop_verification_only_leaves(opus_plan)
+    assert [t["slug"] for t in result["tasks"]] == ["feat-a", "feat-b"]
+
+
+def test_drop_verification_only_leaves_borderline_add_tests_leaf_not_dropped():
+    """A leaf whose title merely mentions 'add tests' is NOT treated as verify-only."""
+    tasks = [
+        _make_task(
+            "add-tests",
+            "Add unit tests for the new parser",
+            "Write pytest tests covering edge cases in parser.py",
+        ),
+    ]
+    opus_plan: dict[str, Any] = {"tasks": tasks}
+    result = drop_verification_only_leaves(opus_plan)
+    assert len(result["tasks"]) == 1
+    assert result["tasks"][0]["slug"] == "add-tests"
+
+
+def test_drop_verification_only_leaves_verification_only_in_plan_text():
+    """A leaf with 'verification only' in plan_text is dropped."""
+    tasks = [
+        _make_task("impl", "Implement login", "Build login endpoint"),
+        _make_task(
+            "ci-check",
+            "CI check",
+            "No code changes expected",
+            plan_text="Verification only: run mypy and ruff, no source changes.",
+            depends_on=["impl"],
+        ),
+    ]
+    opus_plan: dict[str, Any] = {"tasks": tasks}
+    result = drop_verification_only_leaves(opus_plan)
+    assert len(result["tasks"]) == 1
+    assert result["tasks"][0]["slug"] == "impl"
+
+
+def test_drop_verification_only_leaves_multiple_verify_leaves():
+    """Multiple verification-only leaves are all dropped; graph stays valid."""
+    tasks = [
+        _make_task("impl", "Build feature", "Write the code"),
+        _make_task(
+            "lint",
+            "Run ruff and mypy",
+            "Run ruff check and mypy, no source edits",
+            depends_on=["impl"],
+        ),
+        _make_task(
+            "pytest-run",
+            "Run the test suite",
+            "Execute pytest, commit only if coverage report changed",
+            depends_on=["impl"],
+        ),
+        _make_task(
+            "deploy",
+            "Deploy to staging",
+            "Push docker image",
+            depends_on=["lint", "pytest-run"],
+        ),
+    ]
+    opus_plan: dict[str, Any] = {"tasks": tasks}
+    result = drop_verification_only_leaves(opus_plan)
+    slugs = [t["slug"] for t in result["tasks"]]
+    assert "lint" not in slugs
+    assert "pytest-run" not in slugs
+    assert "impl" in slugs
+    assert "deploy" in slugs
+    deploy_task = next(t for t in result["tasks"] if t["slug"] == "deploy")
+    assert "lint" not in deploy_task["depends_on"]
+    assert "pytest-run" not in deploy_task["depends_on"]

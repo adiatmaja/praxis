@@ -31,6 +31,91 @@ _LEAF_BUDGET_FRACTION = 0.4
 # a subscription CLI call (no per-call dollar cost), so a single retry is cheap.
 _DECOMPOSE_ATTEMPTS = 2
 
+# Patterns that identify a leaf as verification-only (no source edits expected).
+# Conservative: only match when the entire purpose of the task is running checks.
+_VERIFY_ONLY_RE: re.Pattern[str] = re.compile(
+    r"""
+    run\s+the\s+(test\s+)?suite         # "run the test suite" / "run the suite"
+    | run\s+(pytest|mypy|ruff)\b        # "run pytest", "run mypy", "run ruff"
+    | verification[-\s]only             # "verification only" / "verification-only"
+    | commit\s+only\s+if               # "commit only if formatting changed"
+    | no\s+(source|code)\s+changes?     # "no source changes" / "no code change"
+    """,
+    re.VERBOSE | re.IGNORECASE,
+)
+
+# Guard: if a leaf also contains any of these phrases, it is real implementation
+# work even if a verify-only phrase appears incidentally.
+_REAL_WORK_RE: re.Pattern[str] = re.compile(
+    r"""
+    implement | add\s+test | write\s+test | create\s+test
+    | build | refactor | fix | update | migrate | introduce
+    | new\s+(class|function|module|endpoint|feature)
+    """,
+    re.VERBOSE | re.IGNORECASE,
+)
+
+
+def _is_verification_only(task: dict[str, Any]) -> bool:
+    """Return True when a task is purely verification with no source edits expected.
+
+    Args:
+        task: A task dict with at least ``title``, ``description``, and
+            ``plan_text`` keys (any may be absent or None).
+
+    Returns:
+        True if the task matches a verification-only pattern and does NOT also
+        match a real-implementation guard phrase.
+    """
+    text = " ".join(
+        str(task.get(field) or "") for field in ("title", "description", "plan_text")
+    )
+    return bool(_VERIFY_ONLY_RE.search(text)) and not bool(_REAL_WORK_RE.search(text))
+
+
+def drop_verification_only_leaves(opus_plan: dict[str, Any]) -> dict[str, Any]:
+    """Remove verification-only tasks from an opus_plan and repair depends_on refs.
+
+    Verification is already covered mechanically by ``core/verify_gate.py`` plus
+    per-leaf Opus review, so a brain-emitted leaf whose sole job is "run the test
+    suite and commit only if formatting changed" will never produce a git diff.
+    The agent entrypoint treats no-diff as failure and the orchestrator re-dispatches
+    up to three times before marking the task ``failed``. Dropping these leaves at
+    decompose time avoids the wasted retries.
+
+    After dropping, any ``depends_on`` reference to a removed slug is also removed
+    so the wave scheduler does not deadlock waiting for a task that no longer exists.
+
+    Args:
+        opus_plan: A normalized ``{"tasks": [...]}`` dict (slugs already assigned).
+
+    Returns:
+        The same dict mutated in place (also returned for convenience).
+    """
+    tasks: list[dict[str, Any]] = opus_plan.get("tasks", [])
+    dropped_slugs: set[str] = set()
+
+    retained: list[dict[str, Any]] = []
+    for task in tasks:
+        if _is_verification_only(task):
+            slug = task.get("slug", task.get("title", "<unknown>"))
+            logger.info(
+                "Dropping verification-only leaf %r; "
+                "coverage is handled by verify_gate + Opus review.",
+                slug,
+            )
+            dropped_slugs.add(str(slug))
+        else:
+            retained.append(task)
+
+    if dropped_slugs:
+        for task in retained:
+            original_deps: list[str] = task.get("depends_on") or []
+            task["depends_on"] = [d for d in original_deps if d not in dropped_slugs]
+
+    opus_plan["tasks"] = retained
+    return opus_plan
+
 
 def normalize_slugs(opus_plan: dict[str, Any]) -> None:
     """Add a unique ``slug`` to each task and remap ``depends_on`` ids -> slugs."""
@@ -78,7 +163,8 @@ async def decompose_plan(
 
     Returns:
         A normalized ``{"tasks": [...]}`` dict where each task has a ``slug``
-        and ``depends_on`` holds slugs (not brain ids).
+        and ``depends_on`` holds slugs (not brain ids). Verification-only leaves
+        are removed before the dict is returned.
 
     Raises:
         PlanReviewError: If the brain output cannot be parsed.
@@ -111,6 +197,7 @@ async def decompose_plan(
             )
         )
     normalize_slugs(opus_plan)
+    drop_verification_only_leaves(opus_plan)
 
     scrubbed_context = scrub_context(context)
     if scrubbed_context is not None:
