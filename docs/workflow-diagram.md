@@ -8,9 +8,10 @@ Swimlane diagram scoped by **User · Brain (Claude Code) · Praxis Orchestrator 
 
 ```
 ╔══════════════════╦═══════════════════════════╦═══════════════════════════════╦══════════════════════════════════╦══════════════════╦══════════════════════════════════╗
-║      USER        ║   BRAIN (Claude Code)     ║    PRAXIS ORCHESTRATOR        ║     CODING AGENT (DOCKER)        ║   LOCAL GIT      ║      ORIGIN GIT (GitHub)         ║
-║                  ║  your AI subscription     ║   FastAPI + SQLite + SSE      ║  OpenCode / Aider / OpenHands    ║  your checkout   ║  branches · PRs · source of truth║
-║                  ║  calls Praxis via MCP     ║                               ║  + Local LLM (LM Studio)         ║  NEVER touched   ║                                  ║
+║      USER        ║   BRAIN (provider CLI)    ║    PRAXIS ORCHESTRATOR        ║     CODING AGENT (DOCKER)        ║   LOCAL GIT      ║      ORIGIN GIT (GitHub)         ║
+║                  ║  any subscription/CLI:    ║   FastAPI + SQLite + SSE      ║  OpenCode / Aider / OpenHands    ║  your checkout   ║  branches · PRs · source of truth║
+║                  ║  claude/codex/agy/local   ║                               ║  + any OpenAI-compat endpoint    ║  NEVER touched   ║                                  ║
+║                  ║  calls Praxis via MCP     ║                               ║  (LM Studio / Ollama / hosted)   ║                  ║                                  ║
 ╠══════════════════╬═══════════════════════════╬═══════════════════════════════╬══════════════════════════════════╬══════════════════╬══════════════════════════════════╣
 ║                  ║                           ║                               ║                                  ║                  ║                                  ║
 ║  "use praxis to  ║                           ║                               ║                                  ║                  ║                                  ║

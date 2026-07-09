@@ -2,10 +2,17 @@
 
 ## What Is This
 
-Praxis is a Docker-based AI agent orchestrator. Claude Opus (via `claude -p` CLI, subscription)
-handles planning and code review. A local LLM (LM Studio) drives a pluggable coding harness in
-Docker containers to handle implementation (OpenCode is the default; Aider and OpenHands are
-optional alternatives).
+Praxis is a provider-agnostic, Docker-based AI software engineering orchestrator. It splits the
+software engineering loop into four roles — **plan**, **implement**, **review**, and **verify** —
+each independently configurable to any provider, model, or harness. Nothing is hard-wired to a
+single vendor.
+
+The reference configuration pairs a subscription reasoning model (e.g. Claude via `claude -p`) for
+planning/review with an open-weight model (e.g. via LM Studio) driving a pluggable coding harness
+in Docker for implementation, but any role can point at any supported provider (`claude`, `codex`,
+`agy`, or a `local` OpenAI-compatible endpoint) via the LLM router. Harnesses are pluggable too:
+OpenCode is the default; Aider and OpenHands are optional alternatives. Cost efficiency is a
+consequence of this flexibility, not the constraint.
 
 ## Tech Stack
 
@@ -17,8 +24,9 @@ optional alternatives).
 | Web UI | No-build HTML/CSS/JS (`web/index.html` + `styles.css` + `app.js`) |
 | Containers | Docker SDK for Python |
 | Agent | Pluggable harness — OpenCode (default), Aider, OpenHands (custom Docker images) |
-| LLM (plan/review) | Claude Opus via `claude -p` (subscription) |
-| LLM (implement) | Local model via LM Studio (OpenAI-compatible) |
+| LLM (any role) | Provider-agnostic via the LLM router — `claude`, `codex`, `agy`, or `local` (OpenAI-compatible); per-call-site configurable |
+| LLM (reference: plan/review) | Subscription reasoning model, e.g. Claude via `claude -p` |
+| LLM (reference: implement) | Open-weight model, e.g. via LM Studio (OpenAI-compatible) |
 | Git/GitHub | git CLI, gh CLI |
 | Reverse Proxy | Caddy (auto-HTTPS, hosted profile) |
 

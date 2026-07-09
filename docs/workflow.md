@@ -1,12 +1,18 @@
 # Workflow
 
+> The `Opus` / `claude -p` and LM Studio references throughout this doc are the reference
+> configuration, not a constraint. Praxis is provider-agnostic: each role (plan, implement,
+> review, verify) is independently configurable to any supported provider, model, or harness
+> via `core/llm_router.py`. Read them as "the planning brain" and "the implementer", not as
+> a fixed vendor.
+
 ## Full Orchestration Cycle
 
 ```
   ┌──────────┐     ┌──────────────┐     ┌──────────────┐
-  │  User    │────►│  Opus plans  │────►│  Create plan │
-  │  submits │     │  via claude  │     │  branch      │
-  │  spec    │     │  -p CLI      │     │              │
+  │  User    │────►│  Brain plans │────►│  Create plan │
+  │  submits │     │  via provider│     │  branch      │
+  │  spec    │     │  CLI (router)│     │              │
   └──────────┘     └──────────────┘     └──────┬───────┘
                                                │
                           ┌────────────────────┼────────────────────┐
@@ -21,7 +27,7 @@
                                               │
                                               ▼
                                      ┌────────────────┐
-                                     │  Opus reviews  │
+                                     │  Brain reviews │
                                      │  PR diffs      │
                                      └───────┬────────┘
                                              │

@@ -24,15 +24,23 @@
                                          │               │
                           ┌──────────────┼──────┐        │
                           ▼              ▼      ▼        │
-                  harness-agent  harness-agent  ...    claude -p
-                  (Docker, e.g.  (Docker)             (subscription)
-                   opencode)
+                  harness-agent  harness-agent  ...   Brain provider CLI
+                  (Docker, e.g.  (Docker)             claude / codex / agy
+                   opencode)                          (subscription) or local
                           │              │
                           └──────┬───────┘
                                  ▼
-                            LM Studio
-                          localhost:1234
+                   OpenAI-compatible endpoint
+                   (LM Studio / Ollama / hosted)
 ```
+
+> **Provider-agnostic by design.** The `claude -p` (plan/review) and LM Studio (implement)
+> boxes above are the *reference* wiring, not a requirement. Every brain role — plan,
+> review, verify, decompose — resolves through `core/llm_router.py` to `{provider, model,
+> effort}` and can point at any supported provider (`claude`, `codex`, `agy`, or a `local`
+> OpenAI-compatible endpoint). The implementer harness is likewise pluggable (OpenCode,
+> Aider, OpenHands) and can drive any OpenAI-compatible endpoint (LM Studio, Ollama, or a
+> hosted one). Nothing is hard-wired to a single vendor.
 
 ## Components
 
