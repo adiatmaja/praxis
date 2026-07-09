@@ -4,7 +4,7 @@
 
 ```
   ┌──────────┐     ┌──────────────┐     ┌──────────────┐
-  │  User    │────▶│  Opus plans  │────▶│  Create plan │
+  │  User    │────►│  Opus plans  │────►│  Create plan │
   │  submits │     │  via claude  │     │  branch      │
   │  spec    │     │  -p CLI      │     │              │
   └──────────┘     └──────────────┘     └──────┬───────┘

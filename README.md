@@ -1,8 +1,11 @@
 <div align="center">
 <pre>
-█▀█ █▀▄ █▀█ █ █ █ █▀▀
-█▀▀ █▀▄ █▀█ ▄▀▄ █ ▄██
-▀   ▀ ▀ ▀ ▀ ▀ ▀ ▀ ▀▀▀
+██████╗ ██████╗  █████╗ ██╗  ██╗██╗███████╗
+██╔══██╗██╔══██╗██╔══██╗╚██╗██╔╝██║██╔════╝
+██████╔╝██████╔╝███████║ ╚███╔╝ ██║███████╗
+██╔═══╝ ██╔══██╗██╔══██║ ██╔██╗ ██║╚════██║
+██║     ██║  ██║██║  ██║██╔╝ ██╗██║███████║
+╚═╝     ╚═╝  ╚═╝╚═╝  ╚═╝╚═╝  ╚═╝╚═╝╚══════╝
 </pre>
 </div>
 
@@ -29,29 +32,29 @@ own AI provider, model, execution environment, and coding harness.
 
 ```
                                 ┌──────────────────────────────┐
-   spec / plan ────────────────▶│         PRAXIS ENGINE        │
+   spec / plan ────────────────►│         PRAXIS ENGINE        │
                                 │   (FastAPI · SQLite · Git)   │
-                                └───┬────────┬────────┬────────┘
-                                    │        │        │
-              ┌─────────────────────┘        │        └────────────────────┐
-              ▼                    ┌──────────▼─────────┐                    ▼
+                                └───┬─────┬───────────┬────────┘
+                                    │     │           │
+              ┌─────────────────────┘     │           └───────────────┐
+              ▼                           ▼                           ▼
       ┌───────────────┐           ┌───────────────┐           ┌───────────────┐
       │    PLANNER    │           │ IMPLEMENTER   │           │   REVIEWER    │
-      │ decompose to  │           │ write the     │           │ inspect the   │
-      │ match worker  │           │ code, open a  │           │ PR, gate the  │
-      │ capability    │           │ pull request  │           │ merge         │
+      │ decompose to  │           │  write the    │           │  inspect the  │
+      │ match worker  │           │ code, open a  │           │  PR, gate the │
+      │  capability   │           │ pull request  │           │     merge     │
       └───────┬───────┘           └───────┬───────┘           └───────┬───────┘
               │                           │                           │
-       any provider                any harness +                any provider
-       (Claude · GLM ·             any open-weight model        (Claude · GLM ·
-        Codex · open-weight)       (LM Studio · Ollama ·         GPT · open-weight)
-              │                     OpenAI-compatible)                  │
-              └──────────────────────────┬────────────────────────────┘
-                                         ▼
-                          ┌──────────────────────────────┐
-                          │  GitHub  ·  branches + PRs    │
-                          │  (the one platform contract)  │
-                          └──────────────────────────────┘
+        any provider                any harness +                any provider
+      (Claude · GLM ·          any open-weight model          (Claude · GLM ·
+    Codex · open-weight)        (LM Studio · Ollama ·        GPT · open-weight)
+              │                  OpenAI-compatible)                   │
+              └───────────────────────────┬───────────────────────────┘
+                                          ▼
+                            ┌───────────────────────────────┐
+                            │    GitHub · branches + PRs    │
+                            │  (the one platform contract)  │
+                            └───────────────────────────────┘
 ```
 
 Each role is a swappable seat. Changing who fills a seat, a frontier hosted model, a free

@@ -16,10 +16,10 @@ Swimlane diagram scoped by **User · Brain (Claude Code) · Praxis Orchestrator 
 ║  "use praxis to  ║                           ║                               ║                                  ║                  ║                                  ║
 ║  implement       ║                           ║                               ║                                  ║  git push        ║                                  ║
 ║  plan.md on      ║                           ║                               ║                                  ║  (required first)║                                  ║
-║  my-repo with    ║                           ║                               ║                                  ║  ─────────────────────────────────────────────────────▶  ║
+║  my-repo with    ║                           ║                               ║                                  ║  ─────────────────────────────────────────────────────►  ║
 ║  <local-model>"  ║                           ║                               ║                                  ║                  ║  origin/main (up to date)        ║
 ║        │         ║                           ║                               ║                                  ║                  ║                                  ║
-║        ╰────────▶║ 1. read plan.md           ║                               ║                                  ║                  ║                                  ║
+║        ╰────────►║ 1. read plan.md           ║                               ║                                  ║                  ║                                  ║
 ║                  ║    decompose into tasks   ║                               ║                                  ║                  ║                                  ║
 ║                  ║    build task graph       ║                               ║                                  ║                  ║                                  ║
 ║                  ║    call execute_plan()    ║                               ║                                  ║                  ║                                  ║
@@ -27,23 +27,23 @@ Swimlane diagram scoped by **User · Brain (Claude Code) · Praxis Orchestrator 
 ║                  ║         MCP tool call     ║    derive tasks from plan.md  ║                                  ║                  ║                                  ║
 ║                  ║         returns           ║    store in DB (status:active)║                                  ║                  ║                                  ║
 ║                  ║         {task_id,         ║                               ║                                  ║                  ║                                  ║
-║                  ║          dashboard_url} ◀─╼                               ║                                  ║                  ║                                  ║
+║                  ║          dashboard_url} ◄─╼                               ║                                  ║                  ║                                  ║
 ║                  ║                           ║                               ║                                  ║                  ║                                  ║
-║  Dashboard ◀ SSE ╫─ live logs (monitor only) ║ 3. create plan branch ─────────────────────────────────────────────────────────────╼ push plan/date-slug branch       ║
+║  Dashboard ◄ SSE ╫─ live logs (monitor only) ║ 3. create plan branch ─────────────────────────────────────────────────────────────╼ push plan/date-slug branch       ║
 ║                  ║                           ║                               ║                                  ║                  ║                                  ║
 ║                  ║                           ║ 4. dispatch tasks             ║                                  ║                  ║                                  ║
 ║                  ║                           ║    dep-ordered, parallel      ║                                  ║                  ║                                  ║
 ║                  ║                           ║         │                     ║                                  ║                  ║                                  ║
 ║                  ║                           ║         ╰───────────────────────────────────╼ spawn container   ║                  ║                                  ║
-║                  ║                           ║                               ║   git clone ◀────────────────║                  ║  clone from origin               ║
+║                  ║                           ║                               ║   git clone ◄────────────────║                  ║  clone from origin               ║
 ║                  ║                           ║                               ║   checkout -b agent/task-slug    ║                  ║                                  ║
 ║                  ║                           ║                               ║   run harness + task prompt      ║                  ║                                  ║
 ║                  ║                           ║                               ║   local LLM edits files          ║                  ║                                  ║
 ║                  ║                           ║                               ║   git commit                     ║                  ║                                  ║
-║                  ║                           ║                               ║   push + open PR ─────────────────────────────────────────────────────────────────▶  ║
+║                  ║                           ║                               ║   push + open PR ─────────────────────────────────────────────────────────────────►  ║
 ║                  ║                           ║                               ║        │                         ║                  ║  agent/task-slug → plan branch   ║
-║                  ║                           ║ 5. callback: agent-done ◀─────╫────────╯                         ║                  ║                                  ║
-║                  ║                           ║    fetch PR diff ◀─────────────────────────║                  ║  via gh pr diff                   ║
+║                  ║                           ║ 5. callback: agent-done ◄─────╫────────╯                         ║                  ║                                  ║
+║                  ║                           ║    fetch PR diff ◄─────────────────────────║                  ║  via gh pr diff                   ║
 ║                  ║                           ║    route to Brain for review  ║                                  ║                  ║                                  ║
 ║                  ║                           ║         ╰─────────────────────╼                                  ║                  ║                                  ║
 ║                  ║  6. review_diff           ║                               ║                                  ║                  ║                                  ║
@@ -55,7 +55,7 @@ Swimlane diagram scoped by **User · Brain (Claude Code) · Praxis Orchestrator 
 ║                  ║                           ║   ║   PASS?    ║             ║                                  ║                  ║                                  ║
 ║                  ║                           ║   ╚══╤══════╤══╝             ║                                  ║                  ║                                  ║
 ║                  ║                           ║ YES  │      │ NO             ║                                  ║                  ║                                  ║
-║                  ║                           ║      │      ╰── post review comment ─────────────────────────────────────────────▶  PR comment (retry context)     ║
+║                  ║                           ║      │      ╰── post review comment ─────────────────────────────────────────────►  PR comment (retry context)     ║
 ║                  ║                           ║      │          task → FAILED ║                                  ║                  ║                                  ║
 ║                  ║                           ║      │          retry < 3? ────╼ re-spawn w/ feedback          ║                  ║                                  ║
 ║                  ║                           ║      │          (loops to step 4)                              ║                  ║                                  ║
@@ -66,7 +66,7 @@ Swimlane diagram scoped by **User · Brain (Claude Code) · Praxis Orchestrator 
 ║                  ║  answer_clarification     ║      │                       ║                                  ║                  ║                                  ║
 ║                  ║  confident? ──yes─────────╼ re-dispatch w/ Q&A injected  ║                                  ║                  ║                                  ║
 ║                  ║  not confident            ║      │ park: awaiting_human  ║                                  ║                  ║                                  ║
-║  Dashboard ◀ SSE ╫─ task_needs_clarify        ║      │                       ║                                  ║                  ║                                  ║
+║  Dashboard ◄ SSE ╫─ task_needs_clarify        ║      │                       ║                                  ║                  ║                                  ║
 ║  (intervene) OR  ║                           ║      │                       ║                                  ║                  ║                                  ║
 ║  poll_task()     ║                           ║      │                       ║                                  ║                  ║                                  ║
 ║  POST /clarify ──╫───────────────────────────╼ re-dispatch w/ human answer  ║                                  ║                  ║                                  ║
@@ -74,27 +74,27 @@ Swimlane diagram scoped by **User · Brain (Claude Code) · Praxis Orchestrator 
 ║                  ║  poll_task() ─────────────╼ status / PR url / logs        ║                                  ║                  ║                                  ║
 ║                  ║  (loop or watch dashboard)║                               ║                                  ║                  ║                                  ║
 ║                  ║                           ║                               ║                                  ║                  ║                                  ║
-║                  ║                           ║  7. squash-merge PR ──────────────────────────────────────────────────────────────▶  agent branch → plan branch    ║
+║                  ║                           ║  7. squash-merge PR ──────────────────────────────────────────────────────────────►  agent branch → plan branch    ║
 ║                  ║                           ║     delete agent branch ───────────────────────────────────────────────────────────╼ delete agent/task-slug          ║
 ║                  ║                           ║     next task? → step 4       ║                                  ║                  ║                                  ║
 ║                  ║                           ║         │                     ║                                  ║                  ║                                  ║
 ║                  ║                           ║  all tasks merged?            ║                                  ║                  ║                                  ║
 ║                  ║                           ║  open integration PR ──────────────────────────────────────────────────────────────╼ PR: plan branch → main          ║
 ║                  ║                           ║         │                     ║                                  ║                  ║                                  ║
-║  Dashboard ◀ SSE ╫─ plan_completed            ║         │                     ║                                  ║                  ║                                  ║
+║  Dashboard ◄ SSE ╫─ plan_completed            ║         │                     ║                                  ║                  ║                                  ║
 ║  (notify)        ║                           ║         │                     ║                                  ║                  ║                                  ║
 ║                  ║  poll_task returns         ║         │                     ║                                  ║                  ║                                  ║
 ║                  ║  status: merged ───────────╼ confirmed                     ║                                  ║                  ║                                  ║
 ║                  ║                           ║                               ║                                  ║                  ║                                  ║
 ║  8. review PR    ║                           ║                               ║                                  ║                  ║                                  ║
-║  on GitHub and   ║───────────────────────────╫───────────────────────────────╫──────────────────────────────────╫──────────────────────────────────────────────────▶  ║
+║  on GitHub and   ║───────────────────────────╫───────────────────────────────╫──────────────────────────────────╫──────────────────────────────────────────────────►  ║
 ║  merge (or       ║                           ║                               ║                                  ║  git pull        ║  ← human approves + merges PR   ║
 ║  auto-merge)     ║                           ║                               ║                                  ║  (your choice,   ║                                  ║
 ║                  ║                           ║                               ║                                  ║  your timing)    ║                                  ║
 ║                  ║                           ║                               ║                                  ║                  ║                                  ║
 ╠══════════════════╩═══════════════════════════╩═══════════════════════════════╩══════════════════════════════════╩══════════════════╩══════════════════════════════════╣
 ║ KEY                                                                                                                                                                  ║
-║  ────╼  push / send    ◀────  pull / fetch    ╰────  calls / invokes                                                                                                ║
+║  ────╼  push / send    ◄────  pull / fetch    ╰────  calls / invokes                                                                                                ║
 ║  ← SSE  server-sent event streamed to dashboard   Dashboard = monitoring + intervention surface, NOT the entry point                                                 ║
 ║  LOCAL GIT is NEVER touched by agents — agents clone from ORIGIN, push to ORIGIN; your checkout only changes when YOU pull after merging.                           ║
 ╚══════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╝

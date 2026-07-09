@@ -46,7 +46,7 @@ provider without touching code.
 ## Architecture
 
 ```
-  call-site ──▶ effective_settings.resolve(call_site, project)
+  call-site ──► effective_settings.resolve(call_site, project)
                        │  override → global → default
                        ▼
                  { provider, model, effort }

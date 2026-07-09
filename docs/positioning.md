@@ -107,9 +107,9 @@ of what ships, not a pitch:
 ```
   Run OpenCode yourself          Run Praxis
   ─────────────────────          ──────────────────────────────────────
-  one worker, by hand            spec ─▶ task graph ─▶ N branches
+  one worker, by hand            spec ─► task graph ─► N branches
   no plan / no review            brain plans + reviews every PR
-  auto-commit                    review gate: pass ─▶ park for approval
+  auto-commit                    review gate: pass ─► park for approval
   cold every run                 Static Bible handoff survives restarts
   you pick the model each time   call-site tiering + capability gate
   editor / terminal only         MCP + dashboard + CLI over one engine

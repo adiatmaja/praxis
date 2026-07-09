@@ -28,11 +28,11 @@ UX clarity (Unit E) is a lens applied across A–D, not a separate build.
 
 ```
   ┌─────────┐   ┌─────────┐   ┌──────────┐   ┌──────────────┐
-  │ 1 Spec  │──▶│ 2 Plan  │──▶│ 3 Execute│──▶│ 4 Context    │
+  │ 1 Spec  │──►│ 2 Plan  │──►│ 3 Execute│──►│ 4 Context    │
   │ brainst.│   │ writing-│   │ agents   │   │   Sync       │
   └─────────┘   │ plans   │   └──────────┘   └──────┬───────┘
        ▲        └─────────┘                          │
-       └──────── fresh CLAUDE.md/MEMORY.md feeds next plan ◀┘
+       └──────── fresh CLAUDE.md/MEMORY.md feeds next plan ◄┘
 ```
 
 ## Cross-Cutting Principles

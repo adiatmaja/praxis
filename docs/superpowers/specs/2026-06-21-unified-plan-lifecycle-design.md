@@ -51,12 +51,12 @@ Merge **Specs + Plan Docs + Plans** into one **Plans** view where each object mo
   SOURCE OF TRUTH (repo markdown)            EXECUTION (SQLite, runtime state only)
   ┌──────────────────┐  front-matter   ┌──────────────────┐
   │ docs/**/specs/   │  spec_path:     │  plans row        │
-  │   <slug>.md      │◀────────────────│   spec_path       │
+  │   <slug>.md      │◄────────────────│   spec_path       │
   └────────┬─────────┘                 │   plan_path       │
            │ generate_plan             │   opus_plan(JSON) │
            ▼                           │   status, branch  │
   ┌──────────────────┐   Promote       │   tasks[]         │
-  │ docs/**/plans/   │────────────────▶│                   │
+  │ docs/**/plans/   │────────────────►│                   │
   │   <slug>.md      │  derive_tasks   └────────┬──────────┘
   └──────────────────┘                          │ existing orchestrator loop
                                                  ▼

@@ -114,8 +114,8 @@ MCP transport cannot surface.
 ## Task State Machine
 
 ```
-PENDING ──▶ IN_PROGRESS ──▶ REVIEWING ──▶ PASSED ──▶ MERGED
-                                      └──▶ FAILED ──▶ (re-dispatch, max 3)
+PENDING ──► IN_PROGRESS ──► REVIEWING ──► PASSED ──► MERGED
+                                      └──► FAILED ──► (re-dispatch, max 3)
 ```
 
 ## Plan Lifecycle
@@ -123,8 +123,8 @@ PENDING ──▶ IN_PROGRESS ──▶ REVIEWING ──▶ PASSED ──▶ MER
 DB plan status:
 
 ```
-pending ──▶ active ──▶ completed
-                   └──▶ rejected (autonomous plans only, via approval gate)
+pending ──► active ──► completed
+                   └──► rejected (autonomous plans only, via approval gate)
 ```
 
 ### Unified Spec → Plan → Run (Spec 1)
@@ -134,14 +134,14 @@ The dashboard's single **Plans** view aggregates one row per spec, joined to its
 and any DB run:
 
 ```
-  docs/**/specs/<slug>.md   ──generate_plan──▶   docs/**/plans/<slug>.md
+  docs/**/specs/<slug>.md   ──generate_plan──►   docs/**/plans/<slug>.md
         (Spec)                spec_path: link          (Plan)
                                                           │ Promote to Run
                                                           ▼
                                        derive_opus_plan (parser → local LLM fallback)
                                                           │
                                                           ▼
-                                  DB plan (spec_path, plan_path, opus_plan) ──▶ orchestrator loop
+                                  DB plan (spec_path, plan_path, opus_plan) ──► orchestrator loop
 ```
 
 - **Spec ↔ Plan** link: `generate_plan` stamps `spec_path:` YAML front-matter into the plan.
@@ -153,13 +153,13 @@ and any DB run:
 Opus Bridge tracks Claude subscription limits:
 
 ```
-available ──▶ rate_limited (5h cooldown detected)
+available ──► rate_limited (5h cooldown detected)
                    │
                    ▼
               queued_actions (stored in opus_state.queued_actions JSON)
                    │
                    ▼ (after resume_at)
-              resuming ──▶ available (drain queued actions)
+              resuming ──► available (drain queued actions)
 ```
 
 ## Git Branching Strategy
@@ -190,8 +190,8 @@ checkout. There is no bind mount back to your disk. The only durable output is a
   ┌────────────────────────────┐                 ┌───────────────────────────┐
   │  your local checkout       │                 │  origin/main               │
   │  (edits, uncommitted work) │                 │                            │
-  │        UNTOUCHED           │                 │  agent/task-a  ──▶ PR #1    │
-  └────────────────────────────┘                 │  agent/task-b  ──▶ PR #2    │
+  │        UNTOUCHED           │                 │  agent/task-a  ──► PR #1    │
+  └────────────────────────────┘                 │  agent/task-b  ──► PR #2    │
               ▲                                   └───────────┬───────────────┘
               │ you pull only when                    ▲       │ clone (read)
               │ you merge a PR                        │       │ push branch (write)
@@ -201,11 +201,11 @@ checkout. There is no bind mount back to your disk. The only durable output is a
   │                                                                            │
   │   ┌──────────────────────────┐        ┌──────────────────────────┐        │
   │   │ container: task-a         │        │ container: task-b         │       │
-  │   │  git clone ──▶ /home/     │        │  git clone ──▶ /home/     │       │
+  │   │  git clone ──► /home/     │        │  git clone ──► /home/     │       │
   │   │     agent/workspace       │        │     agent/workspace       │       │
   │   │  checkout -b agent/task-a │        │  checkout -b agent/task-b │       │
   │   │  local model edits + commit        │  local model edits + commit       │
-  │   │  push branch ──▶ open PR  │        │  push branch ──▶ open PR  │       │
+  │   │  push branch ──► open PR  │        │  push branch ──► open PR  │       │
   │   └──────────────────────────┘        └──────────────────────────┘        │
   │        (filesystem discarded on exit)                                      │
   └────────────────────────────────────────────────────────────────────────────┘

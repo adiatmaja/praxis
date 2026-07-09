@@ -158,7 +158,7 @@ When `claude -p` hits the 5-hour subscription limit:
                      │  agent spawned
                      ▼
               ┌──────────────┐
-              │ IN_PROGRESS  │◀─────────────────┐
+              │ IN_PROGRESS  │◄─────────────────┐
               └──────┬───────┘                   │
                      │  agent finished           │
                      ▼                           │

@@ -41,7 +41,7 @@ claims:
   ┌─────────────────────────────────────────────┐
   │  OPERATOR MACHINE (trusted)                  │
   │   local clone (may be ahead of origin)       │
-  │   MCP brain ── git ahead/behind ──▶ REFUSE   │  ← Layer 1 (real guard)
+  │   MCP brain ── git ahead/behind ──► REFUSE   │  ← Layer 1 (real guard)
   │        │ dispatch(expected_base_sha)         │
   └────────┼────────────────────────────────────┘
            ▼

@@ -43,7 +43,7 @@ client of the `core/` engine alongside the dashboard and the Typer CLI.
 
 ```
   ┌─────────────┐   stdio    ┌──────────────┐   HTTP+Bearer   ┌──────────────────┐
-  │ Claude Code │◀──────────▶│ mcp_server.py│◀───────────────▶│ Praxis REST API  │
+  │ Claude Code │◄──────────►│ mcp_server.py│◄───────────────►│ Praxis REST API  │
   │  (the brain)│   MCP      │ (forwarder)  │                 │ (core/ engine)   │
   └─────────────┘            └──────────────┘                 └────────┬─────────┘
                                                                        │
@@ -93,14 +93,14 @@ MCP is request/response. The model is **handle + poll** — `dispatch_task` neve
 
 **Happy path:**
 ```
-CC brain ──dispatch_task(repo, "add X", model=qwen3)──▶ mcp_server ──POST /tasks──▶ TaskQueue
-   ◀── {task_id, dashboard_url, status:queued} ──────────────────────────────────────┘
+CC brain ──dispatch_task(repo, "add X", model=qwen3)──► mcp_server ──POST /tasks──► TaskQueue
+   ◄── {task_id, dashboard_url, status:queued} ──────────────────────────────────────┘
         (returns immediately — never blocks)
 
    [engine, async]  spawn_agent(aider + LM Studio) → implement → push → PR → review?(optional)
 
-CC brain ──poll_task(task_id)──▶ GET /api/tasks/{id}
-   ◀── {status: in_progress | reviewing | passed, pr_url, review} ──┘   (CC loops at its own pace)
+CC brain ──poll_task(task_id)──► GET /api/tasks/{id}
+   ◄── {status: in_progress | reviewing | passed, pr_url, review} ──┘   (CC loops at its own pace)
 ```
 
 **Failure path (the async-blindness answer):** when a run wedges (lost callback, dead

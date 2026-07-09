@@ -45,8 +45,8 @@ the UI — not duplication, and not config).
 ```
   REPO MARKDOWN (truth)        SQLite (runtime ledger)         YAML (global settings)
   ┌──────────────┐             ┌────────────────────┐          ┌──────────────────┐
-  │ specs/*.md   │◀── spec_path│ plans               │          │ config/praxis.yaml│
-  │ plans/*.md   │◀── plan_path│  status, branch,    │          │  loop_interval    │
+  │ specs/*.md   │◄── spec_path│ plans               │          │ config/praxis.yaml│
+  │ plans/*.md   │◄── plan_path│  status, branch,    │          │  loop_interval    │
   └──────────────┘   (derive   │  confidence, source │          │  callback_grace   │
         ▲           opus_plan   │ tasks               │          │  thresholds       │
         │           on demand)  │ agent_runs (logs)   │          │  (env overrides   │
