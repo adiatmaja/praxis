@@ -18,6 +18,27 @@ from orchestrator.core.github_credentials import (
 )
 
 
+# Transient GitHub merge-race signatures (case-insensitive).
+_TRANSIENT_MERGE_PATTERNS: tuple[str, ...] = (
+    "base branch was modified",
+    "not mergeable",
+    "pull request is not mergeable",
+    "try again",
+    "please try again",
+    "merge already in progress",
+    "unexpected error",
+)
+
+# Retry tuning — monkeypatched in tests.
+_MERGE_MAX_ATTEMPTS: int = 3
+_MERGE_BACKOFF_SECONDS: tuple[float, ...] = (1.0, 2.0)
+
+
+async def _merge_sleep(seconds: float) -> None:
+    """Thin wrapper around asyncio.sleep so tests can monkeypatch it."""
+    await asyncio.sleep(seconds)
+
+
 if TYPE_CHECKING:
     from orchestrator.core.progress_handover import Commit
 
@@ -237,20 +258,44 @@ class GitOps:
             if repo
             else await self._token_for_workspace(workspace)
         )
-        await self._run_checked(
-            [
-                "gh",
-                "pr",
-                "merge",
-                str(pr_number),
-                "--squash",
-                "--delete-branch",
-                *(["--repo", repo] if repo else []),
-            ],
-            cwd=workspace,
-            token=token,
-        )
-        logger.info("Merged PR #%d", pr_number)
+        cmd = [
+            "gh",
+            "pr",
+            "merge",
+            str(pr_number),
+            "--squash",
+            "--delete-branch",
+            *(["--repo", repo] if repo else []),
+        ]
+        last_exc: RuntimeError | None = None
+        for attempt in range(_MERGE_MAX_ATTEMPTS):
+            code, stdout, stderr = await self._run_command(
+                cmd, cwd=workspace, token=token
+            )
+            if code == 0:
+                logger.info("Merged PR #%d", pr_number)
+                return
+            message = f"Git command failed (exit {code}): {' '.join(cmd)}\n{stderr}"
+            exc = RuntimeError(message)
+            stderr_lower = stderr.lower()
+            if not any(pat in stderr_lower for pat in _TRANSIENT_MERGE_PATTERNS):
+                raise exc
+            last_exc = exc
+            if attempt < _MERGE_MAX_ATTEMPTS - 1:
+                backoff = _MERGE_BACKOFF_SECONDS[
+                    min(attempt, len(_MERGE_BACKOFF_SECONDS) - 1)
+                ]
+                logger.warning(
+                    "Transient merge error on PR #%d (attempt %d/%d), "
+                    "retrying in %.1fs: %s",
+                    pr_number,
+                    attempt + 1,
+                    _MERGE_MAX_ATTEMPTS,
+                    backoff,
+                    stderr,
+                )
+                await _merge_sleep(backoff)
+        raise last_exc  # type: ignore[misc]
 
     async def comment_on_pr(
         self,

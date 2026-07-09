@@ -226,3 +226,40 @@ async def test_get_plan_returns_error_reason(
 
     assert resp.status_code == 200
     assert resp.json()["error"] == "review response not valid JSON"
+
+
+@pytest.mark.integration
+async def test_approve_merges_surfaces_exception_class_and_scrubbed_message(
+    client: AsyncClient,
+    db: Database,
+    auth_headers: dict[str, str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """approve-merges must include exc class + scrubbed message, not opaque string."""
+    secret_token = "ghp_AAAAAAAAAAAAAAAAAAA1234567890"
+
+    async def fake_approve_raises(task_id: str, project: dict) -> None:
+        msg = f"Git command failed (exit 1): gh pr merge\ntoken={secret_token}"
+        raise RuntimeError(msg)
+
+    plan_id, _ = await _seed_plan_with_passed_tasks(client, db, auth_headers, n=1)
+    monkeypatch.setattr(
+        client.app.state.orchestrator, "approve_task_merge", fake_approve_raises
+    )
+    resp = await client.post(
+        f"/api/plans/{plan_id}/approve-merges", headers=auth_headers
+    )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["approved"] == 0
+    assert len(body["errors"]) == 1
+    err_msg = body["errors"][0]["error"]
+    # Must include exception class name
+    assert "RuntimeError" in err_msg
+    # Must include the failure context (non-secret part)
+    assert "Git command failed" in err_msg
+    # Must NOT leak the raw token
+    assert secret_token not in err_msg
+    # Must show redaction marker
+    assert "[REDACTED]" in err_msg

@@ -31,6 +31,15 @@ services:
       # during first-run setup.  If you are certain claude is already configured
       # you may add :ro here.  See docs/deployment.md "Security / Trust Model".
       - ${CLAUDE_CONFIG_PATH:-~/.claude}:/root/.claude
+    # Bound log rotation prevents json-file log growth from making `docker logs`
+    # seek slowly or hang on Docker Desktop for Windows (unbounded json-file logs
+    # accumulate metadata Docker must scan on every `docker logs` call).
+    # 10 MB x 5 files = 50 MB max; adjust max-size/max-file in .env if needed.
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
     environment:
       - AUTH_TOKEN=${AUTH_TOKEN}
       - GITHUB_TOKEN=${GITHUB_TOKEN}
@@ -38,6 +47,10 @@ services:
       - LM_STUDIO_URL=${LM_STUDIO_URL:-http://host.docker.internal:1234}
       - HOST=0.0.0.0
       - PORT=8080
+      # Container timezone.  Keeps log timestamps in sync with the host so
+      # `docker logs --since` works correctly.  Docker Desktop / WSL2 can drift
+      # after sleep; override TZ in .env to match your local zone (e.g. Asia/Jakarta).
+      - TZ=${TZ:-UTC}
       # claude refuses --dangerously-skip-permissions as root (the container's
       # default user) unless it believes it runs in a sandbox. Brainstorm/plan/
       # review all pass that flag, so without this they exit 1 and silently fail.

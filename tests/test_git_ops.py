@@ -572,3 +572,145 @@ async def test_git_ops_remote_validation_raises():
     # Invalid sha
     with pytest.raises(ValueError, match="Invalid commit sha format"):
         await git.remote_commit_meta("owner/repo", "not-a-sha-123")
+
+
+# ---------------------------------------------------------------------------
+# merge_pr transient-retry tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+async def test_merge_pr_retries_on_transient_error_then_succeeds(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Transient error on attempt 1 then success on attempt 2 -> merge succeeds."""
+    import orchestrator.core.git_ops as git_ops_mod
+
+    sleep_calls: list[float] = []
+
+    async def fake_sleep(seconds: float) -> None:
+        sleep_calls.append(seconds)
+
+    monkeypatch.setattr(git_ops_mod, "_merge_sleep", fake_sleep)
+
+    # Patch _run_checked so _token_for_workspace doesn't go to subprocess.
+    # We intercept merge_pr's internal _run_command calls directly by patching
+    # the token resolution and the run loop separately.
+    git = GitOps("ghp_test")
+
+    # Make token resolution trivially succeed.
+    async def fake_token_for_workspace(workspace: str) -> str:
+        return "ghp_test"
+
+    monkeypatch.setattr(git, "_token_for_workspace", fake_token_for_workspace)
+
+    merge_call_count = 0
+
+    original_run_command = git._run_command
+
+    async def fake_run_command(
+        cmd: list[str],
+        cwd: str | None = None,
+        token: str | None = None,
+    ) -> tuple[int, str, str]:
+        nonlocal merge_call_count
+        if "merge" in cmd:
+            merge_call_count += 1
+            if merge_call_count == 1:
+                return (1, "", "Base branch was modified. Please try again.")
+            return (0, "", "")
+        return await original_run_command(cmd, cwd=cwd, token=token)
+
+    monkeypatch.setattr(git, "_run_command", fake_run_command)
+
+    await git.merge_pr("/tmp/workspace", 42)
+
+    assert merge_call_count == 2
+    assert len(sleep_calls) == 1
+
+
+@pytest.mark.unit
+async def test_merge_pr_non_transient_error_raises_immediately(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Non-transient error must NOT retry — raises on first attempt."""
+    import orchestrator.core.git_ops as git_ops_mod
+
+    sleep_calls: list[float] = []
+
+    async def fake_sleep(seconds: float) -> None:
+        sleep_calls.append(seconds)
+
+    monkeypatch.setattr(git_ops_mod, "_merge_sleep", fake_sleep)
+
+    git = GitOps("ghp_test")
+
+    async def fake_token_for_workspace(workspace: str) -> str:
+        return "ghp_test"
+
+    monkeypatch.setattr(git, "_token_for_workspace", fake_token_for_workspace)
+
+    merge_call_count = 0
+
+    async def fake_run_command(
+        cmd: list[str],
+        cwd: str | None = None,
+        token: str | None = None,
+    ) -> tuple[int, str, str]:
+        nonlocal merge_call_count
+        if "merge" in cmd:
+            merge_call_count += 1
+            return (1, "", "Not found: repository or object does not exist")
+        return (0, "", "")
+
+    monkeypatch.setattr(git, "_run_command", fake_run_command)
+
+    with pytest.raises(RuntimeError, match="Git command failed"):
+        await git.merge_pr("/tmp/workspace", 7)
+
+    assert merge_call_count == 1
+    assert sleep_calls == []
+
+
+@pytest.mark.unit
+async def test_merge_pr_exhausts_retries_and_raises(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Transient error on every attempt -> raises after retry bound."""
+    import orchestrator.core.git_ops as git_ops_mod
+
+    sleep_calls: list[float] = []
+
+    async def fake_sleep(seconds: float) -> None:
+        sleep_calls.append(seconds)
+
+    monkeypatch.setattr(git_ops_mod, "_merge_sleep", fake_sleep)
+    monkeypatch.setattr(git_ops_mod, "_MERGE_MAX_ATTEMPTS", 3)
+
+    git = GitOps("ghp_test")
+
+    async def fake_token_for_workspace(workspace: str) -> str:
+        return "ghp_test"
+
+    monkeypatch.setattr(git, "_token_for_workspace", fake_token_for_workspace)
+
+    merge_call_count = 0
+
+    async def fake_run_command(
+        cmd: list[str],
+        cwd: str | None = None,
+        token: str | None = None,
+    ) -> tuple[int, str, str]:
+        nonlocal merge_call_count
+        if "merge" in cmd:
+            merge_call_count += 1
+            return (1, "", "Pull request is not mergeable. Try again.")
+        return (0, "", "")
+
+    monkeypatch.setattr(git, "_run_command", fake_run_command)
+
+    with pytest.raises(RuntimeError, match="Git command failed"):
+        await git.merge_pr("/tmp/workspace", 99)
+
+    assert merge_call_count == 3
+    assert len(sleep_calls) == 2  # sleep between attempts, not after last
