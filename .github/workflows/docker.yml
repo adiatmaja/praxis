@@ -13,6 +13,13 @@ on:
       - "docker-compose.yml"
       - ".github/workflows/docker.yml"
 
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   entrypoint-syntax:
     runs-on: ubuntu-latest

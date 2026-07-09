@@ -40,7 +40,21 @@ def _check(response: httpx.Response) -> dict[str, Any] | list[dict[str, Any]]:
         console.print(f"[red]Error {response.status_code}:[/red] {response.text}")
         raise typer.Exit(1)
     data = response.json()
-    if not isinstance(data, dict | list):
+    if not isinstance(data, (dict, list)):
+        raise typer.Exit(1)
+    return data
+
+
+def _check_dict(response: httpx.Response) -> dict[str, Any]:
+    data = _check(response)
+    if not isinstance(data, dict):
+        raise typer.Exit(1)
+    return data
+
+
+def _check_list(response: httpx.Response) -> list[dict[str, Any]]:
+    data = _check(response)
+    if not isinstance(data, list):
         raise typer.Exit(1)
     return data
 
@@ -50,7 +64,7 @@ def projects() -> None:
     """List all projects."""
 
     with _client() as client:
-        data = _check(client.get("/api/projects"))
+        data = _check_list(client.get("/api/projects"))
     table = Table(title="Projects")
     table.add_column("ID", style="dim", max_width=8)
     table.add_column("Name")
@@ -77,7 +91,7 @@ def add_project(
     """Register a new GitHub repository."""
 
     with _client() as client:
-        data = _check(
+        data = _check_dict(
             client.post(
                 "/api/projects",
                 json={"name": name, "repo_url": repo, "model_name": model},
@@ -106,7 +120,7 @@ def configure(
         console.print("[yellow]No settings to update[/yellow]")
         return
     with _client() as client:
-        data = _check(client.patch(f"/api/projects/{project_id}", json=body))
+        data = _check_dict(client.patch(f"/api/projects/{project_id}", json=body))
     console.print(f"[green]Updated project:[/green] {data['name']}")
 
 
@@ -118,7 +132,7 @@ def submit(
     """Submit a specification for planning."""
 
     with _client() as client:
-        data = _check(
+        data = _check_dict(
             client.post(f"/api/projects/{project_id}/plans", json={"spec": spec})
         )
     console.print(f"[green]Plan created:[/green] {data['id']} ({data['status']})")
@@ -129,7 +143,7 @@ def plans(project_id: str = typer.Argument(..., help="Project ID")) -> None:
     """List plans for a project."""
 
     with _client() as client:
-        data = _check(client.get(f"/api/projects/{project_id}/plans"))
+        data = _check_list(client.get(f"/api/projects/{project_id}/plans"))
     table = Table(title="Plans")
     table.add_column("ID", style="dim", max_width=8)
     table.add_column("Spec", max_width=40)
@@ -146,7 +160,7 @@ def approve(plan_id: str = typer.Argument(..., help="Plan ID")) -> None:
     """Approve an autonomous improvement plan."""
 
     with _client() as client:
-        data = _check(client.post(f"/api/plans/{plan_id}/approve"))
+        data = _check_dict(client.post(f"/api/plans/{plan_id}/approve"))
     console.print(f"[green]Plan approved:[/green] {data['id']}")
 
 
@@ -155,7 +169,7 @@ def reject(plan_id: str = typer.Argument(..., help="Plan ID")) -> None:
     """Reject an autonomous improvement plan."""
 
     with _client() as client:
-        data = _check(client.post(f"/api/plans/{plan_id}/reject"))
+        data = _check_dict(client.post(f"/api/plans/{plan_id}/reject"))
     console.print(f"[red]Plan rejected:[/red] {data['id']}")
 
 
@@ -164,7 +178,7 @@ def tasks(plan_id: str = typer.Argument(..., help="Plan ID")) -> None:
     """List tasks in a plan."""
 
     with _client() as client:
-        data = _check(client.get(f"/api/plans/{plan_id}/tasks"))
+        data = _check_list(client.get(f"/api/plans/{plan_id}/tasks"))
     table = Table(title="Tasks")
     table.add_column("ID", style="dim", max_width=8)
     table.add_column("Title")
@@ -187,7 +201,7 @@ def task(task_id: str = typer.Argument(..., help="Task ID")) -> None:
     """Get task details with agent run history."""
 
     with _client() as client:
-        data = _check(client.get(f"/api/tasks/{task_id}"))
+        data = _check_dict(client.get(f"/api/tasks/{task_id}"))
     task_data = data["task"]
     console.print(f"[bold]{task_data['title']}[/bold]")
     console.print(
@@ -208,7 +222,7 @@ def stop(task_id: str = typer.Argument(..., help="Task ID")) -> None:
     """Stop a running agent."""
 
     with _client() as client:
-        data = _check(client.post(f"/api/tasks/{task_id}/stop"))
+        data = _check_dict(client.post(f"/api/tasks/{task_id}/stop"))
     console.print(f"[yellow]Stopped {data['stopped']} agent(s)[/yellow]")
 
 
@@ -217,7 +231,7 @@ def status() -> None:
     """Show orchestrator status."""
 
     with _client() as client:
-        data = _check(client.get("/api/status"))
+        data = _check_dict(client.get("/api/status"))
     opus_state = data["opus_state"]
     console.print(f"Opus: [bold]{opus_state['status']}[/bold]")
     if opus_state["resume_at"]:
