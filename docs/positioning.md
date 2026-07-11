@@ -37,21 +37,42 @@ idea:
 That is one configuration of the role-separation architecture, the most economically
 striking one, not the whole of what Praxis is.
 
-## What is genuinely unique (vs Aider / Roo Code / Cline / OpenHands)
+## Engine, not cockpit (vs agent-orchestrator)
 
-1. **Subscription-CLI arbitrage.** Other tools mix a strong planner with a cheap
+The most visible neighbor is
+[AgentWrapper/agent-orchestrator](https://github.com/AgentWrapper/agent-orchestrator):
+an Electron IDE that supervises many agent CLIs in parallel worktrees, routing
+CI failures and review comments back to the right session. It is a **cockpit**:
+a human decides what each session works on; the tool keeps sessions healthy.
+Praxis is an **engine**: headless, MCP-driven, and autonomous through the loop
+(decompose → dispatch → verify → review → merge gate). AO has no automated
+decomposition, no capability model, no learning loop, and no headless surface;
+Praxis deliberately does not compete on supervision UX, harness breadth (23+
+there), or desktop polish. "Like agent-orchestrator, but headless,
+capability-aware, and free to run" is the honest one-line comparison.
+
+## What is genuinely unique (vs Aider / Roo Code / Cline / OpenHands / AO)
+
+1. **The Capability Calibration Loop (flagship).** Praxis decomposes work
+   against a structured profile of the actual worker, validates the resulting
+   leaves mechanically, splits or escalates on failure, and records every
+   terminal verdict as a labeled outcome that tunes future decomposition.
+   Measured, learned, per-model capability driving planning is claimed by no
+   shipping tool, and it requires a full closed loop to copy. (Design:
+   `docs/superpowers/specs/2026-07-11-capability-engine-roadmap.md`.)
+2. **Subscription-CLI arbitrage.** Other tools mix a strong planner with a cheap
    implementer, but they assume a *metered API* for the planner. Praxis drives
    the flat-rate subscription CLI for planning/review. None of the off-the-shelf
    tools productize this.
-2. **Provider escape hatch via MCP.** Aider/Roo Code can use local models, but
+3. **Provider escape hatch via MCP.** Aider/Roo Code can use local models, but
    neither lets a *Claude-locked assistant* delegate to a local worker from
    inside that assistant. Praxis does, through MCP `dispatch_task`.
-3. **Functional fleet dashboard.** A working (not mockup) dashboard with live SSE
+4. **Functional fleet dashboard.** A working (not mockup) dashboard with live SSE
    logs showing N agents on N branches, plus a human window to unstick wedged
    tasks. MCP is request/response and blind to long-running async work; the
    dashboard covers that blind spot. Aider has no equivalent; Roo Code's UI is
    the editor, not a fleet view.
-4. **GitHub-native PR loop.** plan branch → per-task agent branches → squash
+5. **GitHub-native PR loop.** plan branch → per-task agent branches → squash
    merge on review pass → integration PR. Real PRs you can inspect, with
    parallel-branch race handling — not blind auto-commit.
 
@@ -137,9 +158,11 @@ about the engine's economic foundation.
 
 ## Positioning guidance
 
-Lead with **provider-agnostic role separation** as the category (planning /
-implementation / review / verification, each independently configurable), not the
-generic "autonomous PR engine" framing — platform-native subagents (e.g. Claude
+Lead with **capability-aware role separation** as the category (planning /
+implementation / review / verification, each independently configurable, with
+decomposition sized to the worker), not the generic "autonomous PR engine" or
+bare "orchestrator" framing (the orchestrator-IDE space is owned; see "Engine,
+not cockpit" above) — platform-native subagents (e.g. Claude
 Code's own fan-out) are absorbing generic orchestration, but they are single-provider
 by design. Present the **MCP / subscription→local bridge** and the two-cost-tier
 split as the flagship *deployment* of that architecture (the most economically

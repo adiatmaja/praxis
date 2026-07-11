@@ -37,3 +37,6 @@ Thumbs.db
 
 # Playwright MCP screenshot artifacts
 .playwright-mcp/
+
+# Social launch drafts (private, not for commit)
+docs/social-launch*

@@ -10,11 +10,11 @@
 </div>
 
 <p align="center">
-  <strong>Provider-Agnostic AI Software Engineering Orchestrator</strong>
+  <strong>Capability-Aware AI Software Engineering Orchestrator</strong>
 </p>
 
 <p align="center">
-  Coordinate planning, implementation, review, and Git workflows across independently configurable AI systems.
+  Provider-agnostic planning, implementation, review, and Git workflows, with work decomposed to fit the model that implements it.
 </p>
 
 <p align="center">
@@ -97,7 +97,7 @@ quality, not just to schedule work. The planner adjusts task granularity to the 
 worker's capability, so complexity per task stays within what that worker can implement
 correctly. Weaker worker, finer-grained tasks; stronger worker, coarser ones. Praxis gates
 the resulting plan against the open-weight model before dispatch and escalates when a task
-exceeds its reach.
+exceeds its reach; every merge and failure feeds back into what that worker is trusted with.
 
 **Every seat is independently configurable.** Provider, model, execution environment, and
 harness are set per role (and per project) in **Settings → Models**. A typical arrangement:
