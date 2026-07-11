@@ -35,6 +35,7 @@ class BibleSources:
     caller_context: str | None = None
     repo_memory: str | None = None
     review_feedback: str | None = None
+    verify_cmd: str | None = None
     reserve_fraction: float = 0.6
 
 
@@ -48,6 +49,17 @@ def build_bible(src: BibleSources) -> str:
     if src.caller_context:
         raw_sections.append(
             Section("caller", f"# CONTEXT\n{src.caller_context}", 3, floor=True)
+        )
+    if src.verify_cmd:
+        raw_sections.append(
+            Section(
+                "validate",
+                "# HOW TO VALIDATE\n"
+                "Run this to check your change before finishing:\n"
+                f"{src.verify_cmd}",
+                3,
+                floor=True,
+            )
         )
     if src.review_feedback:
         raw_sections.append(

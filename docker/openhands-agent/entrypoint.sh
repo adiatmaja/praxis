@@ -102,6 +102,35 @@ else
 fi
 git checkout -b "${BRANCH}"
 
+echo "--- Writing environment manifest + Static Bible (never committed) ---"
+{
+    printf "# ENVIRONMENT (this container -- use what is already here; do NOT install your own)\n"
+    printf "- Non-root user. NO sudo. NO apt (permission denied). Network may be restricted.\n\n"
+    if command -v python3 >/dev/null 2>&1; then
+        printf "- python3: %s\n" "$(python3 --version 2>&1)"
+    fi
+    if command -v uv >/dev/null 2>&1; then
+        printf "- uv: %s at %s\n" "$(uv --version 2>&1)" "$(command -v uv)"
+        printf "  Run Python tools via \`uv run <tool>\` (e.g. \`uv run pytest\`, \`uv run ruff check .\`, \`uv run mypy src\`).\n"
+        printf "  uv installs project deps on demand -- do NOT use pip/apt/get-pip.\n"
+    else
+        printf "- uv: NOT available on PATH.\n"
+    fi
+    if command -v git >/dev/null 2>&1; then
+        printf "- git: %s\n" "$(git --version 2>&1)"
+    fi
+    if command -v gh >/dev/null 2>&1; then
+        printf "- gh: present\n"
+    fi
+    if command -v node >/dev/null 2>&1; then
+        printf "- node: %s\n" "$(node --version 2>&1)"
+    fi
+} > "${WORKSPACE}/.praxis-bible.md"
+if [ -n "${BIBLE_TEXT:-}" ]; then
+    printf "\n%s\n" "${BIBLE_TEXT}" >> "${WORKSPACE}/.praxis-bible.md"
+fi
+echo ".praxis-bible.md" >> "${WORKSPACE}/.git/info/exclude"
+
 echo "--- Running OpenHands (headless, local runtime) ---"
 # LiteLLM openai-compatible config via env; --override-with-envs applies them.
 export LLM_MODEL="openai/${MODEL}"
@@ -109,14 +138,23 @@ export LLM_BASE_URL="${OPENAI_API_BASE}"
 export LLM_API_KEY="${OPENAI_API_KEY:-not-needed}"
 export RUNTIME="local"
 
+# OpenHands has no persistent instructions/--read mechanism, so fold the
+# environment manifest + Static Bible directly into the prompt it consumes.
+BIBLE_PREAMBLE=""
+if [ -s "${WORKSPACE}/.praxis-bible.md" ]; then
+    BIBLE_PREAMBLE="$(cat "${WORKSPACE}/.praxis-bible.md")
+
+"
+fi
+
 # Prepend plan context to the prompt when supplied.
-EFFECTIVE_PROMPT="${TASK_PROMPT}"
+EFFECTIVE_PROMPT="${BIBLE_PREAMBLE}${TASK_PROMPT}"
 if [ -n "${PLAN_PATH:-}" ]; then
-    EFFECTIVE_PROMPT="Plan reference: ${PLAN_PATH}
+    EFFECTIVE_PROMPT="${BIBLE_PREAMBLE}Plan reference: ${PLAN_PATH}
 
 ${TASK_PROMPT}"
 elif [ -n "${PLAN_TEXT:-}" ]; then
-    EFFECTIVE_PROMPT="${PLAN_TEXT}
+    EFFECTIVE_PROMPT="${BIBLE_PREAMBLE}${PLAN_TEXT}
 
 ${TASK_PROMPT}"
 fi
