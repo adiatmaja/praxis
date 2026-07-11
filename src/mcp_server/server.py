@@ -15,6 +15,7 @@ from typing import Any, cast
 from mcp.server.fastmcp import FastMCP
 
 from mcp_server.client import PraxisClient, PraxisClientError
+from orchestrator.core import status_vocab
 
 
 def load_orchestration_guide() -> str:
@@ -155,16 +156,13 @@ async def poll_task_impl(client: Any, task_id: str) -> dict[str, Any]:
     }
 
 
-_TASK_STATUS_MAP: dict[str, str] = {
-    "passed": "awaiting_merge",
-    "needs_clarification": "awaiting_clarification",
-}
+_TASK_STATUS_MAP = status_vocab.MCP_STATUS_ALIASES
 
 # Statuses that are gated (passed review but not yet merged into the base branch).
-_GATED_STATUSES: frozenset[str] = frozenset({"passed", "awaiting_merge"})
+_GATED_STATUSES = status_vocab.GATED_STATUSES
 
 # Terminal statuses that cannot progress further without intervention.
-_TERMINAL_STATUSES: frozenset[str] = frozenset({"failed", "merged"})
+_TERMINAL_STATUSES = status_vocab.TERMINAL_STATUSES
 
 
 def derive_plan_blocked_state(

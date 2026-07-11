@@ -26,6 +26,7 @@ class TaskStatus(StrEnum):
     FAILED = "failed"
     MERGED = "merged"
     NEEDS_CLARIFICATION = "needs_clarification"
+    SUPERSEDED = "superseded"
 
 
 class PlanStatus(StrEnum):

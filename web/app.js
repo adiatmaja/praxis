@@ -1053,7 +1053,7 @@
 
     function renderSwimLane(plan) {
       const tasks = (dashboardTasks[plan.id] || []).slice();
-      const statusOrder = { merged: 0, passed: 1, reviewing: 2, in_progress: 3, failed: 4, pending: 5 };
+      const statusOrder = { merged: 0, passed: 1, reviewing: 2, in_progress: 3, failed: 4, superseded: 5, pending: 6 };
       tasks.sort((a, b) => (statusOrder[a.status] ?? 99) - (statusOrder[b.status] ?? 99));
       const isSpecExpanded = expandedSpecs.has(plan.id);
       const specPreview = esc(planLabel(plan)).slice(0, 80);
