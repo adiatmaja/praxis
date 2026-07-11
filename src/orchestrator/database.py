@@ -161,6 +161,23 @@ async def _migration_0003_plan_error(connection: aiosqlite.Connection) -> None:
         await connection.execute("ALTER TABLE plans ADD COLUMN error TEXT")
 
 
+async def _migration_0004_capability_events(connection: aiosqlite.Connection) -> None:
+    """Add capability_events: decision-record table for capability calibration."""
+    await connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS capability_events (
+            id TEXT PRIMARY KEY,
+            schema_version INTEGER NOT NULL,
+            event_type TEXT NOT NULL,
+            plan_id TEXT,
+            task_id TEXT,
+            payload TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
+
+
 MIGRATIONS: list[Migration] = [
     Migration(1, "baseline: schema as of 2026-07-02", _migration_0001_baseline),
     Migration(
@@ -172,6 +189,11 @@ MIGRATIONS: list[Migration] = [
         3,
         "add plans.error for terminal-failure reasons",
         _migration_0003_plan_error,
+    ),
+    Migration(
+        4,
+        "add capability_events decision-record table",
+        _migration_0004_capability_events,
     ),
 ]
 

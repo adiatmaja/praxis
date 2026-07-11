@@ -7,7 +7,7 @@ from enum import StrEnum
 from sys import version_info
 from typing import TypedDict
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from orchestrator.core.harnesses import REGISTRY, default_harness_id
 
@@ -26,6 +26,7 @@ class TaskStatus(StrEnum):
     FAILED = "failed"
     MERGED = "merged"
     NEEDS_CLARIFICATION = "needs_clarification"
+    SUPERSEDED = "superseded"
 
 
 class PlanStatus(StrEnum):
@@ -68,6 +69,49 @@ class CapabilityProfile(BaseModel):
     strengths: str = ""
     weaknesses: str = ""
     max_task_complexity: str = "medium"
+
+
+LEAF_SCHEMA_VERSION = 1
+
+
+class LeafChecklistItem(BaseModel):
+    """Single checklist step within a leaf task."""
+
+    text: str
+
+
+class LeafTask(BaseModel):
+    """Decomposed leaf task produced by the capability-aware plan review.
+
+    Accepts extra fields (``extra="allow"``) so the brain can attach
+    arbitrary metadata without breaking the parser.  Missing optional
+    fields derive sensible defaults from ``title`` via an after-validator.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    schema_version: int = LEAF_SCHEMA_VERSION
+    id: str
+    title: str
+    description: str = ""
+    plan_text: str = ""
+    depends_on: list[str] = Field(default_factory=list)
+    checklist: list[LeafChecklistItem] = Field(default_factory=list)
+    needs_stronger_model: bool = False
+    files: list[str] = Field(default_factory=list)
+    task_type: str | None = None
+    estimated_loc: int | None = None
+    verification: str | None = None
+
+    @model_validator(mode="after")
+    def _apply_title_defaults(self) -> LeafTask:
+        if not self.description:
+            self.description = self.title
+        if not self.plan_text:
+            self.plan_text = self.description
+        if not self.checklist:
+            self.checklist = [LeafChecklistItem(text=self.title)]
+        return self
 
 
 class ProjectCreate(BaseModel):
