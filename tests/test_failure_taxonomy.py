@@ -54,5 +54,7 @@ class TestCountsAgainstWorker:
             ("provider_error", False),
         ],
     )
-    def test_attribution(self, failure_class: FailureClass | str, expected: bool) -> None:
+    def test_attribution(
+        self, failure_class: FailureClass | str, expected: bool
+    ) -> None:
         assert counts_against_worker(failure_class) is expected
