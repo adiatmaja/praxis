@@ -114,26 +114,26 @@ echo "--- Writing Static Bible to a separate instructions file (never committed)
 # Build a runtime environment manifest so the worker knows what is available
 # without guessing. Probe only tools actually on PATH.
 {
-    printf "# ENVIRONMENT (this container -- use what is already here; do NOT install your own)\n"
-    printf "- Non-root user. NO sudo. NO apt (permission denied). Network may be restricted.\n\n"
+    printf '%s\n' "# ENVIRONMENT (this container -- use what is already here; do NOT install your own)"
+    printf '%s\n\n' "- Non-root user. NO sudo. NO apt (permission denied). Network may be restricted."
     if command -v python3 >/dev/null 2>&1; then
-        printf "- python3: %s\n" "$(python3 --version 2>&1)"
+        printf '%s\n' "- python3: $(python3 --version 2>&1)"
     fi
     if command -v uv >/dev/null 2>&1; then
-        printf "- uv: %s at %s\n" "$(uv --version 2>&1)" "$(command -v uv)"
-        printf "  Run Python tools via \`uv run <tool>\` (e.g. \`uv run pytest\`, \`uv run ruff check .\`, \`uv run mypy src\`).\n"
-        printf "  uv installs project deps on demand -- do NOT use pip/apt/get-pip.\n"
+        printf '%s\n' "- uv: $(uv --version 2>&1) at $(command -v uv)"
+        printf '%s\n' '  Run Python tools via `uv run <tool>` (e.g. `uv run pytest`, `uv run ruff check .`, `uv run mypy src`).'
+        printf '%s\n' '  uv installs project deps on demand -- do NOT use pip/apt/get-pip.'
     else
-        printf "- uv: NOT available on PATH.\n"
+        printf '%s\n' "- uv: NOT available on PATH."
     fi
     if command -v git >/dev/null 2>&1; then
-        printf "- git: %s\n" "$(git --version 2>&1)"
+        printf '%s\n' "- git: $(git --version 2>&1)"
     fi
     if command -v gh >/dev/null 2>&1; then
-        printf "- gh: present\n"
+        printf '%s\n' "- gh: present"
     fi
     if command -v node >/dev/null 2>&1; then
-        printf "- node: %s\n" "$(node --version 2>&1)"
+        printf '%s\n' "- node: $(node --version 2>&1)"
     fi
 } > "${WORKSPACE}/.praxis-bible.md"
 
