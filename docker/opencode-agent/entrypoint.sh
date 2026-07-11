@@ -110,12 +110,40 @@ echo "--- Writing Static Bible to a separate instructions file (never committed)
 #   - we never touch/dereference the repo's AGENTS.md (which may be a symlink),
 #   - the Bible can never leak into a PR, so no strip/restore logic is needed.
 # `.git/info/exclude` is per-clone and uncommitted, so `git add -A` skips it.
-BIBLE_INSTRUCTIONS=""
+
+# Build a runtime environment manifest so the worker knows what is available
+# without guessing. Probe only tools actually on PATH.
+{
+    printf "# ENVIRONMENT (this container -- use what is already here; do NOT install your own)\n"
+    printf "- Non-root user. NO sudo. NO apt (permission denied). Network may be restricted.\n\n"
+    if command -v python3 >/dev/null 2>&1; then
+        printf "- python3: %s\n" "$(python3 --version 2>&1)"
+    fi
+    if command -v uv >/dev/null 2>&1; then
+        printf "- uv: %s at %s\n" "$(uv --version 2>&1)" "$(command -v uv)"
+        printf "  Run Python tools via \`uv run <tool>\` (e.g. \`uv run pytest\`, \`uv run ruff check .\`, \`uv run mypy src\`).\n"
+        printf "  uv installs project deps on demand -- do NOT use pip/apt/get-pip.\n"
+    else
+        printf "- uv: NOT available on PATH.\n"
+    fi
+    if command -v git >/dev/null 2>&1; then
+        printf "- git: %s\n" "$(git --version 2>&1)"
+    fi
+    if command -v gh >/dev/null 2>&1; then
+        printf "- gh: present\n"
+    fi
+    if command -v node >/dev/null 2>&1; then
+        printf "- node: %s\n" "$(node --version 2>&1)"
+    fi
+} > "${WORKSPACE}/.praxis-bible.md"
+
+# Append the orchestrator-supplied Bible (goal + handover + conventions) after the manifest.
 if [ -n "${BIBLE_TEXT:-}" ]; then
-    printf "%s\n" "${BIBLE_TEXT}" > "${WORKSPACE}/.praxis-bible.md"
-    echo ".praxis-bible.md" >> "${WORKSPACE}/.git/info/exclude"
-    BIBLE_INSTRUCTIONS='  "instructions": [".praxis-bible.md"],'
+    printf "\n%s\n" "${BIBLE_TEXT}" >> "${WORKSPACE}/.praxis-bible.md"
 fi
+
+echo ".praxis-bible.md" >> "${WORKSPACE}/.git/info/exclude"
+BIBLE_INSTRUCTIONS='  "instructions": [".praxis-bible.md"],'
 
 echo "--- Writing OpenCode config (OpenAI-compatible local provider) ---"
 mkdir -p "${HOME}/.config/opencode"

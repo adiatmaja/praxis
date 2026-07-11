@@ -204,5 +204,6 @@ class DispatchMixin:
                 # are still folded in separately by the entrypoint --read.
                 repo_memory=plan_task.get("repo_memory"),
                 review_feedback=task.get("review_feedback"),
+                verify_cmd=project.get("verify_cmd"),
             )
         )

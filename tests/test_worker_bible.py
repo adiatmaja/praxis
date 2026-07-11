@@ -70,6 +70,48 @@ def test_bible_omits_feedback_section_when_absent():
 
 
 @pytest.mark.unit
+def test_verify_cmd_renders_how_to_validate_section():
+    src = BibleSources(
+        goal="do it",
+        handover="# PROGRESS",
+        context_window=8192,
+        verify_cmd="uv run pytest --tb=short",
+    )
+    out = build_bible(src)
+    assert "# HOW TO VALIDATE" in out
+    assert "uv run pytest --tb=short" in out
+
+
+@pytest.mark.unit
+def test_verify_cmd_absent_when_none():
+    src = BibleSources(
+        goal="do it",
+        handover="# PROGRESS",
+        context_window=8192,
+        verify_cmd=None,
+    )
+    out = build_bible(src)
+    assert "# HOW TO VALIDATE" not in out
+
+
+@pytest.mark.unit
+def test_verify_cmd_survives_tight_budget():
+    """verify_cmd section is floor=True so it survives budget trimming (repo_memory dropped)."""
+    src = BibleSources(
+        goal="Do x",
+        handover="# PROGRESS",
+        context_window=2000,
+        verify_cmd="uv run pytest",
+        repo_memory="r" * 40000,
+    )
+    out = build_bible(src)
+    assert "# HOW TO VALIDATE" in out
+    assert "uv run pytest" in out
+    # repo_memory (low-priority, non-floor) should be dropped
+    assert "r" * 1000 not in out
+
+
+@pytest.mark.unit
 def test_repo_memory_section_present_when_provided():
     src = BibleSources(
         goal="do it",
