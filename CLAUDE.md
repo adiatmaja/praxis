@@ -2,10 +2,17 @@
 
 ## What Is This
 
-Praxis is a provider-agnostic, Docker-based AI software engineering orchestrator. It splits the
-software engineering loop into four roles — **plan**, **implement**, **review**, and **verify** —
-each independently configurable to any provider, model, or harness. Nothing is hard-wired to a
-single vendor.
+Praxis is a capability-aware, provider-agnostic, Docker-based AI software engineering
+orchestrator. It splits the software engineering loop into four roles — **plan**, **implement**,
+**review**, and **verify** — each independently configurable to any provider, model, or harness,
+and decomposes every plan to fit the capability of the model that implements it. Nothing is
+hard-wired to a single vendor.
+
+**Framing (canonical, 2026-07-11):** capability-aware task decomposition is THE main feature and
+leads in all public docs; role separation is the supporting architecture; cost is a consequence.
+Flagship under development: the **Capability Calibration Loop**. Roadmap + feature/contract
+designs: `docs/superpowers/specs/2026-07-11-capability-engine-roadmap.md` (F1-F15, S1-S11,
+10-plan breakdown).
 
 The reference configuration pairs a subscription reasoning model (e.g. Claude via `claude -p`) for
 planning/review with an open-weight model (e.g. via LM Studio) driving a pluggable coding harness
@@ -289,6 +296,7 @@ the relevant subsystem. Condensed index:
 - **Deployment, Docker & API reference:** `docs/deployment.md`
 - **Gotchas (full narrative):** `docs/gotchas.md`
 - **Design spec:** `docs/superpowers/specs/2026-06-01-ai-agent-orchestrator-design.md`
+- **Capability-engine roadmap (canonical, 2026-07-11):** `docs/superpowers/specs/2026-07-11-capability-engine-roadmap.md` — features F1-F15, standardization contracts S1-S11, 10-plan breakdown; next up = Plan 1 `capability-contracts-foundation`
 - **Implementation plans:** `docs/superpowers/plans/` (sequential plans)
 - **Implemented + merged (2026-06-29 epic, live e2e-verified 2026-07-01):** worker context
   continuity (`specs/2026-06-29-worker-context-continuity-design.md`), capability-aware plan
