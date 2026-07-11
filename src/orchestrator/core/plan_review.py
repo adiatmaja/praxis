@@ -13,7 +13,9 @@ from __future__ import annotations
 import json
 import re
 
-from orchestrator.models.schemas import CapabilityProfile
+from pydantic import ValidationError
+
+from orchestrator.models.schemas import CapabilityProfile, LeafTask
 
 
 class PlanReviewError(Exception):
@@ -141,12 +143,14 @@ def parse_review_response(raw: str) -> dict:
     tasks = data.get("tasks") if isinstance(data, dict) else None
     if not isinstance(tasks, list) or not tasks:
         raise PlanReviewError("review response had no tasks")  # noqa: EM101
+    leaves = []
     for t in tasks:
-        if "id" not in t or "title" not in t:
+        if not isinstance(t, dict) or "id" not in t or "title" not in t:
             raise PlanReviewError(f"task missing id/title: {t}")  # noqa: EM102
-        t.setdefault("description", t["title"])
-        t.setdefault("plan_text", t["description"])
-        t.setdefault("depends_on", [])
-        t.setdefault("checklist", [{"text": t["title"]}])
-        t.setdefault("needs_stronger_model", False)
-    return {"tasks": tasks}
+        try:
+            leaf = LeafTask.model_validate(t)
+        except ValidationError as exc:
+            msg = f"invalid leaf task: {exc}"
+            raise PlanReviewError(msg) from exc
+        leaves.append(leaf.model_dump())
+    return {"tasks": leaves}
