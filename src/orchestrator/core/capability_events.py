@@ -7,9 +7,15 @@ persists these events is delivered in Task 7 (module stubbed here).
 
 from __future__ import annotations
 
+import json
+import uuid
+from datetime import UTC, datetime
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
+
+from orchestrator.core.event_bus import EventBus
+from orchestrator.database import Database
 
 
 CAPABILITY_EVENT_SCHEMA_VERSION: int = 1
@@ -123,3 +129,53 @@ CAPABILITY_EVENT_TYPES: frozenset[str] = frozenset(
         "outcome_recorded",
     }
 )
+
+
+# ---------------------------------------------------------------------------
+# Emitter
+# ---------------------------------------------------------------------------
+
+
+class CapabilityEventEmitter:
+    """Dual-writes capability events to the database and the event bus."""
+
+    def __init__(self, db: Database, bus: EventBus) -> None:
+        self._db = db
+        self._bus = bus
+
+    async def emit(self, event: CapabilityEventModel) -> str:
+        """Persist the event and broadcast it.
+
+        Returns the row ID that was inserted.
+        """
+        payload = event.model_dump()
+        row_id = str(uuid.uuid4())
+        plan_id = payload.get("plan_id")
+        task_id = payload.get("task_id")
+
+        await self._db.execute(
+            """
+            INSERT INTO capability_events
+                (id, schema_version, event_type, plan_id, task_id,
+                 payload, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                row_id,
+                event.schema_version,
+                event.event_type,
+                plan_id,
+                task_id,
+                json.dumps(payload),
+                datetime.now(UTC).isoformat(),
+            ),
+        )
+
+        self._bus.publish(
+            {
+                "type": f"capability.{event.event_type}",
+                **payload,
+            }
+        )
+
+        return row_id
