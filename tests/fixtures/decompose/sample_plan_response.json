@@ -1,0 +1,20 @@
+{
+  "tasks": [
+    {
+      "id": "t1",
+      "title": "Add config loader",
+      "description": "Implement a configuration loader that reads settings from a YAML file",
+      "plan_text": "def load_config(path: str) -> dict: ...\nSupported formats: YAML, JSON",
+      "depends_on": [],
+      "checklist": [
+        {"text": "write test"},
+        {"text": "implement"}
+      ],
+      "needs_stronger_model": false
+    },
+    {
+      "id": "t2",
+      "title": "Wire config into settings"
+    }
+  ]
+}

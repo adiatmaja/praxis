@@ -1,0 +1,37 @@
+{
+  "tasks": [
+    {
+      "schema_version": 1,
+      "id": "t1",
+      "title": "Add config loader",
+      "description": "Implement a configuration loader that reads settings from a YAML file",
+      "plan_text": "def load_config(path: str) -> dict: ...\nSupported formats: YAML, JSON",
+      "depends_on": [],
+      "checklist": [
+        {"text": "write test"},
+        {"text": "implement"}
+      ],
+      "needs_stronger_model": false,
+      "files": [],
+      "task_type": null,
+      "estimated_loc": null,
+      "verification": null
+    },
+    {
+      "schema_version": 1,
+      "id": "t2",
+      "title": "Wire config into settings",
+      "description": "Wire config into settings",
+      "plan_text": "Wire config into settings",
+      "depends_on": [],
+      "checklist": [
+        {"text": "Wire config into settings"}
+      ],
+      "needs_stronger_model": false,
+      "files": [],
+      "task_type": null,
+      "estimated_loc": null,
+      "verification": null
+    }
+  ]
+}
