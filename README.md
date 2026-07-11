@@ -14,7 +14,7 @@
 </p>
 
 <p align="center">
-  Provider-agnostic planning, implementation, review, and Git workflows, with work decomposed to fit the model that implements it.
+  Plan, implement, review, and verify with any mix of AI systems. Every task is sized to what the implementing model can actually do.
 </p>
 
 <p align="center">
@@ -26,9 +26,10 @@
   <a href="https://github.com/adiatmaja/praxis/stargazers"><img alt="Stars" src="https://img.shields.io/github/stars/adiatmaja/praxis?style=social"></a>
 </p>
 
-Praxis is an orchestration platform that treats software engineering as four independent
-roles, planning, implementation, review, and verification, and lets each role choose its
-own AI provider, model, execution environment, and coding harness.
+Praxis is an AI software engineering orchestrator built around one idea: work should be
+decomposed to fit the model that implements it. It splits engineering into four roles,
+planning, implementation, review, and verification, and each role can run on any provider,
+model, or coding harness.
 
 ```
                            ┌───────────────────────────┐
@@ -63,41 +64,40 @@ substrate the whole loop is built on.
 
 ## Why Praxis exists
 
-A real change to a codebase is not one act. Someone decides *what* to build and breaks it
-into ordered work. Someone *writes* the code. Someone *reviews* it against intent. Something
-*verifies* it mechanically. Most AI coding tools collapse these into a single model behind a
-single prompt, which forces one capability tier, one vendor, and one price on work that has
-very different requirements.
+If you develop with AI every day, you know the pattern: the model that is smart enough to
+plan your work is too expensive to also write all the code, so the plan gets handed to a
+cheaper model. That handoff is where things break. The cheaper model never sees the context
+the plan was written with, and some of the tasks are just too hard for it, but nothing warns
+you about either problem. You find out when the code comes back wrong.
 
-Praxis keeps the four responsibilities separate and lets each one be filled by the system
-best suited to it, judged on capability, cost, latency, privacy, availability, or plain
-preference. Decomposition and review reward judgment; implementation is high-volume,
-mechanical, and cheap to parallelize; verification is deterministic. Assigning each to the
-right tool is the whole idea.
+Praxis closes both gaps. It carries the full context of the plan across the handoff, and it
+sizes every task to the model that will implement it: smaller and more explicit tasks for a
+weaker model, coarser ones for a stronger model. Anything still beyond the worker's reach is
+flagged and escalated instead of quietly failing. This is **capability-aware task
+decomposition**, and it is the reason a modest open-weight model can ship quality patches
+here: it is never asked to plan or architect, only to complete tasks scoped small enough for
+it to get right.
 
-Separating the seats also lets them adapt to each other. The planner does not just split a
-spec into tasks, it sizes those tasks to the implementer that will run them, breaking work
-down further for a weaker worker and leaving it coarser for a stronger one. This
-**capability-aware task decomposition** is why a modest open-weight model can produce quality
-patches: it is never asked to plan or architect, only to fill in a task scoped small enough
-that it can succeed.
+The architecture that makes this possible is role separation. A real code change is four
+different jobs, deciding what to build, writing it, reviewing it, and verifying it, and each
+job needs a different kind of system. Praxis keeps them as four independent seats so each can
+be filled by whatever fits best, whether that is judged on capability, cost, privacy, or
+preference.
 
-Cost efficiency falls out of this rather than driving it. Because implementation is the
-token-heavy role and can run on a free open-weight model while judgment-heavy roles run on a
-capable hosted one, a modest setup can drive the full loop, but that is a *consequence* of
-separating the roles, not the reason to.
+Cost efficiency falls out of this rather than driving it: implementation is where the tokens
+go, and it can run on a free open-weight model while the judgment-heavy seats run on a
+capable hosted one.
 
 ## Key concepts
 
+**Capability-aware task decomposition.** The core feature. Praxis keeps a capability profile
+of the implementing model (context window, what it handles well, where it fails) and the
+planner decomposes every plan against it, so no task asks for more than the worker can
+deliver. Plans are gated before dispatch, tasks that exceed the worker's reach are escalated,
+and every merge and failure feeds back into what that worker is trusted with next time.
+
 **Roles, not a monolith.** Planning, implementation, review, and verification are distinct
 seats. The engine coordinates them; it is not itself the intelligence.
-
-**Capability-aware task decomposition.** Decomposition exists to preserve implementation
-quality, not just to schedule work. The planner adjusts task granularity to the chosen
-worker's capability, so complexity per task stays within what that worker can implement
-correctly. Weaker worker, finer-grained tasks; stronger worker, coarser ones. Praxis gates
-the resulting plan against the open-weight model before dispatch and escalates when a task
-exceeds its reach; every merge and failure feeds back into what that worker is trusted with.
 
 **Every seat is independently configurable.** Provider, model, execution environment, and
 harness are set per role (and per project) in **Settings → Models**. A typical arrangement:

@@ -36,6 +36,17 @@ The headline differentiator to develop thoroughly (section 5): the
 **Capability Calibration Loop**, because decomposition claims are only
 defensible when they are learned from observed outcomes, not asserted.
 
+**Two-layer framing.** The category framing above is the *what*; the narrative
+front door is the *problem story*, told from the buyer's seat: a developer on a
+flat-rate subscription plans with a frontier model because that is what
+judgment costs, cannot afford to implement there too, hands the plan to an
+open-weight model, and two things go wrong. The context that made the plan
+executable does not survive the handoff, and some tasks are simply beyond that
+model, except nothing tells them which ones until the diff is wrong. Praxis
+closes both gaps. Use the story in README "Why Praxis exists" and at the top of
+positioning.md; never anchor the brand to a dollar figure (the story stars the
+budget-constrained developer, the product is not "the budget orchestrator").
+
 ---
 
 ## 2. What capability-aware task decomposition IS
@@ -517,7 +528,123 @@ brain-calls per merged task (the economics number).
 
 ---
 
-## 6. Documentation and framing changes
+## 6. Contracts and standardization (S1-S11)
+
+The capability engine and external contribution both fail on the same thing:
+implicit contracts. Every seam where the engine, a contributor, or an external
+system meets Praxis is today a convention living in code and prompts rather
+than a schema someone can build against. Rule going forward (add to
+CONTRIBUTING.md): **new seam = written contract + fixture test.**
+
+Already standardized, no work needed: DB migrations (`Migration` list +
+`PRAGMA user_version`), settings resolution (env > YAML > default), merge
+policy (`core/merge_policy.py`).
+
+### S1. Capability decision log (prerequisite for the flagship)
+
+Today `logger.info` free text is the only trace of why a leaf was sized,
+rejected, split, or escalated. Standardize versioned, structured **decision
+records** emitted at every capability-engine decision point:
+
+| Event | Emitted by | Payload core |
+|---|---|---|
+| `decompose_input` | F2 | profile used, per-leaf budget, history summary hash, plan hash |
+| `leaf_validated` / `leaf_rejected` | F3 | leaf slug, rule id, measured value vs limit |
+| `plan_rejected` | F3 | violations list, rounds consumed |
+| `task_split` | F4 | parent slug, child slugs, tightened limits, failure evidence ref |
+| `task_escalated` | F4 | leaf slug, policy applied (block/brain/paid_fallback) |
+| `outcome_recorded` | F5 | task_outcomes row id, attribution decision |
+
+One Pydantic model per event with a `schema_version` field. Dual-written to
+the existing SSE event bus (live view) and a `capability_events` table
+(queryable history; the dashboard capability panel and any future analysis
+read this, never the logs). Contributor tests become assertions on events:
+"this input emits `leaf_rejected` with `rule=max_files`".
+
+### S2. Leaf/decomposition contract (prerequisite for the flagship)
+
+The leaf dict is currently shaped by `setdefault` calls in
+`parse_review_response`. Promote to a versioned Pydantic model (`LeafTask`,
+`schema_version`) covering the F2 fields (`plan_text`, `files`, `task_type`,
+`estimated_loc`, `verification`, `checklist`, `depends_on`,
+`needs_stronger_model`). Add **golden-file fixtures**: sample plan in,
+expected leaf graph out, so prompt tuning has a frozen target and a prompt
+change that breaks the parser or drops a field fails CI, not a live run.
+
+### S3. Harness entrypoint contract (highest contributor value)
+
+The env-var interface (`HARNESS`, `MODEL`, `TASK_PROMPT`, Bible/plan/context
+vars, callback vars), the `Status: BLOCKED`/`NEEDS_CONTEXT` marker protocol,
+commit/PR/no-diff-is-failure semantics, and the Bible-must-not-leak rule live
+spread across three `entrypoint.sh` files plus the parsing code. Write
+`docs/harness-contract.md` (the distillation of every harness debugging
+session to date) plus a **conformance suite**: a fake harness image that CI
+runs through spawn → work → callback, asserting every obligation. This is what
+makes "community contributes harness #4" possible instead of a support burden.
+
+### S4. Brain call-site contract
+
+Each router call-site (`plan_review`, `review_diff`, `answer_clarification`,
+`derive_tasks`, ...) is an ad-hoc prompt string + ad-hoc parser. Standardize:
+every call-site declares a name, input dataclass, output schema, parser, and
+**fixture tests of real provider outputs** including the messy variants
+(fenced JSON, preamble prose, effort-mode chatter already special-cased in
+`parse_review_response`). This doubles as the definition of what a new
+provider adapter must satisfy, which today is tribal knowledge (the agy/codex
+verification saga).
+
+### S5. Event taxonomy (freeze before webhooks)
+
+Event `type` strings (~20: `task_retry`, `agent_dispatched`,
+`plan_integration_ready`, ...) are scattered literals with undocumented
+payloads. The moment webhooks (F12) ship these become a **public API that can
+never be renamed**. One enum/registry module, documented payload schema per
+event, lint/test that publishes go through the registry. Do this while it is
+still free.
+
+### S6. Failure taxonomy (prerequisite for F4/F5 correctness)
+
+`failure_class` values will be produced by the reviewer, dispatch, and the
+reconciler, and consumed by calibration attribution. As string literals in
+four modules, attribution silently rots. One shared enum with the attribution
+rule attached to each member (`counts_against_worker: bool`), so the hygiene
+rule from F5 is code, not convention.
+
+### S7. Callback payload contract
+
+`/api/internal/agent-done`'s body is implicit between entrypoints and the API
+handler, and F7 extends it (token counts). Add `payload_version`, Pydantic
+validation, and one compatibility test per supported version, so a stale agent
+image (the historical callback-401 class of bug) fails loudly and diagnosably.
+
+### S8. Profile + priors YAML schema (community contribution surface)
+
+`capability.models.*` and `aa_priors.yaml` are exactly the files community PRs
+should target ("here is the profile for Devstral-24B"). JSON Schema validated
+at startup and in CI, so a typo'd key is rejected at load instead of silently
+falling through to `capability.default`.
+
+### S9. Status vocabulary
+
+The REST/MCP parked-status name mismatch already happened once. With
+`superseded` and escalation states arriving (F4), freeze the canonical
+`TaskStatus`/`PlanStatus` vocabulary in one module, document aliases, and test
+that MCP, REST, and dashboard all render from the same enum.
+
+### S10. Benchmark suite format (F6 as data, not code)
+
+Calibration tasks defined as data files (YAML: description, files, task_type,
+size bucket, verification command), not Python. "Add a TypeScript leaf pack"
+becomes a data PR with no engine changes.
+
+### S11. Correlation-ID logging
+
+Beneath S1: every orchestrator log line carries `plan_id`/`task_id`/`run_id`
+via a `logging.LoggerAdapter` convention (no structlog stack adoption).
+Reconstructing one task's journey today means grepping free text across
+orchestrator and container logs; this ends that.
+
+## 7. Documentation and framing changes
 
 Principle: the README stays short by deliberate design; framing sharpens, word
 count does not grow materially.
@@ -530,6 +657,8 @@ count does not grow materially.
 | `docs/mcp.md` | Document `dry_run`/`commit_plan` (F8) and `calibrate` when they ship. |
 | `CLAUDE.md` | Gotchas index entries per feature as they land (validator fail-closed, superseded status, outcome attribution rules). |
 | New `docs/calibration.md` | The flagship's user-facing doc: how profiles resolve, how to run `praxis calibrate`, how to read the capability panel, AA-priors table maintenance. |
+| New `docs/harness-contract.md` | S3: the full harness obligations spec (env contract, marker protocol, commit/PR semantics, Bible hygiene) + how to run the conformance suite. |
+| `CONTRIBUTING.md` | Add the standing rule: new seam = written contract + fixture test; link the contract docs and the golden-fixture locations. |
 
 README framing rule (from positioning history): lead with roles +
 capability-awareness as the category; cost is a consequence; "open-weight
@@ -538,17 +667,27 @@ name in the README (positioning.md carries the comparison).
 
 ---
 
-## 7. Sequencing
+## 8. Plan breakdown (10 plans)
 
-| Phase | Contents | Rationale |
-|---|---|---|
-| 1 | F2 + F3 + F5-recording (+ F15, small) | schema, validator, and outcome data start accruing immediately; fixes the wave-deadlock bug |
-| 2 | F9 + F7 | cheapest pass-rate and economics wins; instrumentation before optimization |
-| 3 | F4 | consumes failure_class from phase 1 data |
-| 4 | F6 + F5-learned-overlay + `docs/calibration.md` | the flagship, launched with real data behind it |
-| 5 | F8 dry-run | demo layer over a now-real capability engine |
-| 6 | F10 + F11 + F12 | operational hardening epic |
-| 7 | F13 + F14 | compounding memory + reviewer trust |
+Each plan is one `docs/superpowers/plans/` document, sized for one dogfooding
+run (5-10 leaf tasks), executed via the normal flow (fix-before-advance
+applies). Standardization items are folded into the plan that first needs
+them, never retrofitted; the two contributor-facing contract plans (7, 8) have
+no feature dependencies and can run in parallel with anything after Plan 1.
 
-Each phase = one spec + one plan in `docs/superpowers/`, executed via the
-normal dogfooding flow (fix-before-advance applies).
+| # | Plan (working title) | Contents | Why this grouping |
+|---|---|---|---|
+| 1 | **capability-contracts-foundation** | S2 `LeafTask` model + golden fixtures; S6 failure-taxonomy enum with `counts_against_worker`; S9 status vocabulary freeze; S1 decision-record models + `capability_events` table + bus wiring (emitters stubbed) | Pure schemas + infra, no behavior change, everything later builds on it. Small, low-risk first dogfood target. |
+| 2 | **decomposition-constraints-validator** | F2 (structured constraints in prompt, extended leaf schema, budget-fraction unification); F3 (`core/leaf_validator.py`, informed re-decompose, fail-closed); wave-scheduler defensive fix for dangling deps; F15 supply-chain diff gates (small, same review-path area); S1 emitters for decompose/validate events | The core decomposition upgrade. F15 rides along because it touches the same `diff_guard`/review seam. |
+| 3 | **outcome-recording** | F5-recording (`task_outcomes` table, measurement in `review_task`, `summarize_outcomes` wiring, attribution rules via S6); S11 correlation-ID logging | Instrumentation before optimization: data starts accruing the day this merges, so Plan 6 launches with real history. |
+| 4 | **worker-context-pack** | F9 (declared-files + one-hop-importer skeletons as a Bible section); F7 (`llm_calls` table, router instrumentation, worker tokens via callback); S7 callback `payload_version` | F9 and F7 both touch the dispatch/callback seam; S7 must land with the payload change, not after. Requires agent image rebuilds. |
+| 5 | **adaptive-redecomposition** | F4 (failure classification, split with bounds, `superseded` status, escalation policy wired end-to-end); S1 emitters for split/escalate events | Consumes S6 classes and Plan 3's evidence; the largest behavioral change, isolated on purpose. |
+| 6 | **calibration-flagship** | F6 (aa_priors.yaml + `praxis calibrate` + fixture repo + suite); S10 benchmark-tasks-as-data format; F1 learned overlay (Wilson bounds over `task_outcomes`); `GET /api/capability/{model}` + dashboard panel; `docs/calibration.md` | The flagship launch, assembled from parts that already exist and data already accrued. |
+| 7 | **harness-contract** | S3 (`docs/harness-contract.md` + fake-harness conformance suite in CI) | Contributor-facing; no feature dependency; parallelizable. |
+| 8 | **brain-and-event-contracts** | S4 (call-site registry: input/output schema + parser + provider-output fixtures per site); S5 (event registry + payload docs); S8 profile/priors JSON Schema validation | The remaining contracts, grouped because all three are registry-shaped refactors with fixture tests. S5 MUST precede Plan 9's webhooks. |
+| 9 | **ops-hardening** | F10 resume; F11 worker slots; F12 signed webhooks (consumes S5) | Operational epic once the engine is feature-complete. |
+| 10 | **compounding-memory** | F13 cross-plan repo memory; F14 reviewer calibration analysis (columns already recorded since Plan 3) | Long-horizon differentiators; benefit from months of accumulated data. |
+
+Dependency spine: 1 → 2 → 3 → 5 → 6, with 4 insertable anywhere after 1,
+7 and 8 parallel after 1, 9 after 8, 10 last. The flagship
+(section 5) ships across plans 3, 5, and 6; plan 6 is the marketing moment.

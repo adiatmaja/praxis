@@ -4,6 +4,35 @@ This doc captures *why* Praxis exists, what makes it genuinely different from
 off-the-shelf tools, and an honest account of its limitations. It is the
 reference for keeping the README and marketing aligned with reality.
 
+## The problem, concretely
+
+The narrative front door, told from the buyer's seat. A developer on a
+flat-rate subscription (Claude Pro at $20 is the archetype) plans with a
+frontier model because that is what judgment costs, and cannot afford to
+implement there too: implementation is the token furnace, and it eats the
+subscription window. So they hand the plan to a cheaper open-weight model,
+usually on a different harness, and three struggles follow:
+
+1. **The handoff loses the context.** The plan was executable in the planner's
+   session; the worker starts cold on another harness, missing the decisions,
+   constraints, and contracts that made the plan implementable.
+2. **The plan is sometimes too hard for the worker, and nobody can tell you.**
+   The failure is silent: the worker produces something that looks like code,
+   and you find out it was beyond the model only after the diff is wrong.
+3. **So implementation quality is less than optimal**, and the retries eat the
+   planner quota the setup was meant to protect.
+
+Praxis is built to close these gaps: it carries the plan's contract across the
+provider boundary intact (Static Bible, verbatim `plan_text`), sizes every
+task to the worker that will run it (capability-aware decomposition), and
+escalates what does not fit. This story maps 1:1 onto the three pillars below.
+The README opens "Why Praxis exists" with a paraphrased, conversational version
+of it (humanized wording, no dollar figure); keep the two in sync in spirit,
+never verbatim-duplicated. Never
+anchor the brand to the dollar figure — the story stars the budget-constrained
+developer, but the product is not "the budget orchestrator" (cost stays a
+consequence, per the guidance at the bottom).
+
 ## The core reason Praxis exists
 
 **Software engineering is not one act.** Praxis treats it as four independent
