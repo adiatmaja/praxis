@@ -991,6 +991,150 @@ class TestContextSyncOnPlanCompletion:
         evt = next(e for e in published if e["type"] == "plan_integration_ready")
         assert evt["pr_url"] is None
 
+    async def test_on_plan_completed_no_verify_cmd_skips_gate(
+        self, db: Database
+    ) -> None:
+        """No verify_cmd configured: gate skipped, verify_status == 'skipped'."""
+        task_queue, plan_id, task_id = await _setup(db)
+        await task_queue.update_task_status(task_id, TaskStatus.MERGED)
+
+        published: list[dict] = []
+        bus = EventBus()
+        _orig = bus.publish
+        bus.publish = lambda e: (published.append(e), _orig(e))
+
+        mock_git = AsyncMock()
+        mock_git.open_integration_pr = AsyncMock(
+            return_value="https://github.com/u/a/pull/5"
+        )
+        mock_git.repo_slug = MagicMock(return_value="u/a")
+
+        orch = Orchestrator(
+            task_queue=task_queue,
+            agent_manager=MagicMock(),
+            opus_bridge=AsyncMock(),
+            git_ops=mock_git,
+            event_bus=bus,
+            context_sync=None,
+        )
+
+        await orch.on_plan_completed(plan_id=plan_id)
+
+        types = [e["type"] for e in published]
+        assert "plan_verify_failed" not in types
+        evt = next(e for e in published if e["type"] == "plan_integration_ready")
+        assert evt["verify_status"] == "skipped"
+
+    async def test_on_plan_completed_verify_pass(
+        self, db: Database, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """verify PASS: integration_ready carries verify_status == 'passed'."""
+        task_queue, plan_id, task_id = await _setup(db)
+        await task_queue.update_task_status(task_id, TaskStatus.MERGED)
+        await db.execute(
+            "UPDATE projects SET verify_cmd = ? WHERE id = 'p1'",
+            ("uv run pytest -q",),
+        )
+
+        published: list[dict] = []
+        bus = EventBus()
+        _orig = bus.publish
+        bus.publish = lambda e: (published.append(e), _orig(e))
+
+        from orchestrator.core.github_credentials import PatCredentialProvider
+
+        mock_git = AsyncMock()
+        mock_git.open_integration_pr = AsyncMock(
+            return_value="https://github.com/u/a/pull/5"
+        )
+        mock_git.repo_slug = MagicMock(return_value="u/a")
+        mock_git._provider = PatCredentialProvider("test-token-xyz")
+
+        from orchestrator.core import orchestrator_review as mod
+
+        monkeypatch.setattr(mod, "clone_with_token", MagicMock(), raising=True)
+        monkeypatch.setattr(mod, "checkout_branch", MagicMock(), raising=True)
+        monkeypatch.setattr(
+            mod,
+            "run_verify",
+            AsyncMock(return_value=(True, "all green")),
+            raising=True,
+        )
+
+        orch = Orchestrator(
+            task_queue=task_queue,
+            agent_manager=MagicMock(),
+            opus_bridge=AsyncMock(),
+            git_ops=mock_git,
+            event_bus=bus,
+            context_sync=None,
+        )
+
+        await orch.on_plan_completed(plan_id=plan_id)
+
+        types = [e["type"] for e in published]
+        assert "plan_verify_failed" not in types
+        mock_git.open_integration_pr.assert_awaited_once()
+        evt = next(e for e in published if e["type"] == "plan_integration_ready")
+        assert evt["verify_status"] == "passed"
+
+    async def test_on_plan_completed_verify_fail(
+        self, db: Database, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """verify FAIL: plan_verify_failed published, integration_ready == 'failed'."""
+        task_queue, plan_id, task_id = await _setup(db)
+        await task_queue.update_task_status(task_id, TaskStatus.MERGED)
+        await db.execute(
+            "UPDATE projects SET verify_cmd = ? WHERE id = 'p1'",
+            ("uv run pytest -q",),
+        )
+
+        published: list[dict] = []
+        bus = EventBus()
+        _orig = bus.publish
+        bus.publish = lambda e: (published.append(e), _orig(e))
+
+        from orchestrator.core.github_credentials import PatCredentialProvider
+
+        mock_git = AsyncMock()
+        mock_git.open_integration_pr = AsyncMock(
+            return_value="https://github.com/u/a/pull/9"
+        )
+        mock_git.repo_slug = MagicMock(return_value="u/a")
+        mock_git._provider = PatCredentialProvider("test-token-xyz")
+
+        from orchestrator.core import orchestrator_review as mod
+
+        monkeypatch.setattr(mod, "clone_with_token", MagicMock(), raising=True)
+        monkeypatch.setattr(mod, "checkout_branch", MagicMock(), raising=True)
+        monkeypatch.setattr(
+            mod,
+            "run_verify",
+            AsyncMock(return_value=(False, "1 failed test")),
+            raising=True,
+        )
+
+        orch = Orchestrator(
+            task_queue=task_queue,
+            agent_manager=MagicMock(),
+            opus_bridge=AsyncMock(),
+            git_ops=mock_git,
+            event_bus=bus,
+            context_sync=None,
+        )
+
+        await orch.on_plan_completed(plan_id=plan_id)
+
+        types = [e["type"] for e in published]
+        assert "plan_verify_failed" in types
+        # Still opens the PR so the failure is visible on a PR.
+        mock_git.open_integration_pr.assert_awaited_once()
+        ready = next(e for e in published if e["type"] == "plan_integration_ready")
+        assert ready["verify_status"] == "failed"
+        failed = next(e for e in published if e["type"] == "plan_verify_failed")
+        assert "1 failed test" in failed["output"]
+        assert failed["pr_url"] == "https://github.com/u/a/pull/9"
+
 
 def test_flip_checkbox_marks_task_done():
     from orchestrator.core.git_ops import flip_checklist_item

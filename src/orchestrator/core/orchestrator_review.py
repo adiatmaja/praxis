@@ -11,11 +11,13 @@ import contextlib
 import json
 import logging
 import tempfile
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from orchestrator.core.diff_guard import destructive_deletions
 from orchestrator.core.git_ops import (
+    checkout_branch,
     clone_with_token,
     commit_and_push,
     flip_checklist_item,
@@ -31,6 +33,22 @@ if TYPE_CHECKING:
 
 
 logger = logging.getLogger(__name__)
+
+# Cap on the verify output threaded through the SSE/plan_verify_failed event so
+# a huge test log does not bloat the in-memory event or the dashboard payload.
+_VERIFY_OUTPUT_MAX = 4000
+
+
+@dataclass(frozen=True)
+class _PlanVerifyResult:
+    """Outcome of the whole-plan verify gate.
+
+    ``status`` is one of ``"skipped"`` (no verify_cmd or no credential),
+    ``"passed"``, ``"failed"``, or ``"error"`` (clone/verify raised).
+    """
+
+    status: str
+    output: str = ""
 
 
 class ReviewMixin:
@@ -507,6 +525,53 @@ class ReviewMixin:
                 "_sync_plan_checkbox failed for task %s: %s", task.get("id"), exc
             )
 
+    async def _verify_plan_branch(
+        self,
+        repo_url: str,
+        plan_branch: str,
+        verify_cmd: str | None,
+    ) -> _PlanVerifyResult:
+        """Run the project's verify command against the accumulated plan branch.
+
+        Clones the plan-branch head into a temp dir (token resolved via the
+        git-ops credential provider, exactly like ``_sync_plan_checkbox``) and
+        runs ``run_verify``.  Returns a ``_PlanVerifyResult`` whose ``status``
+        is ``skipped`` when there is nothing to run or no credential, ``passed``
+        / ``failed`` for the gate outcome, and ``error`` if any I/O raised.  All
+        exceptions are caught so this never wedges the completion path.
+        """
+        if not verify_cmd:
+            return _PlanVerifyResult("skipped")
+
+        provider = getattr(self._git, "_provider", None)
+        if provider is None:
+            logger.warning("plan verify gate: credential provider unavailable, skipped")
+            return _PlanVerifyResult("skipped")
+
+        try:
+            token = await provider.token_for_repo(repo_url)
+            if not token:
+                logger.warning(
+                    "plan verify gate: no token resolved for %s, skipped", repo_url
+                )
+                return _PlanVerifyResult("skipped")
+
+            with tempfile.TemporaryDirectory() as checkout_dir:
+                clone_with_token(repo_url, checkout_dir, token)
+                checkout_branch(checkout_dir, plan_branch, token)
+                passed, output = await run_verify(checkout_dir, verify_cmd)
+        except Exception as exc:  # noqa: BLE001 - degrade, never wedge the loop
+            logger.warning(
+                "plan verify gate errored for %s (%s): %s",
+                repo_url,
+                plan_branch,
+                exc,
+            )
+            return _PlanVerifyResult("error")
+
+        status = "passed" if passed else "failed"
+        return _PlanVerifyResult(status, output[:_VERIFY_OUTPUT_MAX])
+
     async def on_plan_completed(self, plan_id: str) -> None:
         """Open a best-effort integration PR and signal readiness, then draft a context sync."""
         plan = await self._tq.get_plan(plan_id)
@@ -522,6 +587,17 @@ class ReviewMixin:
             from orchestrator.core.git_ops import compare_url
 
             base = project.get("default_branch") or "main"
+
+            # Whole-plan verify gate: run the project's verify command against
+            # the accumulated plan branch BEFORE greening the integration PR.
+            # Per-task gates are task-scoped, so a cross-task regression (an
+            # additive change that breaks a pre-existing test in another leaf)
+            # only surfaces against the fully merged plan branch.  All I/O here
+            # degrades to a warning + a verify_status, never wedges the loop.
+            verify_status = await self._verify_plan_branch(
+                repo_url, plan_branch, project.get("verify_cmd")
+            )
+
             pr_url: str | None = None
             try:
                 pr_url = await self._git.open_integration_pr(
@@ -536,6 +612,23 @@ class ReviewMixin:
                 )
             except Exception as exc:  # noqa: BLE001
                 logger.warning("Integration PR open failed for %s: %s", plan_id, exc)
+
+            if verify_status.status == "failed":
+                # Surface the failure on its own event so the plan does not
+                # silently advance; the integration PR is still opened above so
+                # the failure is visible on a real PR.
+                self._bus.publish(
+                    {
+                        "type": "plan_verify_failed",
+                        "project_id": project["id"],
+                        "plan_id": plan_id,
+                        "plan_branch": plan_branch,
+                        "base_branch": base,
+                        "output": verify_status.output,
+                        "pr_url": pr_url,
+                    }
+                )
+
             self._bus.publish(
                 {
                     "type": "plan_integration_ready",
@@ -545,6 +638,7 @@ class ReviewMixin:
                     "base_branch": base,
                     "pr_url": pr_url,
                     "compare_url": compare_url(repo_url, base, plan_branch),
+                    "verify_status": verify_status.status,
                 }
             )
 

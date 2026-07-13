@@ -83,6 +83,31 @@ def clone_with_token(repo_url: str, dest: str, token: str, depth: int = 50) -> N
     logger.info("Cloned %s to %s", repo_url, dest)
 
 
+def checkout_branch(workspace: str, branch: str, token: str) -> None:
+    """Fetch and check out ``branch`` in an existing clone at ``workspace``.
+
+    ``clone_with_token`` only brings down the default branch, so the plan
+    branch must be fetched explicitly before it can be checked out. The token
+    is supplied via ``GH_TOKEN`` for the fetch, consistent with the other
+    helpers here.
+    """
+    env = {**os.environ, "GH_TOKEN": token}
+    subprocess.run(  # noqa: S603
+        ["git", *_token_git_args(), "-C", workspace, "fetch", "origin", branch],
+        check=True,
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+    subprocess.run(  # noqa: S603
+        ["git", "-C", workspace, "checkout", branch],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    logger.info("Checked out branch %s in %s", branch, workspace)
+
+
 def commit_and_push(
     workspace: str,
     token: str,
