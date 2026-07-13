@@ -55,6 +55,43 @@ _REAL_WORK_RE: re.Pattern[str] = re.compile(
     re.VERBOSE | re.IGNORECASE,
 )
 
+# Sibling guard: a leaf that names a concrete docs/file edit is real work even
+# when it also runs the suite (e.g. a terminal "finalize" step that updates
+# CLAUDE.md AND runs the full gate). Conservative: only match when the leaf
+# clearly names a doc/file to edit, not incidental mentions.
+_DOCS_EDIT_RE: re.Pattern[str] = re.compile(
+    r"""
+    \bCLAUDE\.md\b
+    | \bREADME\b
+    | \bdocs/                                # a docs/ path
+    | \bgotcha\b
+    | \bdocumentation\b
+    | (update|edit|add)[^.\n]*\.md\b         # "update ... foo.md"
+    | add[^.\n]*\bline(s)?\s+to\b            # "add 3 lines to ..."
+    """,
+    re.VERBOSE | re.IGNORECASE,
+)
+
+# Header pattern for authored "### Task N" leaves in an externally-authored plan.
+_PLAN_TASK_HEADER_RE: re.Pattern[str] = re.compile(
+    r"^###\s+Task\s+\d+", re.IGNORECASE | re.MULTILINE
+)
+
+
+def count_plan_tasks(plan: str) -> int:
+    """Count ``### Task N`` markdown headers in an authored plan.
+
+    Matches headers case-insensitively and allows optional trailing text after
+    the number (e.g. ``### Task 8: Finalize``).
+
+    Args:
+        plan: The externally-authored plan text.
+
+    Returns:
+        The number of ``### Task N`` headers found (0 if none).
+    """
+    return len(_PLAN_TASK_HEADER_RE.findall(plan))
+
 
 def _is_verification_only(task: dict[str, Any]) -> bool:
     """Return True when a task is purely verification with no source edits expected.
@@ -70,7 +107,11 @@ def _is_verification_only(task: dict[str, Any]) -> bool:
     text = " ".join(
         str(task.get(field) or "") for field in ("title", "description", "plan_text")
     )
-    return bool(_VERIFY_ONLY_RE.search(text)) and not bool(_REAL_WORK_RE.search(text))
+    if not _VERIFY_ONLY_RE.search(text):
+        return False
+    if _REAL_WORK_RE.search(text):
+        return False
+    return not _DOCS_EDIT_RE.search(text)
 
 
 def drop_verification_only_leaves(opus_plan: dict[str, Any]) -> dict[str, Any]:
@@ -198,6 +239,20 @@ async def decompose_plan(
         )
     normalize_slugs(opus_plan)
     drop_verification_only_leaves(opus_plan)
+
+    authored_count = count_plan_tasks(plan)
+    leaf_count = len(opus_plan["tasks"])
+    if authored_count > 0 and leaf_count < authored_count:
+        logger.warning(
+            "Decomposition emitted fewer leaves (%d) than the plan's authored "
+            "task count (%d); a leaf may have been silently dropped.",
+            leaf_count,
+            authored_count,
+        )
+        opus_plan["decompose_warning"] = {
+            "authored_task_count": authored_count,
+            "leaf_count": leaf_count,
+        }
 
     scrubbed_context = scrub_context(context)
     if scrubbed_context is not None:

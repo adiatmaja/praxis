@@ -7,6 +7,7 @@ from typing import Any
 import pytest
 
 from orchestrator.core.execute_plan_decompose import (
+    count_plan_tasks,
     decompose_plan,
     drop_verification_only_leaves,
 )
@@ -312,3 +313,125 @@ def test_drop_verification_only_leaves_multiple_verify_leaves():
     deploy_task = next(t for t in result["tasks"] if t["slug"] == "deploy")
     assert "lint" not in deploy_task["depends_on"]
     assert "pytest-run" not in deploy_task["depends_on"]
+
+
+# ---------------------------------------------------------------------------
+# count_plan_tasks unit tests (Fix 3, Part A)
+# ---------------------------------------------------------------------------
+
+
+def test_count_plan_tasks_zero_when_no_headers():
+    plan = "Some free-form plan with no task headers.\n\n## Overview\nblah"
+    assert count_plan_tasks(plan) == 0
+
+
+def test_count_plan_tasks_counts_several():
+    plan = "### Task 1\ndo a thing\n\n### Task 2\ndo another\n\n### Task 3\nfinish up\n"
+    assert count_plan_tasks(plan) == 3
+
+
+def test_count_plan_tasks_allows_trailing_text_and_case_insensitive():
+    plan = (
+        "### Task 1: Scaffold\nx\n\n"
+        "### task 2 - add tests\ny\n\n"
+        "### TASK 8: Finalize\nz\n"
+    )
+    assert count_plan_tasks(plan) == 3
+
+
+# ---------------------------------------------------------------------------
+# decompose_warning tests (Fix 3, Part A)
+# ---------------------------------------------------------------------------
+
+
+async def test_decompose_warning_set_when_leaves_fewer_than_authored():
+    """Router drops a leaf (2 authored -> 1 leaf): decompose_warning is attached."""
+    raw = '{"tasks":[{"id":"t1","title":"A","description":"d","depends_on":[]}]}'
+    router = _FakeRouter(raw)
+    plan = "### Task 1\nfirst\n\n### Task 2\nsecond\n"
+    opus_plan = await decompose_plan(
+        plan=plan,
+        model="qwen3.6-27b",
+        context=None,
+        router=router,
+        effective_settings=_FakeEffective(),
+        project_id="p1",
+    )
+    assert opus_plan["decompose_warning"] == {
+        "authored_task_count": 2,
+        "leaf_count": 1,
+    }
+
+
+async def test_decompose_warning_absent_when_leaves_equal_authored():
+    raw = (
+        '{"tasks":[{"id":"t1","title":"A","description":"d","depends_on":[]},'
+        '{"id":"t2","title":"B","description":"d","depends_on":[]}]}'
+    )
+    router = _FakeRouter(raw)
+    plan = "### Task 1\nfirst\n\n### Task 2\nsecond\n"
+    opus_plan = await decompose_plan(
+        plan=plan,
+        model="qwen3.6-27b",
+        context=None,
+        router=router,
+        effective_settings=_FakeEffective(),
+        project_id="p1",
+    )
+    assert "decompose_warning" not in opus_plan
+
+
+async def test_decompose_warning_absent_when_no_authored_headers():
+    """No '### Task N' headers means authored count is 0; never warn."""
+    raw = '{"tasks":[{"id":"t1","title":"A","description":"d","depends_on":[]}]}'
+    router = _FakeRouter(raw)
+    opus_plan = await decompose_plan(
+        plan="free-form plan with no task headers",
+        model="qwen3.6-27b",
+        context=None,
+        router=router,
+        effective_settings=_FakeEffective(),
+        project_id="p1",
+    )
+    assert "decompose_warning" not in opus_plan
+
+
+# ---------------------------------------------------------------------------
+# Docs-finalization leaf protection (Fix 3, Part B)
+# ---------------------------------------------------------------------------
+
+
+def test_drop_keeps_docs_finalization_leaf_that_also_runs_suite():
+    """A terminal leaf editing CLAUDE.md is retained even though it runs the suite."""
+    tasks = [
+        _make_task("impl", "Implement feature", "Write the code"),
+        _make_task(
+            "finalize",
+            "Finalize docs",
+            "Update CLAUDE.md gotcha index (add 3 lines) then run the full suite",
+            depends_on=["impl"],
+        ),
+    ]
+    opus_plan: dict[str, Any] = {"tasks": tasks}
+    result = drop_verification_only_leaves(opus_plan)
+    slugs = [t["slug"] for t in result["tasks"]]
+    assert "finalize" in slugs
+    assert "impl" in slugs
+
+
+def test_drop_still_removes_pure_verification_leaf():
+    """A pure 'run the suite, commit only if formatting changed' leaf is dropped."""
+    tasks = [
+        _make_task("impl", "Implement feature", "Write the code"),
+        _make_task(
+            "verify",
+            "Run the test suite",
+            "Run the test suite and commit only if formatting changed",
+            depends_on=["impl"],
+        ),
+    ]
+    opus_plan: dict[str, Any] = {"tasks": tasks}
+    result = drop_verification_only_leaves(opus_plan)
+    slugs = [t["slug"] for t in result["tasks"]]
+    assert "verify" not in slugs
+    assert "impl" in slugs

@@ -139,6 +139,17 @@ class Orchestrator(DispatchMixin, ReviewMixin, ReconcileMixin, ImprovementMixin)
             logger.error("execute-plan decomposition failed for %s: %s", plan_id, exc)
             return
 
+        warning = opus_plan.get("decompose_warning")
+        if warning:
+            self._bus.publish(
+                {
+                    "type": "plan_decompose_dropped_leaf",
+                    "plan_id": plan_id,
+                    "authored_task_count": warning["authored_task_count"],
+                    "leaf_count": warning["leaf_count"],
+                }
+            )
+
         await self._tq.activate_plan(plan_id, opus_plan, payload["branch"])
         self._bus.publish(
             {
