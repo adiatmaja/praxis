@@ -43,7 +43,8 @@ RUN claude plugin install superpowers || echo "superpowers install deferred to r
 RUN git config --global credential.helper \
     '!f() { echo username=x-access-token; echo password=$GITHUB_TOKEN; }; f' \
     && git config --global user.email "praxis@orchestrator.local" \
-    && git config --global user.name "Praxis Orchestrator"
+    && git config --global user.name "Praxis Orchestrator" \
+    && git config --global --add safe.directory /app
 
 WORKDIR /app
 

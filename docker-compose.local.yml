@@ -13,9 +13,17 @@ services:
     volumes:
       - ./src:/app/src
       - ./web:/app/web
+      # Mount the repo's .git so build_info.py can derive the real commit SHA at
+      # runtime. Dev mounts source and hot-reloads, so the image's baked
+      # PRAXIS_BUILD_SHA arg is always stale; blanking the env below makes
+      # _resolve_commit() fall through to `git rev-parse` against this mount.
+      - ./.git:/app/.git:ro
     command: uvicorn orchestrator.main:app --host 0.0.0.0 --port 8080 --reload
     environment:
       - AUTH_TOKEN=${AUTH_TOKEN:-dev-token}
       - GITHUB_TOKEN=${GITHUB_TOKEN:-ghp_dev}
       - DATABASE_URL=sqlite+aiosqlite:///data/orchestrator.db
       - LM_STUDIO_URL=${LM_STUDIO_URL:-http://host.docker.internal:1234}
+      # Empty so build_info._resolve_commit() ignores the baked "dev" arg and
+      # derives the live SHA from the mounted .git (stops /health showing "dev").
+      - PRAXIS_BUILD_SHA=

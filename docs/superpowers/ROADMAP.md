@@ -5,7 +5,7 @@
 > (features F1-F15, standardization contracts S1-S11, 10-plan breakdown).
 
 **Last updated:** 2026-07-13
-**Base:** `origin/main @ fdea53d` (Plan 1 integration PR #53 merged)
+**Base:** `origin/main @ 2d39ed5` (Plan 1 merged; Plan 1.5 dogfood fixes landed on top)
 
 ---
 
@@ -38,8 +38,8 @@ Dependency spine: **1 -> 2 -> 3 -> 5 -> 6**, with 4 insertable anywhere after 1,
 | # | Plan | Contents | Status | Notes |
 |---|------|----------|--------|-------|
 | 1 | **capability-contracts-foundation** | S2 `LeafTask` model + golden fixtures; S6 failure-taxonomy enum; S9 status-vocab freeze; S1 decision-record models + `capability_events` table + bus wiring (emitters stubbed) | **DONE (code)** / fixes pending | Merged PR #53 @ `fdea53d`. Dogfood 7.5/10. See "Plan 1 fixes" below before Plan 2. |
-| 1.5 | **plan-1-dogfood-fixes** | Findings #1-#4 + dropped CLAUDE.md lines | **IN PROGRESS (next task)** | Gates Plan 2. Report: `data/dogfood-plan1-capability-contracts-2026-07-12.md`. |
-| 2 | **decomposition-constraints-validator** | F2 (structured constraints, extended leaf schema, budget-fraction unification); F3 (`core/leaf_validator.py`, informed re-decompose, fail-closed); wave-scheduler dangling-dep fix; F15 supply-chain diff gates; S1 emitters for decompose/validate | **BLOCKED** | Unblocks when Plan 1 fixes land. Core decomposition upgrade. |
+| 1.5 | **plan-1-dogfood-fixes** | Findings #1-#4 + dropped CLAUDE.md lines | **DONE** | Landed on main. Report: `data/dogfood-plan1-capability-contracts-2026-07-12.md`. See "Plan 1.5 fixes landed" below. |
+| 2 | **decomposition-constraints-validator** | F2 (structured constraints, extended leaf schema, budget-fraction unification); F3 (`core/leaf_validator.py`, informed re-decompose, fail-closed); wave-scheduler dangling-dep fix; F15 supply-chain diff gates; S1 emitters for decompose/validate | **TODO (next)** | Unblocked: Plan 1.5 fixes landed. Core decomposition upgrade. |
 | 3 | **outcome-recording** | F5-recording (`task_outcomes` table, measurement in `review_task`, `summarize_outcomes` wiring, S6 attribution); S11 correlation-ID logging | **TODO** | Instrumentation before optimization; data accrues for Plan 6. |
 | 4 | **worker-context-pack** | F9 (declared-files + one-hop-importer skeletons in Bible); F7 (`llm_calls` table, router + worker-token instrumentation); S7 callback `payload_version` | **TODO (insertable after 1)** | Requires agent image rebuilds. |
 | 5 | **adaptive-redecomposition** | F4 (failure classification, split with bounds, `superseded` status, escalation wired e2e); S1 emitters for split/escalate | **TODO** | Consumes S6 + Plan 3 evidence. Largest behavioral change. |
@@ -51,30 +51,34 @@ Dependency spine: **1 -> 2 -> 3 -> 5 -> 6**, with 4 insertable anywhere after 1,
 
 ---
 
-## NEXT UP — Plan 1 dogfood fixes (blocks Plan 2)
+## Plan 1.5 fixes landed (unblocks Plan 2)
 
-Full report: `data/dogfood-plan1-capability-contracts-2026-07-12.md`.
-Base: `origin/main @ fdea53d`. TDD (`superpowers:test-driven-development`); commit + push to
-main when green; rebuild the 3 harness agent images after any entrypoint change. No em dashes.
+Full report: `data/dogfood-plan1-capability-contracts-2026-07-12.md`. Implemented via TDD by
+dispatched sonnet agents; the 3 harness agent images were rebuilt after the entrypoint changes.
 
-- [ ] **#1 HIGH — protected-branch guard.** `branch=<protected>` is a silent footgun (burned 3
-  retries on `git checkout -b main`; worst case a worker PR straight to main).
-  - [ ] (a) Reject/auto-rewrite base in {default, `main`, `master`, `release*`} at `execute_plan`
-    + dispatch + project-create (reuse the protected-set predicate in `core/merge_policy.py`).
-  - [ ] (b) Entrypoint (all 3 harnesses) hard-exits if `BASE_BRANCH` is protected, before push/PR.
-  - [ ] (c) Deterministic branch-setup failure is non-retryable (do not burn 3 retries).
-  - [ ] (d) Backstop (own follow-up): branch protection on `main` + least-privilege App token.
-- [ ] **#2 HIGH — whole-plan verify gate.** Per-task verification is task-scoped, so a
-  cross-cutting regression (`SUPERSEDED` broke `test_schemas.py`) passed review and failed only
-  at integration. Run full `pytest` on the accumulated plan branch before greening the
-  integration PR; make final full-suite verification a built-in loop stage, not a droppable leaf.
-- [ ] **#3 MED — protect terminal leaves from decompose drop.** Identical plan decomposed 8->8
-  then 8->7 (dropped Task 8: full-suite gate + 3 CLAUDE.md lines). Make verification/docs-finalization
-  a built-in terminal stage; flag when leaf count < plan `### Task N` count.
-- [ ] **#4 LOW — build stamp.** `/health` shows `build.commit = "dev"`; set `PRAXIS_BUILD_SHA`
-  in `docker-compose.local.yml` or derive from git in-container.
-- [ ] **Follow-through — dropped Task 8 docs:** add the 3 `CLAUDE.md` gotcha-index lines
-  (LeafTask contract; status_vocab; capability decision records / stubbed emitter).
+- [x] **#1 HIGH — protected-branch guard.** (a) `execute_plan` + `dispatch` reject a protected
+  base (`main`/`master`/`release*`) with 422, reusing `is_protected_branch` from
+  `core/merge_policy.py` (project-create left alone: `default_branch` legitimately is `main`).
+  (b) All 3 harness entrypoints hard-exit before any clone/push/PR when `BASE_BRANCH` is
+  protected, printing the sentinel `PRAXIS_FATAL_PROTECTED_BASE`. (c) `orchestrator_reconcile`
+  treats that sentinel (and `a branch named ... already exists`) as non-retryable, so a
+  deterministic branch-setup failure no longer burns the 3 retries.
+  - [ ] (d) Backstop (own follow-up, NOT this task): GitHub branch protection on `main` +
+    least-privilege repo-scoped App token.
+- [x] **#2 HIGH — whole-plan verify gate.** `on_plan_completed` now runs the project's
+  configured `verify_cmd` against the accumulated plan branch before greening the integration
+  PR (language-agnostic: whatever the project configured; skipped when unset). On failure it
+  still opens the PR but publishes `plan_verify_failed` and tags `plan_integration_ready` with
+  `verify_status="failed"`. Built-in loop stage, not a droppable leaf.
+- [x] **#3 MED — protect terminal leaves from decompose drop.** `decompose_plan` now counts the
+  authored `### Task N` headers and, when leaves < authored count, logs a warning, sets
+  `opus_plan["decompose_warning"]`, and emits `plan_decompose_dropped_leaf`. `drop_verification_only_leaves`
+  now retains a verify leaf that also names a concrete docs/file edit (`CLAUDE.md`/`README`/`docs/`/`.md`).
+- [x] **#4 LOW — build stamp.** `docker-compose.local.yml` mounts `./.git:ro` and blanks
+  `PRAXIS_BUILD_SHA` so `build_info._resolve_commit()` derives the live SHA via `git rev-parse`
+  (Dockerfile marks `/app` a safe git dir). `/health` stops reporting `build.commit = "dev"`.
+- [x] **Follow-through — dropped Task 8 docs:** the 3 `CLAUDE.md` gotcha-index lines were added
+  (LeafTask contract; frozen status_vocab; stubbed capability decision-record emitter).
 
 ---
 

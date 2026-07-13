@@ -277,6 +277,9 @@ the relevant subsystem. Condensed index:
 - **Mechanical verify gate runs before the brain** (`core/verify_gate.py`) — non-zero exit fails free.
 - **Build stamp on /health + /api/status** (`core/build_info.py`) exposes running commit; restart after deploy.
 - **Decomposition emits per-leaf `plan_text`** (verbatim contract) so review checks against the real spec.
+- **`LeafTask` is the S2 decomposition contract** (`models/schemas.py`) with golden fixtures; a decomposed leaf must round-trip through it, so extend the fixtures when you add a field.
+- **Status vocabulary is frozen in `core/status_vocab.py`** (S9) drawn from the `TaskStatus`/`PlanStatus` enums; add a value to the enum AND its exhaustive `test_schemas` assertion together, never one alone (a lone `SUPERSEDED` add broke that test at integration).
+- **Capability decision records live in `core/capability_events.py`** (S1: versioned Pydantic events + `capability_events` table + bus wiring), but the emitter is STILL a stub; no production caller constructs `CapabilityEventEmitter(` yet (Plans 2/3/5 wire it).
 - **`opus_bridge.py` + `users.token_hash` are legacy names on purpose** (renames deferred as churn).
 - **Blocked workers ask, they don't guess** — `Status: BLOCKED`/`NEEDS_CONTEXT` → `NEEDS_CLARIFICATION`
   (no retry burned) → brain `answer_clarification` → re-dispatch or human gate. All three harnesses parse it.
