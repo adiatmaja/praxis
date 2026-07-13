@@ -86,6 +86,60 @@ async def test_execute_plan_missing_plan_returns_422(
     assert resp.status_code == 422
 
 
+@pytest.mark.parametrize("branch", ["main", "master", "Release-1.2"])
+async def test_execute_plan_rejects_protected_base_branch(
+    client: AsyncClient,
+    auth_headers: dict[str, str],
+    seeded_user: str,
+    monkeypatch: pytest.MonkeyPatch,
+    db: Database,
+    branch: str,
+) -> None:
+    """A protected base branch is rejected 422 before any plan/project is created."""
+    monkeypatch.setattr(app.state, "llm_router", AsyncMock(), raising=False)
+
+    resp = await client.post(
+        "/api/execute-plan",
+        headers=auth_headers,
+        json={
+            "repo_url": "https://github.com/o/protected",
+            "plan": "Build a thing with a model and a test",
+            "model": "qwen3",
+            "branch": branch,
+        },
+    )
+    assert resp.status_code == 422, resp.text
+    assert "protected branch" in resp.json()["detail"]
+    # No project must have been created as a side effect.
+    row = await db.fetch_one(
+        "SELECT id FROM projects WHERE repo_url = ?",
+        ("https://github.com/o/protected",),
+    )
+    assert row is None
+
+
+async def test_execute_plan_allows_feature_base_branch(
+    client: AsyncClient,
+    auth_headers: dict[str, str],
+    seeded_user: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A non-protected feature branch is accepted."""
+    monkeypatch.setattr(app.state, "llm_router", AsyncMock(), raising=False)
+
+    resp = await client.post(
+        "/api/execute-plan",
+        headers=auth_headers,
+        json={
+            "repo_url": "https://github.com/o/feat",
+            "plan": "Build a thing with a model and a test",
+            "model": "qwen3",
+            "branch": "feature/x",
+        },
+    )
+    assert resp.status_code == 201, resp.text
+
+
 async def test_execute_plan_rejects_stale_expected_base_sha(
     client: AsyncClient,
     auth_headers: dict[str, str],
@@ -111,7 +165,7 @@ async def test_execute_plan_rejects_stale_expected_base_sha(
                 "repo_url": "https://github.com/o/r",
                 "plan": "# plan\n- do a thing",
                 "model": "m",
-                "branch": "main",
+                "branch": "feature/base",
                 "expected_base_sha": "local111",
             },
         )
@@ -156,7 +210,7 @@ async def test_execute_plan_rejects_empty_expected_base_sha(
             "repo_url": "https://github.com/o/r",
             "plan": "# plan\n- do a thing",
             "model": "m",
-            "branch": "main",
+            "branch": "feature/base",
             "expected_base_sha": "   ",
         },
     )

@@ -154,6 +154,18 @@ class ReconcileMixin:
         # commits), surface a clear explanation instead of the generic exit reason.
         if logs and ("No commits between" in logs or "no commits" in logs.lower()):
             reason = self._classify_pr_failure(logs)
+        # A deterministic branch-setup failure (protected base) will recur on
+        # every attempt, so it must NOT burn the retry budget. Detect the
+        # entrypoint sentinel / git "branch already exists" message and mark it
+        # terminal.
+        if logs and self._is_nonretryable(logs):
+            reason = (
+                "Deterministic branch-setup failure: the base branch is protected "
+                "(workers must never target main/master/release*). Re-dispatch "
+                "with a feature branch. Original: " + reason
+            )
+            await self._resolve_failed_run(run, reason, logs=logs, can_retry=False)
+            return
         # Docker is available on this path (we observed the container exit),
         # so a fresh dispatch can succeed — allow a bounded retry. However,
         # provider/gateway errors are transient and must not burn the budget.
@@ -265,6 +277,27 @@ class ReconcileMixin:
                 f"Original error: {raw.strip()}"
             )
         return raw.strip()
+
+    @staticmethod
+    def _is_nonretryable(logs: str) -> bool:
+        """Return True when logs reveal a deterministic branch-setup failure.
+
+        These failures recur identically on every attempt (the base branch is
+        protected), so a bounded retry only wastes the budget. Detected via the
+        entrypoint sentinel ``PRAXIS_FATAL_PROTECTED_BASE`` or the git message
+        emitted when a clone already sits on the target branch
+        (``a branch named '<x>' already exists``).
+
+        Args:
+            logs: Full container log text.
+
+        Returns:
+            True when the failure is deterministic and must not be retried.
+        """
+        if "PRAXIS_FATAL_PROTECTED_BASE" in logs:
+            return True
+        lowered = logs.lower()
+        return "a branch named" in lowered and "already exists" in lowered
 
     @staticmethod
     def is_provider_error(logs: str) -> bool:

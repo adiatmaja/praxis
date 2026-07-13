@@ -22,6 +22,7 @@ from orchestrator.core.execute_plan_decompose import branch_slug, normalize_slug
 from orchestrator.core.git_ops import GitOps
 from orchestrator.core.github_credentials import build_credential_provider
 from orchestrator.core.harnesses import default_harness_id
+from orchestrator.core.merge_policy import is_protected_branch
 from orchestrator.core.preflight import (
     PreflightError,
     credential_configured,
@@ -98,6 +99,21 @@ async def execute_plan(request: Request, body: ExecutePlanRequest) -> dict[str, 
     db = state.db
     queue = state.task_queue
     settings = state.settings
+
+    # Guard: a protected branch (main/master/release*) must never be used as a
+    # plan base. Workers only ever target feature branches; targeting main would
+    # collapse two-tier branching and let a worker PR aim at main directly. This
+    # runs before any project/plan is created so it is a clean, side-effect-free
+    # rejection.
+    if body.branch and is_protected_branch(body.branch, "main"):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=(
+                f"branch {body.branch} is a protected branch and cannot be used "
+                "as a plan base; omit branch to auto-create "
+                "plan/execute-<slug>, or pass a feature branch"
+            ),
+        )
 
     if body.expected_base_sha is not None:
         expected = (body.expected_base_sha or "").strip()

@@ -236,6 +236,85 @@ async def test_provider_error_does_not_consume_retry(db: Database) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Dogfood #1: protected-base branch-setup failure is non-retryable
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_is_nonretryable_detects_protected_base_sentinel() -> None:
+    logs = (
+        "=== agent starting ===\n"
+        "PRAXIS_FATAL_PROTECTED_BASE: base branch 'main' is protected; "
+        "workers must never target it\n"
+    )
+    assert ReconcileMixin._is_nonretryable(logs) is True
+
+
+@pytest.mark.unit
+def test_is_nonretryable_detects_branch_already_exists() -> None:
+    logs = "fatal: a branch named 'main' already exists"
+    assert ReconcileMixin._is_nonretryable(logs) is True
+
+
+@pytest.mark.unit
+def test_is_nonretryable_ignores_normal_failure() -> None:
+    assert ReconcileMixin._is_nonretryable("TypeError: boom\nexit code 1") is False
+
+
+@pytest.mark.integration
+async def test_protected_base_failure_does_not_consume_retry(db: Database) -> None:
+    """A protected-base branch-setup failure must fail WITHOUT burning a retry.
+
+    Even though attempts remain (attempt=1 < max_retries=3), the deterministic
+    sentinel makes the run non-retryable: no ``task_retry`` is emitted and the
+    task ends ``failed``.
+    """
+    task_queue, _, task_id = await _setup(db)
+    await task_queue.update_task_status(task_id, TaskStatus.IN_PROGRESS)
+    run_id = await task_queue.create_agent_run(task_id, "container-prot")
+
+    sentinel_logs = (
+        "PRAXIS_FATAL_PROTECTED_BASE: base branch 'main' is protected; "
+        "workers must never target it"
+    )
+    bus = EventBus()
+    events = bus.subscribe()
+
+    mock_agents = MagicMock()
+    mock_agents.get_container_logs.return_value = sentinel_logs
+    # Container exited non-zero without a completion callback.
+    mock_agents.get_container_status.return_value = {
+        "status": "exited",
+        "exit_code": 1,
+    }
+
+    orch = Orchestrator(
+        task_queue=task_queue,
+        agent_manager=mock_agents,
+        opus_bridge=AsyncMock(),
+        git_ops=AsyncMock(),
+        event_bus=bus,
+    )
+    orch._callback_grace = 0.0
+
+    run = await task_queue.get_agent_run(run_id)
+    assert run is not None
+    await orch._reconcile_exited(dict(run), {"status": "exited", "exit_code": 1})
+
+    task = await task_queue.get_task(task_id)
+    assert task is not None
+    # Attempt must NOT have advanced; task must be terminally failed.
+    assert int(task["attempt"]) == 1
+    assert task["status"] == TaskStatus.FAILED
+
+    published = []
+    while not events.empty():
+        published.append(events.get_nowait())
+    assert not any(e["type"] == "task_retry" for e in published)
+    assert any(e["type"] == "task_failed" for e in published)
+
+
+# ---------------------------------------------------------------------------
 # Fix 3: Disk-headroom and concurrency-cap preflight in AgentManager
 # ---------------------------------------------------------------------------
 

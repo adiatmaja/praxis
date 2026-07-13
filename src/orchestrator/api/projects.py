@@ -39,6 +39,10 @@ async def create_project(request: Request, body: ProjectCreate) -> dict[str, Any
             detail="No user found. Seed a user first.",
         )
 
+    # NOTE: the protected-branch guard (main/master/release*) applies only to
+    # WORK/BASE branches at execute_plan and dispatch, NOT here: a project's
+    # configured default_branch legitimately IS the protected branch (main), so
+    # rejecting it would be wrong. See core/merge_policy.is_protected_branch.
     # Preflight: validate remote reachability before inserting a project row.
     settings = request.app.state.settings
     provider = build_credential_provider(settings)

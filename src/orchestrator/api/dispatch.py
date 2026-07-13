@@ -24,6 +24,7 @@ from orchestrator.core.github_credentials import (
     build_credential_provider,
 )
 from orchestrator.core.harnesses import default_harness_id
+from orchestrator.core.merge_policy import is_protected_branch
 from orchestrator.core.preflight import (
     PreflightError,
     credential_configured,
@@ -58,6 +59,19 @@ async def _preflight(body: DispatchRequest, settings: Any) -> list[str]:
     Raises:
         HTTPException: On validation failure or upstream communication error.
     """
+    # Guard: a protected branch (main/master/release*) must never be used as a
+    # base branch. Workers only target feature branches; a re-dispatch always
+    # creates a fresh PR off the base. This runs before any DB writes.
+    if body.branch and is_protected_branch(body.branch, "main"):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=(
+                f"branch {body.branch} is a protected branch and cannot be used "
+                "as a plan base; omit branch to auto-create plan/mcp-<slug>, "
+                "or pass a feature branch"
+            ),
+        )
+
     # plan_path without branch: we cannot know which remote ref to check.
     if body.plan_path is not None and body.branch is None:
         raise HTTPException(

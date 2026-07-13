@@ -15,6 +15,19 @@ WORKSPACE="/home/agent/workspace"
 STATUS="completed"
 PR_URL=""
 
+# Guard: workers must NEVER target a protected base branch (main/master/release*).
+# Doing so collapses two-tier branching and (worst case) points a PR at main.
+# Match case-insensitively and hard-exit before any clone/branch/push/PR.
+base_branch_lower=$(printf '%s' "${BASE_BRANCH}" | tr '[:upper:]' '[:lower:]')
+case "${base_branch_lower}" in
+    main | master | release*)
+        printf 'PRAXIS_FATAL_PROTECTED_BASE: base branch %s is protected; workers must never target it\n' \
+            "'${BASE_BRANCH}'"
+        STATUS="failed"
+        exit 1
+        ;;
+esac
+
 json_escape() {
     python -c 'import json,sys; print(json.dumps(sys.stdin.read()))'
 }

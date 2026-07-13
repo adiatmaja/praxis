@@ -41,6 +41,50 @@ async def test_dispatch_creates_project_plan_and_task(
     assert task_resp.json()["task"]["status"] == "pending"
 
 
+@pytest.mark.parametrize("branch", ["main", "master", "Release-1.2"])
+async def test_dispatch_rejects_protected_base_branch(
+    client: AsyncClient,
+    auth_headers: dict[str, str],
+    seeded_user: str,
+    db: Database,
+    branch: str,
+) -> None:
+    """A protected base branch is rejected 422 before any DB writes."""
+    body = {
+        "repo_url": "https://github.com/u/protected",
+        "instructions": "Add a /health endpoint",
+        "model": "qwen3-32b",
+        "branch": branch,
+    }
+    resp = await client.post("/api/dispatch", json=body, headers=auth_headers)
+    assert resp.status_code == 422, resp.text
+    assert "protected branch" in resp.json()["detail"]
+    # No project must have been created as a side effect.
+    row = await db.fetch_one(
+        "SELECT id FROM projects WHERE repo_url = ?",
+        ("https://github.com/u/protected",),
+    )
+    assert row is None
+
+
+async def test_dispatch_allows_feature_base_branch(
+    client: AsyncClient, auth_headers: dict[str, str], seeded_user: str
+) -> None:
+    """A non-protected feature branch is accepted."""
+    with patch("orchestrator.api.dispatch.GitOps") as mock_git:
+        inst = mock_git.return_value
+        inst.remote_branch_exists = AsyncMock(return_value=True)
+        inst.remote_head_sha = AsyncMock(return_value="abcdef")
+        body = {
+            "repo_url": "https://github.com/u/featrepo",
+            "instructions": "Add a /health endpoint",
+            "model": "qwen3-32b",
+            "branch": "feature/x",
+        }
+        resp = await client.post("/api/dispatch", json=body, headers=auth_headers)
+    assert resp.status_code == 201, resp.text
+
+
 async def test_dispatch_reuses_project_and_updates_model(
     client: AsyncClient, auth_headers: dict[str, str], seeded_user: str
 ) -> None:
@@ -360,7 +404,7 @@ async def test_dispatch_rejects_stale_expected_base_sha(
                 "repo_url": "https://github.com/o/r",
                 "instructions": "do it",
                 "model": "m",
-                "branch": "main",
+                "branch": "feature/base",
                 "expected_base_sha": "local111",
             },
         )
@@ -382,7 +426,7 @@ async def test_dispatch_accepts_matching_expected_base_sha(
                 "repo_url": "https://github.com/o/r",
                 "instructions": "do it",
                 "model": "m",
-                "branch": "main",
+                "branch": "feature/base",
                 "expected_base_sha": "same777",
             },
         )
@@ -421,7 +465,7 @@ async def test_dispatch_rejects_empty_expected_base_sha(
                 "repo_url": "https://github.com/o/r",
                 "instructions": "do it",
                 "model": "m",
-                "branch": "main",
+                "branch": "feature/base",
                 "expected_base_sha": "   ",
             },
         )
