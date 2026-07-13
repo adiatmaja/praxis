@@ -340,3 +340,25 @@ async def test_record_clarification_answer_requeues_with_progress_note(
     assert "Which config file?" in task["progress_note"]
     assert "Use config/praxis.yaml" in task["progress_note"]
     assert task["attempt"] == before_attempt + 1
+
+
+@pytest.mark.integration
+async def test_dispatchable_raises_on_dangling_dependency(db: Database) -> None:
+    """A task with depends_on referencing an unknown slug raises ValueError."""
+    opus_plan = {
+        "plan_summary": "Test",
+        "plan_slug": "test",
+        "tasks": [
+            {"title": "A", "description": "a", "slug": "a", "depends_on": []},
+            {
+                "title": "B",
+                "description": "b",
+                "slug": "b",
+                "depends_on": ["nonexistent"],
+            },
+        ],
+    }
+    queue, plan_id = await _activate_test_plan(db, opus_plan)
+
+    with pytest.raises(ValueError, match="dangling dependency"):
+        await queue.get_dispatchable_tasks(plan_id)
