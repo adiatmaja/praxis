@@ -19,12 +19,10 @@ from orchestrator.core.plan_review import (
     build_review_prompt,
     parse_review_response,
 )
+from orchestrator.core.token_budget import WORKER_RESERVE_FRACTION
 
 
 logger = logging.getLogger(__name__)
-
-# Fraction of the model's context window reserved for a single leaf's context.
-_LEAF_BUDGET_FRACTION = 0.4
 
 # Total brain-decomposition attempts. High-effort models occasionally emit
 # unparseable output; one retry self-heals a stochastic bad draw. The brain is
@@ -211,7 +209,7 @@ async def decompose_plan(
         PlanReviewError: If the brain output cannot be parsed.
     """
     profile = await effective_settings.capability_profile(project_id=None, model=model)
-    per_leaf_budget = int(profile.context_window * _LEAF_BUDGET_FRACTION)
+    per_leaf_budget = int(profile.context_window * (1 - WORKER_RESERVE_FRACTION))
     history = summarize_outcomes([])
     prompt = build_review_prompt(plan, profile, history, per_leaf_budget)
 
