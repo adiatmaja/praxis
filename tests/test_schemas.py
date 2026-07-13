@@ -9,6 +9,7 @@ from pydantic import ValidationError
 from orchestrator.models.schemas import (
     AgentRunResponse,
     AgentRunStatus,
+    CapabilityProfile,
     DispatchRequest,
     OpusImprovementPayload,
     OpusPlanPayload,
@@ -435,3 +436,36 @@ def test_execute_plan_request_expected_base_sha_defaults_none():
         repo_url="https://github.com/o/r", plan="# plan", model="m"
     )
     assert req.expected_base_sha is None
+
+
+@pytest.mark.unit
+def test_capability_profile_numeric_limits_defaults() -> None:
+    profile = CapabilityProfile(
+        model_name="qwen3.6-27b",
+        parameter_count_b=27,
+        context_window=131072,
+    )
+    assert profile.max_files_touched == 5
+    assert profile.max_loc_delta == 300
+    assert profile.max_checklist_items == 12
+    assert profile.max_dep_depth == 3
+    assert profile.escalate_task_types == []
+
+
+@pytest.mark.unit
+def test_capability_profile_numeric_limits_custom() -> None:
+    profile = CapabilityProfile(
+        model_name="qwen3.6-27b",
+        parameter_count_b=27,
+        context_window=131072,
+        max_files_touched=10,
+        max_loc_delta=600,
+        max_checklist_items=20,
+        max_dep_depth=5,
+        escalate_task_types=["refactor", "architectural"],
+    )
+    assert profile.max_files_touched == 10
+    assert profile.max_loc_delta == 600
+    assert profile.max_checklist_items == 20
+    assert profile.max_dep_depth == 5
+    assert profile.escalate_task_types == ["refactor", "architectural"]

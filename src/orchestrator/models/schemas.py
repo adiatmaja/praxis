@@ -69,6 +69,11 @@ class CapabilityProfile(BaseModel):
     strengths: str = ""
     weaknesses: str = ""
     max_task_complexity: str = "medium"
+    max_files_touched: int = 5
+    max_loc_delta: int = 300
+    max_checklist_items: int = 12
+    max_dep_depth: int = 3
+    escalate_task_types: list[str] = Field(default_factory=list)
 
 
 LEAF_SCHEMA_VERSION = 1
