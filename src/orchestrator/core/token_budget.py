@@ -14,6 +14,10 @@ from dataclasses import dataclass
 
 _CHARS_PER_TOKEN = 4
 
+# Fraction of the context window reserved for the agent's own reasoning and
+# edits.  The injected-context budget is the complement (1 - this value).
+WORKER_RESERVE_FRACTION: float = 0.6
+
 
 class ContextBudgetExceeded(Exception):  # noqa: N818
     """Raised when mandatory (floor) context alone exceeds the budget."""
@@ -44,7 +48,7 @@ def estimate_tokens(text: str) -> int:
 def fit_sections(
     sections: list[Section],
     context_window: int,
-    reserve_fraction: float = 0.6,
+    reserve_fraction: float = WORKER_RESERVE_FRACTION,
 ) -> list[Section]:
     """Return the highest-priority sections that fit the budget.
 

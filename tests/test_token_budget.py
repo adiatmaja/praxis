@@ -1,6 +1,7 @@
 import pytest
 
 from orchestrator.core.token_budget import (
+    WORKER_RESERVE_FRACTION,
     ContextBudgetExceeded,
     Section,
     estimate_tokens,
@@ -51,3 +52,14 @@ def test_floor_sections_never_dropped():
     ]
     kept = fit_sections(sections, context_window=300, reserve_fraction=0.0)
     assert len(kept) == 2
+
+
+@pytest.mark.unit
+def test_worker_reserve_fraction_is_0_6():
+    assert WORKER_RESERVE_FRACTION == 0.6
+
+
+@pytest.mark.unit
+def test_leaf_budget_fraction_equivalence():
+    """1 - WORKER_RESERVE_FRACTION equals the former _LEAF_BUDGET_FRACTION (0.4)."""
+    assert 1.0 - WORKER_RESERVE_FRACTION == 0.4
