@@ -9,6 +9,11 @@ capability:
     strengths: "single-file edits, adding tests, small bug fixes"
     weaknesses: "multi-file refactors, novel architecture, large context"
     max_task_complexity: "medium"
+    max_files_touched: 5
+    max_loc_delta: 300
+    max_checklist_items: 12
+    max_dep_depth: 3
+    escalate_task_types: []
 
 escalation:
   policy: block   # block | brain | paid_fallback
