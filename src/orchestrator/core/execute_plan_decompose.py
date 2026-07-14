@@ -13,6 +13,10 @@ from typing import Any
 
 from orchestrator.core.capability_history import summarize_outcomes
 from orchestrator.core.context_scrub import scrub_context
+from orchestrator.core.leaf_validator import (
+    format_violations_feedback,
+    validate_leaves,
+)
 from orchestrator.core.plan_derive import slugify
 from orchestrator.core.plan_review import (
     PlanReviewError,
@@ -20,6 +24,7 @@ from orchestrator.core.plan_review import (
     parse_review_response,
 )
 from orchestrator.core.token_budget import WORKER_RESERVE_FRACTION
+from orchestrator.models.schemas import LeafTask
 
 
 logger = logging.getLogger(__name__)
@@ -187,6 +192,8 @@ async def decompose_plan(
     effective_settings: Any,
     project_id: str | None,
     local_context: str | None = None,
+    plan_id: str | None = None,
+    emitter: Any = None,
 ) -> dict[str, Any]:
     """Capability-review a plan into a normalized opus_plan task graph.
 
@@ -199,6 +206,8 @@ async def decompose_plan(
             returning a profile with a ``context_window`` attribute.
         project_id: Project id for router routing context; may be None.
         local_context: Optional local context to thread onto each leaf as repo_memory.
+        plan_id: Plan identifier (reserved for capability event wiring).
+        emitter: Capability event emitter (reserved for capability event wiring).
 
     Returns:
         A normalized ``{"tasks": [...]}`` dict where each task has a ``slug``
@@ -206,7 +215,8 @@ async def decompose_plan(
         are removed before the dict is returned.
 
     Raises:
-        PlanReviewError: If the brain output cannot be parsed.
+        PlanReviewError: If the brain output cannot be parsed, or if HARD
+            validation violations remain after the informed re-decompose round.
     """
     profile = await effective_settings.capability_profile(project_id=None, model=model)
     per_leaf_budget = int(profile.context_window * (1 - WORKER_RESERVE_FRACTION))
@@ -214,11 +224,12 @@ async def decompose_plan(
     prompt = build_review_prompt(plan, profile, history, per_leaf_budget)
 
     last_exc: PlanReviewError | None = None
+    opus_plan: dict[str, Any] | None = None
+
     for attempt in range(1, _DECOMPOSE_ATTEMPTS + 1):
         raw = await router.run("plan_review", prompt, project_id=project_id)
         try:
             opus_plan = parse_review_response(raw)
-            break
         except PlanReviewError as exc:
             last_exc = exc
             logger.warning(
@@ -227,7 +238,47 @@ async def decompose_plan(
                 _DECOMPOSE_ATTEMPTS,
                 exc,
             )
-    else:
+            continue
+
+        normalize_slugs(opus_plan)
+        drop_verification_only_leaves(opus_plan)
+
+        # Sync id -> slug so validation rules (which compare depends_on
+        # against task ids) see consistent identifiers.
+        for task in opus_plan["tasks"]:
+            task["id"] = task["slug"]
+
+        leaves = [LeafTask.model_validate(t) for t in opus_plan["tasks"]]
+        validation_result = validate_leaves(opus_plan, profile, plan, leaves)
+
+        if validation_result.clean:
+            break
+
+        if attempt < _DECOMPOSE_ATTEMPTS:
+            feedback = format_violations_feedback(validation_result)
+            prompt = f"{prompt}\n\n{feedback}"
+            logger.warning(
+                "Decomposition validation failed (attempt %d/%d); "
+                "re-invoking brain with feedback.",
+                attempt,
+                _DECOMPOSE_ATTEMPTS,
+            )
+            continue
+
+        if validation_result.hard:
+            hard_msgs = "; ".join(
+                f"[{v.rule}] {v.task_id}: {v.message}" for v in validation_result.hard
+            )
+            msg = f"plan_rejected: {hard_msgs}"
+            raise PlanReviewError(msg)
+
+        opus_plan["validation_warnings"] = [
+            {"rule": v.rule, "task_id": v.task_id, "message": v.message}
+            for v in validation_result.soft
+        ]
+        break
+
+    if opus_plan is None:
         raise (
             last_exc
             if last_exc is not None
@@ -235,8 +286,6 @@ async def decompose_plan(
                 "decomposition failed with no parseable output"
             )
         )
-    normalize_slugs(opus_plan)
-    drop_verification_only_leaves(opus_plan)
 
     authored_count = count_plan_tasks(plan)
     leaf_count = len(opus_plan["tasks"])
