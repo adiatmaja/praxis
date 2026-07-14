@@ -260,4 +260,24 @@ keep the CLAUDE.md index in sync.
   checks before every container spawn. Non-GitHub URL, auth failure, missing branch
   or file return 422. Unreachable remote returns 502. Base-SHA mismatch returns 409.
   Without a configured credential, checks are skipped with a warning so local-only
-  experimentation still works.
+   experimentation still works.
+- **F2 decomposition constraints are hard, not advisory** — the capability profile's
+  numeric limits (`max_files_touched`, `max_loc_delta`, `max_dep_depth`, etc.) are
+  injected into the decompose prompt as a `HARD CONSTRAINTS` block, one line per limit,
+  stating that violating leaves will be rejected automatically. The brain is expected
+  to comply; prose guidance alone is not enforcement — F3 enforces it. Budget
+  consistency uses the same `reserve_fraction = 0.6` as `worker_bible`/`fit_sections`,
+  replacing the independent `_LEAF_BUDGET_FRACTION = 0.4` that existed before.
+- **F3 leaf validator is deterministic and fail-closed** — `core/leaf_validator.py`
+  runs after `_normalize_slugs` in `decompose_plan`. It checks: DAG + depth limits,
+  no dangling `depends_on` slugs, file/LOC limits, verbatim `plan_text` (≥70% fuzzy
+  match to source plan), non-trivial `verification` (>40 chars with runnable signal),
+  cross-cutting file overlap, and escalate-type mismatch. On hard rejection the brain
+  is re-invoked with specific violations (≤2 informed rounds), then the plan is
+  rejected entirely — never dispatching an invalid graph. Warnings (vague phrases,
+  oversized checklist, bare-gerund titles) trigger ≤1 re-decompose round.
+- **F15 supply-chain gates block auto-merge** — `core/diff_guard.py` checks for new
+  dependencies in `pyproject.toml`/`package.json`/lockfiles and runs a gitleaks-style
+  secret regex over the PR diff. Any hit forces the human gate regardless of review
+  verdict. A local model prompted with repo context is a supply-chain surface;
+  "worker added a dependency" must never auto-merge.
