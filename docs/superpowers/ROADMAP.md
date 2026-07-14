@@ -4,8 +4,8 @@
 > Source of truth for scope: [`docs/superpowers/specs/2026-07-11-capability-engine-roadmap.md`](specs/2026-07-11-capability-engine-roadmap.md)
 > (features F1-F15, standardization contracts S1-S11, 10-plan breakdown).
 
-**Last updated:** 2026-07-13
-**Base:** `origin/main @ 2d39ed5` (Plan 1 merged; Plan 1.5 dogfood fixes landed on top)
+**Last updated:** 2026-07-14
+**Base:** `origin/main @ 2d39ed5` (Plan 1 merged; Plan 1.5 dogfood fixes landed on top; Plan 2 merged)
 
 ---
 
@@ -39,8 +39,8 @@ Dependency spine: **1 -> 2 -> 3 -> 5 -> 6**, with 4 insertable anywhere after 1,
 |---|------|----------|--------|-------|
 | 1 | **capability-contracts-foundation** | S2 `LeafTask` model + golden fixtures; S6 failure-taxonomy enum; S9 status-vocab freeze; S1 decision-record models + `capability_events` table + bus wiring (emitters stubbed) | **DONE (code)** / fixes pending | Merged PR #53 @ `fdea53d`. Dogfood 7.5/10. See "Plan 1 fixes" below before Plan 2. |
 | 1.5 | **plan-1-dogfood-fixes** | Findings #1-#4 + dropped CLAUDE.md lines | **DONE** | Landed on main. Report: `data/dogfood-plan1-capability-contracts-2026-07-12.md`. See "Plan 1.5 fixes landed" below. |
-| 2 | **decomposition-constraints-validator** | F2 (structured constraints, extended leaf schema, budget-fraction unification); F3 (`core/leaf_validator.py`, informed re-decompose, fail-closed); wave-scheduler dangling-dep fix; F15 supply-chain diff gates; S1 emitters for decompose/validate | **TODO (next)** | Unblocked: Plan 1.5 fixes landed. Core decomposition upgrade. |
-| 3 | **outcome-recording** | F5-recording (`task_outcomes` table, measurement in `review_task`, `summarize_outcomes` wiring, S6 attribution); S11 correlation-ID logging | **TODO** | Instrumentation before optimization; data accrues for Plan 6. |
+| 2 | **decomposition-constraints-validator** | F2 (structured constraints, extended leaf schema, budget-fraction unification); F3 (`core/leaf_validator.py`, informed re-decompose, fail-closed); wave-scheduler dangling-dep fix; F15 supply-chain diff gates; S1 emitters for decompose/validate | **DONE** | Merged. Core decomposition upgrade with hard constraints + deterministic validation. |
+| 3 | **outcome-recording** | F5-recording (`task_outcomes` table, measurement in `review_task`, `summarize_outcomes` wiring, S6 attribution); S11 correlation-ID logging | **TODO (next)** | Unblocked: Plan 2 merged. Instrumentation before optimization; data accrues for Plan 6. |
 | 4 | **worker-context-pack** | F9 (declared-files + one-hop-importer skeletons in Bible); F7 (`llm_calls` table, router + worker-token instrumentation); S7 callback `payload_version` | **TODO (insertable after 1)** | Requires agent image rebuilds. |
 | 5 | **adaptive-redecomposition** | F4 (failure classification, split with bounds, `superseded` status, escalation wired e2e); S1 emitters for split/escalate | **TODO** | Consumes S6 + Plan 3 evidence. Largest behavioral change. |
 | 6 | **calibration-flagship** | F6 (`aa_priors.yaml` + `praxis calibrate` + fixture repo + suite); S10 benchmark-as-data; F1 learned overlay (Wilson bounds); `GET /api/capability/{model}` + dashboard panel; `docs/calibration.md` | **TODO** | The flagship launch + README reframe moment. |
@@ -86,13 +86,14 @@ dispatched sonnet agents; the 3 harness agent images were rebuilt after the entr
 
 Skeleton exists; 3 of 5 properties are stubs until the plans above land:
 
-- `core/plan_review.py` renders the decompose prompt with a profile + per-leaf budget, but
-  sizing rules are **prose only** (F2/F3 fix).
+- `core/plan_review.py` renders the decompose prompt with a profile + per-leaf budget +
+  **hard constraints block** (F2, Plan 2).
 - `execute_plan_decompose.py` passes `summarize_outcomes([])` — **calibration is a hardcoded
   no-op**; nothing records outcomes (F5 fix).
 - `effective_settings.py:capability_profile` resolves one YAML blob; per-project override path is
   dead code (`project_id=None`) — **one profile for every model** (F1 fix).
-- `parse_review_response` validates JSON **shape only** — no quality validator (F3 fix).
+- `core/leaf_validator.py` validates **shape + content** — DAG, depth, file/LOC limits,
+  verbatim plan_text, runnable verification, file overlap, escalate mismatch (F3, Plan 2).
 - Retry re-dispatches the same task; **no split/escalate acted on end-to-end** (F4 fix).
-- Known live bug: a dangling `depends_on` slug **silently deadlocks the wave** in
-  `task_queue.get_dispatchable_tasks` (fixed as part of Plan 2 / F3).
+- Dangling `depends_on` slug deadlock **fixed** (F3, Plan 2); `diff_guard.py` now blocks
+  auto-merge on new deps or secrets (F15, Plan 2).
