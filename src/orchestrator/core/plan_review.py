@@ -36,6 +36,14 @@ Local model capability:
 
 Hard limit: each leaf task's full context must fit ~{per_leaf_token_budget} tokens.
 
+HARD CONSTRAINTS (non-negotiable):
+- Each leaf touches at most {max_files_touched} files.
+- Each leaf adds or changes approximately ~{max_loc_delta} lines of code.
+- Each leaf has no more than {max_checklist_items} checklist items.
+- Dependency depth no deeper than {max_dep_depth}.
+- Every leaf MUST include a "verification" string >40 characters describing
+  how to confirm the leaf's work is correct.
+
 Plan to decompose:
 {plan_text}
 
@@ -64,6 +72,12 @@ plan that defines this leaf's contract -- exact function/type signatures, API
 shapes, and named requirements. Do not paraphrase; copy the relevant lines so a
 reviewer can check the implementation against the original contract, not a summary.
 
+For every leaf you MUST also include:
+- "files": list of file paths this leaf will touch.
+- "task_type": one of "feature", "bugfix", "refactor", "test", "chore".
+- "estimated_loc": integer estimate of lines added or changed.
+- "verification": string >40 characters describing how to verify correctness.
+
 Set "depends_on" to the ids of any leaves whose output this leaf builds on (e.g.
 a leaf that edits a file another leaf creates). Only truly independent leaves get
 an empty list.
@@ -76,7 +90,11 @@ Respond with ONLY valid JSON:
   "tasks": [
     {{"id": "t1", "title": "...", "description": "...", "plan_text": "...",
       "depends_on": [], "checklist": [{{"text": "..."}}],
-      "needs_stronger_model": false}}
+      "needs_stronger_model": false,
+      "files": ["src/foo.py", "tests/test_foo.py"],
+      "task_type": "feature",
+      "estimated_loc": 85,
+      "verification": "Run the test suite and confirm all tests pass"}}
   ]
 }}
 """
@@ -108,6 +126,10 @@ def build_review_prompt(
         max_task_complexity=profile.max_task_complexity,
         history_summary=history_summary,
         per_leaf_token_budget=per_leaf_token_budget,
+        max_files_touched=profile.max_files_touched,
+        max_loc_delta=profile.max_loc_delta,
+        max_checklist_items=profile.max_checklist_items,
+        max_dep_depth=profile.max_dep_depth,
         plan_text=plan_text,
     )
 

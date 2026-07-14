@@ -148,3 +148,75 @@ def test_parse_still_accepts_bare_json():
 def test_parse_raises_planreviewerror_on_garbage():
     with pytest.raises(PlanReviewError):
         parse_review_response("this is not json at all, no braces")
+
+
+@pytest.mark.unit
+def test_prompt_includes_hard_constraints_with_rendered_limits():
+    profile = CapabilityProfile(
+        model_name="qwen3",
+        parameter_count_b=30,
+        context_window=8192,
+        strengths="single-file",
+        weaknesses="refactors",
+        max_task_complexity="medium",
+        max_files_touched=4,
+        max_loc_delta=250,
+        max_checklist_items=8,
+        max_dep_depth=2,
+    )
+    prompt = build_review_prompt(
+        plan_text="Build a thing",
+        profile=profile,
+        history_summary="(no prior run history for this model)",
+        per_leaf_token_budget=3200,
+    )
+    assert "HARD CONSTRAINTS" in prompt
+    assert "at most 4 files" in prompt
+    assert "~250 lines" in prompt
+    assert "no more than 8 checklist items" in prompt
+    assert "Dependency depth no deeper than 2" in prompt
+    assert ">40 characters" in prompt
+
+
+@pytest.mark.unit
+def test_prompt_requests_extended_leaf_fields():
+    prompt = build_review_prompt(
+        plan_text="PLAN",
+        profile=PROFILE,
+        history_summary="none",
+        per_leaf_token_budget=4000,
+    )
+    assert '"files"' in prompt
+    assert '"task_type"' in prompt
+    assert '"estimated_loc"' in prompt
+    assert '"verification"' in prompt
+
+
+@pytest.mark.unit
+def test_parse_accepts_extended_leaf_fields():
+    raw = json.dumps(
+        {
+            "tasks": [
+                {
+                    "id": "t1",
+                    "title": "Add endpoint",
+                    "description": "Add a new API endpoint",
+                    "depends_on": [],
+                    "checklist": [{"text": "write handler"}],
+                    "needs_stronger_model": False,
+                    "files": ["src/api/endpoint.py", "tests/test_endpoint.py"],
+                    "task_type": "feature",
+                    "estimated_loc": 85,
+                    "verification": "curl the new endpoint and assert 200",
+                },
+            ]
+        }
+    )
+    plan = parse_review_response(raw)
+    assert plan["tasks"][0]["files"] == [
+        "src/api/endpoint.py",
+        "tests/test_endpoint.py",
+    ]
+    assert plan["tasks"][0]["task_type"] == "feature"
+    assert plan["tasks"][0]["estimated_loc"] == 85
+    assert "curl" in plan["tasks"][0]["verification"]
