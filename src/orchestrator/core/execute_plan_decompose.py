@@ -321,15 +321,15 @@ async def decompose_plan(
     if emitter is not None and plan_id is not None:
         rejected_slugs = {v.task_id for v in validation_result.hard}
         for leaf in leaves:
-            if leaf.slug in rejected_slugs:
+            if leaf.id in rejected_slugs:
                 hard_for_leaf = [
-                    v for v in validation_result.hard if v.task_id == leaf.slug
+                    v for v in validation_result.hard if v.task_id == leaf.id
                 ]
                 for hv in hard_for_leaf:
                     await emitter.emit(
                         LeafRejectedEvent(
                             plan_id=plan_id,
-                            leaf_slug=leaf.slug,
+                            leaf_slug=leaf.id,
                             rule_id=hv.rule,
                         )
                     )
@@ -337,7 +337,7 @@ async def decompose_plan(
                 await emitter.emit(
                     LeafValidatedEvent(
                         plan_id=plan_id,
-                        leaf_slug=leaf.slug,
+                        leaf_slug=leaf.id,
                     )
                 )
 
