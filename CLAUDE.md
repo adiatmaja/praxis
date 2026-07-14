@@ -280,6 +280,9 @@ the relevant subsystem. Condensed index:
 - **`LeafTask` is the S2 decomposition contract** (`models/schemas.py`) with golden fixtures; a decomposed leaf must round-trip through it, so extend the fixtures when you add a field.
 - **Status vocabulary is frozen in `core/status_vocab.py`** (S9) drawn from the `TaskStatus`/`PlanStatus` enums; add a value to the enum AND its exhaustive `test_schemas` assertion together, never one alone (a lone `SUPERSEDED` add broke that test at integration).
 - **Capability decision records live in `core/capability_events.py`** (S1: versioned Pydantic events + `capability_events` table + bus wiring), but the emitter is STILL a stub; no production caller constructs `CapabilityEventEmitter(` yet (Plans 2/3/5 wire it).
+- **F2 decomposition constraints are hard, not advisory** — the profile's numeric limits (`max_files_touched`, `max_loc_delta`, `max_dep_depth`, etc.) are injected as a `HARD CONSTRAINTS` block in the decompose prompt; leaves violating them are rejected by F3, not merely warned about.
+- **F3 leaf validator is deterministic and fail-closed** — `core/leaf_validator.py` runs after `_normalize_slugs`; on hard rejection the brain is re-invoked with specific violations (≤2 informed rounds), then the plan is rejected entirely — no dispatch of an invalid graph.
+- **F15 supply-chain gates block auto-merge** — `core/diff_guard.py` checks new deps in `pyproject.toml`/`package.json`/lockfiles and runs a secret regex over the diff; any hit forces the human gate regardless of review verdict.
 - **`opus_bridge.py` + `users.token_hash` are legacy names on purpose** (renames deferred as churn).
 - **Blocked workers ask, they don't guess** — `Status: BLOCKED`/`NEEDS_CONTEXT` → `NEEDS_CLARIFICATION`
   (no retry burned) → brain `answer_clarification` → re-dispatch or human gate. All three harnesses parse it.
@@ -299,7 +302,7 @@ the relevant subsystem. Condensed index:
 - **Deployment, Docker & API reference:** `docs/deployment.md`
 - **Gotchas (full narrative):** `docs/gotchas.md`
 - **Design spec:** `docs/superpowers/specs/2026-06-01-ai-agent-orchestrator-design.md`
-- **Capability-engine roadmap (canonical, 2026-07-11):** `docs/superpowers/specs/2026-07-11-capability-engine-roadmap.md` — features F1-F15, standardization contracts S1-S11, 10-plan breakdown; next up = Plan 1 `capability-contracts-foundation`
+- **Capability-engine roadmap (canonical, 2026-07-11):** `docs/superpowers/specs/2026-07-11-capability-engine-roadmap.md` — features F1-F15, standardization contracts S1-S11, 10-plan breakdown; next up = Plan 3 `outcome-recording`
 - **Implementation plans:** `docs/superpowers/plans/` (sequential plans)
 - **Implemented + merged (2026-06-29 epic, live e2e-verified 2026-07-01):** worker context
   continuity (`specs/2026-06-29-worker-context-continuity-design.md`), capability-aware plan

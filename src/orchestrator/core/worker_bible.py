@@ -11,7 +11,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from orchestrator.core.context_scrub import scrub_context
-from orchestrator.core.token_budget import Section, fit_sections
+from orchestrator.core.token_budget import (
+    WORKER_RESERVE_FRACTION,
+    Section,
+    fit_sections,
+)
 
 
 _WORKING_AGREEMENT = (
@@ -36,7 +40,7 @@ class BibleSources:
     repo_memory: str | None = None
     review_feedback: str | None = None
     verify_cmd: str | None = None
-    reserve_fraction: float = 0.6
+    reserve_fraction: float = WORKER_RESERVE_FRACTION
 
 
 def build_bible(src: BibleSources) -> str:

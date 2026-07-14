@@ -15,7 +15,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from orchestrator.core.diff_guard import destructive_deletions
+from orchestrator.core.diff_guard import (
+    added_dependencies,
+    destructive_deletions,
+    detect_secrets,
+)
 from orchestrator.core.git_ops import (
     checkout_branch,
     clone_with_token,
@@ -165,6 +169,26 @@ class ReviewMixin:
             )
 
         if verdict == "pass":
+            # Supply-chain gate: check for added dependencies and secrets.
+            supply_chain = added_dependencies(diff) + detect_secrets(diff)
+            if supply_chain:
+                feedback = (
+                    f"[supply-chain] Blocked: {supply_chain}. "
+                    "Review added dependencies and secrets before merging. "
+                    + (feedback or "")
+                )
+                await self._tq.mark_passed(task_id, feedback)
+                self._bus.publish(
+                    {
+                        "type": "task_supply_chain_gate",
+                        "task_id": task_id,
+                        "pr_url": task["pr_url"],
+                        "findings": supply_chain,
+                        "branch": task["branch_name"],
+                    }
+                )
+                return
+
             base_branch = plan.get("plan_branch_name") if plan else None
             if auto_merge_eligible(project, base_branch):
                 await self._git.merge_pr(".", pr_number, repo=repo)

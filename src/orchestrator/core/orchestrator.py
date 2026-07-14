@@ -8,6 +8,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from orchestrator.core.agent_prompt import build_implementer_prompt
+from orchestrator.core.capability_events import CapabilityEventEmitter
 from orchestrator.core.event_bus import EventBus
 from orchestrator.core.llm_router import ProviderAuthError
 from orchestrator.core.orchestrator_dispatch import DispatchMixin
@@ -45,6 +46,7 @@ class Orchestrator(DispatchMixin, ReviewMixin, ReconcileMixin, ImprovementMixin)
         self._bus = event_bus
         self._doc_indexer = doc_indexer
         self._context_sync = context_sync
+        self._emitter = CapabilityEventEmitter(task_queue._db, event_bus)
         # Resolves the escalation policy (block | brain | paid_fallback) for a
         # failing leaf. Optional so tests/older callers can omit it.
         self._effective_settings = effective_settings
@@ -129,6 +131,8 @@ class Orchestrator(DispatchMixin, ReviewMixin, ReconcileMixin, ImprovementMixin)
                 effective_settings=self._effective_settings,
                 project_id=project["id"],
                 local_context=payload.get("local_context"),
+                plan_id=plan_id,
+                emitter=self._emitter,
             )
         except PlanReviewError as exc:
             await self._tq.set_plan_error(plan_id, str(exc))

@@ -243,6 +243,16 @@ class TaskQueue:
             if index < len(tasks)
         }
 
+        for task_data in opus_plan["tasks"]:
+            deps = task_data.get("depends_on", [])
+            for dep in deps:
+                if dep not in slug_to_task:
+                    msg = (
+                        f"dangling dependency: task "
+                        f"{task_data['slug']!r} depends on unknown slug {dep!r}"
+                    )
+                    raise ValueError(msg)
+
         dispatchable: list[dict[str, Any]] = []
         for task_data in opus_plan["tasks"]:
             task = slug_to_task.get(task_data["slug"])
