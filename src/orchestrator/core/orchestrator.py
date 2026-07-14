@@ -25,6 +25,13 @@ logger = logging.getLogger(__name__)
 class Orchestrator(DispatchMixin, ReviewMixin, ReconcileMixin, ImprovementMixin):
     """Coordinate the task queue, agents, Claude review, and GitHub actions."""
 
+    # Provider/gateway errors (Cloudflare/WAF 403, 429, 5xx) do not burn the
+    # retry budget because they are usually transient. But a PERSISTENT block
+    # (VPN down, endpoint offline) would otherwise re-queue and respawn forever
+    # invisibly. After this many consecutive provider-error runs on one task we
+    # stop respawning and surface a terminal ``worker_endpoint_unreachable``.
+    PROVIDER_ERROR_RESPAWN_CAP: int = 5
+
     def __init__(
         self,
         task_queue: TaskQueue,
@@ -64,6 +71,13 @@ class Orchestrator(DispatchMixin, ReviewMixin, ReconcileMixin, ImprovementMixin)
         self._callback_grace: float = 5.0
         # Seconds between live-log polls of a running container.
         self._monitor_poll_interval: float = 2.0
+        # Base seconds to back off before re-queuing a task after a transient
+        # worker provider/gateway error (bounded; grows with the error streak).
+        self._provider_error_backoff: float = 2.0
+        # Per-plan wave-verify memo: plan_id -> (merged_count, passed). Lets the
+        # accumulated-branch verify run ONCE per wave boundary instead of every
+        # loop pass. In-memory only (a restart re-runs it once, which is safe).
+        self._wave_verify_state: dict[str, tuple[int, bool]] = {}
 
     async def plan_and_activate(self, plan_id: str, project: dict[str, Any]) -> None:
         """Ask Opus to plan a pending spec and activate the resulting task graph."""

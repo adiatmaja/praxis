@@ -73,7 +73,24 @@ class DispatchMixin:
                     if isinstance(pt, dict) and "slug" in pt:
                         slug_to_plan_task[pt["slug"]] = pt
 
-        for task in await self._tq.get_dispatchable_tasks(plan_id):
+        dispatchable = await self._tq.get_dispatchable_tasks(plan_id)
+
+        # HIGH-2: per-wave cross-leaf verification. A new wave becomes
+        # dispatchable only after the previous wave's tasks are MERGED to the
+        # plan branch. Per-task gates are task-scoped and miss cross-leaf
+        # contract breaks (e.g. a leaf shipping ``leaf.slug`` that its own tests
+        # never exercise). Before dispatching a wave built on already-merged
+        # leaves, run the accumulated plan-branch verify so a regression is
+        # caught before dependent leaves are built on top of it.
+        if dispatchable:
+            all_tasks = await self._tq.get_tasks_for_plan(plan_id)
+            merged_count = sum(1 for t in all_tasks if t["status"] == TaskStatus.MERGED)
+            if merged_count > 0 and not await self._wave_verify_gate(
+                plan_id, plan, project, merged_count
+            ):
+                return
+
+        for task in dispatchable:
             prompt = self._task_prompt(task, project)
 
             # Derive the task slug from its branch name (agent/{slug}).
@@ -153,6 +170,66 @@ class DispatchMixin:
                     "container_id": container_id,
                 }
             )
+
+    async def _wave_verify_gate(
+        self,
+        plan_id: str,
+        plan: dict[str, Any],
+        project: dict[str, Any],
+        merged_count: int,
+    ) -> bool:
+        """Verify the accumulated plan branch before dispatching a new wave.
+
+        Runs the project's verify command against the plan branch once per wave
+        boundary (memoized on ``merged_count``). Returns True when dispatch may
+        proceed (gate passed, skipped, errored, or already-verified for this
+        wave), False when a cross-leaf regression is detected — in which case a
+        ``plan_wave_verify_failed`` event is published and the wave is parked.
+
+        Errors and skips never block dispatch: this is an early-warning gate,
+        and the whole-plan gate in ``on_plan_completed`` is the final backstop.
+        """
+        verify_cmd = project.get("verify_cmd")
+        if not verify_cmd:
+            return True
+
+        state = cast(Any, self)._wave_verify_state
+        prior = state.get(plan_id)
+        if prior is not None and prior[0] == merged_count:
+            # Already verified this exact wave; reuse the memoized verdict.
+            return bool(prior[1])
+
+        plan_branch = plan.get("plan_branch_name")
+        repo_url = project.get("repo_url")
+        if not plan_branch or not repo_url:
+            return True
+
+        result = await cast(Any, self)._verify_plan_branch(
+            repo_url, plan_branch, verify_cmd
+        )
+        if result.status == "failed":
+            state[plan_id] = (merged_count, False)
+            self._bus.publish(
+                {
+                    "type": "plan_wave_verify_failed",
+                    "plan_id": plan_id,
+                    "merged_count": merged_count,
+                    "output": result.output,
+                }
+            )
+            logger.warning(
+                "Wave verify gate FAILED for plan %s after %d merged leaves; "
+                "parking the next wave (cross-leaf regression).",
+                plan_id,
+                merged_count,
+            )
+            return False
+
+        # passed / skipped / error -> allow dispatch, memoize only a clean pass
+        # so a transient clone/error is retried next tick.
+        if result.status == "passed":
+            state[plan_id] = (merged_count, True)
+        return True
 
     async def _build_worker_bible(
         self,

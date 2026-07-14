@@ -10,7 +10,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from orchestrator.models.schemas import TaskStatus
 
@@ -365,6 +365,37 @@ class ReconcileMixin:
             await self._tq.complete_agent_run(run["id"], "failed", log_text or reason)
             task = await self._tq.get_task(run["task_id"])
             if task is not None:
+                streak = await self._provider_error_streak(run["task_id"])
+                cap = cast(int, cast(Any, self).PROVIDER_ERROR_RESPAWN_CAP)
+                if streak >= cap:
+                    # Persistent block, not a transient blip: stop respawning.
+                    terminal = (
+                        f"Worker endpoint unreachable: {streak} consecutive "
+                        "provider/gateway errors (e.g. Cloudflare/WAF 403, VPN "
+                        "down, or endpoint offline). Halting respawns; check the "
+                        f"worker endpoint. Original: {reason}"
+                    )
+                    await self._tq.fail_task(run["task_id"], terminal)
+                    self._bus.publish(
+                        {
+                            "type": "worker_endpoint_unreachable",
+                            "task_id": run["task_id"],
+                            "reason": terminal,
+                            "consecutive_errors": streak,
+                        }
+                    )
+                    logger.error(
+                        "Worker endpoint unreachable for task %s after %d "
+                        "consecutive provider errors; halting respawns.",
+                        run["task_id"],
+                        streak,
+                    )
+                    return
+                # Bounded backoff before re-queue so we do not hammer a blocked
+                # gateway (which can worsen a WAF bot-fight block).
+                backoff = min(cast(Any, self)._provider_error_backoff * streak, 30.0)
+                if backoff > 0:
+                    await asyncio.sleep(backoff)
                 now = datetime.now(UTC).isoformat()
                 await self._tq._db.execute(
                     "UPDATE tasks SET status = ?, review_feedback = ?, updated_at = ? "
@@ -376,13 +407,34 @@ class ReconcileMixin:
                         "type": "worker_provider_error",
                         "task_id": run["task_id"],
                         "reason": reason,
+                        "consecutive_errors": streak,
                     }
                 )
                 logger.warning(
-                    "Worker provider/gateway error for task %s; re-queued without "
-                    "consuming a retry attempt: %s",
+                    "Worker provider/gateway error for task %s (streak %d/%d); "
+                    "re-queued without consuming a retry attempt: %s",
                     run["task_id"],
+                    streak,
+                    cap,
                     reason,
                 )
             return
         await self._resolve_failed_run(run, reason, can_retry=can_retry, logs=log_text)
+
+    async def _provider_error_streak(self, task_id: str) -> int:
+        """Count trailing consecutive failed provider-error runs for a task.
+
+        The current run (just marked ``failed``) is included. A non-provider
+        failed run breaks the streak, so a single transient blip after real
+        progress does not accumulate toward the cap.
+        """
+        runs = await self._tq.get_runs_for_task(task_id)
+        streak = 0
+        for run in reversed(runs):
+            if run["status"] != "failed":
+                continue
+            if self.is_provider_error(str(run["logs"] or "")):
+                streak += 1
+            else:
+                break
+        return streak

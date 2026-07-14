@@ -97,3 +97,14 @@ Skeleton exists; 3 of 5 properties are stubs until the plans above land:
 - Retry re-dispatches the same task; **no split/escalate acted on end-to-end** (F4 fix).
 - Dangling `depends_on` slug deadlock **fixed** (F3, Plan 2); `diff_guard.py` now blocks
   auto-merge on new deps or secrets (F15, Plan 2).
+
+**Plan 2 Phase B (live gate verification, 2026-07-15):** all F2/F3/F15/S1 gates exercised against
+the redeployed orchestrator and confirmed firing — tiered validator HARD-rejects oversize leaves and
+only warns on SOFT (vague/verbatim/overlap), informed re-decompose appends actionable feedback,
+`get_dispatchable_tasks` raises loudly on a dangling dep, S1 events dual-write to `capability_events`
++ the `capability.*` bus, and `WORKER_RESERVE_FRACTION=0.6` per-leaf budget is unchanged. Fixes
+landed: HIGH-1 provider-error respawn cap + `worker_endpoint_unreachable`, HIGH-2 per-wave verify
+gate, and an F15 false-negative (PEP621 pyproject array deps). **Plan-authoring note (MED):** decompose
+cannot guarantee an inter-leaf API contract the plan only prose-describes; when leaves must share a
+signature (e.g. `validate_leaves(...)`), pin it verbatim in the plan as a contract each leaf must
+honor, or workers converge on a different-but-consistent shape via git-spine adaptation.

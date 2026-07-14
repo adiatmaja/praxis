@@ -79,6 +79,9 @@ _DEP_LINE = re.compile(
         require\s\s*\[                                   # require [ …  (bundler)
         |
         ^\s*"[A-Za-z0-9_][A-Za-z0-9._-]*"\s*:            # pkg: …  (Gemfile.lock)
+        |
+        # PEP621 array item: "pkg", "pkg>=1.0", "pkg[extra] >= 1.0; marker"
+        ^\s*"[A-Za-z0-9_][A-Za-z0-9._-]*(?:\[[^\]]*\])?(?:\s*[><=!~;@][^"]*)?"
     )
     """,
     re.VERBOSE,
