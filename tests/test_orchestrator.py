@@ -538,6 +538,97 @@ class TestOrchestrationReview:
         await orch.review_task(mocks.task_id, mocks.project)
         mocks.opus.review_diff.assert_called_once()
 
+    # ------------------------------------------------------------------
+    # Supply-chain gate tests (Task 7)
+    # ------------------------------------------------------------------
+
+    async def test_supply_chain_gate_blocks_auto_merge(
+        self, db: Database, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """When added_dependencies or detect_secrets fires on a pass verdict,
+        auto-merge is blocked: task parks at PASSED, event published, feedback annotated."""
+        orch, mocks = await self._make_review_pass_orch(
+            db, auto_merge=1, base_branch="plan/x"
+        )
+        # Diff that adds a dependency to requirements.txt
+        diff_with_dep = "\n".join(
+            [
+                "--- a/requirements.txt",
+                "+++ b/requirements.txt",
+                "+requests>=2.31.0",
+            ]
+        )
+        mocks.git.get_pr_diff.return_value = diff_with_dep
+
+        await orch.review_task(mocks.task_id, mocks.project)
+
+        # Auto-merge must NOT happen despite auto_merge=1
+        mocks.git.merge_pr.assert_not_called()
+
+        # Task must be parked at PASSED
+        task = await orch._tq.get_task(mocks.task_id)
+        assert task is not None
+        assert task["status"] == TaskStatus.PASSED
+
+        # Feedback must contain [supply-chain] annotation
+        feedback = task["review_feedback"] or ""
+        assert "[supply-chain]" in feedback
+
+        # task_supply_chain_gate event must be published
+        assert any(e["type"] == "task_supply_chain_gate" for e in mocks.published), (
+            mocks.published
+        )
+
+    async def test_supply_chain_gate_secrets_blocks_auto_merge(
+        self, db: Database, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Secret detection also blocks auto-merge on pass verdict."""
+        orch, mocks = await self._make_review_pass_orch(
+            db, auto_merge=1, base_branch="plan/x"
+        )
+        # Diff that adds a secret
+        diff_with_secret = "\n".join(
+            [
+                "--- a/config.py",
+                "+++ b/config.py",
+                "+API_KEY = 'sk-abc123'",
+            ]
+        )
+        mocks.git.get_pr_diff.return_value = diff_with_secret
+
+        await orch.review_task(mocks.task_id, mocks.project)
+
+        mocks.git.merge_pr.assert_not_called()
+
+        task = await orch._tq.get_task(mocks.task_id)
+        assert task is not None
+        assert task["status"] == TaskStatus.PASSED
+
+        feedback = task["review_feedback"] or ""
+        assert "[supply-chain]" in feedback
+
+        assert any(e["type"] == "task_supply_chain_gate" for e in mocks.published), (
+            mocks.published
+        )
+
+    async def test_supply_chain_gate_clean_diff_auto_merges(
+        self, db: Database, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """No supply-chain findings: auto-merge proceeds normally."""
+        orch, mocks = await self._make_review_pass_orch(
+            db, auto_merge=1, base_branch="plan/x"
+        )
+        mocks.git.get_pr_diff.return_value = (
+            "--- a/src/main.py\n+++ b/src/main.py\n+print('hello')"
+        )
+
+        await orch.review_task(mocks.task_id, mocks.project)
+
+        mocks.git.merge_pr.assert_called_once()
+        task = await orch._tq.get_task(mocks.task_id)
+        assert task is not None
+        assert task["status"] == TaskStatus.MERGED
+
 
 @pytest.mark.integration
 class TestImprovementLoop:
