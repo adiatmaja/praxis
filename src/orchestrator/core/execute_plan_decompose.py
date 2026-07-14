@@ -6,11 +6,18 @@ orchestration loop (async path) run one identical implementation.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import re
 import uuid
 from typing import Any
 
+from orchestrator.core.capability_events import (
+    DecomposeInputEvent,
+    LeafRejectedEvent,
+    LeafValidatedEvent,
+    PlanRejectedEvent,
+)
 from orchestrator.core.capability_history import summarize_outcomes
 from orchestrator.core.context_scrub import scrub_context
 from orchestrator.core.leaf_validator import (
@@ -223,6 +230,18 @@ async def decompose_plan(
     history = summarize_outcomes([])
     prompt = build_review_prompt(plan, profile, history, per_leaf_budget)
 
+    if emitter is not None and plan_id is not None:
+        await emitter.emit(
+            DecomposeInputEvent(
+                plan_id=plan_id,
+                model_name=model,
+                per_leaf_budget=per_leaf_budget,
+                profile_summary=f"{profile.model_name}/{profile.context_window}",
+                history_summary_hash=hashlib.sha256(history.encode()).hexdigest()[:16],
+                plan_hash=hashlib.sha256(plan.encode()).hexdigest()[:16],
+            )
+        )
+
     last_exc: PlanReviewError | None = None
     opus_plan: dict[str, Any] | None = None
 
@@ -269,6 +288,17 @@ async def decompose_plan(
             hard_msgs = "; ".join(
                 f"[{v.rule}] {v.task_id}: {v.message}" for v in validation_result.hard
             )
+            if emitter is not None and plan_id is not None:
+                await emitter.emit(
+                    PlanRejectedEvent(
+                        plan_id=plan_id,
+                        violations=[
+                            f"[{v.rule}] {v.task_id}: {v.message}"
+                            for v in validation_result.hard
+                        ],
+                        rounds=attempt,
+                    )
+                )
             msg = f"plan_rejected: {hard_msgs}"
             raise PlanReviewError(msg)
 
@@ -286,6 +316,30 @@ async def decompose_plan(
                 "decomposition failed with no parseable output"
             )
         )
+
+    # Emit per-leaf capability events from the final validation result.
+    if emitter is not None and plan_id is not None:
+        rejected_slugs = {v.task_id for v in validation_result.hard}
+        for leaf in leaves:
+            if leaf.slug in rejected_slugs:
+                hard_for_leaf = [
+                    v for v in validation_result.hard if v.task_id == leaf.slug
+                ]
+                for hv in hard_for_leaf:
+                    await emitter.emit(
+                        LeafRejectedEvent(
+                            plan_id=plan_id,
+                            leaf_slug=leaf.slug,
+                            rule_id=hv.rule,
+                        )
+                    )
+            else:
+                await emitter.emit(
+                    LeafValidatedEvent(
+                        plan_id=plan_id,
+                        leaf_slug=leaf.slug,
+                    )
+                )
 
     authored_count = count_plan_tasks(plan)
     leaf_count = len(opus_plan["tasks"])

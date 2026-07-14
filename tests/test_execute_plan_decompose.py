@@ -566,3 +566,151 @@ async def test_decompose_plan_id_and_emitter_params_accepted():
         emitter=None,
     )
     assert opus_plan["tasks"]
+
+
+# ---------------------------------------------------------------------------
+# Capability event emitter tests (S1)
+# ---------------------------------------------------------------------------
+
+
+class _CapturingEmitter:
+    """Fake emitter that records emitted events."""
+
+    def __init__(self) -> None:
+        self.events: list[Any] = []
+
+    async def emit(self, event: Any) -> str:
+        self.events.append(event)
+        return "fake-id"
+
+
+async def test_decompose_emits_decompose_input_event():
+    """DecomposeInputEvent is emitted before the brain call."""
+    raw = (
+        '{"tasks":[{"id":"t1","title":"A","description":"d",'
+        '"depends_on":[],"files":["src/a.py"],"task_type":"feature",'
+        '"estimated_loc":50,"verification":"Run pytest and confirm all tests pass"}]}'
+    )
+    router = _FakeRouter(raw)
+    emitter = _CapturingEmitter()
+    await decompose_plan(
+        plan="build a thing",
+        model="qwen3.6-27b",
+        context=None,
+        router=router,
+        effective_settings=_FakeEffective(),
+        project_id="p1",
+        plan_id="plan-123",
+        emitter=emitter,
+    )
+    input_events = [e for e in emitter.events if e.event_type == "decompose_input"]
+    assert len(input_events) == 1
+    assert input_events[0].plan_id == "plan-123"
+    assert input_events[0].model_name == "qwen3.6-27b"
+
+
+async def test_decompose_emits_leaf_validated_on_clean():
+    """LeafValidatedEvent emitted per leaf when validation is clean."""
+    raw = (
+        '{"tasks":[{"id":"t1","title":"A","description":"d",'
+        '"depends_on":[],"files":["src/a.py"],"task_type":"feature",'
+        '"estimated_loc":50,"verification":"Run pytest and confirm all tests pass"},'
+        '{"id":"t2","title":"B","description":"d",'
+        '"depends_on":["t1"],"files":["src/b.py"],"task_type":"feature",'
+        '"estimated_loc":60,"verification":"Run pytest and confirm all tests pass"}]}'
+    )
+    router = _FakeRouter(raw)
+    emitter = _CapturingEmitter()
+    await decompose_plan(
+        plan="build a thing",
+        model="qwen3.6-27b",
+        context=None,
+        router=router,
+        effective_settings=_FakeEffective(),
+        project_id="p1",
+        plan_id="plan-456",
+        emitter=emitter,
+    )
+    validated = [e for e in emitter.events if e.event_type == "leaf_validated"]
+    assert len(validated) == 2
+    assert all(e.plan_id == "plan-456" for e in validated)
+
+
+async def test_decompose_emits_plan_rejected_on_hard_violations():
+    """PlanRejectedEvent emitted when HARD violations persist after all rounds."""
+    bad = (
+        '{"tasks":[{"id":"t1","title":"A","description":"d",'
+        '"depends_on":[],"files":["src/a.py"],"task_type":"feature",'
+        '"estimated_loc":50}]}'
+    )
+
+    class _AlwaysBadRouter:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, str]] = []
+
+        async def run(self, call_site: str, prompt: str, project_id: Any = None) -> str:
+            self.calls.append((call_site, prompt))
+            return bad
+
+    router = _AlwaysBadRouter()
+    emitter = _CapturingEmitter()
+    with pytest.raises(PlanReviewError, match="plan_rejected"):
+        await decompose_plan(
+            plan="x",
+            model="m",
+            context=None,
+            router=router,
+            effective_settings=_FakeEffective(),
+            project_id=None,
+            plan_id="plan-789",
+            emitter=emitter,
+        )
+    rejected = [e for e in emitter.events if e.event_type == "plan_rejected"]
+    assert len(rejected) == 1
+    assert rejected[0].plan_id == "plan-789"
+    assert rejected[0].rounds == 2
+    assert len(rejected[0].violations) > 0
+
+
+async def test_decompose_no_emit_when_emitter_is_none():
+    """No events emitted when emitter is None (None-safe guard)."""
+    raw = (
+        '{"tasks":[{"id":"t1","title":"A","description":"d",'
+        '"depends_on":[],"files":["src/a.py"],"task_type":"feature",'
+        '"estimated_loc":50,"verification":"Run pytest and confirm all tests pass"}]}'
+    )
+    router = _FakeRouter(raw)
+    opus_plan = await decompose_plan(
+        plan="build a thing",
+        model="qwen3.6-27b",
+        context=None,
+        router=router,
+        effective_settings=_FakeEffective(),
+        project_id="p1",
+        plan_id="plan-123",
+        emitter=None,
+    )
+    assert opus_plan["tasks"]
+
+
+async def test_decompose_no_emit_when_plan_id_is_none():
+    """No events emitted when plan_id is None (None-safe guard)."""
+    raw = (
+        '{"tasks":[{"id":"t1","title":"A","description":"d",'
+        '"depends_on":[],"files":["src/a.py"],"task_type":"feature",'
+        '"estimated_loc":50,"verification":"Run pytest and confirm all tests pass"}]}'
+    )
+    router = _FakeRouter(raw)
+    emitter = _CapturingEmitter()
+    opus_plan = await decompose_plan(
+        plan="build a thing",
+        model="qwen3.6-27b",
+        context=None,
+        router=router,
+        effective_settings=_FakeEffective(),
+        project_id="p1",
+        plan_id=None,
+        emitter=emitter,
+    )
+    assert opus_plan["tasks"]
+    assert len(emitter.events) == 0
