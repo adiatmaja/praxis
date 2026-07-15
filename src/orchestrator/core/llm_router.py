@@ -60,7 +60,11 @@ def _looks_like_auth_failure(stderr: str) -> bool:
 
 # Default {provider, model, effort} per call-site (the model-tiering policy).
 CALL_SITE_DEFAULTS: dict[str, dict[str, str | None]] = {
-    "plan_spec": {"provider": "claude", "model": "claude-opus-4-8", "effort": "high"},
+    # Planning from a spec is a structured spec->task-graph transformation, not
+    # open-ended authoring (Praxis always starts from an existing spec/plan). A
+    # mid-tier model suffices; Opus is reserved for analyze_improvements, the one
+    # seat that reasons open-ended (decide what to build next with no artifact).
+    "plan_spec": {"provider": "claude", "model": "claude-sonnet-4-6", "effort": None},
     "review_diff_first": {
         "provider": "claude",
         "model": "claude-sonnet-4-6",

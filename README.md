@@ -113,18 +113,18 @@ command verifies. Any of these can change without touching the others.
 | Verifier | any shell command — `pytest`, `ruff`, `npm test`, a build script (deterministic, not a model) |
 | Reviewer | Claude · GLM · GPT · an open-weight model |
 
-**Recommended defaults per role** (July 2026 models — pick the column for the subscription you already own; mix freely):
+**Recommended defaults per role** (July 2026 models — pick the column for the subscription you already own; mix freely). Praxis always starts from an existing spec or `plan.md`, so there is no "write the spec" seat; planning means turning that artifact into a task graph.
 
-| Role | Claude (sub) | OpenAI · Codex | Gemini | Open-weight (local) |
-|------|--------------|----------------|--------|---------------------|
-| **Plan** — author a spec | Opus 4.8 (Fable 5 for the hardest) | GPT-5.6 Sol | Gemini 3.5 Flash | not advised (needs a frontier model) |
-| **Plan** — decompose an authored plan | Sonnet 4.6 | GPT-5.6 Terra | Gemini 3.5 Flash | Sonnet-tier hosted, not local |
-| **Implement** | open-weight local (default) or Sonnet 4.6 | GPT-5.6 Luna | Gemini 3.5 Flash | Qwen3.6-27B+ · Devstral · GLM-4.6 |
-| **Review** — first pass | Sonnet 4.6 | GPT-5.6 Terra | Gemini 3.5 Flash | Qwen3.6-27B (weaker signal) |
+| Role | Claude (sub) | OpenAI · Codex | Gemini | Open-weight (hosted or local) |
+|------|--------------|----------------|--------|-------------------------------|
+| **Plan** (spec/plan → task graph) | Sonnet 4.6 | GPT-5.6 Terra | Gemini 3.5 Flash | GLM-5.2 |
+| **Implement** | open-weight worker (default) or Sonnet 4.6 | GPT-5.6 Luna | Gemini 3.5 Flash | GLM-5.2 · DeepSeek V4-Pro · Qwen3.6-27B (local) |
+| **Review** — first pass | Sonnet 4.6 | GPT-5.6 Terra | Gemini 3.5 Flash | GLM-5.2 |
 | **Review** — re-review | Haiku 4.5 | GPT-5.6 Luna | Gemini 3.5 Flash | Qwen3.6-27B |
+| **Improve loop** (autonomous) | Opus 4.8 (Fable 5) | GPT-5.6 Sol | Gemini 3.1 Pro | GLM-5.2 · DeepSeek V4-Pro |
 | **Verify** | deterministic shell command — no model, any column |||
 
-Decomposition is a structured transformation, not open-ended reasoning, so a mid-tier model is enough; reserve the top tier (Opus · Sol · Fable 5) for authoring a plan from a bare spec. Implementation is where the tokens go, so an open-weight local worker is the cost-optimal default regardless of which column fills the brain seats. Gemini as a *brain* seat currently needs a CLI that emits capturable non-interactive output; see [docs/gotchas.md](docs/gotchas.md).
+Reserve the top tier (Opus · Sol · Fable 5 · GLM-5.2) for the **autonomous improvement loop**, the one seat that reasons open-ended (it decides what to build next with no human artifact). Planning and review are structured transformations a mid-tier model handles well, so that is where the defaults land. **Open-weight is not the same as local:** GLM-5.2 and DeepSeek V4-Pro are frontier open-weight models you can serve hosted (e.g. [z.ai](https://z.ai/)) or locally (LM Studio · Ollama); a small local model like Qwen3.6-27B is the cost floor for the implement and review seats. Gemini as a *brain* seat currently needs a CLI that emits capturable non-interactive output; see [docs/gotchas.md](docs/gotchas.md).
 
 **GitHub is the one platform contract.** Every unit of work becomes a real branch and a real
 pull request. Implementers push, the reviewer gates the PR, and you keep the merge button.
