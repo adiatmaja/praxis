@@ -178,6 +178,37 @@ async def _migration_0004_capability_events(connection: aiosqlite.Connection) ->
     )
 
 
+async def _migration_0005_task_outcomes(connection: aiosqlite.Connection) -> None:
+    """Add task_outcomes: calibration table for capability-aware task outcomes."""
+    await connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS task_outcomes (
+            id TEXT PRIMARY KEY,
+            task_id TEXT,
+            project_id TEXT,
+            model_name TEXT,
+            harness TEXT,
+            task_type TEXT,
+            files_touched INTEGER,
+            loc_delta INTEGER,
+            context_tokens_est INTEGER,
+            attempt INTEGER,
+            outcome TEXT NOT NULL,
+            failure_class TEXT,
+            split_depth INTEGER NOT NULL DEFAULT 0,
+            source TEXT NOT NULL DEFAULT 'run',
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
+    await connection.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_task_outcomes_model_project
+        ON task_outcomes (model_name, project_id, created_at)
+        """
+    )
+
+
 MIGRATIONS: list[Migration] = [
     Migration(1, "baseline: schema as of 2026-07-02", _migration_0001_baseline),
     Migration(
@@ -194,6 +225,11 @@ MIGRATIONS: list[Migration] = [
         4,
         "add capability_events decision-record table",
         _migration_0004_capability_events,
+    ),
+    Migration(
+        5,
+        "add task_outcomes calibration table",
+        _migration_0005_task_outcomes,
     ),
 ]
 
