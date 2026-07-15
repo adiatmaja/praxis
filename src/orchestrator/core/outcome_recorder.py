@@ -12,6 +12,7 @@ from orchestrator.core.capability_events import (
 from orchestrator.core.failure_taxonomy import counts_against_worker
 from orchestrator.database import Database
 
+
 logger = logging.getLogger(__name__)
 
 
@@ -46,7 +47,7 @@ async def record_outcome(
     # Determine whether this failure counts against the worker.
     # counts_against_worker raises ValueError on unknown strings,
     # so the bool guard prevents a crash on bogus failure_class values.
-    against = bool(failure_class) and False
+    against = False
     try:
         against = bool(failure_class) and counts_against_worker(failure_class)
     except (ValueError, TypeError):
