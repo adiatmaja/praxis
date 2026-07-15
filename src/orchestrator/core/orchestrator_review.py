@@ -20,13 +20,17 @@ from orchestrator.core.diff_guard import (
     destructive_deletions,
     detect_secrets,
 )
+from orchestrator.core.diff_stats import diff_stats
+from orchestrator.core.failure_taxonomy import FailureClass
 from orchestrator.core.git_ops import (
     checkout_branch,
     clone_with_token,
     commit_and_push,
     flip_checklist_item,
 )
+from orchestrator.core.log_context import task_logger
 from orchestrator.core.merge_policy import auto_merge_eligible
+from orchestrator.core.outcome_recorder import record_outcome
 from orchestrator.core.verify_gate import run_verify
 from orchestrator.models.schemas import TaskStatus
 
@@ -76,6 +80,10 @@ class ReviewMixin:
             return
         if task["status"] != TaskStatus.REVIEWING or task["pr_url"] is None:
             return
+
+        log = task_logger(logger, plan_id=task.get("plan_id"), task_id=task_id)
+        log.info("reviewing task (pr=%s)", task.get("pr_url"))
+
         if not await self._opus.is_available():
             await self._opus.queue_action(
                 {"action": "review", "task_id": task_id, "project_id": project["id"]}
@@ -92,6 +100,7 @@ class ReviewMixin:
 
         # Resolve plan_text for this task from the plan's opus_plan task list.
         plan_text_for_review: str | None = None
+        task_type_for_outcome: str | None = None
         plan = await self._tq.get_plan(task["plan_id"])
         if plan is not None:
             slug_to_plan_task: dict[str, dict[str, Any]] = {}
@@ -110,6 +119,7 @@ class ReviewMixin:
             )
             plan_task = slug_to_plan_task.get(task_slug, {})
             plan_text_for_review = plan_task.get("plan_text")
+            task_type_for_outcome = plan_task.get("task_type")
 
         checkout: str | None
         with tempfile.TemporaryDirectory() as _checkout_dir:
@@ -151,6 +161,27 @@ class ReviewMixin:
         verdict = str(review["verdict"]).lower()
         feedback = str(review.get("feedback", ""))
 
+        # Outcome recording: compute diff stats once, define helper.
+        files_touched, loc_delta = diff_stats(diff)
+
+        async def _record(outcome: str, failure_class: str | None) -> None:
+            await record_outcome(
+                self._tq._db,
+                task_id=task_id,
+                plan_id=task.get("plan_id"),
+                project_id=project["id"],
+                model_name=project.get("agent_model") or project.get("model_name"),
+                harness=project.get("harness"),
+                task_type=task_type_for_outcome,
+                files_touched=files_touched,
+                loc_delta=loc_delta,
+                context_tokens_est=None,
+                attempt=int(task["attempt"]),
+                outcome=outcome,
+                failure_class=failure_class,
+                emitter=getattr(self, "_emitter", None),
+            )
+
         flagged = destructive_deletions(diff)
         if flagged and verdict == "fail":
             # Gate already failed; annotate so the reviewer's feedback includes
@@ -177,6 +208,7 @@ class ReviewMixin:
                     "Review added dependencies and secrets before merging. "
                     + (feedback or "")
                 )
+                await _record("pass", None)
                 await self._tq.mark_passed(task_id, feedback)
                 self._bus.publish(
                     {
@@ -191,6 +223,7 @@ class ReviewMixin:
 
             base_branch = plan.get("plan_branch_name") if plan else None
             if auto_merge_eligible(project, base_branch):
+                await _record("pass", None)
                 await self._git.merge_pr(".", pr_number, repo=repo)
                 await self._tq.mark_merged(task_id)
                 await self._sync_plan_checkbox(task)
@@ -203,6 +236,7 @@ class ReviewMixin:
                 )
                 return
             # Default: park the reviewed PR for explicit human approval.
+            await _record("pass", None)
             await self._tq.mark_passed(task_id, feedback)
             self._bus.publish(
                 {
@@ -216,6 +250,12 @@ class ReviewMixin:
             )
             return
 
+        fail_class = (
+            FailureClass.VERIFY_FAIL.value
+            if "Automated verification failed" in feedback
+            else FailureClass.FIXABLE_IN_PLACE.value
+        )
+        await _record("fail", fail_class)
         await self._git.comment_on_pr(".", pr_number, feedback, repo=repo)
         await self._tq.fail_task(task_id, feedback)
         if int(task["attempt"]) < int(project["max_retries"]):

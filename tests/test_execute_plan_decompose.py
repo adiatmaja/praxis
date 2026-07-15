@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from typing import Any
+from unittest.mock import patch
 
 import pytest
 
@@ -714,3 +715,78 @@ async def test_decompose_no_emit_when_plan_id_is_none():
     )
     assert opus_plan["tasks"]
     assert len(emitter.events) == 0
+
+
+# ---------------------------------------------------------------------------
+# fetch_recent_outcomes wiring test (Part B)
+# ---------------------------------------------------------------------------
+
+
+async def test_decompose_uses_fetched_outcome_history_when_db_provided(db):
+    """When db is passed, decompose_plan feeds real outcome history to the brain."""
+    await db.execute(
+        """INSERT INTO task_outcomes
+           (id, project_id, model_name, outcome, failure_class, source, task_type,
+            harness, files_touched, loc_delta, context_tokens_est,
+            attempt, split_depth)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (
+            "r1",
+            "p1",
+            "m",
+            "pass",
+            None,
+            "run",
+            "feature",
+            "opencode",
+            2,
+            50,
+            1000,
+            1,
+            0,
+        ),
+    )
+
+    raw = (
+        '{"tasks":[{"id":"t1","title":"A","description":"d",'
+        '"depends_on":[],"files":["src/a.py"],"task_type":"feature",'
+        '"estimated_loc":50,"verification":"Run pytest and confirm all tests pass"}]}'
+    )
+    router = _FakeRouter(raw)
+
+    with patch(
+        "orchestrator.core.execute_plan_decompose.build_review_prompt"
+    ) as mock_prompt:
+        mock_prompt.return_value = "fake-prompt"
+        with patch(
+            "orchestrator.core.execute_plan_decompose.parse_review_response"
+        ) as mock_parse:
+            mock_parse.return_value = {
+                "tasks": [
+                    {
+                        "id": "t1",
+                        "slug": "a",
+                        "title": "A",
+                        "description": "d",
+                        "depends_on": [],
+                        "files": ["src/a.py"],
+                        "task_type": "feature",
+                        "estimated_loc": 50,
+                        "verification": "Run pytest and confirm all tests pass",
+                    }
+                ]
+            }
+            await decompose_plan(
+                plan="build a thing",
+                model="m",
+                context=None,
+                router=router,
+                effective_settings=_FakeEffective(),
+                project_id="p1",
+                db=db,
+            )
+
+    assert mock_prompt.called
+    history_arg = mock_prompt.call_args[0][2]
+    assert "no prior run history" not in history_arg
+    assert "feature" in history_arg
