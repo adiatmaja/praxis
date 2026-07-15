@@ -49,7 +49,7 @@ async def record_outcome(
     # so the bool guard prevents a crash on bogus failure_class values.
     against = False
     try:
-        against = bool(failure_class) and counts_against_worker(failure_class)
+        against = failure_class is not None and counts_against_worker(failure_class)
     except (ValueError, TypeError):
         against = False
 

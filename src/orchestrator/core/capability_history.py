@@ -61,9 +61,9 @@ async def fetch_recent_outcomes(
         scoped_params = [model_name, project_id, *_ATTRIBUTABLE_FAIL_CLASSES, limit]
         rows = await db.fetch_all(scoped_sql, tuple(scoped_params))
         if rows:
-            return rows
+            return [dict(r) for r in rows]
 
-    return await db.fetch_all(base_sql, tuple(params_base))
+    return [dict(r) for r in await db.fetch_all(base_sql, tuple(params_base))]
 
 
 def summarize_outcomes(runs: list[dict]) -> str:
