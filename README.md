@@ -111,7 +111,7 @@ command verifies. Any of these can change without touching the others.
 | Planner | Claude · GLM · Codex · an open-weight model |
 | Implementer | an open-weight model over any OpenAI-compatible endpoint (LM Studio · Ollama · a hosted endpoint like z.ai) |
 | Verifier | any shell command — `pytest`, `ruff`, `npm test`, a build script (deterministic, not a model) |
-| Reviewer | Claude · GLM · GPT · an open-weight model |
+| Reviewer | Claude · GLM · GPT · Gemini · an open-weight model |
 
 **Recommended defaults by capability tier.** Configure each seat by the *capability class* it needs, not a specific model — models churn, tiers don't. Praxis always starts from an existing spec or `plan.md`, so there is no "write the spec" seat; planning means turning that artifact into a task graph. Only the autonomous improvement loop reasons open-ended (it decides what to build next with no human artifact), so it is the one seat that wants a Frontier model; planning and review are structured jobs a High-tier model handles, and re-review drops to Low. Example models are as of July 2026.
 
@@ -123,7 +123,9 @@ command verifies. Any of these can change without touching the others.
 | **Low** | Review (re-review) | Haiku 4.5 | GPT-5.6 Luna | Gemini 3.5 Flash | small local model |
 | **none** | Verify | deterministic shell command — no model, any column ||||
 
-**Open-weight is not the same as local:** GLM-5.2 and DeepSeek V4-Pro are Frontier-class open-weight models you can serve hosted (e.g. [z.ai](https://z.ai/)) or locally (LM Studio · Ollama); a small local model is the cost floor for the implement and review seats. Gemini as a *brain* seat currently needs a CLI that emits capturable non-interactive output; see [docs/gotchas.md](docs/gotchas.md).
+**Open-weight is not the same as local:** GLM-5.2 and DeepSeek V4-Pro are Frontier-class open-weight models you can serve hosted (e.g. [z.ai](https://z.ai/)) or locally (LM Studio · Ollama); a small local model is the cost floor for the implement and review seats.
+
+**Where Gemini fits: worker seats, not the planner.** Claude, GPT/Codex, and Frontier-class open-weight models are the strong choices for planning and the autonomous improve loop. Gemini is the exception to reach for elsewhere: in practice it plans poorly, but its mid-tier models (Gemini 3.5 Flash) are moderately capable at scoped implementation, review, and everything that is not the plan itself, trading higher token usage for that reach. So point Gemini at Implement / Review / Verify and keep Plan and Improve on Claude, GPT, or a frontier model. Gemini runs as a brain through the `agy` (Antigravity) CLI, which emits capturable non-interactive output as of agy v1.1.0; as an implementer it drives the Antigravity coding agent as a harness. See [docs/gotchas.md](docs/gotchas.md).
 
 **GitHub is the one platform contract.** Every unit of work becomes a real branch and a real
 pull request. Implementers push, the reviewer gates the PR, and you keep the merge button.

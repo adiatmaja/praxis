@@ -109,6 +109,49 @@ REGISTRY: dict[str, HarnessSpec] = {
             "agent because OpenCode edits files but does not commit.",
         ),
     ),
+    "agy": HarnessSpec(
+        id="agy",
+        display_name="Antigravity (Gemini)",
+        image="agy-agent:latest",
+        description=(
+            "Google's Antigravity (agy) CLI agent, powered by Gemini models. "
+            "Edits files headless and uses portable OAuth credentials — no "
+            "OS-keychain lock-in. Gemini-only: does not talk to LM Studio or "
+            "any OpenAI-compatible endpoint."
+        ),
+        uniqueness=(
+            "First-party Google agent using Gemini natively via OAuth; brings "
+            "Gemini's large context window and code reasoning without requiring "
+            "a separate API key beyond the user's existing Google account."
+        ),
+        when_to_pick=(
+            "When the project is already on Google Cloud / Gemini and you want "
+            "first-party model quality without proxying through LM Studio. "
+            "Requires GEMINI_CREDS_HOST_DIR to be set so the container can read "
+            "the host OAuth credentials."
+        ),
+        pros=(
+            "First-party Gemini agent — best model quality for Gemini users",
+            "Large context window (Gemini 3.x models)",
+            "Portable OAuth JSON: no OS-keychain, easy Docker bind-mount",
+            "Headless `--headless --approve all` automation path",
+        ),
+        cons=(
+            "Gemini-only: cannot use local open-weight models via LM Studio",
+            "Requires host ~/.gemini OAuth creds mounted into the container",
+            "Does not auto-commit — entrypoint stages and commits changes",
+            "Newer / less battle-tested in headless CI than Aider or OpenCode",
+        ),
+        maturity="experimental",
+        recommended=False,
+        does_own_git=False,
+        supports_local_llm=False,
+        notes=(
+            "Set GEMINI_CREDS_HOST_DIR to the HOST path of ~/.gemini (e.g. "
+            "C:\\Users\\<user>\\.gemini on Windows) in the orchestrator env so "
+            "the Docker daemon can bind-mount it read-only into the container.",
+        ),
+    ),
     "openhands": HarnessSpec(
         id="openhands",
         display_name="OpenHands",

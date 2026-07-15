@@ -18,7 +18,7 @@ The reference configuration pairs a subscription reasoning model (e.g. Claude vi
 planning/review with an open-weight model (e.g. via LM Studio) driving a pluggable coding harness
 in Docker for implementation, but any role can point at any supported provider (`claude`, `codex`,
 `agy`, or a `local` OpenAI-compatible endpoint) via the LLM router. Harnesses are pluggable too:
-OpenCode is the default; Aider and OpenHands are optional alternatives. Cost efficiency is a
+OpenCode is the default; Aider, OpenHands, and Antigravity (agy/Gemini) are optional alternatives. Cost efficiency is a
 consequence of this flexibility, not the constraint.
 
 ## Tech Stack
@@ -251,6 +251,9 @@ the relevant subsystem. Condensed index:
 - **Agent containers use bridge net + `host.docker.internal`**, not `network_mode=host`.
 - **Harness images are standalone (NOT in compose)** — rebuild `aider-agent:latest` etc. after
   ANY `entrypoint.sh` change or a stale image runs silently. Read baked files via `docker cp`.
+- **agy harness requires `GEMINI_CREDS_HOST_DIR`** — set to the HOST-side path of `~/.gemini`
+  (e.g. `C:\Users\<user>\.gemini` on Windows) in the orchestrator env; the Docker daemon
+  bind-mounts it read-only into the container. Without it the agent starts but auth fails.
 - **Agent runs non-root** — workspace `/home/agent/workspace`; **git auth via `GH_TOKEN`**;
   **Aider needs a dummy `OPENAI_API_KEY`** + `--no-browser --no-detect-urls`.
 - **GitHub creds via provider seam** (`core/github_credentials.py`) — App installation tokens

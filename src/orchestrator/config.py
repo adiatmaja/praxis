@@ -60,6 +60,14 @@ class Settings(BaseSettings):
     # ``dashboard_url`` with its own ``PRAXIS_BASE_URL``, so this is mainly
     # needed when callers consume the REST API directly.
     public_url: str | None = None
+    # HOST filesystem path to the Gemini OAuth credentials directory (typically
+    # ~/.gemini on the host machine).  The Docker daemon resolves bind-mount
+    # sources from the HOST, not from inside the orchestrator container, so this
+    # must be the host path (e.g. C:\Users\<user>\.gemini on Windows or
+    # /home/<user>/.gemini on Linux).  Set via GEMINI_CREDS_HOST_DIR env var.
+    # When empty/unset, the agy harness proceeds without mounting credentials
+    # (a warning is logged) so unconfigured setups do not crash.
+    gemini_creds_host_dir: str = ""
 
     def dashboard_url(self) -> str:
         """Return the human-reachable dashboard URL for use in API responses.

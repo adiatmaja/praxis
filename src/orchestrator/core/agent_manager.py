@@ -102,11 +102,13 @@ class AgentManager:
         git_author_email: str | None = None,
         max_agent_concurrency: int = _DEFAULT_MAX_AGENT_CONCURRENCY,
         min_free_disk_bytes: int = _MIN_FREE_DISK_BYTES,
+        gemini_creds_host_dir: str = "",
     ) -> None:
         self._lm_studio_url = lm_studio_url
         self._effective_settings = effective_settings
         self._git_author_name = git_author_name
         self._git_author_email = git_author_email
+        self._gemini_creds_host_dir = gemini_creds_host_dir
         self._max_agent_concurrency = max_agent_concurrency
         self._min_free_disk_bytes = min_free_disk_bytes
         if credentials is not None:
@@ -217,19 +219,44 @@ class AgentManager:
         # (OpenCode) can trigger at the right threshold instead of sailing past
         # it into silent server-side truncation. Detected per-model, never
         # hardcoded; omitted when LM Studio can't be reached.
-        context_limit = await detect_context_limit(lm_studio_url, model_name)
-        if context_limit is not None:
-            environment["MODEL_CONTEXT_LIMIT"] = str(context_limit)
+        # agy skips this: it talks to Google via OAuth, not LM Studio, so the
+        # /api/v0/models probe is irrelevant and would only generate noise.
+        if harness_id != "agy":
+            context_limit = await detect_context_limit(lm_studio_url, model_name)
+            if context_limit is not None:
+                environment["MODEL_CONTEXT_LIMIT"] = str(context_limit)
+
+        # Build optional bind-mounts for harness-specific credential files.
+        # The mount source is resolved by the Docker daemon on the HOST (not
+        # inside the orchestrator container), so we use the host-side path
+        # supplied via gemini_creds_host_dir.
+        volumes: dict[str, dict[str, str]] = {}
+        if harness_id == "agy":
+            if self._gemini_creds_host_dir:
+                volumes[self._gemini_creds_host_dir] = {
+                    "bind": "/home/agent/.gemini",
+                    "mode": "ro",
+                }
+            else:
+                logger.warning(
+                    "agy harness selected but GEMINI_CREDS_HOST_DIR is not set; "
+                    "the container will start without Gemini OAuth credentials "
+                    "and authentication will likely fail."
+                )
+
         container_name = f"praxis-agent-{task_id[:8]}"
         self._remove_existing_container(container_name)
-        container = self._client.containers.run(
-            image=spec.image,
-            name=container_name,
-            environment=environment,
-            detach=True,
-            auto_remove=False,
-            extra_hosts={"host.docker.internal": "host-gateway"},
-        )
+        run_kwargs: dict[str, object] = {
+            "image": spec.image,
+            "name": container_name,
+            "environment": environment,
+            "detach": True,
+            "auto_remove": False,
+            "extra_hosts": {"host.docker.internal": "host-gateway"},
+        }
+        if volumes:
+            run_kwargs["volumes"] = volumes
+        container = self._client.containers.run(**run_kwargs)
         logger.info(
             "Spawned %s container %s for task %s on branch %s",
             harness_id,

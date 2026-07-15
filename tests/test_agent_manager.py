@@ -654,3 +654,141 @@ async def test_spawn_agent_injects_freshly_minted_token(monkeypatch) -> None:
         callback_url="http://host.docker.internal:8080/api/internal/agent-done",
     )
     assert captured["environment"]["GH_TOKEN"] == "ghs_fresh"
+
+
+# ---------------------------------------------------------------------------
+# agy harness: .gemini mount + context-limit skip
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+@patch("orchestrator.core.agent_manager.docker")
+async def test_agy_mounts_gemini_creds_when_configured(
+    mock_docker: MagicMock,
+) -> None:
+    """When gemini_creds_host_dir is set, spawn adds a read-only bind mount."""
+    mock_client = MagicMock()
+    mock_docker.from_env.return_value = mock_client
+    mock_client.containers.run.return_value = _mock_container()
+
+    manager = AgentManager(
+        lm_studio_url="http://localhost:1234",
+        github_token="ghp_x",
+        gemini_creds_host_dir="/home/user/.gemini",
+    )
+    await manager.spawn_agent(
+        task_id="agy-t1",
+        repo_url="https://github.com/u/r.git",
+        branch="agent/agy-task",
+        base_branch="plan/agy",
+        task_prompt="do it",
+        model_name="Gemini 3.5 Flash (High)",
+        callback_url="http://cb/",
+        harness="agy",
+    )
+
+    call_kwargs = mock_client.containers.run.call_args.kwargs
+    mounts = call_kwargs.get("volumes") or call_kwargs.get("mounts") or []
+    # volumes dict form: {host_path: {"bind": container_path, "mode": "ro"}}
+    assert "/home/user/.gemini" in mounts or any(
+        "/home/user/.gemini" in str(v)
+        for v in mounts.values()
+        if isinstance(mounts, dict)
+    ), f"Expected .gemini mount in volumes, got: {mounts}"
+    if isinstance(mounts, dict):
+        entry = mounts["/home/user/.gemini"]
+        assert entry["bind"] == "/home/agent/.gemini"
+        assert entry["mode"] == "ro"
+
+
+@pytest.mark.unit
+@patch("orchestrator.core.agent_manager.docker")
+async def test_agy_skips_gemini_mount_when_unconfigured(
+    mock_docker: MagicMock,
+) -> None:
+    """When gemini_creds_host_dir is empty/None, spawn proceeds without mount."""
+    mock_client = MagicMock()
+    mock_docker.from_env.return_value = mock_client
+    mock_client.containers.run.return_value = _mock_container()
+
+    manager = AgentManager(
+        lm_studio_url="http://localhost:1234",
+        github_token="ghp_x",
+        # gemini_creds_host_dir not supplied -> defaults to ""
+    )
+    # Should not raise even with no creds dir configured
+    await manager.spawn_agent(
+        task_id="agy-t2",
+        repo_url="https://github.com/u/r.git",
+        branch="agent/agy-task2",
+        base_branch="plan/agy",
+        task_prompt="do it",
+        model_name="Gemini 3.5 Flash (High)",
+        callback_url="http://cb/",
+        harness="agy",
+    )
+
+    call_kwargs = mock_client.containers.run.call_args.kwargs
+    volumes = call_kwargs.get("volumes") or {}
+    assert not any(".gemini" in str(k) for k in volumes), (
+        "No .gemini mount expected when gemini_creds_host_dir is unset"
+    )
+
+
+@pytest.mark.unit
+@patch("orchestrator.core.agent_manager.detect_context_limit", new_callable=AsyncMock)
+@patch("orchestrator.core.agent_manager.docker")
+async def test_agy_skips_context_limit_detection(
+    mock_docker: MagicMock,
+    mock_detect: AsyncMock,
+) -> None:
+    """agy harness must NOT call detect_context_limit (it talks to Google, not LM Studio)."""
+    mock_client = MagicMock()
+    mock_docker.from_env.return_value = mock_client
+    mock_client.containers.run.return_value = _mock_container()
+
+    manager = AgentManager(
+        lm_studio_url="http://localhost:1234",
+        github_token="ghp_x",
+        gemini_creds_host_dir="/home/user/.gemini",
+    )
+    await manager.spawn_agent(
+        task_id="agy-t3",
+        repo_url="https://github.com/u/r.git",
+        branch="agent/agy-task3",
+        base_branch="plan/agy",
+        task_prompt="do it",
+        model_name="Gemini 3.5 Flash (High)",
+        callback_url="http://cb/",
+        harness="agy",
+    )
+
+    mock_detect.assert_not_called()
+    env = mock_client.containers.run.call_args.kwargs["environment"]
+    assert "MODEL_CONTEXT_LIMIT" not in env
+
+
+@pytest.mark.unit
+@patch("orchestrator.core.agent_manager.docker")
+async def test_agy_uses_correct_image(mock_docker: MagicMock) -> None:
+    """agy harness selects the agy-agent:latest image."""
+    mock_client = MagicMock()
+    mock_docker.from_env.return_value = mock_client
+    mock_client.containers.run.return_value = _mock_container()
+
+    manager = AgentManager(
+        lm_studio_url="http://localhost:1234",
+        github_token="ghp_x",
+    )
+    await manager.spawn_agent(
+        task_id="agy-t4",
+        repo_url="https://github.com/u/r.git",
+        branch="agent/agy-task4",
+        base_branch="plan/agy",
+        task_prompt="do it",
+        model_name="Gemini 3.1 Pro (Low)",
+        callback_url="http://cb/",
+        harness="agy",
+    )
+
+    assert mock_client.containers.run.call_args.kwargs["image"] == "agy-agent:latest"
