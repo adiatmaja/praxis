@@ -113,18 +113,17 @@ command verifies. Any of these can change without touching the others.
 | Verifier | any shell command — `pytest`, `ruff`, `npm test`, a build script (deterministic, not a model) |
 | Reviewer | Claude · GLM · GPT · an open-weight model |
 
-**Recommended defaults per role** (July 2026 models — pick the column for the subscription you already own; mix freely). Praxis always starts from an existing spec or `plan.md`, so there is no "write the spec" seat; planning means turning that artifact into a task graph.
+**Recommended defaults by capability tier.** Configure each seat by the *capability class* it needs, not a specific model — models churn, tiers don't. Praxis always starts from an existing spec or `plan.md`, so there is no "write the spec" seat; planning means turning that artifact into a task graph. Only the autonomous improvement loop reasons open-ended (it decides what to build next with no human artifact), so it is the one seat that wants a Frontier model; planning and review are structured jobs a High-tier model handles, and re-review drops to Low. Example models are as of July 2026.
 
-| Role | Claude (sub) | OpenAI · Codex | Gemini | Open-weight (hosted or local) |
-|------|--------------|----------------|--------|-------------------------------|
-| **Plan** (spec/plan → task graph) | Sonnet 4.6 | GPT-5.6 Terra | Gemini 3.5 Flash | GLM-5.2 |
-| **Implement** | open-weight worker (default) or Sonnet 4.6 | GPT-5.6 Luna | Gemini 3.5 Flash | GLM-5.2 · DeepSeek V4-Pro · Qwen3.6-27B (local) |
-| **Review** — first pass | Sonnet 4.6 | GPT-5.6 Terra | Gemini 3.5 Flash | GLM-5.2 |
-| **Review** — re-review | Haiku 4.5 | GPT-5.6 Luna | Gemini 3.5 Flash | Qwen3.6-27B |
-| **Improve loop** (autonomous) | Opus 4.8 (Fable 5) | GPT-5.6 Sol | Gemini 3.1 Pro | GLM-5.2 · DeepSeek V4-Pro |
-| **Verify** | deterministic shell command — no model, any column |||
+| Tier | Fills which seat | Claude | OpenAI · Codex | Gemini | Open-weight (hosted or local) |
+|------|------------------|--------|----------------|--------|-------------------------------|
+| **Frontier** | Autonomous improve loop | Opus 4.8 · Fable 5 | GPT-5.6 Sol | Gemini 3.1 Pro | GLM-5.2 · DeepSeek V4-Pro |
+| **High** | Plan · Implement · Review (first pass) | Sonnet 4.6 | GPT-5.6 Terra | Gemini 3.5 Flash | GLM-5.2 |
+| **Medium** | Implement (tightly-scoped leaves) | Haiku 4.5 | GPT-5.6 Luna | Gemini 3.5 Flash | Qwen3.6-27B |
+| **Low** | Review (re-review) | Haiku 4.5 | GPT-5.6 Luna | Gemini 3.5 Flash | small local model |
+| **none** | Verify | deterministic shell command — no model, any column ||||
 
-Reserve the top tier (Opus · Sol · Fable 5 · GLM-5.2) for the **autonomous improvement loop**, the one seat that reasons open-ended (it decides what to build next with no human artifact). Planning and review are structured transformations a mid-tier model handles well, so that is where the defaults land. **Open-weight is not the same as local:** GLM-5.2 and DeepSeek V4-Pro are frontier open-weight models you can serve hosted (e.g. [z.ai](https://z.ai/)) or locally (LM Studio · Ollama); a small local model like Qwen3.6-27B is the cost floor for the implement and review seats. Gemini as a *brain* seat currently needs a CLI that emits capturable non-interactive output; see [docs/gotchas.md](docs/gotchas.md).
+**Open-weight is not the same as local:** GLM-5.2 and DeepSeek V4-Pro are Frontier-class open-weight models you can serve hosted (e.g. [z.ai](https://z.ai/)) or locally (LM Studio · Ollama); a small local model is the cost floor for the implement and review seats. Gemini as a *brain* seat currently needs a CLI that emits capturable non-interactive output; see [docs/gotchas.md](docs/gotchas.md).
 
 **GitHub is the one platform contract.** Every unit of work becomes a real branch and a real
 pull request. Implementers push, the reviewer gates the PR, and you keep the merge button.
