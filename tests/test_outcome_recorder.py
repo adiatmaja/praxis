@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from orchestrator.core.capability_events import (
     CapabilityEventEmitter,
-    OutcomeRecordedEvent,
 )
 from orchestrator.core.event_bus import EventBus
 from orchestrator.core.outcome_recorder import record_outcome
@@ -39,9 +38,7 @@ async def test_record_outcome_inserts_row(tmp_path):
         )
 
         assert row_id is not None
-        row = await db.fetch_one(
-            "SELECT * FROM task_outcomes WHERE id = ?", (row_id,)
-        )
+        row = await db.fetch_one("SELECT * FROM task_outcomes WHERE id = ?", (row_id,))
         assert row is not None
         assert row["outcome"] == "pass"
         assert row["files_touched"] == 3
@@ -80,9 +77,7 @@ async def test_record_outcome_verify_fail_emits_event(tmp_path):
         assert row_id is not None
 
         # Check DB row
-        row = await db.fetch_one(
-            "SELECT * FROM task_outcomes WHERE id = ?", (row_id,)
-        )
+        row = await db.fetch_one("SELECT * FROM task_outcomes WHERE id = ?", (row_id,))
         assert row is not None
         assert row["outcome"] == "fail"
         assert row["failure_class"] == "verify_fail"
@@ -156,9 +151,7 @@ async def test_record_outcome_no_emitter_no_event(tmp_path):
         )
 
         assert row_id is not None
-        row = await db.fetch_one(
-            "SELECT * FROM task_outcomes WHERE id = ?", (row_id,)
-        )
+        row = await db.fetch_one("SELECT * FROM task_outcomes WHERE id = ?", (row_id,))
         assert row is not None
 
         # Bus should be empty
