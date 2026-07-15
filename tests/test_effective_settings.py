@@ -89,7 +89,7 @@ async def test_resolve_call_site_falls_back_to_default(
 ) -> None:
     es = EffectiveSettings(test_settings, db)
     cfg = await es.call_site_config("plan_spec", None)
-    assert cfg == {"provider": "claude", "model": "claude-opus-4-8", "effort": "high"}
+    assert cfg == {"provider": "claude", "model": "claude-sonnet-4-6", "effort": None}
 
 
 @pytest.mark.unit
