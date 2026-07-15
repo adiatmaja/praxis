@@ -43,8 +43,21 @@ async def test_fetch_scopes_by_model_and_project(db):
             harness, files_touched, loc_delta, context_tokens_est,
             attempt, split_depth)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-        ("r1", "proj-A", "model-m", "pass", None, "run", "feature",
-         "opencode", 2, 50, 1000, 1, 0),
+        (
+            "r1",
+            "proj-A",
+            "model-m",
+            "pass",
+            None,
+            "run",
+            "feature",
+            "opencode",
+            2,
+            50,
+            1000,
+            1,
+            0,
+        ),
     )
     await db.execute(
         """INSERT INTO task_outcomes
@@ -52,8 +65,21 @@ async def test_fetch_scopes_by_model_and_project(db):
             harness, files_touched, loc_delta, context_tokens_est,
             attempt, split_depth)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-        ("r2", "proj-A", "other-model", "pass", None, "run", "feature",
-         "opencode", 3, 80, 1200, 1, 0),
+        (
+            "r2",
+            "proj-A",
+            "other-model",
+            "pass",
+            None,
+            "run",
+            "feature",
+            "opencode",
+            3,
+            80,
+            1200,
+            1,
+            0,
+        ),
     )
     results = await fetch_recent_outcomes(db, model_name="model-m", project_id="proj-A")
     assert len(results) == 1
@@ -72,8 +98,21 @@ async def test_fetch_falls_back_to_model_wide_when_project_empty(db):
             harness, files_touched, loc_delta, context_tokens_est,
             attempt, split_depth)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-        ("r1", "proj-B", "model-m", "pass", None, "run", "feature",
-         "opencode", 2, 50, 1000, 1, 0),
+        (
+            "r1",
+            "proj-B",
+            "model-m",
+            "pass",
+            None,
+            "run",
+            "feature",
+            "opencode",
+            2,
+            50,
+            1000,
+            1,
+            0,
+        ),
     )
     results = await fetch_recent_outcomes(db, model_name="model-m", project_id="proj-A")
     assert len(results) == 1
@@ -91,8 +130,21 @@ async def test_fetch_excludes_provider_error_includes_verify_fail(db):
             harness, files_touched, loc_delta, context_tokens_est,
             attempt, split_depth)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-        ("r1", "proj-A", "model-m", "fail", "provider_error", "run", "feature",
-         "opencode", 0, 0, 0, 1, 0),
+        (
+            "r1",
+            "proj-A",
+            "model-m",
+            "fail",
+            "provider_error",
+            "run",
+            "feature",
+            "opencode",
+            0,
+            0,
+            0,
+            1,
+            0,
+        ),
     )
     await db.execute(
         """INSERT INTO task_outcomes
@@ -100,8 +152,21 @@ async def test_fetch_excludes_provider_error_includes_verify_fail(db):
             harness, files_touched, loc_delta, context_tokens_est,
             attempt, split_depth)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-        ("r2", "proj-A", "model-m", "fail", "verify_fail", "run", "feature",
-         "opencode", 1, 10, 500, 1, 0),
+        (
+            "r2",
+            "proj-A",
+            "model-m",
+            "fail",
+            "verify_fail",
+            "run",
+            "feature",
+            "opencode",
+            1,
+            10,
+            500,
+            1,
+            0,
+        ),
     )
     results = await fetch_recent_outcomes(db, model_name="model-m", project_id="proj-A")
     assert len(results) == 1
@@ -120,8 +185,21 @@ async def test_fetch_respects_limit(db):
                 harness, files_touched, loc_delta, context_tokens_est,
                 attempt, split_depth)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (f"r{i}", "proj-A", "model-m", "pass", None, "run", "feature",
-             "opencode", 1, 10, 500, 1, 0),
+            (
+                f"r{i}",
+                "proj-A",
+                "model-m",
+                "pass",
+                None,
+                "run",
+                "feature",
+                "opencode",
+                1,
+                10,
+                500,
+                1,
+                0,
+            ),
         )
     results = await fetch_recent_outcomes(
         db, model_name="model-m", project_id="proj-A", limit=3
@@ -134,7 +212,5 @@ async def test_fetch_returns_empty_when_no_matching_rows(db):
     """Empty result when no rows match the model."""
     from orchestrator.core.capability_history import fetch_recent_outcomes
 
-    results = await fetch_recent_outcomes(
-        db, model_name="model-m", project_id="proj-A"
-    )
+    results = await fetch_recent_outcomes(db, model_name="model-m", project_id="proj-A")
     assert results == []
