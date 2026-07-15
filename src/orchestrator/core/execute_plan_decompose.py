@@ -18,7 +18,10 @@ from orchestrator.core.capability_events import (
     LeafValidatedEvent,
     PlanRejectedEvent,
 )
-from orchestrator.core.capability_history import summarize_outcomes
+from orchestrator.core.capability_history import (
+    fetch_recent_outcomes,
+    summarize_outcomes,
+)
 from orchestrator.core.context_scrub import scrub_context
 from orchestrator.core.leaf_validator import (
     format_violations_feedback,
@@ -201,6 +204,7 @@ async def decompose_plan(
     local_context: str | None = None,
     plan_id: str | None = None,
     emitter: Any = None,
+    db: Any = None,
 ) -> dict[str, Any]:
     """Capability-review a plan into a normalized opus_plan task graph.
 
@@ -215,6 +219,7 @@ async def decompose_plan(
         local_context: Optional local context to thread onto each leaf as repo_memory.
         plan_id: Plan identifier (reserved for capability event wiring).
         emitter: Capability event emitter (reserved for capability event wiring).
+        db: Optional Database to fetch recent outcomes for history.
 
     Returns:
         A normalized ``{"tasks": [...]}`` dict where each task has a ``slug``
@@ -227,7 +232,13 @@ async def decompose_plan(
     """
     profile = await effective_settings.capability_profile(project_id=None, model=model)
     per_leaf_budget = int(profile.context_window * (1 - WORKER_RESERVE_FRACTION))
-    history = summarize_outcomes([])
+    if db is not None:
+        runs = await fetch_recent_outcomes(
+            db, model_name=model, project_id=project_id, limit=100
+        )
+    else:
+        runs = []
+    history = summarize_outcomes(runs)
     prompt = build_review_prompt(plan, profile, history, per_leaf_budget)
 
     if emitter is not None and plan_id is not None:
