@@ -42,9 +42,12 @@ async def fetch_recent_outcomes(
     Returns:
         List of row dicts compatible with ``summarize_outcomes``.
     """
+    # Only `?` placeholders are interpolated (one per attributable failure
+    # class); every value is bound via the params tuple, so this is not a SQL
+    # injection vector despite the f-string.
     attributable_placeholders = ",".join("?" * len(_ATTRIBUTABLE_FAIL_CLASSES))
     base_sql = (
-        "SELECT * FROM task_outcomes WHERE model_name = ? AND source = 'run'"
+        "SELECT * FROM task_outcomes WHERE model_name = ? AND source = 'run'"  # nosec B608 - placeholders only, all values parameterized
         " AND (outcome = 'pass' OR (outcome = 'fail'"
         f" AND failure_class IN ({attributable_placeholders})))"
         " ORDER BY created_at DESC LIMIT ?"
