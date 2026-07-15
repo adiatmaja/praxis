@@ -53,6 +53,19 @@ _NON_RUNNABLE_PATTERNS = [
     r"\breview\b",
 ]
 
+# A verification that carries a real runnable command is runnable regardless of
+# any manual-verb prose (or file paths) around it. Without this guard the blunt
+# keyword scan above false-positives on legitimate commands whose surrounding
+# text contains "review"/"inspect" (pervasive in this codebase: `review_task`,
+# `test_orchestrator_review.py`, "no regression in existing review tests"). A
+# backtick-wrapped command or a known runner token counts as a runnable signal.
+_RUNNABLE_SIGNAL = re.compile(
+    r"`[^`]+`"  # any backtick-wrapped command
+    r"|\b(pytest|uv\s+run|npm|pnpm|yarn|make|go\s+test|cargo|ruff|mypy|tox|"
+    r"pre-commit|python3?\s+-m|bash\s|sh\s|\./)",
+    re.IGNORECASE,
+)
+
 
 # ---------------------------------------------------------------------------
 # Data structures
@@ -291,6 +304,9 @@ def _check_verification(
                     else "missing verification command",
                 )
             )
+            continue
+        if _RUNNABLE_SIGNAL.search(v):
+            # Carries a real command; manual-verb prose around it is fine.
             continue
         for pat in _NON_RUNNABLE_PATTERNS:
             if re.search(pat, v, re.IGNORECASE):

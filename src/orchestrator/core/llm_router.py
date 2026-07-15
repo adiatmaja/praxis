@@ -89,7 +89,16 @@ CALL_SITE_DEFAULTS: dict[str, dict[str, str | None]] = {
     },
     "context_sync": {"provider": "claude", "model": "claude-haiku-4-5", "effort": None},
     "derive_tasks": {"provider": "local", "model": "", "effort": None},
-    "plan_review": {"provider": "claude", "model": "claude-opus-4-8", "effort": "high"},
+    # Decomposition is a structured transformation of an already-authored plan
+    # into a constraint-valid DAG, not open-ended deep reasoning; Sonnet is
+    # sufficient and far cheaper/faster. Opus is reserved for the judgment-heavy
+    # seats (plan_spec authoring, analyze_improvements). See capability-engine
+    # framing: use the highest-cost model only where capability truly demands it.
+    "plan_review": {
+        "provider": "claude",
+        "model": "claude-sonnet-4-6",
+        "effort": None,
+    },
     "answer_clarification": {
         "provider": "claude",
         "model": "claude-sonnet-4-6",

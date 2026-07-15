@@ -407,6 +407,29 @@ def test_validate_leaves_verification_not_runnable():
 
 
 @pytest.mark.unit
+def test_validate_leaves_verification_runnable_with_review_prose():
+    # A real `uv run pytest` command must NOT be flagged non-runnable just
+    # because its surrounding prose or file paths contain "review"/"inspect".
+    leaves = [
+        LeafTask(
+            id="t1",
+            title="Task",
+            plan_text="do something",
+            verification=(
+                "Run `uv run pytest tests/test_orchestrator_review.py -q`; "
+                "confirms no regression in existing review tests."
+            ),
+        ),
+    ]
+    profile = _profile()
+    source = _source_plan(leaves)
+    opus_plan = {"plan_summary": "x", "plan_slug": "x", "tasks": []}
+
+    result = validate_leaves(opus_plan, profile, source, leaves)
+    assert not any(v.rule == "verification" for v in result.hard)
+
+
+@pytest.mark.unit
 def test_validate_leaves_verification_valid():
     leaves = [
         LeafTask(
