@@ -147,6 +147,7 @@ class Orchestrator(DispatchMixin, ReviewMixin, ReconcileMixin, ImprovementMixin)
                 local_context=payload.get("local_context"),
                 plan_id=plan_id,
                 emitter=self._emitter,
+                db=self._tq._db,
             )
         except PlanReviewError as exc:
             await self._tq.set_plan_error(plan_id, str(exc))
