@@ -258,3 +258,14 @@ DOMAIN=praxis.example.com docker compose --profile hosted up --build
 
 - Caddy reverse proxy with auto-HTTPS
 - Security headers (HSTS, XSS protection, etc.)
+
+## Capability Engine: Outcome Recording (F5)
+
+When the review phase reaches a terminal verdict for a task, `record_outcome` writes a single
+`task_outcomes` row containing the review decision, attribution (via `counts_against_worker`),
+and measured diff statistics. The write is fire-and-forget — DB or emit errors are swallowed so
+the review pipeline never stalls. On the next decomposition, `decompose_plan` calls
+`fetch_recent_outcomes` (scoped to the worker model, widening from the current project to all
+projects) and feeds those historical results into the decompose prompt's history slot, allowing
+the brain to calibrate leaf sizing against real evidence. Learned Wilson-bound limits and the
+`GET /api/capability/{model}` endpoint remain planned for Plan 6.
