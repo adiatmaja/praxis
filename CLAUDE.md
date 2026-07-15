@@ -296,6 +296,14 @@ the relevant subsystem. Condensed index:
 - **`local_context` fills the worker's `repo_memory` Bible slot** with client-gathered
   non-committed context (gitignored config shapes, user-scope conventions); minimum-blocking,
   names/shapes over values, never a "read file X" pointer. Threaded like `context_text`.
+- **Outcome recording is fire-and-forget** — `core/outcome_recorder.record_outcome` writes one
+  `task_outcomes` row per terminal `review_task` verdict, swallows its own DB/emit errors;
+  attribution decided ONLY by `core/failure_taxonomy.counts_against_worker` (S6);
+  `provider_error` and human merge-gate rejections never count against the worker.
+- **Decomposition history is real now** — `decompose_plan(db=...)` feeds
+  `fetch_recent_outcomes` (scoped `(model, project)` → `(model, *)`, worker-attributable rows
+  only) into the prompt history slot; Wilson-bound learned limits and `GET /api/capability`
+  remain Plan 6.
 
 ## Documentation
 
