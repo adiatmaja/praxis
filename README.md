@@ -113,6 +113,19 @@ command verifies. Any of these can change without touching the others.
 | Verifier | any shell command — `pytest`, `ruff`, `npm test`, a build script (deterministic, not a model) |
 | Reviewer | Claude · GLM · GPT · an open-weight model |
 
+**Recommended defaults per role** (July 2026 models — pick the column for the subscription you already own; mix freely):
+
+| Role | Claude (sub) | OpenAI · Codex | Gemini | Open-weight (local) |
+|------|--------------|----------------|--------|---------------------|
+| **Plan** — author a spec | Opus 4.8 (Fable 5 for the hardest) | GPT-5.6 Sol | Gemini 3.5 Flash | not advised (needs a frontier model) |
+| **Plan** — decompose an authored plan | Sonnet 4.6 | GPT-5.6 Terra | Gemini 3.5 Flash | Sonnet-tier hosted, not local |
+| **Implement** | open-weight local (default) or Sonnet 4.6 | GPT-5.6 Luna | Gemini 3.5 Flash | Qwen3.6-27B+ · Devstral · GLM-4.6 |
+| **Review** — first pass | Sonnet 4.6 | GPT-5.6 Terra | Gemini 3.5 Flash | Qwen3.6-27B (weaker signal) |
+| **Review** — re-review | Haiku 4.5 | GPT-5.6 Luna | Gemini 3.5 Flash | Qwen3.6-27B |
+| **Verify** | deterministic shell command — no model, any column |||
+
+Decomposition is a structured transformation, not open-ended reasoning, so a mid-tier model is enough; reserve the top tier (Opus · Sol · Fable 5) for authoring a plan from a bare spec. Implementation is where the tokens go, so an open-weight local worker is the cost-optimal default regardless of which column fills the brain seats. Gemini as a *brain* seat currently needs a CLI that emits capturable non-interactive output; see [docs/gotchas.md](docs/gotchas.md).
+
 **GitHub is the one platform contract.** Every unit of work becomes a real branch and a real
 pull request. Implementers push, the reviewer gates the PR, and you keep the merge button.
 This is a deliberate dependency, not an accident: inspectable, revertible PRs are the
