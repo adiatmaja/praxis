@@ -56,8 +56,6 @@ def test_repo_slug_from_url_rejects_garbage(invalid_url):
         repo_slug_from_url(invalid_url)
 
 
-
-
 async def test_pat_provider_returns_static_token_for_any_repo():
     provider = PatCredentialProvider("ghp_static")
     assert await provider.token_for_repo("https://github.com/a/b") == "ghp_static"
@@ -223,9 +221,9 @@ async def test_app_provider_installation_id_validation_raises():
 
 @pytest.mark.unit
 def test_github_app_jwt_minting() -> None:
-    from cryptography.hazmat.primitives.asymmetric import rsa
-    from cryptography.hazmat.primitives import serialization
     import jwt
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric import rsa
 
     # Generate a real RSA private key
     private_key = rsa.generate_private_key(
@@ -235,7 +233,7 @@ def test_github_app_jwt_minting() -> None:
     pem = private_key.private_bytes(
         encoding=serialization.Encoding.PEM,
         format=serialization.PrivateFormat.PKCS8,
-        encryption_algorithm=serialization.NoEncryption()
+        encryption_algorithm=serialization.NoEncryption(),
     ).decode("utf-8")
 
     provider = GitHubAppCredentialProvider(
@@ -254,22 +252,24 @@ def test_github_app_jwt_minting() -> None:
 
     # Verify signature using public key
     public_key = private_key.public_key()
-    decoded = jwt.decode(jwt_token, public_key, algorithms=["RS256"], options={"verify_exp": False})
+    decoded = jwt.decode(
+        jwt_token, public_key, algorithms=["RS256"], options={"verify_exp": False}
+    )
     assert decoded["iss"] == "987"
     assert decoded["iat"] == 5000 - 60
 
 
 @pytest.mark.asyncio
 async def test_app_provider_token_expiry_caching_robust() -> None:
-    from cryptography.hazmat.primitives.asymmetric import rsa
-    from cryptography.hazmat.primitives import serialization
     import jwt
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric import rsa
 
     private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     pem = private_key.private_bytes(
         encoding=serialization.Encoding.PEM,
         format=serialization.PrivateFormat.PKCS8,
-        encryption_algorithm=serialization.NoEncryption()
+        encryption_algorithm=serialization.NoEncryption(),
     ).decode("utf-8")
 
     installation_requests = []
@@ -280,7 +280,12 @@ async def test_app_provider_token_expiry_caching_robust() -> None:
         auth_header = request.headers.get("Authorization", "")
         assert auth_header.startswith("Bearer ")
         token_str = auth_header.split("Bearer ")[1]
-        decoded = jwt.decode(token_str, private_key.public_key(), algorithms=["RS256"], options={"verify_exp": False})
+        decoded = jwt.decode(
+            token_str,
+            private_key.public_key(),
+            algorithms=["RS256"],
+            options={"verify_exp": False},
+        )
         assert decoded["iss"] == "123"
 
         if "/repos/owner/repo/installation" in request.url.path:
@@ -290,7 +295,9 @@ async def test_app_provider_token_expiry_caching_robust() -> None:
             token_requests.append(request)
             # Expiry is 1 hour in the future (3600 seconds)
             # e.g., iat is at clock, expires_at is 3600 seconds later
-            expires_at = datetime.fromtimestamp(decoded["iat"] + 3600, tz=UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+            expires_at = datetime.fromtimestamp(decoded["iat"] + 3600, tz=UTC).strftime(
+                "%Y-%m-%dT%H:%M:%SZ"
+            )
             return httpx.Response(
                 201,
                 json={
@@ -344,11 +351,14 @@ async def test_app_provider_token_expiry_caching_robust() -> None:
     )
     # Define a clean mock transport handler for fixed provider
     fixed_token_requests = []
+
     def handler_fixed(request: httpx.Request) -> httpx.Response:
         assert "/repos/" not in request.url.path
         assert "/app/installations/8888/access_tokens" in request.url.path
         fixed_token_requests.append(request)
-        expires_at = datetime.fromtimestamp(clock() + 3600, tz=UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+        expires_at = datetime.fromtimestamp(clock() + 3600, tz=UTC).strftime(
+            "%Y-%m-%dT%H:%M:%SZ"
+        )
         return httpx.Response(
             201,
             json={
@@ -356,8 +366,8 @@ async def test_app_provider_token_expiry_caching_robust() -> None:
                 "expires_at": expires_at,
             },
         )
+
     provider_fixed._transport = httpx.MockTransport(handler_fixed)
     token_fixed = await provider_fixed.token_for_repo("owner/repo")
     assert token_fixed == "ghs_fixed_token"
     assert len(fixed_token_requests) == 1
-

@@ -110,11 +110,15 @@ async def test_verify_token_unicode_bytes_handling(mocker) -> None:
 @pytest.mark.integration
 async def test_verify_token_via_client(client) -> None:
     # Valid token passes
-    response = await client.get("/api/settings", headers={"Authorization": "Bearer test-auth"})
+    response = await client.get(
+        "/api/settings", headers={"Authorization": "Bearer test-auth"}
+    )
     assert response.status_code == 200
 
     # Wrong token returns 401
-    response = await client.get("/api/settings", headers={"Authorization": "Bearer wrong-auth"})
+    response = await client.get(
+        "/api/settings", headers={"Authorization": "Bearer wrong-auth"}
+    )
     assert response.status_code == 401
 
     # Empty token returns 401 (depends on how HTTPBearer behaves or verification logic)
@@ -122,12 +126,13 @@ async def test_verify_token_via_client(client) -> None:
     assert response.status_code in (401, 403)
 
     # Malformed bearer scheme returns 401/403
-    response = await client.get("/api/settings", headers={"Authorization": "Basic test-auth"})
+    response = await client.get(
+        "/api/settings", headers={"Authorization": "Basic test-auth"}
+    )
     assert response.status_code in (401, 403)
 
     response = await client.get("/api/settings", headers={"Authorization": "Bearer"})
     assert response.status_code in (401, 403)
-
 
 
 @pytest.mark.unit

@@ -209,13 +209,7 @@ async def test_llm_router_run_local_makes_http_request(mocker) -> None:
 
     mock_response = mocker.MagicMock()
     mock_response.json.return_value = {
-        "choices": [
-            {
-                "message": {
-                    "content": "resolved local response"
-                }
-            }
-        ]
+        "choices": [{"message": {"content": "resolved local response"}}]
     }
     mock_post.return_value = mock_response
 
@@ -245,9 +239,12 @@ async def test_llm_router_unknown_provider_raises_error(mocker) -> None:
 
 
 @pytest.mark.integration
-async def test_llm_router_routing_decision_overridden_by_db(db, test_settings, mocker) -> None:
+async def test_llm_router_routing_decision_overridden_by_db(
+    db, test_settings, mocker
+) -> None:
     # 1. Override plan_spec routing decision in the database
     import json
+
     override_config = {
         "provider": "local",
         "model": "db-overridden-model",
@@ -260,19 +257,14 @@ async def test_llm_router_routing_decision_overridden_by_db(db, test_settings, m
 
     # 2. Setup EffectiveSettings with the database
     from orchestrator.core.effective_settings import EffectiveSettings
+
     effective_settings = EffectiveSettings(test_settings, db)
 
     # 3. Mock the httpx request so we don't hit actual local network
     mock_post = mocker.patch("httpx.AsyncClient.post", new_callable=mocker.AsyncMock)
     mock_response = mocker.MagicMock()
     mock_response.json.return_value = {
-        "choices": [
-            {
-                "message": {
-                    "content": "db override response"
-                }
-            }
-        ]
+        "choices": [{"message": {"content": "db override response"}}]
     }
     mock_post.return_value = mock_response
 
@@ -290,4 +282,3 @@ async def test_llm_router_routing_decision_overridden_by_db(db, test_settings, m
     mock_post.assert_called_once()
     _, kwargs = mock_post.call_args
     assert kwargs["json"]["model"] == "db-overridden-model"
-
