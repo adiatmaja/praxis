@@ -309,7 +309,9 @@ def test_validate_leaves_dep_depth_default_profile_limits():
         LeafTask(id="t6", title="F", plan_text="f", depends_on=["t5"]),
     ]
     source_rejected = _source_plan(rejected_leaves)
-    result_rejected = validate_leaves(opus_plan, profile, source_rejected, rejected_leaves)
+    result_rejected = validate_leaves(
+        opus_plan, profile, source_rejected, rejected_leaves
+    )
     assert any(v.rule == "dep_depth" for v in result_rejected.hard)
 
 
