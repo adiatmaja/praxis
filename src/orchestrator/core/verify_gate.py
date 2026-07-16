@@ -20,9 +20,7 @@ _MAX_OUTPUT = 8000
 # We treat exit 5 as a pass ONLY when the output carries pytest's own
 # no-tests-collected signal, so an unrelated command exiting 5 still fails.
 _PYTEST_NO_TESTS_EXIT = 5
-_PYTEST_NO_TESTS_SIGNAL = re.compile(
-    r"no tests ran|no tests collected", re.IGNORECASE
-)
+_PYTEST_NO_TESTS_SIGNAL = re.compile(r"no tests ran|no tests collected", re.IGNORECASE)
 
 
 def _truncate(text: str) -> str:
