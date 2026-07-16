@@ -282,6 +282,37 @@ def test_validate_leaves_dep_depth_within_limit():
     assert not any(v.rule == "dep_depth" for v in result.hard)
 
 
+@pytest.mark.unit
+def test_validate_leaves_dep_depth_default_profile_limits():
+    # 1) Passing depth-4 chain (5 tasks)
+    passing_leaves = [
+        LeafTask(id="t1", title="A", plan_text="a", depends_on=[]),
+        LeafTask(id="t2", title="B", plan_text="b", depends_on=["t1"]),
+        LeafTask(id="t3", title="C", plan_text="c", depends_on=["t2"]),
+        LeafTask(id="t4", title="D", plan_text="d", depends_on=["t3"]),
+        LeafTask(id="t5", title="E", plan_text="e", depends_on=["t4"]),
+    ]
+    profile = _profile()  # default max_dep_depth = 4
+    source = _source_plan(passing_leaves)
+    opus_plan = {"plan_summary": "x", "plan_slug": "x", "tasks": []}
+
+    result = validate_leaves(opus_plan, profile, source, passing_leaves)
+    assert not any(v.rule == "dep_depth" for v in result.hard)
+
+    # 2) Rejected depth-5 chain (6 tasks)
+    rejected_leaves = [
+        LeafTask(id="t1", title="A", plan_text="a", depends_on=[]),
+        LeafTask(id="t2", title="B", plan_text="b", depends_on=["t1"]),
+        LeafTask(id="t3", title="C", plan_text="c", depends_on=["t2"]),
+        LeafTask(id="t4", title="D", plan_text="d", depends_on=["t3"]),
+        LeafTask(id="t5", title="E", plan_text="e", depends_on=["t4"]),
+        LeafTask(id="t6", title="F", plan_text="f", depends_on=["t5"]),
+    ]
+    source_rejected = _source_plan(rejected_leaves)
+    result_rejected = validate_leaves(opus_plan, profile, source_rejected, rejected_leaves)
+    assert any(v.rule == "dep_depth" for v in result_rejected.hard)
+
+
 # ---------------------------------------------------------------------------
 # HARD: max_files
 # ---------------------------------------------------------------------------
