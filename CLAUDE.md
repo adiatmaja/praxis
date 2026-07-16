@@ -18,7 +18,7 @@ The reference configuration pairs a subscription reasoning model (e.g. Claude vi
 planning/review with an open-weight model (e.g. via LM Studio) driving a pluggable coding harness
 in Docker for implementation, but any role can point at any supported provider (`claude`, `codex`,
 `agy`, or a `local` OpenAI-compatible endpoint) via the LLM router. Harnesses are pluggable too:
-OpenCode is the default; Aider, OpenHands, and Antigravity (agy/Gemini) are optional alternatives. Cost efficiency is a
+OpenCode is the default; Antigravity (agy/Gemini) is the experimental alternative. Cost efficiency is a
 consequence of this flexibility, not the constraint.
 
 ## Tech Stack
@@ -30,7 +30,7 @@ consequence of this flexibility, not the constraint.
 | CLI | Typer + rich |
 | Web UI | No-build HTML/CSS/JS (`web/index.html` + `styles.css` + `app.js`) |
 | Containers | Docker SDK for Python |
-| Agent | Pluggable harness — OpenCode (default), Aider, OpenHands (custom Docker images) |
+| Agent | Pluggable harness — OpenCode (default), agy/Antigravity (custom Docker images) |
 | LLM (any role) | Provider-agnostic via the LLM router — `claude`, `codex`, `agy`, or `local` (OpenAI-compatible); per-call-site configurable |
 | LLM (reference: plan/review) | Subscription reasoning model, e.g. Claude via `claude -p` |
 | LLM (reference: implement) | Open-weight model, e.g. via LM Studio (OpenAI-compatible) |
@@ -72,7 +72,7 @@ praxis/
 │   │   │   ├── effective_settings.py# override(project)→global→default resolution
 │   │   │   ├── settings_file.py     # config/praxis.yaml loader + env overrides (Spec 2)
 │   │   │   ├── agent_manager.py     # Docker container lifecycle
-│   │   │   ├── harnesses.py         # Harness registry (Aider/OpenCode/OpenHands)
+│   │   │   ├── harnesses.py         # Harness registry (OpenCode/agy)
 │   │   │   ├── git_ops.py           # Branch, PR, merge, conflict ops
 │   │   │   ├── brainstorm.py        # Clone repo, run claude -p, write/list/read docs
 │   │   │   ├── context_sync.py      # CLAUDE.md/MEMORY.md freshness (Memory view)
@@ -95,13 +95,10 @@ praxis/
 │   └── app.js                       # Dashboard JS (extracted from index.html, classic script)
 ├── docker/
 │   ├── orchestrator/Dockerfile
-│   ├── aider-agent/
-│   │   ├── Dockerfile
-│   │   └── entrypoint.sh
 │   ├── opencode-agent/
 │   │   ├── Dockerfile
 │   │   └── entrypoint.sh
-│   ├── openhands-agent/
+│   ├── agy-agent/
 │   │   ├── Dockerfile
 │   │   └── entrypoint.sh
 │   └── caddy/Caddyfile
@@ -218,7 +215,7 @@ Tables: `users`, `projects`, `plans`, `tasks`, `agent_runs`, `opus_state`,
 - **Two-tier git branching** — `plan/{date}-{slug}` groups tasks, `agent/{task-slug}` per task
 - **Single static auth token** for v1 (data model supports multi-user for future)
 - **Pluggable harnesses** — `core/harnesses.py` is the registry (image + About
-  content) for Aider, OpenCode, OpenHands. Projects pick one via the `harness`
+  content) for OpenCode and agy. Projects pick one via the `harness`
   column (default `opencode`). `AgentManager.spawn_agent` selects the image and
   sets a harness-agnostic env contract (`HARNESS`, `MODEL`, `OPENAI_API_BASE`,
   + repo/branch/callback vars). Each `docker/<harness>-agent/` image honors the
@@ -249,8 +246,8 @@ the relevant subsystem. Condensed index:
 - **`gh pr` calls need `--repo <owner/name>`** or they target the orchestrator's own cwd.
 - **Agent callbacks retry with backoff**; `/api/internal/agent-done` fails closed (503) w/o secret.
 - **Agent containers use bridge net + `host.docker.internal`**, not `network_mode=host`.
-- **Harness images are standalone (NOT in compose)** — rebuild `aider-agent:latest` etc. after
-  ANY `entrypoint.sh` change or a stale image runs silently. Read baked files via `docker cp`.
+- **Harness images are standalone (NOT in compose)** — rebuild `opencode-agent:latest` or `agy-agent:latest`
+  after ANY `entrypoint.sh` change or a stale image runs silently. Read baked files via `docker cp`.
 - **agy harness auth is a login-seeded Docker VOLUME, never host-path creds** — agy ignores
   `GEMINI_API_KEY`/ADC (upstream issue #78) and cross-OS host `~/.gemini` files are the wrong
   format. The working model (live-verified 2026-07-16): chown the `praxis-gemini-creds` volume
@@ -261,11 +258,11 @@ the relevant subsystem. Condensed index:
   identical on every OS — see `docs/deployment.md`. **`agy -p` still needs valid creds present or
   it hangs with no stdout and ignores `timeout` (forks a detached child); it is TTY-oriented.**
 - **Agent runs non-root** — workspace `/home/agent/workspace`; **git auth via `GH_TOKEN`**;
-  **Aider needs a dummy `OPENAI_API_KEY`** + `--no-browser --no-detect-urls`.
+  **agy needs valid creds in the `praxis-gemini-creds` volume** (see agy harness gotcha above).
 - **GitHub creds via provider seam** (`core/github_credentials.py`) — App installation tokens
   (short-lived, repo-scoped) or `GITHUB_TOKEN` PAT fallback; install tokens cap at 1h.
 - **Plan branch race** handled by fetch-fallback on push failure.
-- **OpenCode/OpenHands don't auto-commit** (entrypoint does); **OpenCode needs `limit.output`**;
+- **OpenCode and agy don't auto-commit** (entrypoint does); **OpenCode needs `limit.output`**;
   **Static Bible must NOT land in the PR** (entrypoint strips it from `AGENTS.md`).
 - **PR body uses `TASK_SUMMARY`**, not a `TASK_PROMPT` slice. **`MODEL` env is provider-prefixed per harness.**
 - **Unified Plans view = Spec→Plan→Run**; lifecycle docs live in the TARGET repo (read via `/doc-raw`).
@@ -296,7 +293,7 @@ the relevant subsystem. Condensed index:
 - **Per-wave cross-leaf verify gate** — `DispatchMixin._wave_verify_gate` runs the project `verify_cmd` against the accumulated plan branch before dispatching each wave built on already-MERGED leaves (memoized per `merged_count` in `_wave_verify_state`); a fail publishes `plan_wave_verify_failed` and PARKS the wave. Catches cross-leaf contract breaks early (per-task tests are task-scoped and miss them, e.g. a leaf shipping `leaf.slug`); `on_plan_completed` whole-plan verify remains the final backstop. No `verify_cmd` = no-op (Plan 2 Phase B HIGH-2).
 - **`opus_bridge.py` + `users.token_hash` are legacy names on purpose** (renames deferred as churn).
 - **Blocked workers ask, they don't guess** — `Status: BLOCKED`/`NEEDS_CONTEXT` → `NEEDS_CLARIFICATION`
-  (no retry burned) → brain `answer_clarification` → re-dispatch or human gate. All three harnesses parse it.
+  (no retry burned) → brain `answer_clarification` → re-dispatch or human gate. Both harnesses parse it.
 - **Remote preflight is shared** (`core/preflight.py`) — every dispatch path runs
   cheap, read-only remote checks before spawning a container. Non-GitHub URL, auth
   failure, missing branch or file return 422. Unreachable remote returns 502. Base-SHA

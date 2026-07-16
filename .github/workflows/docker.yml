@@ -37,7 +37,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        image: [aider-agent, opencode-agent, openhands-agent]
+        image: [opencode-agent, agy-agent]
     steps:
       - uses: actions/checkout@v7
       - name: Build ${{ matrix.image }}

@@ -85,12 +85,12 @@ async def test_spawn_agent(mock_docker: MagicMock) -> None:
         task_prompt="Build login page",
         model_name="deepseek-coder-v2",
         callback_url="http://orchestrator:8080/api/internal/agent-done",
-        harness="aider",
+        harness="opencode",
     )
 
     assert result == container.id
     call_kwargs = mock_client.containers.run.call_args.kwargs
-    assert call_kwargs["image"] == "aider-agent:latest"
+    assert call_kwargs["image"] == "opencode-agent:latest"
     assert call_kwargs["detach"] is True
     assert call_kwargs["auto_remove"] is False
     assert call_kwargs["environment"]["TASK_PROMPT"] == "Build login page"
@@ -500,8 +500,8 @@ def test_list_agent_containers(mock_docker: MagicMock) -> None:
 
 @pytest.mark.unit
 @patch("orchestrator.core.agent_manager.docker")
-def test_list_agent_containers_queries_both_prefixes(mock_docker: MagicMock) -> None:
-    """list_agent_containers queries both praxis-agent- and legacy aider-agent- prefixes."""
+def test_list_agent_containers_queries_praxis_prefix(mock_docker: MagicMock) -> None:
+    """list_agent_containers queries praxis-agent- containers."""
     mock_client = MagicMock()
     mock_docker.from_env.return_value = mock_client
     mock_client.containers.list.return_value = []
@@ -515,7 +515,6 @@ def test_list_agent_containers_queries_both_prefixes(mock_docker: MagicMock) -> 
     calls = mock_client.containers.list.call_args_list
     filters_used = [c.kwargs["filters"] for c in calls]
     assert {"name": "praxis-agent-"} in filters_used
-    assert {"name": "aider-agent-"} in filters_used
 
 
 @pytest.mark.unit

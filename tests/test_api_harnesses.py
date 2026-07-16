@@ -21,7 +21,7 @@ async def test_list_harnesses_returns_catalog(
     assert resp.status_code == 200
     data = resp.json()
     ids = {h["id"] for h in data}
-    assert ids == {"aider", "opencode", "openhands", "agy"}
+    assert ids == {"opencode", "agy"}
 
 
 @pytest.mark.integration

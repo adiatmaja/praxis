@@ -30,7 +30,7 @@ What actually happened. Include logs or error output if relevant.
 - Python version:
 - Running via: [ ] local (uvicorn) [ ] Docker
 - Planner brain: [ ] claude [ ] gemini [ ] gpt [ ] local
-- Coding agent: [ ] aider [ ] opencode [ ] openhands
+- Coding agent: [ ] opencode [ ] agy
 
 ## Additional context
 

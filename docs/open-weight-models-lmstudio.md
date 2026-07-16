@@ -105,7 +105,8 @@ developers run on 8GB GPUs, laptops, or even CPU-only setups.
 1. **Ultra-fine decomposition** — break each task into single-function changes
 2. **Increase max retries** — set retry limit to 4–5 (default is 3)
 3. **Simplify task descriptions** — short, explicit instructions beat nuanced specs
-4. **Use Aider harness** — Aider's repair loop is more forgiving of format errors
+4. **Use the OpenCode harness** — its agentic loop reads files in bounded chunks and
+   auto-compacts, so it tolerates weaker models better than a single-shot pass
 5. **Set verify_cmd** — `pytest` or linter catches broken patches early
 6. **Know the break-even** — at 3+ retries per task, the planner review cost may
    exceed the savings from running a free local model
@@ -204,7 +205,7 @@ What's your GPU VRAM?
 
   24GB+ → Qwen3.6-27B (Q4_K_M) — best overall
   │       ├── Want faster inference? → Qwen3.6-35B-A3B (MoE)
-  │       └── Want proven Aider compatibility? → Qwen2.5-Coder-32B
+  │       └── Want proven edit-format compatibility? → Qwen2.5-Coder-32B
   │
   16GB  → Qwen3.6-35B-A3B (Q4_K_M) or Qwen2.5-Coder-14B (Q5_K_M)
   │       └── The MoE model is faster; the 14B coder is smaller + solid
@@ -229,8 +230,7 @@ What's your GPU VRAM?
 | Harness | Best Model Fit | Notes |
 |---------|---------------|-------|
 | **OpenCode** (default) | Qwen3.6-27B, Qwen2.5-Coder-14B+ | Best tested combination |
-| **Aider** | Qwen2.5-Coder-32B, Qwen3.6-27B | Aider's diff format well-understood by Qwen coder models |
-| **OpenHands** | Qwen3.6-27B, Qwen2.5-Coder-14B+ | OpenHands compensates for weaker models with repair loops |
+| **agy** (Gemini) | n/a — Gemini only | Does not use local open-weight models; authenticates to Gemini via OAuth |
 
 ---
 
@@ -238,7 +238,7 @@ What's your GPU VRAM?
 
 - [Artificial Analysis](https://artificialanalysis.ai/models) — Intelligence Index v4.1
 - [SWE-bench](https://swebench.com/) — Agentic coding benchmark
-- [Aider Leaderboard](https://aider.chat/docs/leaderboards/) — Edit-format benchmark
+- [Edit-format Leaderboard](https://aider.chat/docs/leaderboards/) — Edit-format benchmark
 - [Hugging Face](https://huggingface.co/) — Model availability
 - [LM Studio](https://lmstudio.ai/) — Local model serving
 - Praxis live run validation — documented in project specs

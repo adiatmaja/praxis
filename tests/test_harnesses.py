@@ -16,7 +16,7 @@ from orchestrator.core.harnesses import (
 
 @pytest.mark.unit
 def test_registry_contains_expected_harnesses() -> None:
-    assert set(REGISTRY) == {"aider", "opencode", "openhands", "agy"}
+    assert set(REGISTRY) == {"opencode", "agy"}
 
 
 @pytest.mark.unit

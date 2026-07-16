@@ -1,7 +1,7 @@
 """Docker container lifecycle management for harness agent containers.
 
 Harness-agnostic: spawns whichever harness a project selects (OpenCode is the
-default; Aider and OpenHands are also supported).
+default; agy/Antigravity is the experimental Gemini-backed alternative).
 """
 
 from __future__ import annotations
@@ -90,7 +90,7 @@ def _container_host_url(url: str) -> str:
 
 
 class AgentManager:
-    """Manage harness agent Docker containers (OpenCode/Aider/OpenHands)."""
+    """Manage harness agent Docker containers (OpenCode default, or agy)."""
 
     def __init__(
         self,
@@ -325,11 +325,6 @@ class AgentManager:
         containers = self._client.containers.list(
             all=True,
             filters={"name": "praxis-agent-"},
-        )
-        # Back-compat: containers spawned before the 2026-07 rename.
-        containers += self._client.containers.list(
-            all=True,
-            filters={"name": "aider-agent-"},
         )
         return [
             {

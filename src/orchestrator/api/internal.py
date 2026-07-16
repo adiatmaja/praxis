@@ -60,8 +60,8 @@ def _verify_callback_token(request: Request) -> None:
 async def agent_done(request: Request, body: AgentDonePayload) -> dict[str, str]:
     """Handle completion callback from a harness agent container.
 
-    Sent by whichever harness ran the task (OpenCode by default; also Aider or
-    OpenHands).
+    Sent by whichever harness ran the task (OpenCode by default; agy for
+    Gemini-backed tasks).
     """
     _verify_callback_token(request)
 

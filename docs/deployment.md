@@ -11,20 +11,18 @@ package, serves FastAPI on port 8080.
 docker build -t orchestrator:latest -f docker/orchestrator/Dockerfile .
 ```
 
-### Coding Agent (`docker/opencode-agent/`, `docker/aider-agent/`, `docker/openhands-agent/`)
+### Coding Agent (`docker/opencode-agent/`, `docker/agy-agent/`)
 
 Each harness has its own single-use worker image that clones, implements, pushes, and
 creates a PR, running as non-root `agent` user. **OpenCode is the default harness** (its
 agentic loop reads files in bounded chunks and auto-compacts, so it survives large tasks);
-Aider and OpenHands are optional alternatives. Build the one(s) you use:
+agy/Antigravity is the experimental Gemini-backed alternative. Build the one(s) you use:
 
 ```bash
 # Default harness (OpenCode)
 docker build -t opencode-agent:latest -f docker/opencode-agent/Dockerfile docker/opencode-agent/
 
-# Optional alternatives
-docker build -t aider-agent:latest -f docker/aider-agent/Dockerfile docker/aider-agent/
-docker build -t openhands-agent:latest -f docker/openhands-agent/Dockerfile docker/openhands-agent/
+# Experimental Gemini harness (agy)
 docker build -t agy-agent:latest -f docker/agy-agent/Dockerfile docker/agy-agent/
 ```
 
@@ -73,7 +71,7 @@ ever mounted — that approach does not work across operating systems.
 
 | Variable | Description |
 |----------|-------------|
-| `HARNESS` | Selected harness (`aider` / `opencode` / `openhands` / `agy`) |
+| `HARNESS` | Selected harness (`opencode` / `agy`) |
 | `REPO_URL` | GitHub repo clone URL |
 | `BRANCH` | Agent branch name (`agent/{task-slug}`) |
 | `BASE_BRANCH` | Plan branch to branch from and PR into |
@@ -319,8 +317,8 @@ Key properties:
 - **Deterministic, cheap gate.** A failing command hard-fails the task immediately with
   the command output as feedback. No brain tokens are spent on a broken build.
 - **Orchestrator-side, harness-agnostic.** The command runs in the orchestrator process
-  against the cloned checkout (`core/verify_gate.py`), so it applies equally to Aider,
-  OpenCode, and OpenHands agents without any entrypoint changes.
+  against the cloned checkout (`core/verify_gate.py`), so it applies equally to OpenCode
+  and agy agents without any entrypoint changes.
 - **Trusted operator config, never from a PR.** `verify_cmd` is stored in the projects
   table and set only by the operator via the API or dashboard. It is never read from PR
   content or branch files. Prefer running the orchestrator inside a container to further
@@ -406,10 +404,11 @@ Docker environment.  The comparison uses `secrets.compare_digest` to prevent tim
 attacks.
 
 > **Rebuild the agent image after editing `entrypoint.sh`.** The token header is sent by
-> the entrypoint's `send_callback`. A stale `aider-agent:latest` (built before this logic)
+> the entrypoint's `send_callback`. A stale image (built before this logic)
 > sends an empty header, so every callback 401s and tasks stall at `in_progress` until the
 > reconciler fails them — implement→review→merge never completes. Rebuild with
-> `docker build -t aider-agent:latest -f docker/aider-agent/Dockerfile docker/aider-agent/`.
+> `docker build -t opencode-agent:latest -f docker/opencode-agent/Dockerfile docker/opencode-agent/`
+> (or the equivalent for `agy-agent`).
 
 ### Docker socket exposure
 

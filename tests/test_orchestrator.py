@@ -91,7 +91,7 @@ class TestOrchestrationDispatch:
         """dispatch_pending_tasks must pass the project's harness to spawn_agent."""
         task_queue, plan_id, _ = await _setup(db)
         # Override harness to something non-default so the assertion is unambiguous.
-        await db.execute("UPDATE projects SET harness = 'openhands' WHERE id = 'p1'")
+        await db.execute("UPDATE projects SET harness = 'agy' WHERE id = 'p1'")
         mock_agent_manager = MagicMock()
         mock_agent_manager.spawn_agent = AsyncMock(return_value="container-456")
 
@@ -108,7 +108,7 @@ class TestOrchestrationDispatch:
 
         mock_agent_manager.spawn_agent.assert_called_once()
         kwargs = mock_agent_manager.spawn_agent.call_args.kwargs
-        assert kwargs["harness"] == "openhands"
+        assert kwargs["harness"] == "agy"
 
     async def test_dispatch_builds_bible_with_goal_and_handover(
         self, db: Database

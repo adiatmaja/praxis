@@ -350,7 +350,7 @@ async def test_get_project_found_maps_model_name_to_model() -> None:
                     "name": "alpha",
                     "repo_url": "https://github.com/o/other",
                     "model_name": "old-model",
-                    "harness": "aider",
+                    "harness": "opencode",
                     "default_branch": "main",
                     "approval_gate": True,
                 },

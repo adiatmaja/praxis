@@ -61,8 +61,7 @@ keep the CLAUDE.md index in sync.
   with `auto_remove=False`. Retrying/re-dispatching a task collides with the exited
   container from its prior run (Docker 409 Conflict → agent never starts → empty Live
   Log). `_remove_existing_container` deletes any same-named container first.
-  `list_agent_containers` queries both `praxis-agent-` and the legacy `aider-agent-`
-  prefix so reconcile can still clean up containers spawned before the 2026-07 rename.
+  `list_agent_containers` queries the `praxis-agent-` prefix used by all harness containers.
 - **Agent callback URL is port-derived, not hardcoded** — `Settings.callback_url()`
   builds `http://host.docker.internal:{PORT}/api/internal/agent-done` (override with
   `AGENT_CALLBACK_URL`) and is passed to `Orchestrator(callback_url=...)`. Running the
@@ -93,7 +92,7 @@ keep the CLAUDE.md index in sync.
   can still reach `host.docker.internal` (needed for LM Studio and the callback
   endpoint), so this reduces but does not eliminate host network exposure.
 - **Harness agent images are standalone — rebuild after ANY `entrypoint.sh` change** —
-  the agent images (`opencode-agent:latest` default, plus `aider-agent`/`openhands-agent`)
+  the agent images (`opencode-agent:latest` default, `agy-agent:latest` experimental)
   are not in docker-compose, so a stale image silently runs old
   entrypoint logic while the source looks current. This bit us live: a pre-callback-token
   image sent an **empty** `X-Praxis-Callback-Token`, so every callback 401'd and tasks
@@ -115,11 +114,6 @@ keep the CLAUDE.md index in sync.
   `credentials` provider (a bare token string is still accepted and wrapped in a
   `PatCredentialProvider`). Installation tokens cap at 1h, so a >1h agent run can
   fail its final push (refresh endpoint is a planned follow-up).
-- **`OPENAI_API_KEY` required by Aider** — even for local LLMs via LM Studio, Aider's
-  litellm backend requires a non-empty API key. The entrypoint sets a dummy value
-  (`not-needed`) if not provided
-- **Aider URL scraping** — Aider auto-detects URLs in prompts and tries to scrape them
-  (installing Playwright). Use `--no-browser --no-detect-urls` flags to prevent this
 - **Plan branch race condition** — Multiple agents dispatched in parallel may try to
   create the same `plan/` base branch. The entrypoint handles this: if push fails
   (branch already exists), it fetches from remote instead
@@ -129,10 +123,9 @@ keep the CLAUDE.md index in sync.
 - **Harness images are standalone** — build each directly, none are in
   docker-compose:
   `docker build -t opencode-agent:latest -f docker/opencode-agent/Dockerfile docker/opencode-agent/`
-  (same for `openhands-agent`).
-- **OpenCode/OpenHands don't auto-commit** — unlike Aider, their entrypoints run
-  `git add -A && git commit` after the agent. A run that produces no changes is
-  marked `failed`.
+  (or the equivalent for `agy-agent`).
+- **OpenCode and agy don't auto-commit** — their entrypoints run `git add -A && git commit`
+  after the agent. A run that produces no changes is marked `failed`.
 - **OpenCode config needs `limit.output`, not just `limit.context`** — when the
   orchestrator detects a model's context window (`MODEL_CONTEXT_LIMIT`), the OpenCode
   entrypoint writes a `limit` block; OpenCode's schema requires BOTH `context` and
@@ -142,17 +135,15 @@ keep the CLAUDE.md index in sync.
   `AGENTS.md` (compaction-proof slot), so the entrypoint strips the
   `<!-- praxis:bible:start -->...:end -->` block before `git add -A` (and deletes
   `AGENTS.md` if it was untracked and now empty). Without this the Bible leaks into every
-  OpenCode PR. Aider's Bible is a read-only `--read .praxis-bible.md` (never committed);
-  OpenHands does not inject a Bible.
+  OpenCode PR. agy prepends the Bible into the effective `-p` prompt (never written to a
+  committed file).
 - **PR body uses `TASK_SUMMARY`, not a slice of `TASK_PROMPT`** — `TASK_PROMPT` is the
   fully-wrapped prompt that starts with a generic autonomous-loop preamble, so
-  `${TASK_PROMPT:0:500}` showed only boilerplate. All three entrypoints now render the
+  `${TASK_PROMPT:0:500}` showed only boilerplate. Both entrypoints now render the
   body from `TASK_SUMMARY` (task title + description), set by `spawn_agent(task_summary=)`.
-- **OpenHands needs a sandbox runtime** — the image uses `RUNTIME=local` to avoid
-  Docker-in-Docker. If unsupported, mount `/var/run/docker.sock` when spawning.
-- **Generic MODEL env var** — all harness entrypoints consume `MODEL` (raw model
-  name); each adds its own provider prefix (Aider/OpenHands use `openai/`,
-  OpenCode uses an `lmstudio/` config provider).
+- **Generic MODEL env var** — both harness entrypoints consume `MODEL` (raw model
+  name); OpenCode uses an `lmstudio/` config provider, while agy passes the Gemini
+  model string verbatim to `--model`.
 - **Unified Plans view = Spec → Plan → Run lifecycle** — the dashboard's single Plans
   view (no separate Specs/Plan Docs nav items) lists one row per spec doc, joined to its
   plan doc (via `spec_path:` front-matter) and any DB plan (via `plan_path`).
@@ -253,7 +244,7 @@ keep the CLAUDE.md index in sync.
   confident answer (>= project `confidence_threshold`) re-dispatches with the Q&A
   injected via `progress_note` (-> Static Bible), otherwise the task parks
   `awaiting_human` (SSE `task_needs_clarification`, `POST /api/tasks/{id}/clarify`,
-  MCP `poll_task` -> `awaiting_clarification`). All three harnesses (aider, opencode, openhands)
+  MCP `poll_task` -> `awaiting_clarification`). Both harnesses (opencode, agy)
   parse the FINAL REPORT and send `needs_clarification` when the report ends
   with `Status: BLOCKED` or `Status: NEEDS_CONTEXT`.
 - **Remote preflight is shared** — `core/preflight.py` runs cheap, read-only remote
