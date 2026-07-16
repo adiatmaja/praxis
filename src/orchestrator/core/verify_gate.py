@@ -9,9 +9,20 @@ misses. The command is trusted operator config, never taken from a PR.
 from __future__ import annotations
 
 import asyncio
+import re
 
 
 _MAX_OUTPUT = 8000
+
+# pytest returns exit code 5 when it collected no tests. For docs-only or
+# config-only leaves this is expected, not a failure: a verify_cmd ending in
+# ``pytest`` would otherwise doom every no-test change into a re-dispatch loop.
+# We treat exit 5 as a pass ONLY when the output carries pytest's own
+# no-tests-collected signal, so an unrelated command exiting 5 still fails.
+_PYTEST_NO_TESTS_EXIT = 5
+_PYTEST_NO_TESTS_SIGNAL = re.compile(
+    r"no tests ran|no tests collected", re.IGNORECASE
+)
 
 
 def _truncate(text: str) -> str:
@@ -46,5 +57,10 @@ async def run_verify(
         proc.kill()
         await proc.wait()
         return False, f"verify command timed out after {timeout:.0f}s"
-    text = _truncate(out.decode(errors="replace"))
-    return proc.returncode == 0, text
+    raw = out.decode(errors="replace")
+    text = _truncate(raw)
+    if proc.returncode == 0:
+        return True, text
+    if proc.returncode == _PYTEST_NO_TESTS_EXIT and _PYTEST_NO_TESTS_SIGNAL.search(raw):
+        return True, text
+    return False, text
