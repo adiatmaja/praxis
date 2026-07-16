@@ -40,6 +40,7 @@ class BibleSources:
     repo_memory: str | None = None
     review_feedback: str | None = None
     verify_cmd: str | None = None
+    context_pack: str | None = None
     reserve_fraction: float = WORKER_RESERVE_FRACTION
 
 
@@ -77,6 +78,12 @@ def build_bible(src: BibleSources) -> str:
         )
     if src.plan_slice:
         raw_sections.append(Section("plan", f"# PLAN\n{src.plan_slice}", 4))
+    if src.context_pack:
+        raw_sections.append(
+            Section(
+                "context_pack", f"# REPO CONTEXT (signatures)\n{src.context_pack}", 6
+            )
+        )
     if src.repo_memory:
         raw_sections.append(Section("repo", f"# REPO MEMORY\n{src.repo_memory}", 9))
 
