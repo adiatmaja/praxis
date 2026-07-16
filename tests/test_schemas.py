@@ -448,7 +448,7 @@ def test_capability_profile_numeric_limits_defaults() -> None:
     assert profile.max_files_touched == 5
     assert profile.max_loc_delta == 300
     assert profile.max_checklist_items == 12
-    assert profile.max_dep_depth == 3
+    assert profile.max_dep_depth == 4
     assert profile.escalate_task_types == []
 
 
