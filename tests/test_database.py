@@ -319,3 +319,29 @@ async def test_plans_has_error_column(db: Database) -> None:
     rows = await db.fetch_all("PRAGMA table_info(plans)")
     cols = {r["name"] for r in rows}
     assert "error" in cols
+
+
+@pytest.mark.asyncio
+async def test_llm_calls_table_exists(tmp_path) -> None:
+    db = Database(f"sqlite+aiosqlite:///{tmp_path / 'llm_calls.db'}")
+    await db.initialize()
+    try:
+        cols = {
+            row["name"]: row["type"]
+            for row in await db.fetch_all("PRAGMA table_info(llm_calls)")
+        }
+        assert "id" in cols
+        assert cols["id"] == "TEXT"
+        assert "plan_id" in cols
+        assert "task_id" in cols
+        assert "call_site" in cols
+        assert "provider" in cols
+        assert "model" in cols
+        assert "prompt_chars" in cols
+        assert cols["prompt_chars"] == "INTEGER"
+        assert "response_chars" in cols
+        assert "duration_ms" in cols
+        assert "source" in cols
+        assert "created_at" in cols
+    finally:
+        await db.close()
