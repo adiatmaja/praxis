@@ -200,3 +200,94 @@ async def test_run_passes_cwd_to_subprocess(mocker):
 def test_plan_review_call_site_registered():
     cfg = CALL_SITE_DEFAULTS["plan_review"]
     assert cfg["provider"] == "claude"  # capability judgment needs the brain
+
+
+@pytest.mark.unit
+async def test_llm_router_run_local_makes_http_request(mocker) -> None:
+    # Setup mock for httpx.AsyncClient
+    mock_post = mocker.patch("httpx.AsyncClient.post", new_callable=mocker.AsyncMock)
+
+    mock_response = mocker.MagicMock()
+    mock_response.json.return_value = {
+        "choices": [
+            {
+                "message": {
+                    "content": "resolved local response"
+                }
+            }
+        ]
+    }
+    mock_post.return_value = mock_response
+
+    resolver = mocker.AsyncMock(
+        return_value={"provider": "local", "model": "my-local-model", "effort": None}
+    )
+    router = LLMRouter(resolve=resolver, lm_studio_url="http://localhost:1234")
+    out = await router.run("derive_tasks", "hello local", project_id=None)
+
+    assert out == "resolved local response"
+    mock_post.assert_called_once()
+    args, kwargs = mock_post.call_args
+    assert args[0] == "http://localhost:1234/v1/chat/completions"
+    assert kwargs["json"]["model"] == "my-local-model"
+    assert kwargs["json"]["temperature"] == 0
+    assert kwargs["json"]["messages"] == [{"role": "user", "content": "hello local"}]
+
+
+@pytest.mark.unit
+async def test_llm_router_unknown_provider_raises_error(mocker) -> None:
+    resolver = mocker.AsyncMock(
+        return_value={"provider": "unsupported-provider", "model": "", "effort": None}
+    )
+    router = LLMRouter(resolve=resolver)
+    with pytest.raises(UnknownProviderError, match="Unknown or non-CLI provider"):
+        await router.run("plan_spec", "hello", project_id=None)
+
+
+@pytest.mark.integration
+async def test_llm_router_routing_decision_overridden_by_db(db, test_settings, mocker) -> None:
+    # 1. Override plan_spec routing decision in the database
+    import json
+    override_config = {
+        "provider": "local",
+        "model": "db-overridden-model",
+        "effort": None,
+    }
+    await db.execute(
+        "INSERT INTO settings_overrides (key, value) VALUES (?, ?)",
+        ("models.plan_spec", json.dumps(override_config)),
+    )
+
+    # 2. Setup EffectiveSettings with the database
+    from orchestrator.core.effective_settings import EffectiveSettings
+    effective_settings = EffectiveSettings(test_settings, db)
+
+    # 3. Mock the httpx request so we don't hit actual local network
+    mock_post = mocker.patch("httpx.AsyncClient.post", new_callable=mocker.AsyncMock)
+    mock_response = mocker.MagicMock()
+    mock_response.json.return_value = {
+        "choices": [
+            {
+                "message": {
+                    "content": "db override response"
+                }
+            }
+        ]
+    }
+    mock_post.return_value = mock_response
+
+    # 4. Instantiate LLMRouter using EffectiveSettings' resolver
+    router = LLMRouter(
+        resolve=effective_settings.call_site_config,
+        lm_studio_url="http://localhost:1234",
+    )
+
+    # 5. Run the router and verify it uses the DB override
+    out = await router.run("plan_spec", "test plan spec prompt", project_id=None)
+    assert out == "db override response"
+
+    # Verify that the DB override's model was used
+    mock_post.assert_called_once()
+    _, kwargs = mock_post.call_args
+    assert kwargs["json"]["model"] == "db-overridden-model"
+
