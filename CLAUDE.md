@@ -251,9 +251,15 @@ the relevant subsystem. Condensed index:
 - **Agent containers use bridge net + `host.docker.internal`**, not `network_mode=host`.
 - **Harness images are standalone (NOT in compose)** — rebuild `aider-agent:latest` etc. after
   ANY `entrypoint.sh` change or a stale image runs silently. Read baked files via `docker cp`.
-- **agy harness requires `GEMINI_CREDS_HOST_DIR`** — set to the HOST-side path of `~/.gemini`
-  (e.g. `C:\Users\<user>\.gemini` on Windows) in the orchestrator env; the Docker daemon
-  bind-mounts it read-only into the container. Without it the agent starts but auth fails.
+- **agy harness auth is a login-seeded Docker VOLUME, never host-path creds** — agy ignores
+  `GEMINI_API_KEY`/ADC (upstream issue #78) and cross-OS host `~/.gemini` files are the wrong
+  format. The working model (live-verified 2026-07-16): chown the `praxis-gemini-creds` volume
+  to the agent user, run a one-time interactive `agy login` into it, then the orchestrator mounts
+  it **read-write** at `/home/agent/.gemini` (`GEMINI_CREDS_VOLUME`). A fresh `agy -p` worker reads
+  those Linux-native creds back and authenticates (issue #479's "write-only" claim does NOT bite
+  v1.1.2 with a persisted volume). RW is required so ~1h token refreshes persist. Setup is
+  identical on every OS — see `docs/deployment.md`. **`agy -p` still needs valid creds present or
+  it hangs with no stdout and ignores `timeout` (forks a detached child); it is TTY-oriented.**
 - **Agent runs non-root** — workspace `/home/agent/workspace`; **git auth via `GH_TOKEN`**;
   **Aider needs a dummy `OPENAI_API_KEY`** + `--no-browser --no-detect-urls`.
 - **GitHub creds via provider seam** (`core/github_credentials.py`) — App installation tokens

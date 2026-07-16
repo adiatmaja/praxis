@@ -102,13 +102,13 @@ class AgentManager:
         git_author_email: str | None = None,
         max_agent_concurrency: int = _DEFAULT_MAX_AGENT_CONCURRENCY,
         min_free_disk_bytes: int = _MIN_FREE_DISK_BYTES,
-        gemini_creds_host_dir: str = "",
+        gemini_creds_volume: str = "",
     ) -> None:
         self._lm_studio_url = lm_studio_url
         self._effective_settings = effective_settings
         self._git_author_name = git_author_name
         self._git_author_email = git_author_email
-        self._gemini_creds_host_dir = gemini_creds_host_dir
+        self._gemini_creds_volume = gemini_creds_volume
         self._max_agent_concurrency = max_agent_concurrency
         self._min_free_disk_bytes = min_free_disk_bytes
         if credentials is not None:
@@ -226,22 +226,25 @@ class AgentManager:
             if context_limit is not None:
                 environment["MODEL_CONTEXT_LIMIT"] = str(context_limit)
 
-        # Build optional bind-mounts for harness-specific credential files.
-        # The mount source is resolved by the Docker daemon on the HOST (not
-        # inside the orchestrator container), so we use the host-side path
-        # supplied via gemini_creds_host_dir.
+        # Mount the agy OAuth credentials VOLUME. The credentials are Linux-native
+        # (populated once by an interactive `agy login`, see docs/deployment.md)
+        # and live in a named Docker volume, so the mount source is a volume NAME
+        # resolved by the Docker daemon (not a host path). We mount it read-write
+        # at /home/agent/.gemini so fresh worker processes both authenticate and
+        # persist refreshed access tokens (tokens expire in ~1h).
         volumes: dict[str, dict[str, str]] = {}
         if harness_id == "agy":
-            if self._gemini_creds_host_dir:
-                volumes[self._gemini_creds_host_dir] = {
+            if self._gemini_creds_volume:
+                volumes[self._gemini_creds_volume] = {
                     "bind": "/home/agent/.gemini",
-                    "mode": "ro",
+                    "mode": "rw",
                 }
             else:
                 logger.warning(
-                    "agy harness selected but GEMINI_CREDS_HOST_DIR is not set; "
+                    "agy harness selected but GEMINI_CREDS_VOLUME is not set; "
                     "the container will start without Gemini OAuth credentials "
-                    "and authentication will likely fail."
+                    "and authentication will fail. Run the one-time `agy login` "
+                    "setup described in docs/deployment.md."
                 )
 
         container_name = f"praxis-agent-{task_id[:8]}"

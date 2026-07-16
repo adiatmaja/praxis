@@ -190,28 +190,39 @@ if [ -n "${BIBLE_CONTENT}" ]; then
 ${EFFECTIVE_PROMPT}"
 fi
 
+echo "--- Verifying OAuth creds are present ---"
+# The orchestrator mounts the praxis-gemini-creds volume read-write at
+# ~/.gemini. It is populated once by an interactive `agy login` (see
+# docs/deployment.md). Read-write so agy can persist refreshed access tokens
+# (they expire in ~1h). A fresh worker process reads these Linux-native creds
+# back and authenticates without any browser flow.
+if [ -f "/home/agent/.gemini/antigravity-cli/conversation_summaries.db" ] \
+    || [ -d "/home/agent/.gemini/antigravity-cli" ]; then
+    echo "OAuth creds volume present at ~/.gemini"
+else
+    echo "WARNING: ~/.gemini has no agy credentials; authentication will fail."
+    echo "Run the one-time 'agy login' setup described in docs/deployment.md."
+fi
+
 echo "--- Running agy (headless) ---"
-# Documented automation invocation:
-#   agy --headless --approve all --model "$MODEL" -p "$PROMPT"
+# Verified invocation (agy v1.1.2 Linux):
+#   agy --dangerously-skip-permissions --mode accept-edits --model "$MODEL" -p "$PROMPT"
 #
 # Flag notes:
-#   --headless          : non-interactive / no terminal UI
-#   --approve all       : automatically approve all file edits (documented path)
-#   --print-timeout 30m : generous timeout for long tasks (default is 5m)
-#   --model             : Gemini model string, passed verbatim (e.g. "Gemini 3.5 Flash (High)")
-#   -p / --print        : one-shot prompt, print output to stdout
+#   --dangerously-skip-permissions : auto-approve all tool permission requests
+#   --mode accept-edits            : non-interactive edit mode
+#   --print-timeout 30m            : generous timeout for long tasks (default 5m)
+#   --model                        : Gemini model string, e.g. "Gemini 3.5 Flash (High)"
+#   -p / --print                   : one-shot prompt, print output to stdout
 #
-# UNCERTAINTY: The spec mentions --dangerously-skip-permissions and
-# --mode accept-edits as alternative flags. We use --headless --approve all
-# as these are the documented automation flags per the verified facts.
-# If agy's headless behaviour changes, revisit this invocation.
-#
-# agy reads OAuth creds from ~/.gemini (bind-mounted read-only by the
-# orchestrator when GEMINI_CREDS_HOST_DIR is set). No OPENAI_API_BASE needed.
+# Note: --headless and --approve are NOT valid flags in v1.1.x; removed.
+# agy reads OAuth creds from ~/.gemini (a named Docker volume mounted read-write
+# by the orchestrator, name set via GEMINI_CREDS_VOLUME). No OPENAI_API_BASE needed.
 
 OUTPUT_LOG="$(mktemp)"
 set +e
-agy --headless --approve all --print-timeout 30m --model "${MODEL}" -p "${EFFECTIVE_PROMPT}" \
+agy --dangerously-skip-permissions --mode accept-edits --print-timeout 30m \
+    --model "${MODEL}" -p "${EFFECTIVE_PROMPT}" \
     2>&1 | tee "${OUTPUT_LOG}"
 agy_rc="${PIPESTATUS[0]}"
 set -e

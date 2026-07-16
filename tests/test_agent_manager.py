@@ -666,7 +666,7 @@ async def test_spawn_agent_injects_freshly_minted_token(monkeypatch) -> None:
 async def test_agy_mounts_gemini_creds_when_configured(
     mock_docker: MagicMock,
 ) -> None:
-    """When gemini_creds_host_dir is set, spawn adds a read-only bind mount."""
+    """When gemini_creds_volume is set, spawn adds a read-write volume mount."""
     mock_client = MagicMock()
     mock_docker.from_env.return_value = mock_client
     mock_client.containers.run.return_value = _mock_container()
@@ -674,7 +674,7 @@ async def test_agy_mounts_gemini_creds_when_configured(
     manager = AgentManager(
         lm_studio_url="http://localhost:1234",
         github_token="ghp_x",
-        gemini_creds_host_dir="/home/user/.gemini",
+        gemini_creds_volume="praxis-gemini-creds",
     )
     await manager.spawn_agent(
         task_id="agy-t1",
@@ -688,17 +688,15 @@ async def test_agy_mounts_gemini_creds_when_configured(
     )
 
     call_kwargs = mock_client.containers.run.call_args.kwargs
-    mounts = call_kwargs.get("volumes") or call_kwargs.get("mounts") or []
-    # volumes dict form: {host_path: {"bind": container_path, "mode": "ro"}}
-    assert "/home/user/.gemini" in mounts or any(
-        "/home/user/.gemini" in str(v)
-        for v in mounts.values()
-        if isinstance(mounts, dict)
-    ), f"Expected .gemini mount in volumes, got: {mounts}"
-    if isinstance(mounts, dict):
-        entry = mounts["/home/user/.gemini"]
-        assert entry["bind"] == "/home/agent/.gemini"
-        assert entry["mode"] == "ro"
+    mounts = call_kwargs.get("volumes") or {}
+    # volumes dict form: {volume_name: {"bind": container_path, "mode": "rw"}}
+    assert isinstance(mounts, dict), f"Expected volumes dict, got: {mounts}"
+    assert "praxis-gemini-creds" in mounts, (
+        f"Expected named-volume mount in volumes, got: {mounts}"
+    )
+    entry = mounts["praxis-gemini-creds"]
+    assert entry["bind"] == "/home/agent/.gemini"
+    assert entry["mode"] == "rw"
 
 
 @pytest.mark.unit
@@ -706,7 +704,7 @@ async def test_agy_mounts_gemini_creds_when_configured(
 async def test_agy_skips_gemini_mount_when_unconfigured(
     mock_docker: MagicMock,
 ) -> None:
-    """When gemini_creds_host_dir is empty/None, spawn proceeds without mount."""
+    """When gemini_creds_volume is empty, spawn proceeds without mount."""
     mock_client = MagicMock()
     mock_docker.from_env.return_value = mock_client
     mock_client.containers.run.return_value = _mock_container()
@@ -714,7 +712,7 @@ async def test_agy_skips_gemini_mount_when_unconfigured(
     manager = AgentManager(
         lm_studio_url="http://localhost:1234",
         github_token="ghp_x",
-        # gemini_creds_host_dir not supplied -> defaults to ""
+        gemini_creds_volume="",  # explicitly disabled
     )
     # Should not raise even with no creds dir configured
     await manager.spawn_agent(
@@ -731,7 +729,7 @@ async def test_agy_skips_gemini_mount_when_unconfigured(
     call_kwargs = mock_client.containers.run.call_args.kwargs
     volumes = call_kwargs.get("volumes") or {}
     assert not any(".gemini" in str(k) for k in volumes), (
-        "No .gemini mount expected when gemini_creds_host_dir is unset"
+        "No .gemini mount expected when gemini_creds_volume is unset"
     )
 
 
@@ -750,7 +748,7 @@ async def test_agy_skips_context_limit_detection(
     manager = AgentManager(
         lm_studio_url="http://localhost:1234",
         github_token="ghp_x",
-        gemini_creds_host_dir="/home/user/.gemini",
+        gemini_creds_volume="praxis-gemini-creds",
     )
     await manager.spawn_agent(
         task_id="agy-t3",

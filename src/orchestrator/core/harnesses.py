@@ -127,18 +127,18 @@ REGISTRY: dict[str, HarnessSpec] = {
         when_to_pick=(
             "When the project is already on Google Cloud / Gemini and you want "
             "first-party model quality without proxying through LM Studio. "
-            "Requires GEMINI_CREDS_HOST_DIR to be set so the container can read "
-            "the host OAuth credentials."
+            "Requires a one-time `agy login` into a Docker credentials volume "
+            "(GEMINI_CREDS_VOLUME); see docs/deployment.md."
         ),
         pros=(
             "First-party Gemini agent — best model quality for Gemini users",
             "Large context window (Gemini 3.x models)",
-            "Portable OAuth JSON: no OS-keychain, easy Docker bind-mount",
-            "Headless `--headless --approve all` automation path",
+            "Login once into a Docker volume; setup is identical on every OS",
+            "Non-interactive `--dangerously-skip-permissions --mode accept-edits`",
         ),
         cons=(
             "Gemini-only: cannot use local open-weight models via LM Studio",
-            "Requires host ~/.gemini OAuth creds mounted into the container",
+            "No API-key auth: needs an interactive `agy login` to seed the volume",
             "Does not auto-commit — entrypoint stages and commits changes",
             "Newer / less battle-tested in headless CI than Aider or OpenCode",
         ),
@@ -147,9 +147,10 @@ REGISTRY: dict[str, HarnessSpec] = {
         does_own_git=False,
         supports_local_llm=False,
         notes=(
-            "Set GEMINI_CREDS_HOST_DIR to the HOST path of ~/.gemini (e.g. "
-            "C:\\Users\\<user>\\.gemini on Windows) in the orchestrator env so "
-            "the Docker daemon can bind-mount it read-only into the container.",
+            "One-time setup: chown the praxis-gemini-creds volume to the agent "
+            "user, then run an interactive `agy login` into it. The orchestrator "
+            "mounts that volume read-write at ~/.gemini in each container. See "
+            "docs/deployment.md for the exact cross-platform commands.",
         ),
     ),
     "openhands": HarnessSpec(
