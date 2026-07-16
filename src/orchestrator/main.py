@@ -119,6 +119,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             effective_settings=effective_settings,
             git_author_name=settings.git_author_name,
             git_author_email=settings.git_author_email,
+            gemini_creds_volume=settings.gemini_creds_volume,
         )
     except Exception as exc:
         logger.warning("Agent manager unavailable during startup: %s", exc)

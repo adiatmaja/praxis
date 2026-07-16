@@ -192,7 +192,7 @@ async def test_agent_manager_uses_effective_lm_studio_url(
         task_prompt="do something",
         model_name="qwen3",
         callback_url="http://o/cb",
-        harness="aider",
+        harness="opencode",
     )
 
     env = mock_client.containers.run.call_args.kwargs["environment"]
@@ -224,7 +224,7 @@ async def test_agent_manager_falls_back_to_static_url_without_effective_settings
         task_prompt="do something",
         model_name="qwen3",
         callback_url="http://o/cb",
-        harness="aider",
+        harness="opencode",
     )
 
     env = mock_client.containers.run.call_args.kwargs["environment"]

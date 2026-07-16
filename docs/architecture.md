@@ -38,8 +38,8 @@
 > boxes above are the *reference* wiring, not a requirement. Every brain role — plan,
 > review, verify, decompose — resolves through `core/llm_router.py` to `{provider, model,
 > effort}` and can point at any supported provider (`claude`, `codex`, `agy`, or a `local`
-> OpenAI-compatible endpoint). The implementer harness is likewise pluggable (OpenCode,
-> Aider, OpenHands) and can drive any OpenAI-compatible endpoint (LM Studio, Ollama, or a
+> OpenAI-compatible endpoint). The implementer harness is likewise pluggable (OpenCode by
+> default, or agy) and can drive any OpenAI-compatible endpoint (LM Studio, Ollama, or a
 > hosted one). Nothing is hard-wired to a single vendor.
 
 ## Components
@@ -102,7 +102,7 @@ MCP transport cannot surface.
 | `markdown_utils.py` | Pure markdown helpers (title, checklist progress, front-matter) |
 | `backfill.py` | One-time legacy `plans.spec` → repo spec doc (Spec 2 migration) |
 | `agent_manager.py` | Docker SDK: spawn/stop/cleanup harness containers |
-| `harnesses.py` | Harness registry (Aider/OpenCode/OpenHands: image + About) |
+| `harnesses.py` | Harness registry (OpenCode/agy: image + About) |
 | `git_ops.py` | git/gh CLI wrappers: branch, push, PR, merge, diff |
 | `event_bus.py` | In-memory async pub/sub for SSE streaming |
 

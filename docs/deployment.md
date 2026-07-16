@@ -11,30 +11,67 @@ package, serves FastAPI on port 8080.
 docker build -t orchestrator:latest -f docker/orchestrator/Dockerfile .
 ```
 
-### Coding Agent (`docker/opencode-agent/`, `docker/aider-agent/`, `docker/openhands-agent/`)
+### Coding Agent (`docker/opencode-agent/`, `docker/agy-agent/`)
 
 Each harness has its own single-use worker image that clones, implements, pushes, and
 creates a PR, running as non-root `agent` user. **OpenCode is the default harness** (its
 agentic loop reads files in bounded chunks and auto-compacts, so it survives large tasks);
-Aider and OpenHands are optional alternatives. Build the one(s) you use:
+agy/Antigravity is the experimental Gemini-backed alternative. Build the one(s) you use:
 
 ```bash
 # Default harness (OpenCode)
 docker build -t opencode-agent:latest -f docker/opencode-agent/Dockerfile docker/opencode-agent/
 
-# Optional alternatives
-docker build -t aider-agent:latest -f docker/aider-agent/Dockerfile docker/aider-agent/
-docker build -t openhands-agent:latest -f docker/openhands-agent/Dockerfile docker/openhands-agent/
+# Experimental Gemini harness (agy)
+docker build -t agy-agent:latest -f docker/agy-agent/Dockerfile docker/agy-agent/
 ```
 
 > All harness images honor the same entrypoint contract. AgentManager selects the image by
 > the project's `harness` column. All are standalone (not in docker-compose); build directly.
 
+#### agy (Antigravity / Gemini) harness — one-time credential setup
+
+`agy` is an **experimental** first-party Google harness that implements tasks with Gemini.
+Unlike the other harnesses it does not talk to LM Studio; it authenticates to Google with
+OAuth. It has **no API-key auth** (upstream ignores `GEMINI_API_KEY`), so you must seed its
+credentials once with an interactive login. These commands are **identical on Windows, macOS,
+and Linux** — the credentials live in a Docker volume, not a host path, so nothing is
+OS-specific.
+
+```bash
+# 1. Create the credentials volume and give the non-root agent user ownership.
+#    (A fresh Docker volume mounts root-owned; agy runs as uid 1000 and needs to write.)
+docker run --rm --user root \
+  -v praxis-gemini-creds:/home/agent/.gemini \
+  --entrypoint bash agy-agent:latest \
+  -c 'chown -R agent:agent /home/agent/.gemini'
+
+# 2. Log in once (interactive). agy prints an OAuth URL; open it in a browser,
+#    approve, and the Linux-native credentials are written into the volume.
+docker run --rm -it \
+  -v praxis-gemini-creds:/home/agent/.gemini \
+  --entrypoint bash agy-agent:latest \
+  -c 'agy login'
+
+# 3. (Optional) verify a fresh process can authenticate with the persisted creds:
+docker run --rm \
+  -v praxis-gemini-creds:/home/agent/.gemini \
+  --entrypoint bash agy-agent:latest \
+  -c 'agy --dangerously-skip-permissions --mode accept-edits \
+        --model "Gemini 3.5 Flash (High)" -p "print PONG"'
+```
+
+The orchestrator mounts this volume **read-write** at `/home/agent/.gemini` in every agy
+container (read-write so it can persist the ~1-hourly refreshed access token). The volume
+name is configurable with `GEMINI_CREDS_VOLUME` (default `praxis-gemini-creds`). Tokens are
+long-lived once seeded; re-run step 2 only if login is revoked. No host `~/.gemini` path is
+ever mounted — that approach does not work across operating systems.
+
 **Agent container environment variables** (harness-agnostic contract, set by AgentManager):
 
 | Variable | Description |
 |----------|-------------|
-| `HARNESS` | Selected harness (`aider` / `opencode` / `openhands`) |
+| `HARNESS` | Selected harness (`opencode` / `agy`) |
 | `REPO_URL` | GitHub repo clone URL |
 | `BRANCH` | Agent branch name (`agent/{task-slug}`) |
 | `BASE_BRANCH` | Plan branch to branch from and PR into |
@@ -251,6 +288,7 @@ env vars); secrets (`AUTH_TOKEN`, GitHub App private key or `GITHUB_TOKEN`) stay
 | `AGENT_MODEL` | No | `claude-opus-4-8` | Default planner model (per-call-site overrides in **Settings → Models**) |
 | `HOST` | No | `0.0.0.0` | Bind address |
 | `PORT` | No | `12323` | Host port (uncommon by design to avoid 8080 collisions; MCP `PRAXIS_BASE_URL` and agent callbacks must match it) |
+| `GEMINI_CREDS_VOLUME` | No | `praxis-gemini-creds` | Docker volume holding agy OAuth creds; only used by the `agy` harness (see [agy setup](#agy-antigravity--gemini-harness--one-time-credential-setup)) |
 
 ---
 
@@ -279,8 +317,8 @@ Key properties:
 - **Deterministic, cheap gate.** A failing command hard-fails the task immediately with
   the command output as feedback. No brain tokens are spent on a broken build.
 - **Orchestrator-side, harness-agnostic.** The command runs in the orchestrator process
-  against the cloned checkout (`core/verify_gate.py`), so it applies equally to Aider,
-  OpenCode, and OpenHands agents without any entrypoint changes.
+  against the cloned checkout (`core/verify_gate.py`), so it applies equally to OpenCode
+  and agy agents without any entrypoint changes.
 - **Trusted operator config, never from a PR.** `verify_cmd` is stored in the projects
   table and set only by the operator via the API or dashboard. It is never read from PR
   content or branch files. Prefer running the orchestrator inside a container to further
@@ -366,10 +404,11 @@ Docker environment.  The comparison uses `secrets.compare_digest` to prevent tim
 attacks.
 
 > **Rebuild the agent image after editing `entrypoint.sh`.** The token header is sent by
-> the entrypoint's `send_callback`. A stale `aider-agent:latest` (built before this logic)
+> the entrypoint's `send_callback`. A stale image (built before this logic)
 > sends an empty header, so every callback 401s and tasks stall at `in_progress` until the
 > reconciler fails them — implement→review→merge never completes. Rebuild with
-> `docker build -t aider-agent:latest -f docker/aider-agent/Dockerfile docker/aider-agent/`.
+> `docker build -t opencode-agent:latest -f docker/opencode-agent/Dockerfile docker/opencode-agent/`
+> (or the equivalent for `agy-agent`).
 
 ### Docker socket exposure
 

@@ -76,8 +76,8 @@
    stores the parsed plan in SQLite, and marks the plan as `active`.
 
 4. **Task dispatch** — For each task with no unmet dependencies, orchestrator spawns
-   a Docker container running the project's selected harness (Aider / OpenCode /
-   OpenHands). The container:
+   a Docker container running the project's selected harness (OpenCode by default,
+   or agy). The container:
    - Clones the repo
    - Creates an `agent/{task-slug}` branch from the plan branch
    - Runs the selected harness with the task description as the prompt
@@ -122,8 +122,8 @@ IN_PROGRESS -> NEEDS_CLARIFICATION -> (brain confident) -> PENDING (re-dispatch)
                                    -> (low confidence)  -> awaiting_human -> PENDING
 ```
 
-All three harnesses (aider, opencode, openhands) parse the FINAL REPORT for
-block signals and route them through the same harness-agnostic callback.
+Both harnesses (opencode, agy) parse the FINAL REPORT for block signals and
+route them through the same harness-agnostic callback.
 
 ## Per-Project Settings
 
@@ -136,7 +136,7 @@ Each registered repository can be configured with:
 | `max_retries` | `3` | Max re-dispatches per failed code review |
 | `max_improvement_cycles` | `5` | Hard cap on autonomous improvement loops |
 | `model_name` | *(required)* | LLM model identifier for the implementer agent |
-| `harness` | `opencode` | Implementer harness: `aider` / `opencode` / `openhands` |
+| `harness` | `opencode` | Implementer harness: `opencode` (default) / `agy` |
 | `agent_model` / `agent_model_effort` | *(inherited)* | Per-project override of the implementer model/effort |
 
 Global brain call-site models (planning, review, classify, derive) are configured in

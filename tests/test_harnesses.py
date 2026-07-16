@@ -16,7 +16,35 @@ from orchestrator.core.harnesses import (
 
 @pytest.mark.unit
 def test_registry_contains_expected_harnesses() -> None:
-    assert set(REGISTRY) == {"aider", "opencode", "openhands"}
+    assert set(REGISTRY) == {"opencode", "agy"}
+
+
+@pytest.mark.unit
+def test_agy_harness_fields() -> None:
+    spec = get_harness("agy")
+    assert isinstance(spec, HarnessSpec)
+    assert spec.id == "agy"
+    assert spec.image == "agy-agent:latest"
+    assert spec.display_name == "Antigravity (Gemini)"
+    assert spec.recommended is False
+    assert spec.does_own_git is False
+    assert spec.supports_local_llm is False
+
+
+@pytest.mark.unit
+def test_agy_harness_has_about_content() -> None:
+    spec = get_harness("agy")
+    assert spec.description
+    assert spec.uniqueness
+    assert spec.pros
+    assert spec.cons
+    assert spec.when_to_pick
+
+
+@pytest.mark.unit
+def test_agy_maturity_is_set() -> None:
+    spec = get_harness("agy")
+    assert spec.maturity in {"stable", "active", "experimental", "beta"}
 
 
 @pytest.mark.unit

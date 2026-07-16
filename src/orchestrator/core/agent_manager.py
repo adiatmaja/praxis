@@ -1,7 +1,7 @@
 """Docker container lifecycle management for harness agent containers.
 
 Harness-agnostic: spawns whichever harness a project selects (OpenCode is the
-default; Aider and OpenHands are also supported).
+default; agy/Antigravity is the experimental Gemini-backed alternative).
 """
 
 from __future__ import annotations
@@ -90,7 +90,7 @@ def _container_host_url(url: str) -> str:
 
 
 class AgentManager:
-    """Manage harness agent Docker containers (OpenCode/Aider/OpenHands)."""
+    """Manage harness agent Docker containers (OpenCode default, or agy)."""
 
     def __init__(
         self,
@@ -102,11 +102,13 @@ class AgentManager:
         git_author_email: str | None = None,
         max_agent_concurrency: int = _DEFAULT_MAX_AGENT_CONCURRENCY,
         min_free_disk_bytes: int = _MIN_FREE_DISK_BYTES,
+        gemini_creds_volume: str = "",
     ) -> None:
         self._lm_studio_url = lm_studio_url
         self._effective_settings = effective_settings
         self._git_author_name = git_author_name
         self._git_author_email = git_author_email
+        self._gemini_creds_volume = gemini_creds_volume
         self._max_agent_concurrency = max_agent_concurrency
         self._min_free_disk_bytes = min_free_disk_bytes
         if credentials is not None:
@@ -217,19 +219,47 @@ class AgentManager:
         # (OpenCode) can trigger at the right threshold instead of sailing past
         # it into silent server-side truncation. Detected per-model, never
         # hardcoded; omitted when LM Studio can't be reached.
-        context_limit = await detect_context_limit(lm_studio_url, model_name)
-        if context_limit is not None:
-            environment["MODEL_CONTEXT_LIMIT"] = str(context_limit)
+        # agy skips this: it talks to Google via OAuth, not LM Studio, so the
+        # /api/v0/models probe is irrelevant and would only generate noise.
+        if harness_id != "agy":
+            context_limit = await detect_context_limit(lm_studio_url, model_name)
+            if context_limit is not None:
+                environment["MODEL_CONTEXT_LIMIT"] = str(context_limit)
+
+        # Mount the agy OAuth credentials VOLUME. The credentials are Linux-native
+        # (populated once by an interactive `agy login`, see docs/deployment.md)
+        # and live in a named Docker volume, so the mount source is a volume NAME
+        # resolved by the Docker daemon (not a host path). We mount it read-write
+        # at /home/agent/.gemini so fresh worker processes both authenticate and
+        # persist refreshed access tokens (tokens expire in ~1h).
+        volumes: dict[str, dict[str, str]] = {}
+        if harness_id == "agy":
+            if self._gemini_creds_volume:
+                volumes[self._gemini_creds_volume] = {
+                    "bind": "/home/agent/.gemini",
+                    "mode": "rw",
+                }
+            else:
+                logger.warning(
+                    "agy harness selected but GEMINI_CREDS_VOLUME is not set; "
+                    "the container will start without Gemini OAuth credentials "
+                    "and authentication will fail. Run the one-time `agy login` "
+                    "setup described in docs/deployment.md."
+                )
+
         container_name = f"praxis-agent-{task_id[:8]}"
         self._remove_existing_container(container_name)
-        container = self._client.containers.run(
-            image=spec.image,
-            name=container_name,
-            environment=environment,
-            detach=True,
-            auto_remove=False,
-            extra_hosts={"host.docker.internal": "host-gateway"},
-        )
+        run_kwargs: dict[str, object] = {
+            "image": spec.image,
+            "name": container_name,
+            "environment": environment,
+            "detach": True,
+            "auto_remove": False,
+            "extra_hosts": {"host.docker.internal": "host-gateway"},
+        }
+        if volumes:
+            run_kwargs["volumes"] = volumes
+        container = self._client.containers.run(**run_kwargs)
         logger.info(
             "Spawned %s container %s for task %s on branch %s",
             harness_id,
@@ -295,11 +325,6 @@ class AgentManager:
         containers = self._client.containers.list(
             all=True,
             filters={"name": "praxis-agent-"},
-        )
-        # Back-compat: containers spawned before the 2026-07 rename.
-        containers += self._client.containers.list(
-            all=True,
-            filters={"name": "aider-agent-"},
         )
         return [
             {

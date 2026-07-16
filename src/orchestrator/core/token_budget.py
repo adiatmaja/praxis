@@ -1,8 +1,7 @@
 """Estimate context size and trim prioritized sections to a model's window.
 
 The worker must never be handed more than its loaded context window can hold;
-overflow causes silent server-side truncation (Aider) or churny compaction
-(OpenCode). We estimate cheaply (chars/4), reserve headroom for the agent's own
+overflow causes silent server-side truncation or churny compaction (OpenCode). We estimate cheaply (chars/4), reserve headroom for the agent's own
 reasoning + edits, and drop the lowest-priority sections until the rest fit.
 ``floor`` sections are never dropped; if they alone overflow we raise.
 """

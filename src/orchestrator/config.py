@@ -60,6 +60,16 @@ class Settings(BaseSettings):
     # ``dashboard_url`` with its own ``PRAXIS_BASE_URL``, so this is mainly
     # needed when callers consume the REST API directly.
     public_url: str | None = None
+    # Name of the Docker VOLUME that holds the agy (Antigravity/Gemini) OAuth
+    # credentials.  The user populates it once with an interactive `agy login`
+    # (see docs/deployment.md); the orchestrator then mounts it read-write into
+    # every agy agent container at /home/agent/.gemini so fresh worker processes
+    # can authenticate and refresh tokens.  A named volume (not a host path) is
+    # used deliberately: the credentials are Linux-native and identical on every
+    # OS, so setup is cross-platform.  Set via GEMINI_CREDS_VOLUME env var.
+    # When empty, the agy harness proceeds without mounting credentials (a
+    # warning is logged) so unconfigured setups do not crash.
+    gemini_creds_volume: str = "praxis-gemini-creds"
 
     def dashboard_url(self) -> str:
         """Return the human-reachable dashboard URL for use in API responses.

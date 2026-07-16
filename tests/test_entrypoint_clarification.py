@@ -53,7 +53,7 @@ def _to_posix(p: Path) -> str:
 
 
 def _run(tmp_path: Path, report: str) -> str:
-    log = tmp_path / "aider.log"
+    log = tmp_path / "agent.log"
     log.write_text(report, encoding="utf-8")
     # Pass the snippet via stdin (bash -s) so no file-path conversion is needed
     # for the script itself; only the log path is converted to POSIX.
@@ -97,7 +97,7 @@ def _read_entrypoint(harness: str) -> str:
     return (REPO_ROOT / "docker" / f"{harness}-agent" / "entrypoint.sh").read_text()
 
 
-@pytest.mark.parametrize("harness", ["opencode", "openhands"])
+@pytest.mark.parametrize("harness", ["opencode", "agy"])
 def test_entrypoint_has_needs_clarification_status(harness):
     content = _read_entrypoint(harness)
     assert 'STATUS="needs_clarification"' in content, (
@@ -105,7 +105,7 @@ def test_entrypoint_has_needs_clarification_status(harness):
     )
 
 
-@pytest.mark.parametrize("harness", ["opencode", "openhands"])
+@pytest.mark.parametrize("harness", ["opencode", "agy"])
 def test_entrypoint_has_concerns_awk_extraction(harness):
     content = _read_entrypoint(harness)
     assert "awk '/^Concerns/" in content, (
@@ -113,7 +113,7 @@ def test_entrypoint_has_concerns_awk_extraction(harness):
     )
 
 
-@pytest.mark.parametrize("harness", ["opencode", "openhands"])
+@pytest.mark.parametrize("harness", ["opencode", "agy"])
 def test_entrypoint_has_question_in_payload(harness):
     content = _read_entrypoint(harness)
     # In the shell file the payload uses escaped quotes: \"question\":${question_json}
@@ -122,7 +122,7 @@ def test_entrypoint_has_question_in_payload(harness):
     )
 
 
-@pytest.mark.parametrize("harness", ["opencode", "openhands"])
+@pytest.mark.parametrize("harness", ["opencode", "agy"])
 def test_entrypoint_syntax_valid(harness):
     """bash -n syntax check on each entrypoint."""
     if _BASH is None:

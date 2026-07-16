@@ -30,43 +30,6 @@ class HarnessSpec:
 
 
 REGISTRY: dict[str, HarnessSpec] = {
-    "aider": HarnessSpec(
-        id="aider",
-        display_name="Aider",
-        image="aider-agent:latest",
-        description=(
-            "A lean, terminal-first pair-programming agent. Edits multiple "
-            "files via diffs and commits to git automatically. Praxis's "
-            "original harness (OpenCode is now the default)."
-        ),
-        uniqueness=(
-            "Native, first-class git integration: every change is an "
-            "auto-commit, so the orchestrator's branch/PR flow needs no extra "
-            "wiring. Smallest, fastest image."
-        ),
-        when_to_pick=(
-            "Best for focused, well-scoped tasks that comfortably fit one "
-            "context window, on small-to-medium repos, when you want minimal "
-            "moving parts and fast runs. Pre-decompose larger work first."
-        ),
-        pros=(
-            "Auto-commits — zero git glue required",
-            "Mature and stable (in production since 2023)",
-            "Lightweight image, fast cold start",
-            "Excellent diff/edit quality on scoped tasks",
-        ),
-        cons=(
-            "Single-shot --message: NO context compaction — each task must fit "
-            "one context window",
-            "On overflow it sends everything raw; if the model server (e.g. LM "
-            "Studio) silently truncates, Aider reports SUCCESS on a partial "
-            "view (verified) — no error, no flag",
-            "Less autonomous on large multi-step tasks",
-            "No built-in sandboxed code execution or browsing",
-        ),
-        maturity="stable",
-        recommended=False,
-    ),
     "opencode": HarnessSpec(
         id="opencode",
         display_name="OpenCode",
@@ -83,8 +46,8 @@ REGISTRY: dict[str, HarnessSpec] = {
         when_to_pick=(
             "Default choice. Best for long-running, large, or open-ended tasks: "
             "its agentic loop reads files in bounded, paginated chunks and never "
-            "builds one oversized request, so it survives big repos where Aider "
-            "would silently truncate. Adds auto-compaction on top."
+            "builds one oversized request, so it survives big repos that would "
+            "otherwise silently truncate. Adds auto-compaction on top."
         ),
         pros=(
             "Bounded, paginated tool reads — never dumps a whole file into one "
@@ -97,7 +60,6 @@ REGISTRY: dict[str, HarnessSpec] = {
         ),
         cons=(
             "Does not auto-commit — entrypoint must stage & commit changes",
-            "Larger image than Aider",
             "Compaction triggers off the model's known context length; for a "
             "custom local provider set `limit.context` so it fires correctly",
         ),
@@ -109,43 +71,48 @@ REGISTRY: dict[str, HarnessSpec] = {
             "agent because OpenCode edits files but does not commit.",
         ),
     ),
-    "openhands": HarnessSpec(
-        id="openhands",
-        display_name="OpenHands",
-        image="openhands-agent:latest",
+    "agy": HarnessSpec(
+        id="agy",
+        display_name="Antigravity (Gemini)",
+        image="agy-agent:latest",
         description=(
-            "A fully autonomous software-engineering agent (formerly "
-            "OpenDevin) that runs in a sandboxed runtime able to execute code, "
-            "browse, and edit end-to-end. Strongest headless/CI story."
+            "Google's Antigravity (agy) CLI agent, powered by Gemini models. "
+            "Edits files headless and uses portable OAuth credentials — no "
+            "OS-keychain lock-in. Gemini-only: does not talk to LM Studio or "
+            "any OpenAI-compatible endpoint."
         ),
         uniqueness=(
-            "Goes beyond editing: it can run the code it writes, inspect "
-            "output, and iterate autonomously across many steps in a sandbox."
+            "First-party Google agent using Gemini natively via OAuth; brings "
+            "Gemini's large context window and code reasoning without requiring "
+            "a separate API key beyond the user's existing Google account."
         ),
         when_to_pick=(
-            "For large, open-ended, multi-step tasks where the agent benefits "
-            "from running tests/commands and self-correcting. Pick when task "
-            "complexity justifies the heavier runtime."
+            "When the project is already on Google Cloud / Gemini and you want "
+            "first-party model quality without proxying through LM Studio. "
+            "Requires a one-time `agy login` into a Docker credentials volume "
+            "(GEMINI_CREDS_VOLUME); see docs/deployment.md."
         ),
         pros=(
-            "Most autonomous — executes & verifies its own changes",
-            "Best for complex, exploratory, multi-file work",
-            "Model-agnostic via LiteLLM (OpenAI-compatible local models work)",
-            "Strong headless batch mode",
+            "First-party Gemini agent — best model quality for Gemini users",
+            "Large context window (Gemini 3.x models)",
+            "Login once into a Docker volume; setup is identical on every OS",
+            "Non-interactive `--dangerously-skip-permissions --mode accept-edits`",
         ),
         cons=(
-            "Heaviest image and slowest runs",
-            "Needs a sandbox runtime (local runtime, or a mounted Docker "
-            "socket for the container runtime)",
-            "Higher token usage from multi-step loops",
-            "Does not auto-commit — entrypoint must stage & commit changes",
+            "Gemini-only: cannot use local open-weight models via LM Studio",
+            "No API-key auth: needs an interactive `agy login` to seed the volume",
+            "Does not auto-commit — entrypoint stages and commits changes",
+            "Newer / less battle-tested in headless CI than OpenCode",
         ),
-        maturity="active",
+        maturity="experimental",
+        recommended=False,
         does_own_git=False,
+        supports_local_llm=False,
         notes=(
-            'Runs headless via `python -m openhands.core.main -t "$TASK" '
-            "--override-with-envs`. Praxis uses the local runtime to avoid "
-            "Docker-in-Docker; if unavailable, mount /var/run/docker.sock.",
+            "One-time setup: chown the praxis-gemini-creds volume to the agent "
+            "user, then run an interactive `agy login` into it. The orchestrator "
+            "mounts that volume read-write at ~/.gemini in each container. See "
+            "docs/deployment.md for the exact cross-platform commands.",
         ),
     ),
 }
@@ -155,8 +122,7 @@ def default_harness_id() -> str:
     """The harness assigned to projects that don't specify one.
 
     OpenCode is the default because its agentic loop reads files in bounded
-    chunks and auto-compacts, so it survives long-running / large tasks. Aider
-    is single-shot with no compaction and silently truncates on overflow.
+    chunks and auto-compacts, so it survives long-running / large tasks.
     """
 
     return "opencode"

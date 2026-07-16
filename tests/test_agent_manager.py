@@ -85,12 +85,12 @@ async def test_spawn_agent(mock_docker: MagicMock) -> None:
         task_prompt="Build login page",
         model_name="deepseek-coder-v2",
         callback_url="http://orchestrator:8080/api/internal/agent-done",
-        harness="aider",
+        harness="opencode",
     )
 
     assert result == container.id
     call_kwargs = mock_client.containers.run.call_args.kwargs
-    assert call_kwargs["image"] == "aider-agent:latest"
+    assert call_kwargs["image"] == "opencode-agent:latest"
     assert call_kwargs["detach"] is True
     assert call_kwargs["auto_remove"] is False
     assert call_kwargs["environment"]["TASK_PROMPT"] == "Build login page"
@@ -500,8 +500,8 @@ def test_list_agent_containers(mock_docker: MagicMock) -> None:
 
 @pytest.mark.unit
 @patch("orchestrator.core.agent_manager.docker")
-def test_list_agent_containers_queries_both_prefixes(mock_docker: MagicMock) -> None:
-    """list_agent_containers queries both praxis-agent- and legacy aider-agent- prefixes."""
+def test_list_agent_containers_queries_praxis_prefix(mock_docker: MagicMock) -> None:
+    """list_agent_containers queries praxis-agent- containers."""
     mock_client = MagicMock()
     mock_docker.from_env.return_value = mock_client
     mock_client.containers.list.return_value = []
@@ -515,7 +515,6 @@ def test_list_agent_containers_queries_both_prefixes(mock_docker: MagicMock) -> 
     calls = mock_client.containers.list.call_args_list
     filters_used = [c.kwargs["filters"] for c in calls]
     assert {"name": "praxis-agent-"} in filters_used
-    assert {"name": "aider-agent-"} in filters_used
 
 
 @pytest.mark.unit
@@ -654,3 +653,139 @@ async def test_spawn_agent_injects_freshly_minted_token(monkeypatch) -> None:
         callback_url="http://host.docker.internal:8080/api/internal/agent-done",
     )
     assert captured["environment"]["GH_TOKEN"] == "ghs_fresh"
+
+
+# ---------------------------------------------------------------------------
+# agy harness: .gemini mount + context-limit skip
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+@patch("orchestrator.core.agent_manager.docker")
+async def test_agy_mounts_gemini_creds_when_configured(
+    mock_docker: MagicMock,
+) -> None:
+    """When gemini_creds_volume is set, spawn adds a read-write volume mount."""
+    mock_client = MagicMock()
+    mock_docker.from_env.return_value = mock_client
+    mock_client.containers.run.return_value = _mock_container()
+
+    manager = AgentManager(
+        lm_studio_url="http://localhost:1234",
+        github_token="ghp_x",
+        gemini_creds_volume="praxis-gemini-creds",
+    )
+    await manager.spawn_agent(
+        task_id="agy-t1",
+        repo_url="https://github.com/u/r.git",
+        branch="agent/agy-task",
+        base_branch="plan/agy",
+        task_prompt="do it",
+        model_name="Gemini 3.5 Flash (High)",
+        callback_url="http://cb/",
+        harness="agy",
+    )
+
+    call_kwargs = mock_client.containers.run.call_args.kwargs
+    mounts = call_kwargs.get("volumes") or {}
+    # volumes dict form: {volume_name: {"bind": container_path, "mode": "rw"}}
+    assert isinstance(mounts, dict), f"Expected volumes dict, got: {mounts}"
+    assert "praxis-gemini-creds" in mounts, (
+        f"Expected named-volume mount in volumes, got: {mounts}"
+    )
+    entry = mounts["praxis-gemini-creds"]
+    assert entry["bind"] == "/home/agent/.gemini"
+    assert entry["mode"] == "rw"
+
+
+@pytest.mark.unit
+@patch("orchestrator.core.agent_manager.docker")
+async def test_agy_skips_gemini_mount_when_unconfigured(
+    mock_docker: MagicMock,
+) -> None:
+    """When gemini_creds_volume is empty, spawn proceeds without mount."""
+    mock_client = MagicMock()
+    mock_docker.from_env.return_value = mock_client
+    mock_client.containers.run.return_value = _mock_container()
+
+    manager = AgentManager(
+        lm_studio_url="http://localhost:1234",
+        github_token="ghp_x",
+        gemini_creds_volume="",  # explicitly disabled
+    )
+    # Should not raise even with no creds dir configured
+    await manager.spawn_agent(
+        task_id="agy-t2",
+        repo_url="https://github.com/u/r.git",
+        branch="agent/agy-task2",
+        base_branch="plan/agy",
+        task_prompt="do it",
+        model_name="Gemini 3.5 Flash (High)",
+        callback_url="http://cb/",
+        harness="agy",
+    )
+
+    call_kwargs = mock_client.containers.run.call_args.kwargs
+    volumes = call_kwargs.get("volumes") or {}
+    assert not any(".gemini" in str(k) for k in volumes), (
+        "No .gemini mount expected when gemini_creds_volume is unset"
+    )
+
+
+@pytest.mark.unit
+@patch("orchestrator.core.agent_manager.detect_context_limit", new_callable=AsyncMock)
+@patch("orchestrator.core.agent_manager.docker")
+async def test_agy_skips_context_limit_detection(
+    mock_docker: MagicMock,
+    mock_detect: AsyncMock,
+) -> None:
+    """agy harness must NOT call detect_context_limit (it talks to Google, not LM Studio)."""
+    mock_client = MagicMock()
+    mock_docker.from_env.return_value = mock_client
+    mock_client.containers.run.return_value = _mock_container()
+
+    manager = AgentManager(
+        lm_studio_url="http://localhost:1234",
+        github_token="ghp_x",
+        gemini_creds_volume="praxis-gemini-creds",
+    )
+    await manager.spawn_agent(
+        task_id="agy-t3",
+        repo_url="https://github.com/u/r.git",
+        branch="agent/agy-task3",
+        base_branch="plan/agy",
+        task_prompt="do it",
+        model_name="Gemini 3.5 Flash (High)",
+        callback_url="http://cb/",
+        harness="agy",
+    )
+
+    mock_detect.assert_not_called()
+    env = mock_client.containers.run.call_args.kwargs["environment"]
+    assert "MODEL_CONTEXT_LIMIT" not in env
+
+
+@pytest.mark.unit
+@patch("orchestrator.core.agent_manager.docker")
+async def test_agy_uses_correct_image(mock_docker: MagicMock) -> None:
+    """agy harness selects the agy-agent:latest image."""
+    mock_client = MagicMock()
+    mock_docker.from_env.return_value = mock_client
+    mock_client.containers.run.return_value = _mock_container()
+
+    manager = AgentManager(
+        lm_studio_url="http://localhost:1234",
+        github_token="ghp_x",
+    )
+    await manager.spawn_agent(
+        task_id="agy-t4",
+        repo_url="https://github.com/u/r.git",
+        branch="agent/agy-task4",
+        base_branch="plan/agy",
+        task_prompt="do it",
+        model_name="Gemini 3.1 Pro (Low)",
+        callback_url="http://cb/",
+        harness="agy",
+    )
+
+    assert mock_client.containers.run.call_args.kwargs["image"] == "agy-agent:latest"

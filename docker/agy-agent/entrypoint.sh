@@ -5,7 +5,9 @@ set -euo pipefail
 : "${BRANCH:?BRANCH is required}"
 : "${BASE_BRANCH:?BASE_BRANCH is required}"
 : "${TASK_PROMPT:?TASK_PROMPT is required}"
-: "${OPENAI_API_BASE:?OPENAI_API_BASE is required}"
+# NOTE: MODEL carries the Gemini model string verbatim, e.g. "Gemini 3.5 Flash (High)".
+# agy does NOT use OPENAI_API_BASE (it talks to Google via OAuth creds, not LM Studio),
+# so that env var is tolerated if set but intentionally not required here.
 : "${MODEL:?MODEL is required}"
 : "${GH_TOKEN:?GH_TOKEN is required}"
 : "${CALLBACK_URL:?CALLBACK_URL is required}"
@@ -14,6 +16,7 @@ set -euo pipefail
 WORKSPACE="/home/agent/workspace"
 STATUS="completed"
 PR_URL=""
+QUESTION=""
 
 # Guard: workers must NEVER target a protected base branch (main/master/release*).
 # Doing so collapses two-tier branching and (worst case) points a PR at main.
@@ -29,7 +32,7 @@ case "${base_branch_lower}" in
 esac
 
 json_escape() {
-    python -c 'import json,sys; print(json.dumps(sys.stdin.read()))'
+    python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))'
 }
 
 send_callback() {
@@ -84,11 +87,9 @@ cleanup() {
 }
 trap cleanup EXIT
 
-echo "=== Agent starting ==="
+echo "=== agy (Antigravity) agent starting ==="
 echo "Repo: ${REPO_URL}"
-echo "Branch: ${BRANCH}"
-echo "Base: ${BASE_BRANCH}"
-echo "Model: openai/${MODEL}"
+echo "Branch: ${BRANCH}  Base: ${BASE_BRANCH}  Model: ${MODEL}"
 
 echo "--- Configuring git auth ---"
 git config --global credential.helper '!f() { echo "username=x-access-token"; echo "password=${GH_TOKEN}"; }; f'
@@ -96,7 +97,6 @@ git config --global credential.helper '!f() { echo "username=x-access-token"; ec
 echo "--- Cloning repository ---"
 git clone "${REPO_URL}" "${WORKSPACE}"
 cd "${WORKSPACE}"
-
 # Commit author identity is provided by the orchestrator (GIT_AUTHOR_*); fall
 # back to a neutral GitHub noreply identity when unset. Kept free of any Praxis
 # footprint in the commit profile.
@@ -107,38 +107,27 @@ echo "--- Creating branch ${BRANCH} from ${BASE_BRANCH} ---"
 if git rev-parse --verify "origin/${BASE_BRANCH}" >/dev/null 2>&1; then
     git checkout -b "${BASE_BRANCH}" "origin/${BASE_BRANCH}"
 else
-    echo "Base branch ${BASE_BRANCH} not found on remote, creating from default branch"
+    echo "Base branch not on remote; creating from default"
     git checkout -b "${BASE_BRANCH}"
     if ! git push -u origin "${BASE_BRANCH}" 2>/dev/null; then
-        echo "Push failed (branch may already exist), fetching from remote"
+        echo "Push failed (branch may exist), fetching"
         git fetch origin "${BASE_BRANCH}"
         git reset --hard "origin/${BASE_BRANCH}"
     fi
 fi
 git checkout -b "${BRANCH}"
 
-echo "--- Running Aider ---"
-export OPENAI_API_KEY="${OPENAI_API_KEY:-not-needed}"
+echo "--- Writing Static Bible (task context, never committed) ---"
+# The Bible is the compaction-proof context slot: goal + handover + conventions.
+# For agy we prepend the Bible into the effective prompt rather than using a
+# separate instructions file, because agy's --add-dir mechanism ingests whole
+# directories (not single markdown files) and its per-prompt context injection
+# via -p is the most reliable headless path.
+#
+# We still write .praxis-bible.md to disk (for human inspection during debug)
+# and register it in .git/info/exclude so `git add -A` never commits it.
 
-# Build --read args so Aider has reference context (read-only) while implementing.
-read_args=()
-
-# 1. The plan file (existing behavior).
-if [ -n "${PLAN_PATH:-}" ]; then
-    read_args+=(--read "${PLAN_PATH}")
-elif [ -n "${PLAN_TEXT:-}" ]; then
-    printf "%s" "${PLAN_TEXT}" > "${WORKSPACE}/.praxis-plan.md"
-    read_args+=(--read ".praxis-plan.md")
-fi
-
-# 2. Caller-curated, secret-scrubbed context from the orchestrator.
-if [ -n "${CONTEXT_TEXT:-}" ]; then
-    printf "%s" "${CONTEXT_TEXT}" > "${WORKSPACE}/.praxis-context.md"
-    read_args+=(--read ".praxis-context.md")
-fi
-
-# 2b. Static Bible: goal + handover + conventions, re-sent each message by Aider.
-# Always create the file, starting with a runtime environment manifest.
+# Build a runtime environment manifest so the worker knows what is available.
 {
     printf '%s\n' "# ENVIRONMENT (this container -- use what is already here; do NOT install your own)"
     printf '%s\n\n' "- Non-root user. NO sudo. NO apt (permission denied). Network may be restricted."
@@ -158,45 +147,87 @@ fi
     if command -v gh >/dev/null 2>&1; then
         printf '%s\n' "- gh: present"
     fi
-    if command -v node >/dev/null 2>&1; then
-        printf '%s\n' "- node: $(node --version 2>&1)"
+    if command -v agy >/dev/null 2>&1; then
+        printf '%s\n' "- agy: $(agy --version 2>&1 || true)"
     fi
 } > "${WORKSPACE}/.praxis-bible.md"
+
+# Append the orchestrator-supplied Bible (goal + handover + conventions).
 if [ -n "${BIBLE_TEXT:-}" ]; then
     printf "\n%s\n" "${BIBLE_TEXT}" >> "${WORKSPACE}/.praxis-bible.md"
 fi
-read_args+=(--read ".praxis-bible.md")
 
-# 3. Repo-local project memory already committed in the clone (GitHub-only:
-#    we never mount local or gitignored files). Best-effort; skip if absent.
-for ctx in CLAUDE.md MEMORY.md AGENTS.md; do
-    if [ -f "${WORKSPACE}/${ctx}" ]; then
-        read_args+=(--read "${ctx}")
-    fi
-done
-while IFS= read -r doc; do
-    [ -n "${doc}" ] && read_args+=(--read "${doc}")
-done < <(find "${WORKSPACE}/docs" -maxdepth 1 -name '*.md' 2>/dev/null | sed "s|${WORKSPACE}/||" || true)
+echo ".praxis-bible.md" >> "${WORKSPACE}/.git/info/exclude"
 
-QUESTION=""
+echo "--- Building effective prompt (Bible prepended to task prompt) ---"
+# We prepend the Bible text into the -p prompt. This ensures the context is
+# always present regardless of how agy handles additional context flags.
+# UNCERTAINTY NOTE: agy's --add-dir flag ingests a directory of files as
+# context, but its exact headless behaviour for single-file injection is
+# undocumented. The safest approach for headless automation is prompt prepend.
+BIBLE_CONTENT=""
+if [ -f "${WORKSPACE}/.praxis-bible.md" ]; then
+    BIBLE_CONTENT=$(cat "${WORKSPACE}/.praxis-bible.md")
+fi
+
+EFFECTIVE_PROMPT="${TASK_PROMPT}"
+if [ -n "${PLAN_PATH:-}" ]; then
+    EFFECTIVE_PROMPT="Plan reference: ${PLAN_PATH}
+
+${TASK_PROMPT}"
+elif [ -n "${PLAN_TEXT:-}" ]; then
+    EFFECTIVE_PROMPT="${PLAN_TEXT}
+
+${TASK_PROMPT}"
+fi
+
+# Prepend Bible if available (non-empty).
+if [ -n "${BIBLE_CONTENT}" ]; then
+    EFFECTIVE_PROMPT="${BIBLE_CONTENT}
+
+---
+
+${EFFECTIVE_PROMPT}"
+fi
+
+echo "--- Verifying OAuth creds are present ---"
+# The orchestrator mounts the praxis-gemini-creds volume read-write at
+# ~/.gemini. It is populated once by an interactive `agy login` (see
+# docs/deployment.md). Read-write so agy can persist refreshed access tokens
+# (they expire in ~1h). A fresh worker process reads these Linux-native creds
+# back and authenticates without any browser flow.
+if [ -f "/home/agent/.gemini/antigravity-cli/conversation_summaries.db" ] \
+    || [ -d "/home/agent/.gemini/antigravity-cli" ]; then
+    echo "OAuth creds volume present at ~/.gemini"
+else
+    echo "WARNING: ~/.gemini has no agy credentials; authentication will fail."
+    echo "Run the one-time 'agy login' setup described in docs/deployment.md."
+fi
+
+echo "--- Running agy (headless) ---"
+# Verified invocation (agy v1.1.2 Linux):
+#   agy --dangerously-skip-permissions --mode accept-edits --model "$MODEL" -p "$PROMPT"
+#
+# Flag notes:
+#   --dangerously-skip-permissions : auto-approve all tool permission requests
+#   --mode accept-edits            : non-interactive edit mode
+#   --print-timeout 30m            : generous timeout for long tasks (default 5m)
+#   --model                        : Gemini model string, e.g. "Gemini 3.5 Flash (High)"
+#   -p / --print                   : one-shot prompt, print output to stdout
+#
+# Note: --headless and --approve are NOT valid flags in v1.1.x; removed.
+# agy reads OAuth creds from ~/.gemini (a named Docker volume mounted read-write
+# by the orchestrator, name set via GEMINI_CREDS_VOLUME). No OPENAI_API_BASE needed.
+
 OUTPUT_LOG="$(mktemp)"
-
 set +e
-aider \
-    --message "${TASK_PROMPT}" \
-    --model "openai/${MODEL}" \
-    --auto-commits \
-    --yes-always \
-    --no-auto-lint \
-    --no-suggest-shell-commands \
-    --no-show-model-warnings \
-    --no-browser \
-    --no-detect-urls \
-    "${read_args[@]}" 2>&1 | tee "${OUTPUT_LOG}"
-aider_rc="${PIPESTATUS[0]}"
+agy --dangerously-skip-permissions --mode accept-edits --print-timeout 30m \
+    --model "${MODEL}" -p "${EFFECTIVE_PROMPT}" \
+    2>&1 | tee "${OUTPUT_LOG}"
+agy_rc="${PIPESTATUS[0]}"
 set -e
-if [ "${aider_rc}" -ne 0 ]; then
-    exit "${aider_rc}"
+if [ "${agy_rc}" -ne 0 ]; then
+    exit "${agy_rc}"
 fi
 
 report_status=$(grep -oE '^Status:[[:space:]]*[A-Z_]+' "${OUTPUT_LOG}" \
@@ -213,18 +244,44 @@ if [ "${report_status}" = "BLOCKED" ] || [ "${report_status}" = "NEEDS_CONTEXT" 
     exit 0
 fi
 
+echo "--- Committing changes (agy does not auto-commit) ---"
+# .praxis-bible.md is excluded via .git/info/exclude, so git add -A never
+# stages it and it can never appear in the PR.
+git add -A
+if git diff --cached --quiet; then
+    # The worker may have committed its own work; a clean tree is only a
+    # failure when the branch also has no commits beyond the base.
+    ahead=$(git rev-list --count "${BASE_BRANCH}..HEAD")
+    if [ "${ahead}" -gt 0 ]; then
+        echo "Worker committed its own work (${ahead} commit(s) ahead of ${BASE_BRANCH})"
+    else
+        echo "No changes produced by agy"
+        STATUS="failed"
+        exit 1
+    fi
+else
+    git commit -m "agent: ${BRANCH}"
+fi
+
 echo "--- Pushing branch ---"
-git push -u origin "${BRANCH}"
+# Force-push is safe here: each attempt is a full re-implementation starting
+# from the base branch, so the fresh branch is always authoritative.
+git push -u --force origin "${BRANCH}"
 
 echo "--- Creating PR ---"
+# A previous attempt may already have opened a PR for this branch; reuse it.
+if PR_URL=$(gh pr view "${BRANCH}" --json url --jq .url 2>/dev/null) && [ -n "${PR_URL}" ]; then
+    echo "Reusing existing PR: ${PR_URL}"
+else
 PR_URL=$(gh pr create \
     --title "agent: ${BRANCH}" \
     --body "Task: ${TASK_SUMMARY:-${BRANCH}}
 
 ---
-Implemented by \`${MODEL}\` (harness: aider)" \
+Implemented by \`${MODEL}\` (harness: agy)" \
     --base "${BASE_BRANCH}" \
     --head "${BRANCH}")
+fi
 
 echo "PR created: ${PR_URL}"
-echo "=== Agent completed ==="
+echo "=== agy agent completed ==="

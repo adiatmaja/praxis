@@ -108,7 +108,7 @@ with standard decomposition, or first-pass success with fine-grained decompositi
 
 - **Qwen2.5-Coder-14B is the recommended minimum** for reliable Praxis worker use
 - Decompose tasks to single-file, single-concern scope for best results
-- These models can follow Aider and OpenCode edit formats when properly prompted
+- These models can follow common edit formats (OpenCode, diff/patch) when properly prompted
 - Context window of 128K (Qwen2.5-Coder) is more than enough for decomposed tasks
 
 ---
@@ -138,7 +138,8 @@ If you're constrained to a 7B–8B model, these strategies improve success rates
 1. **Ultra-fine decomposition**: Break each task into single-function changes
 2. **Increase max retries**: Set retry limit to 4–5 instead of the default 3
 3. **Simplify task descriptions**: Short, explicit instructions > nuanced specs
-4. **Use Aider harness**: Aider's repair loop is more forgiving of format errors
+4. **Use the OpenCode harness**: its bounded, auto-compacting agent loop tolerates
+   weaker models better than a single-shot pass
 5. **Verify gate**: Set a `verify_cmd` (e.g. `pytest`) so broken patches fail fast
 6. **Accept the trade-off**: Small model savings only hold if retry rates don't
    consume all your planner review budget
@@ -207,7 +208,7 @@ These models consistently fail Praxis's edit-format compliance requirements.
 - **Intelligence Index scores** from [Artificial Analysis](https://artificialanalysis.ai/models)
   Intelligence Index v4.1 (updated June 2026)
 - **SWE-bench scores** from [swebench.com](https://swebench.com/) and official model technical reports
-- **Aider scores** from [aider.chat/docs/leaderboards](https://aider.chat/docs/leaderboards/)
+- **Edit-format scores** from [aider.chat/docs/leaderboards](https://aider.chat/docs/leaderboards/)
 - **Praxis validation** from live runs documented in `docs/superpowers/specs/`
 - Rankings prioritize **agentic coding** (edit-format compliance + SWE-bench) over
   general intelligence, which is the correct metric for Praxis workers
