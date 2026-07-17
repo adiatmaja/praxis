@@ -50,7 +50,28 @@ send_callback() {
         question_json=$(printf "%s" "${QUESTION}" | json_escape)
     fi
 
-    local payload="{\"task_id\":\"${TASK_ID}\",\"run_id\":${run_json},\"status\":\"${STATUS}\",\"pr_url\":${pr_json},\"question\":${question_json}}"
+    local model_json="null"
+    if [ -n "${MODEL:-}" ]; then
+        model_json=$(printf "%s" "${MODEL}" | json_escape)
+    fi
+
+    local prompt_chars_json=""
+    local response_chars_json=""
+    if [ -n "${OUTPUT_LOG:-}" ] && [ -f "${OUTPUT_LOG}" ]; then
+        local p_chars
+        p_chars=$(grep -ioE '(prompt|input)[ _-]?(chars|tokens).*?[0-9]+' "${OUTPUT_LOG}" | grep -oE '[0-9]+' | tail -n1 || true)
+        if [ -n "${p_chars}" ]; then
+            prompt_chars_json=",\"worker_prompt_chars\":${p_chars}"
+        fi
+
+        local r_chars
+        r_chars=$(grep -ioE '(response|output|completion)[ _-]?(chars|tokens).*?[0-9]+' "${OUTPUT_LOG}" | grep -oE '[0-9]+' | tail -n1 || true)
+        if [ -n "${r_chars}" ]; then
+            response_chars_json=",\"worker_response_chars\":${r_chars}"
+        fi
+    fi
+
+    local payload="{\"task_id\":\"${TASK_ID}\",\"run_id\":${run_json},\"status\":\"${STATUS}\",\"pr_url\":${pr_json},\"question\":${question_json},\"payload_version\":2,\"worker_model\":${model_json}${prompt_chars_json}${response_chars_json}}"
     local max_attempts="${CALLBACK_MAX_ATTEMPTS:-5}"
     local attempt=1
     while [ "${attempt}" -le "${max_attempts}" ]; do
