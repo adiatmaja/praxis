@@ -1,9 +1,10 @@
 """Tests for llm_calls module."""
+
 from __future__ import annotations
 
 import pytest
 
-from orchestrator.core.llm_calls import record_llm_call, plan_token_usage
+from orchestrator.core.llm_calls import plan_token_usage, record_llm_call
 from orchestrator.database import Database
 
 
@@ -70,9 +71,9 @@ async def test_plan_token_usage_aggregates_and_calls_pricing(db: Database) -> No
         duration_ms=200,
         source="worker",
     )
-    
+
     usage = await plan_token_usage(db, "plan-2")
-    
+
     assert usage["brain_calls"] == 2
     assert usage["brain_chars"] == 400
     assert usage["worker_chars"] == 3000
@@ -89,5 +90,5 @@ async def test_plan_token_usage_no_rows(db: Database) -> None:
         "brain_calls": 0,
         "brain_chars": 0,
         "worker_chars": 0,
-        "est_api_cost_avoided_usd": 0.0
+        "est_api_cost_avoided_usd": 0.0,
     }
