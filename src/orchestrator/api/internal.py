@@ -8,6 +8,7 @@ import secrets
 from fastapi import APIRouter, HTTPException, Request, status
 from pydantic import BaseModel
 
+from orchestrator.core.llm_calls import record_llm_call
 from orchestrator.models.schemas import TaskStatus
 
 
@@ -16,6 +17,7 @@ router = APIRouter(tags=["internal"])
 
 # Header name agents must include with the callback token.
 _CALLBACK_TOKEN_HEADER = "x-praxis-callback-token"  # nosec B105 — header name, not a password
+_MAX_PAYLOAD_VERSION = 2
 
 
 class AgentDonePayload(BaseModel):
@@ -26,6 +28,10 @@ class AgentDonePayload(BaseModel):
     status: str
     pr_url: str | None = None
     question: str | None = None
+    payload_version: int = 1
+    worker_prompt_chars: int | None = None
+    worker_response_chars: int | None = None
+    worker_model: str | None = None
 
 
 def _verify_callback_token(request: Request) -> None:
@@ -65,6 +71,13 @@ async def agent_done(request: Request, body: AgentDonePayload) -> dict[str, str]
     """
     _verify_callback_token(request)
 
+    if body.payload_version > _MAX_PAYLOAD_VERSION:
+        logger.error("Unsupported payload_version: %d", body.payload_version)
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Unsupported payload_version: {body.payload_version}",
+        )
+
     # Sanitize inputs to prevent log injection
     task_id = body.task_id.replace("\r", "").replace("\n", "")
     status_str = body.status.replace("\r", "").replace("\n", "")
@@ -93,6 +106,25 @@ async def agent_done(request: Request, body: AgentDonePayload) -> dict[str, str]
     if body.status == "completed":
         await queue.update_task_status(body.task_id, TaskStatus.REVIEWING)
         logger.info("Task %s ready for review", task_id)
+        if (
+            body.worker_prompt_chars is not None
+            or body.worker_response_chars is not None
+        ):
+            try:
+                await record_llm_call(
+                    queue._db,
+                    plan_id=task["plan_id"],
+                    task_id=body.task_id,
+                    call_site="worker",
+                    provider="",
+                    model=body.worker_model or "",
+                    prompt_chars=body.worker_prompt_chars or 0,
+                    response_chars=body.worker_response_chars or 0,
+                    duration_ms=0,
+                    source="worker",
+                )
+            except Exception as e:
+                logger.error("Failed to record worker LLM call: %s", e)
     elif body.status == "needs_clarification":
         question = body.question or "Worker reported a blocker without details."
         await queue.mark_needs_clarification(body.task_id, question)

@@ -172,3 +172,81 @@ async def test_agent_done_needs_clarification_parks_task(
     task = await queue.get_task(task_id)
     assert task["status"] == TaskStatus.NEEDS_CLARIFICATION
     assert task["clarification_question"] == "Which config file holds the API base?"
+
+
+@pytest.mark.integration
+async def test_agent_done_v1_compat(
+    client: AsyncClient,
+    db: Database,
+    auth_headers: dict[str, str],
+) -> None:
+    _, task_id = await _setup_plan_with_task(client, db, auth_headers)
+
+    # v1 payload: no payload_version, no token fields
+    resp = await client.post(
+        "/api/internal/agent-done",
+        headers={"X-Praxis-Callback-Token": "test-auth"},
+        json={
+            "task_id": task_id,
+            "status": "completed",
+        },
+    )
+    assert resp.status_code == 200
+
+    queue: TaskQueue = client.app.state.task_queue  # type: ignore[attr-defined]
+    task = await queue.get_task(task_id)
+    assert task["status"] == TaskStatus.REVIEWING
+
+
+@pytest.mark.integration
+async def test_agent_done_v2_unsupported_version(
+    client: AsyncClient,
+    db: Database,
+    auth_headers: dict[str, str],
+) -> None:
+    _, task_id = await _setup_plan_with_task(client, db, auth_headers)
+
+    resp = await client.post(
+        "/api/internal/agent-done",
+        headers={"X-Praxis-Callback-Token": "test-auth"},
+        json={
+            "task_id": task_id,
+            "status": "completed",
+            "payload_version": 999,
+        },
+    )
+    assert resp.status_code == 422
+
+
+@pytest.mark.integration
+async def test_agent_done_v2_writes_worker_llm_call(
+    client: AsyncClient,
+    db: Database,
+    auth_headers: dict[str, str],
+) -> None:
+    plan_id, task_id = await _setup_plan_with_task(client, db, auth_headers)
+
+    resp = await client.post(
+        "/api/internal/agent-done",
+        headers={"X-Praxis-Callback-Token": "test-auth"},
+        json={
+            "task_id": task_id,
+            "status": "completed",
+            "payload_version": 2,
+            "worker_prompt_chars": 1500,
+            "worker_response_chars": 500,
+            "worker_model": "test-worker-model",
+        },
+    )
+    assert resp.status_code == 200
+
+    # verify llm_call row
+    rows = await db.fetch_all(
+        "SELECT * FROM llm_calls WHERE source = 'worker' AND task_id = ?",
+        (task_id,),
+    )
+    assert len(rows) == 1
+    assert rows[0]["plan_id"] == plan_id
+    assert int(rows[0]["prompt_chars"]) == 1500
+    assert int(rows[0]["response_chars"]) == 500
+    assert rows[0]["model"] == "test-worker-model"
