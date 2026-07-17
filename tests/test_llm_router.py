@@ -200,3 +200,80 @@ async def test_run_passes_cwd_to_subprocess(mocker):
 def test_plan_review_call_site_registered():
     cfg = CALL_SITE_DEFAULTS["plan_review"]
     assert cfg["provider"] == "claude"  # capability judgment needs the brain
+
+
+async def test_run_records_llm_call(mocker):
+    resolver = mocker.AsyncMock(
+        return_value={
+            "provider": "claude",
+            "model": "claude-opus-4-8",
+            "effort": "high",
+        }
+    )
+    proc = mocker.AsyncMock()
+    proc.communicate = mocker.AsyncMock(return_value=(b"ROUTER_OUTPUT", b""))
+    proc.returncode = 0
+    mocker.patch(
+        "asyncio.create_subprocess_exec", new=mocker.AsyncMock(return_value=proc)
+    )
+    mock_record = mocker.patch(
+        "orchestrator.core.llm_router.record_llm_call", new=mocker.AsyncMock()
+    )
+
+    router = LLMRouter(resolve=resolver)
+    mock_db = mocker.Mock()
+    out = await router.run(
+        "plan_spec",
+        "my_prompt",
+        project_id=None,
+        db=mock_db,
+        plan_id="p123",
+        task_id="t456",
+    )
+
+    assert out == "ROUTER_OUTPUT"
+    mock_record.assert_awaited_once()
+
+    # Check the arguments passed to record_llm_call
+    args, kwargs = mock_record.call_args
+    assert args[0] == mock_db
+    assert kwargs["plan_id"] == "p123"
+    assert kwargs["task_id"] == "t456"
+    assert kwargs["call_site"] == "plan_spec"
+    assert kwargs["provider"] == "claude"
+    assert kwargs["model"] == "claude-opus-4-8"
+    assert kwargs["prompt_chars"] == len("my_prompt")
+    assert kwargs["response_chars"] == len("ROUTER_OUTPUT")
+    assert kwargs["source"] == "brain"
+    assert "duration_ms" in kwargs
+    assert kwargs["duration_ms"] >= 0
+
+
+async def test_run_records_llm_call_exception_is_swallowed(mocker):
+    resolver = mocker.AsyncMock(
+        return_value={
+            "provider": "local",
+            "model": "local-model",
+            "effort": None,
+        }
+    )
+    mocker.patch(
+        "orchestrator.core.llm_router.LLMRouter._run_local",
+        new=mocker.AsyncMock(return_value="LOCAL_OUTPUT"),
+    )
+    mock_record = mocker.patch(
+        "orchestrator.core.llm_router.record_llm_call",
+        new=mocker.AsyncMock(side_effect=Exception("DB Error")),
+    )
+    mock_logger = mocker.patch("orchestrator.core.llm_router.logger.warning")
+
+    router = LLMRouter(resolve=resolver)
+    mock_db = mocker.Mock()
+
+    # Exception should not propagate
+    out = await router.run("derive_tasks", "prompt", project_id=None, db=mock_db)
+
+    assert out == "LOCAL_OUTPUT"
+    mock_record.assert_awaited_once()
+    mock_logger.assert_called_once()
+    assert "Failed to record LLM call" in mock_logger.call_args[0][0]
