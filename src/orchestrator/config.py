@@ -7,6 +7,7 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
+from pydantic import SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from orchestrator.core.settings_file import load_yaml_settings
@@ -20,7 +21,18 @@ def _default_brainstorm_workspace() -> str:
 class Settings(BaseSettings):
     """Runtime settings sourced from environment variables."""
 
-    auth_token: str
+    auth_token: SecretStr
+    auth_token_hashed: bool = False
+
+    @field_validator("auth_token", mode="after")
+    @classmethod
+    def _validate_auth_token(cls, v: SecretStr) -> SecretStr:
+        val = v.get_secret_value().strip()
+        if not val or val in ("default", "change-me", "your-secret-token-here"):
+            msg = "auth_token must be explicitly configured and cannot be empty or default"
+            raise ValueError(msg)
+        return v
+
     github_token: str | None = None
     github_app_id: str | None = None
     # PEM contents OR a path to a PEM file holding the App private key.

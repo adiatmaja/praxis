@@ -279,6 +279,18 @@ env vars); secrets (`AUTH_TOKEN`, GitHub App private key or `GITHUB_TOKEN`) stay
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
 | `AUTH_TOKEN` | Yes | n/a | Bearer token for API auth |
+
+### Auth Token Rotation
+If you are using raw tokens (default), updating `AUTH_TOKEN` in your `.env` file and restarting the orchestrator is sufficient to rotate the token for API access.
+
+However, if you have enabled hashed tokens at rest by setting `AUTH_TOKEN_HASHED=true`:
+1. Generate a new SHA-256 hash for your new secret token.
+2. Update `AUTH_TOKEN` in your `.env` file with the new hash.
+3. Because the hashed token is also stored in the SQLite `users` table for legacy integrations, you must manually update the database to rotate it completely:
+   ```bash
+   sqlite3 data/orchestrator.db "UPDATE users SET token_hash = 'YOUR_NEW_HASH' WHERE id = 'default';"
+   ```
+4. Restart the orchestrator to apply changes.
 | `GITHUB_APP_ID` | Recommended | n/a | GitHub App id. With `GITHUB_APP_PRIVATE_KEY`, Praxis mints short-lived, repo-scoped installation tokens (preferred over `GITHUB_TOKEN`) |
 | `GITHUB_APP_PRIVATE_KEY` | Recommended | n/a | GitHub App private key: PEM contents or a path to the PEM file |
 | `GITHUB_APP_INSTALLATION_ID` | No | n/a | GitHub App installation id; auto-resolved per repo when unset |

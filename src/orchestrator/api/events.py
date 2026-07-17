@@ -26,10 +26,23 @@ async def verify_event_token(
 ) -> str:
     """Validate bearer or query-string token for browser EventSource clients."""
 
-    expected = getattr(request.app.state, "settings", settings).auth_token
+    import hashlib
+    import secrets
+
+    expected_settings = getattr(request.app.state, "settings", settings)
+    expected = expected_settings.auth_token.get_secret_value()
     supplied = credentials.credentials if credentials is not None else token
-    if supplied != expected:
+
+    if supplied is None:
         raise HTTPException(status_code=401, detail="Invalid authentication token")
+
+    if expected_settings.auth_token_hashed:
+        supplied_hash = hashlib.sha256(supplied.encode()).hexdigest()
+        if not secrets.compare_digest(supplied_hash.encode(), expected.encode()):
+            raise HTTPException(status_code=401, detail="Invalid authentication token")
+    else:
+        if not secrets.compare_digest(supplied.encode(), expected.encode()):
+            raise HTTPException(status_code=401, detail="Invalid authentication token")
     assert supplied is not None  # nosec B101 — type narrowing after the 401 guard above
     return supplied
 

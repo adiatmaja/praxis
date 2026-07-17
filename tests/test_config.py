@@ -16,7 +16,7 @@ def test_settings_loads_required_tokens(monkeypatch: pytest.MonkeyPatch) -> None
 
     settings = Settings()
 
-    assert settings.auth_token == "auth-secret"
+    assert settings.auth_token.get_secret_value() == "auth-secret"
     assert settings.github_token == "gh-secret"
 
 
@@ -113,7 +113,7 @@ def test_settings_custom_values_override_defaults(
 
     settings = Settings()
 
-    assert settings.auth_token == "custom-auth"
+    assert settings.auth_token.get_secret_value() == "custom-auth"
     assert settings.github_token == "custom-gh"
     assert settings.database_url == "sqlite+aiosqlite:///tmp/custom.db"
     assert settings.lm_studio_url == "http://127.0.0.1:1234"

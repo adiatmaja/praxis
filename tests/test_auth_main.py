@@ -45,6 +45,50 @@ async def test_verify_token_success() -> None:
 
 
 @pytest.mark.unit
+async def test_verify_token_hashed_success() -> None:
+    import hashlib
+
+    raw_token = "my-secret-token"
+    token_hash = hashlib.sha256(raw_token.encode()).hexdigest()
+
+    credentials = HTTPAuthorizationCredentials(
+        scheme="Bearer",
+        credentials=raw_token,
+    )
+    settings = Settings(
+        auth_token=token_hash,
+        auth_token_hashed=True,
+        github_token="dummy-gh-token",
+    )
+
+    token = await verify_token(credentials=credentials, settings=settings)
+    assert token == raw_token
+
+
+@pytest.mark.unit
+async def test_verify_token_hashed_invalid_raises_401() -> None:
+    import hashlib
+
+    raw_token = "my-secret-token"
+    token_hash = hashlib.sha256(raw_token.encode()).hexdigest()
+
+    credentials = HTTPAuthorizationCredentials(
+        scheme="Bearer",
+        credentials="wrong-token",
+    )
+    settings = Settings(
+        auth_token=token_hash,
+        auth_token_hashed=True,
+        github_token="dummy-gh-token",
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        await verify_token(credentials=credentials, settings=settings)
+
+    assert exc_info.value.status_code == 401
+
+
+@pytest.mark.unit
 async def test_verify_token_invalid_raises_401() -> None:
     credentials = HTTPAuthorizationCredentials(
         scheme="Bearer",
@@ -74,10 +118,10 @@ def test_get_settings_cache_can_be_cleared(monkeypatch: pytest.MonkeyPatch) -> N
     monkeypatch.setenv("GITHUB_TOKEN", "second-gh")
     cached = get_settings()
 
-    assert first.auth_token == "first-auth"
-    assert cached.auth_token == "first-auth"
+    assert first.auth_token.get_secret_value() == "first-auth"
+    assert cached.auth_token.get_secret_value() == "first-auth"
 
     get_settings.cache_clear()
     refreshed = get_settings()
-    assert refreshed.auth_token == "second-auth"
+    assert refreshed.auth_token.get_secret_value() == "second-auth"
     get_settings.cache_clear()

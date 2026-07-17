@@ -69,7 +69,7 @@ async def client(db: Database, test_settings: Settings) -> AsyncClient:
 
     app.state.db = db
     app.state.settings = test_settings
-    app.state.internal_callback_secret = test_settings.auth_token
+    app.state.internal_callback_secret = test_settings.auth_token.get_secret_value()
     app.state.effective_settings = EffectiveSettings(test_settings, db)
     app.state.task_queue = TaskQueue(db)
     app.state.opus_bridge = OpusBridge(db)

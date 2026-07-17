@@ -33,9 +33,16 @@ async def verify_token(
     token string for v1 single-token auth (not a real cryptographic hash).
     The column name is a legacy artifact; do not rely on it being hashed.
     """
-    # encode() so compare_digest works on identical types (bytes vs bytes)
-    if not secrets.compare_digest(
-        credentials.credentials.encode(), settings.auth_token.encode()
-    ):
-        raise HTTPException(status_code=401, detail="Invalid authentication token")
+    import hashlib
+
+    provided = credentials.credentials.encode()
+    expected = settings.auth_token.get_secret_value().encode()
+
+    if settings.auth_token_hashed:
+        provided_hash = hashlib.sha256(provided).hexdigest().encode()
+        if not secrets.compare_digest(provided_hash, expected):
+            raise HTTPException(status_code=401, detail="Invalid authentication token")
+    else:
+        if not secrets.compare_digest(provided, expected):
+            raise HTTPException(status_code=401, detail="Invalid authentication token")
     return credentials.credentials

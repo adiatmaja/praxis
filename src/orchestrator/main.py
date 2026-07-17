@@ -81,9 +81,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # Seed default user for single-token auth (v1)
     existing = await database.fetch_one("SELECT id FROM users LIMIT 1")
     if existing is None:
+        import hashlib
+
+        token_to_store = settings.auth_token.get_secret_value()
+        if settings.auth_token_hashed:
+            token_to_store = hashlib.sha256(token_to_store.encode()).hexdigest()
         await database.execute(
             "INSERT INTO users (id, name, token_hash) VALUES (?, ?, ?)",
-            ("default", "admin", settings.auth_token),
+            ("default", "admin", token_to_store),
         )
         logger.info("Seeded default admin user")
 
@@ -92,7 +97,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # Resolve the internal callback secret once at startup.
     # Precedence: explicit INTERNAL_CALLBACK_SECRET env var > derived from AUTH_TOKEN.
     app.state.internal_callback_secret = (
-        settings.internal_callback_secret or settings.auth_token
+        settings.internal_callback_secret or settings.auth_token.get_secret_value()
     )
     effective_settings = EffectiveSettings(settings, database)
     app.state.effective_settings = effective_settings
