@@ -209,6 +209,27 @@ async def _migration_0005_task_outcomes(connection: aiosqlite.Connection) -> Non
     )
 
 
+async def _migration_0006_llm_calls(connection: aiosqlite.Connection) -> None:
+    """Add llm_calls table."""
+    await connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS llm_calls (
+            id TEXT PRIMARY KEY,
+            plan_id TEXT,
+            task_id TEXT,
+            call_site TEXT,
+            provider TEXT,
+            model TEXT,
+            prompt_chars INTEGER,
+            response_chars INTEGER,
+            duration_ms INTEGER,
+            source TEXT,
+            created_at TEXT
+        )
+        """
+    )
+
+
 MIGRATIONS: list[Migration] = [
     Migration(1, "baseline: schema as of 2026-07-02", _migration_0001_baseline),
     Migration(
@@ -230,6 +251,11 @@ MIGRATIONS: list[Migration] = [
         5,
         "add task_outcomes calibration table",
         _migration_0005_task_outcomes,
+    ),
+    Migration(
+        6,
+        "add llm_calls table",
+        _migration_0006_llm_calls,
     ),
 ]
 
