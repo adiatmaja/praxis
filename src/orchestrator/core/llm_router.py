@@ -3,8 +3,16 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import shutil
+import time
 from collections.abc import Awaitable, Callable
+from typing import Any
+
+from orchestrator.core.llm_calls import record_llm_call
+
+
+logger = logging.getLogger(__name__)
 
 
 class UnknownProviderError(Exception):
@@ -163,61 +171,91 @@ class LLMRouter:
         prompt: str,
         project_id: str | None,
         cwd: str | None = None,
+        db: Any | None = None,
+        plan_id: str | None = None,
+        task_id: str | None = None,
     ) -> str:
+        start_time = time.monotonic()
+        out = ""
         cfg = await self._resolve(call_site, project_id)
         provider = cfg["provider"]
-        if provider == "local":
-            return await self._run_local(prompt, cfg.get("model") or "")
-        # agy receives the prompt as a positional argv value; every other CLI
-        # provider receives it on stdin (avoids the argv length limit).
-        prompt_in_argv = provider == "agy"
-        if prompt_in_argv and len(prompt) > _AGY_ARGV_LIMIT:
-            message = (
-                f"prompt too large for agy argv ({len(prompt)} chars); agy cannot "
-                "accept large prompts on this provider"
-            )
-            raise ProviderOutputError(message)
-        argv = build_argv(provider, cfg.get("model") or "", cfg.get("effort"), prompt)
-        # Resolve argv[0] to its full path: on Windows these CLIs are .CMD/.EXE
-        # npm/installer shims that create_subprocess_exec cannot find by bare
-        # name (raises WinError 2). shutil.which honors PATHEXT.
-        resolved = shutil.which(argv[0])
-        if resolved is None:
-            raise ProviderAuthError(
-                provider, LOGIN_HINTS.get(provider, f"install {provider}")
-            )
-        argv[0] = resolved
-        proc = await asyncio.create_subprocess_exec(
-            *argv,
-            stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            cwd=cwd,
-        )
-        stdin_input = None if prompt_in_argv else prompt.encode()
-        stdout, stderr = await proc.communicate(input=stdin_input)
-        err = stderr.decode()
-        # Auth check first: codex exits 0 while printing a 401 to stderr, so a
-        # returncode-only check would silently accept a failed-auth response.
-        if _looks_like_auth_failure(err):
-            raise ProviderAuthError(
-                provider, LOGIN_HINTS.get(provider, f"re-authenticate {provider}")
-            )
-        if proc.returncode:
-            message = f"{provider} failed (exit {proc.returncode}): {err.strip()}"
-            raise RuntimeError(message)
-        out = stdout.decode().strip()
-        if not out:
-            # agy's --print renders only to an interactive TTY and yields no
-            # capturable stdout when run non-interactively (exit 0, empty out).
-            message = f"{provider} returned empty output (exit 0)." + (
-                " agy --print writes only to an interactive terminal and "
-                "cannot be captured non-interactively."
-                if provider == "agy"
-                else ""
-            )
-            raise ProviderOutputError(message)
-        return out
+        model = cfg.get("model") or ""
+
+        try:
+            if provider == "local":
+                out = await self._run_local(prompt, model)
+            else:
+                # agy receives the prompt as a positional argv value; every other CLI
+                # provider receives it on stdin (avoids the argv length limit).
+                prompt_in_argv = provider == "agy"
+                if prompt_in_argv and len(prompt) > _AGY_ARGV_LIMIT:
+                    message = (
+                        f"prompt too large for agy argv ({len(prompt)} chars); agy cannot "
+                        "accept large prompts on this provider"
+                    )
+                    raise ProviderOutputError(message)
+                argv = build_argv(provider, model, cfg.get("effort"), prompt)
+                # Resolve argv[0] to its full path: on Windows these CLIs are .CMD/.EXE
+                # npm/installer shims that create_subprocess_exec cannot find by bare
+                # name (raises WinError 2). shutil.which honors PATHEXT.
+                resolved = shutil.which(argv[0])
+                if resolved is None:
+                    raise ProviderAuthError(
+                        provider, LOGIN_HINTS.get(provider, f"install {provider}")
+                    )
+                argv[0] = resolved
+                proc = await asyncio.create_subprocess_exec(
+                    *argv,
+                    stdin=asyncio.subprocess.PIPE,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                    cwd=cwd,
+                )
+                stdin_input = None if prompt_in_argv else prompt.encode()
+                stdout, stderr = await proc.communicate(input=stdin_input)
+                err = stderr.decode()
+                # Auth check first: codex exits 0 while printing a 401 to stderr, so a
+                # returncode-only check would silently accept a failed-auth response.
+                if _looks_like_auth_failure(err):
+                    raise ProviderAuthError(
+                        provider,
+                        LOGIN_HINTS.get(provider, f"re-authenticate {provider}"),
+                    )
+                if proc.returncode:
+                    message = (
+                        f"{provider} failed (exit {proc.returncode}): {err.strip()}"
+                    )
+                    raise RuntimeError(message)
+                out = stdout.decode().strip()
+                if not out:
+                    # agy's --print renders only to an interactive TTY and yields no
+                    # capturable stdout when run non-interactively (exit 0, empty out).
+                    message = f"{provider} returned empty output (exit 0)." + (
+                        " agy --print writes only to an interactive terminal and "
+                        "cannot be captured non-interactively."
+                        if provider == "agy"
+                        else ""
+                    )
+                    raise ProviderOutputError(message)
+            return out
+        finally:
+            if db is not None:
+                duration_ms = int((time.monotonic() - start_time) * 1000)
+                try:
+                    await record_llm_call(
+                        db,
+                        plan_id=plan_id,
+                        task_id=task_id,
+                        call_site=call_site,
+                        provider=provider,
+                        model=model,
+                        prompt_chars=len(prompt),
+                        response_chars=len(out),
+                        duration_ms=duration_ms,
+                        source="brain",
+                    )
+                except Exception as e:
+                    logger.warning("Failed to record LLM call: %s", e)
 
     async def _run_local(self, prompt: str, model: str) -> str:
         import httpx
