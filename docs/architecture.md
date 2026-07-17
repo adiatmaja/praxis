@@ -269,3 +269,7 @@ the review pipeline never stalls. On the next decomposition, `decompose_plan` ca
 projects) and feeds those historical results into the decompose prompt's history slot, allowing
 the brain to calibrate leaf sizing against real evidence. Learned Wilson-bound limits and the
 `GET /api/capability/{model}` endpoint remain planned for Plan 6.
+
+## Token Usage Tracking
+
+The system records prompt and completion tokens for every LLM call (`plan_token_usage` and `record_llm_call`), distinguishing between subscription (brain) and open-weight (worker) usage. This is rolled up per-plan into a `token_usage` block, estimating avoided subscription costs, and surfaced via both the REST API and the MCP `poll_plan` tool.

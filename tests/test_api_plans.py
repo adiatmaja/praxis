@@ -263,3 +263,36 @@ async def test_approve_merges_surfaces_exception_class_and_scrubbed_message(
     assert secret_token not in err_msg
     # Must show redaction marker
     assert "[REDACTED]" in err_msg
+
+
+@pytest.mark.integration
+async def test_get_plan_includes_token_usage_with_recorded_rows(
+    client: AsyncClient,
+    db: Database,
+    auth_headers: dict[str, str],
+) -> None:
+    await seed_user(db)
+    project_id = await _create_project(client, auth_headers)
+    queue = client.app.state.task_queue  # type: ignore[attr-defined]
+    plan_id = await queue.create_plan(project_id, "Build things")
+
+    from orchestrator.core.llm_calls import record_llm_call
+
+    await record_llm_call(
+        db,
+        plan_id=plan_id,
+        task_id=None,
+        call_site="site1",
+        provider="openai",
+        model="gpt-4",
+        prompt_chars=100,
+        response_chars=50,
+        duration_ms=100,
+        source="brain",
+    )
+
+    resp = await client.get(f"/api/plans/{plan_id}", headers=auth_headers)
+    assert resp.status_code == 200
+    usage = resp.json()["token_usage"]
+    assert usage["brain_calls"] == 1
+    assert usage["brain_chars"] == 150

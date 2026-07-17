@@ -11,6 +11,7 @@ from pydantic import BaseModel
 
 from orchestrator.api.auth import verify_token
 from orchestrator.core.context_scrub import scrub_context
+from orchestrator.core.llm_calls import plan_token_usage
 from orchestrator.core.markdown_utils import extract_frontmatter_field
 from orchestrator.core.plan_derive import PlanDeriveError, derive_opus_plan
 from orchestrator.models.schemas import (
@@ -78,7 +79,8 @@ async def get_plan(request: Request, plan_id: str) -> dict[str, Any]:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Plan not found"
         )
-    return cast(dict[str, Any], plan)
+    usage = await plan_token_usage(request.app.state.db, plan_id)
+    return {**plan, "token_usage": usage}
 
 
 @router.post("/plans/{plan_id}/approve", response_model=PlanResponse)

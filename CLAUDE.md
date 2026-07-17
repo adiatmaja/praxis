@@ -306,6 +306,8 @@ the relevant subsystem. Condensed index:
   `task_outcomes` row per terminal `review_task` verdict, swallows its own DB/emit errors;
   attribution decided ONLY by `core/failure_taxonomy.counts_against_worker` (S6);
   `provider_error` and human merge-gate rejections never count against the worker.
+- **F9 Context Pack Priority** — standard context MUST render after repo config to win overrides; worker context pack guarantees Section positional order (plan rules).
+- **S7 Versioned Payload + Stale Image** — worker capability shapes are strictly versioned; stale agent images missing the F9 unpacker fail explicitly on protocol mismatch instead of running blind.
 - **Decomposition history is real now** — `decompose_plan(db=...)` feeds
   `fetch_recent_outcomes` (scoped `(model, project)` → `(model, *)`, worker-attributable rows
   only) into the prompt history slot; Wilson-bound learned limits and `GET /api/capability`

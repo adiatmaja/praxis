@@ -381,6 +381,7 @@ async def poll_plan_impl(client: Any, plan_id: str) -> dict[str, Any]:
         "plan_id": plan_id,
         "status": plan_data.get("status"),
         "error": plan_data.get("error"),
+        "token_usage": plan_data.get("token_usage"),
         "task_count": len(tasks),
         "tasks": [
             {
