@@ -14,7 +14,9 @@ def test_is_provider_error_normal_output_ignored():
 
 
 def test_is_unavailability_auth_error_is_unavailability():
-    assert is_unavailability(ProviderAuthError("Authentication failed"))
+    assert is_unavailability(
+        ProviderAuthError("Authentication failed", login_hint="test_hint")
+    )
 
 
 def test_is_unavailability_rate_limit_runtime_error_is_unavailability():
