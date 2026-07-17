@@ -267,6 +267,25 @@ async def test_poll_plan_happy_path_maps_statuses() -> None:
     assert "dashboard_url" in result
 
 
+async def test_poll_plan_includes_token_usage() -> None:
+    client = FakeClient(
+        {
+            ("GET", "/api/plans/p1"): {
+                "id": "p1",
+                "status": "active",
+                "token_usage": {
+                    "brain_calls": 2,
+                    "worker_chars": 3000,
+                },
+            },
+            ("GET", "/api/plans/p1/tasks"): [],
+        }
+    )
+    result = await server.poll_plan_impl(client, plan_id="p1")
+    assert result["token_usage"]["brain_calls"] == 2
+    assert result["token_usage"]["worker_chars"] == 3000
+
+
 async def test_poll_plan_plan_get_error_returns_error() -> None:
     class FailPlanClient:
         async def get(self, path: str) -> Any:

@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from enum import StrEnum
 from sys import version_info
-from typing import TypedDict
+from typing import Any, TypedDict
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -294,6 +294,7 @@ class PlanResponse(BaseModel):
     confidence_reason: str | None = None
     status: PlanStatus
     error: str | None = None
+    token_usage: dict[str, Any] | None = None
     spec_path: str | None = None
     plan_path: str | None = None
     created_at: str
