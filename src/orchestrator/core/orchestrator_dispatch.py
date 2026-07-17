@@ -13,6 +13,7 @@ import logging
 from typing import TYPE_CHECKING, Any, cast
 
 from orchestrator.core.agent_manager import detect_context_limit
+from orchestrator.core.context_pack import build_context_pack
 from orchestrator.core.progress_handover import ChecklistItem, render_handover
 from orchestrator.core.token_budget import ContextBudgetExceeded
 from orchestrator.core.worker_bible import BibleSources, build_bible
@@ -269,6 +270,9 @@ class DispatchMixin:
             else None
         ) or 8192
 
+        files = plan_task.get("files", [])
+        context_pack = build_context_pack(".", files) if files else None
+
         return build_bible(
             BibleSources(
                 goal=goal,
@@ -282,5 +286,6 @@ class DispatchMixin:
                 repo_memory=plan_task.get("repo_memory"),
                 review_feedback=task.get("review_feedback"),
                 verify_cmd=project.get("verify_cmd"),
+                context_pack=context_pack,
             )
         )
