@@ -85,3 +85,112 @@ class TestDispatchMixinRepoMemory:
         bible = mock_agent_manager.spawn_agent.call_args.kwargs["bible_text"]
         assert "# REPO MEMORY" in bible
         assert "custom repo memory content" in bible
+
+
+async def _setup_with_files(
+    db: Database,
+    files: list[str] | None = None,
+) -> tuple[TaskQueue, str, str]:
+    """Create a project, active plan, and one task with files in opus_plan."""
+    await db.execute(
+        "INSERT INTO users (id, name, token_hash) VALUES (?, ?, ?)",
+        ("u2", "User", "hash"),
+    )
+    await db.execute(
+        """INSERT INTO projects (id, user_id, name, repo_url, model_name, max_retries)
+           VALUES (?, ?, ?, ?, ?, ?)""",
+        ("p2", "u2", "App2", "https://github.com/u/b", "deepseek", 3),
+    )
+    task_queue = TaskQueue(db)
+    plan_id = await task_queue.create_plan("p2", "Build auth 2")
+    task_data = {
+        "title": "Login",
+        "slug": "login",
+        "description": "Build login",
+        "depends_on": [],
+    }
+    if files is not None:
+        task_data["files"] = files
+
+    opus_plan = {
+        "plan_summary": "Auth",
+        "plan_slug": "auth",
+        "tasks": [task_data],
+    }
+    await task_queue.activate_plan(plan_id, opus_plan, "plan/2026-06-01-auth2")
+    return (
+        task_queue,
+        plan_id,
+        str((await task_queue.get_tasks_for_plan(plan_id))[0]["id"]),
+    )
+
+
+async def _project_2(db: Database) -> dict[str, Any]:
+    project = await db.fetch_one("SELECT * FROM projects WHERE id = 'p2'")
+    assert project is not None
+    return project
+
+
+@pytest.mark.integration
+class TestDispatchMixinContextPack:
+    async def test_build_worker_bible_uses_plan_task_files(
+        self, db: Database, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        task_queue, plan_id, _ = await _setup_with_files(db, files=["src/main.py"])
+        mock_agent_manager = MagicMock()
+        mock_agent_manager.spawn_agent = AsyncMock(return_value="container-123")
+        mock_git = AsyncMock()
+        mock_git.branch_commit_log = AsyncMock(return_value=[])
+
+        orch = Orchestrator(
+            task_queue=task_queue,
+            agent_manager=mock_agent_manager,
+            opus_bridge=AsyncMock(),
+            git_ops=mock_git,
+            event_bus=EventBus(),
+        )
+        orch._start_monitor = lambda *_: None  # type: ignore[assignment, method-assign]
+        orch._effective_settings = None
+
+        mock_build_context_pack = MagicMock(return_value="mock context pack")
+        monkeypatch.setattr(
+            "orchestrator.core.orchestrator_dispatch.build_context_pack",
+            mock_build_context_pack,
+        )
+
+        await orch.dispatch_pending_tasks(plan_id, await _project_2(db))
+
+        mock_build_context_pack.assert_called_once_with(".", ["src/main.py"])
+        mock_agent_manager.spawn_agent.assert_called_once()
+        bible = mock_agent_manager.spawn_agent.call_args.kwargs["bible_text"]
+        assert "mock context pack" in bible
+
+    async def test_build_worker_bible_no_files_case(
+        self, db: Database, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        task_queue, plan_id, _ = await _setup_with_files(db, files=None)
+        mock_agent_manager = MagicMock()
+        mock_agent_manager.spawn_agent = AsyncMock(return_value="container-123")
+        mock_git = AsyncMock()
+        mock_git.branch_commit_log = AsyncMock(return_value=[])
+
+        orch = Orchestrator(
+            task_queue=task_queue,
+            agent_manager=mock_agent_manager,
+            opus_bridge=AsyncMock(),
+            git_ops=mock_git,
+            event_bus=EventBus(),
+        )
+        orch._start_monitor = lambda *_: None  # type: ignore[assignment, method-assign]
+        orch._effective_settings = None
+
+        mock_build_context_pack = MagicMock()
+        monkeypatch.setattr(
+            "orchestrator.core.orchestrator_dispatch.build_context_pack",
+            mock_build_context_pack,
+        )
+
+        await orch.dispatch_pending_tasks(plan_id, await _project_2(db))
+
+        mock_build_context_pack.assert_not_called()
+        mock_agent_manager.spawn_agent.assert_called_once()
