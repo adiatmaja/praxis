@@ -1,7 +1,11 @@
 import ast
+import logging
 import os
 import re
 from pathlib import Path
+
+
+logger = logging.getLogger(__name__)
 
 
 class SkeletonTransformer(ast.NodeTransformer):
@@ -107,10 +111,10 @@ def get_one_hop_importers(repo_dir: str, declared_files: list[str]) -> list[str]
                         if parts and parts[-1] in stems:
                             importers.add(rel_path)
                             break
-                except Exception:
-                    pass
-    except Exception:
-        pass
+                except Exception as exc:  # noqa: BLE001 - skip unreadable file
+                    logger.debug("context_pack: skipping %s: %s", full_path, exc)
+    except Exception as exc:  # noqa: BLE001 - never raise from importer scan
+        logger.debug("context_pack: importer scan aborted: %s", exc)
 
     return sorted(importers)
 
@@ -132,7 +136,8 @@ def build_context_pack(
             try:
                 with open(full_path, encoding="utf-8") as f:
                     content = f.read()
-            except Exception:
+            except Exception as exc:  # noqa: BLE001 - skip unreadable declared file
+                logger.debug("context_pack: skipping %s: %s", full_path, exc)
                 continue
 
             if file.endswith(".py"):
@@ -155,7 +160,8 @@ def build_context_pack(
             try:
                 with open(full_path, encoding="utf-8") as f:
                     content = f.read()
-            except Exception:
+            except Exception as exc:  # noqa: BLE001 - skip unreadable importer file
+                logger.debug("context_pack: skipping %s: %s", full_path, exc)
                 continue
 
             skeleton = get_python_skeleton(content)
