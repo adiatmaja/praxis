@@ -122,3 +122,51 @@ def test_repo_memory_section_present_when_provided():
     out = build_bible(src)
     assert "# REPO MEMORY" in out
     assert "some repo memory content" in out
+
+
+@pytest.mark.unit
+def test_context_pack_placed_between_plan_and_repo_memory():
+    src = BibleSources(
+        goal="do it",
+        handover="# PROGRESS",
+        context_window=8192,
+        plan_slice="My Plan",
+        context_pack="Some context pack content",
+        repo_memory="My Repo Memory",
+    )
+    out = build_bible(src)
+    assert "# PLAN" in out
+    assert "# REPO CONTEXT (signatures)" in out
+    assert "# REPO MEMORY" in out
+    assert (
+        out.index("# PLAN") < out.index("# REPO CONTEXT") < out.index("# REPO MEMORY")
+    )
+    assert "Some context pack content" in out
+
+
+@pytest.mark.unit
+def test_context_pack_drops_under_tight_budget():
+    src = BibleSources(
+        goal="g" * 400,
+        handover="h" * 400,
+        context_window=1000,
+        context_pack="c" * 40000,
+    )
+    out = build_bible(src)
+    assert "# GOAL" in out
+    assert "c" * 1000 not in out
+
+
+@pytest.mark.unit
+def test_repo_memory_drops_before_context_pack():
+    src = BibleSources(
+        goal="g",
+        handover="h",
+        context_window=2000,
+        context_pack="c" * 500,
+        repo_memory="r" * 40000,
+    )
+    out = build_bible(src)
+    assert "# REPO CONTEXT (signatures)" in out
+    assert "c" * 500 in out
+    assert "r" * 1000 not in out
