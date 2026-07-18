@@ -1,0 +1,9 @@
+{
+  "_meta": { "source": "artificialanalysis.ai", "as_of": "2026-07-17" },
+  "models": {
+    "claude-opus-4-8": { "swe_bench_verified": 0.79, "agentic_coding": "high", "speed_tps": 62, "price_per_mtok_blended": 15.0 },
+    "claude-sonnet-4-6": { "swe_bench_verified": 0.72, "agentic_coding": "high", "speed_tps": 91, "price_per_mtok_blended": 4.5 },
+    "claude-haiku-4-5": { "swe_bench_verified": 0.55, "agentic_coding": "medium", "speed_tps": 140, "price_per_mtok_blended": 1.2 },
+    "gemini-3-pro": { "swe_bench_verified": 0.71, "agentic_coding": "high", "speed_tps": 110, "price_per_mtok_blended": 3.5 }
+  }
+}
