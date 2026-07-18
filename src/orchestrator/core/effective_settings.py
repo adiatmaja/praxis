@@ -120,6 +120,59 @@ class EffectiveSettings:
 
         return load_yaml_settings("config/praxis.yaml")
 
+    async def registered_models(self) -> list[dict[str, Any]]:
+        override = await self._get_override("models.registry")
+        if override is not None:
+            import json
+
+            return json.loads(override)
+        yaml_data = await self._get_yaml()
+        return yaml_data.get("models", {}).get("registry", [])
+
+    async def role_chains(self) -> dict[str, list[str]]:
+        override = await self._get_override("models.roles")
+        if override is not None:
+            import json
+
+            return json.loads(override)
+        yaml_data = await self._get_yaml()
+        return yaml_data.get("models", {}).get("roles", {})
+
+    async def call_site_chain(
+        self, call_site: str, project_id: str | None
+    ) -> list[dict[str, Any]]:
+        from orchestrator.core.roles import ROLE_OF_CALL_SITE
+
+        role = ROLE_OF_CALL_SITE.get(call_site)
+        if not role:
+            return [await self.call_site_config(call_site, project_id)]
+
+        chains = await self.role_chains()
+        model_names = chains.get(role)
+        if not model_names:
+            return [await self.call_site_config(call_site, project_id)]
+
+        registered = await self.registered_models()
+        registry_dict = {
+            item["name"]: {
+                "provider": item["provider"],
+                "model": item["model"],
+                "effort": item["effort"],
+            }
+            for item in registered
+            if "name" in item
+        }
+
+        chain_resolved = []
+        for name in model_names:
+            if name in registry_dict:
+                chain_resolved.append(registry_dict[name])
+
+        if not chain_resolved:
+            return [await self.call_site_config(call_site, project_id)]
+
+        return chain_resolved
+
     async def capability_profile(
         self, project_id: str | None, model: str | None = None
     ) -> CapabilityProfile:
