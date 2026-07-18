@@ -144,9 +144,7 @@ class EffectiveSettings:
         yaml_data = await self._get_yaml()
         from typing import cast
 
-        return cast(
-            dict[str, list[str]], yaml_data.get("models", {}).get("roles", {})
-        )
+        return cast(dict[str, list[str]], yaml_data.get("models", {}).get("roles", {}))
 
     async def call_site_chain(
         self, call_site: str, project_id: str | None
