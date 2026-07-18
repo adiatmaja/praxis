@@ -124,19 +124,29 @@ class EffectiveSettings:
         override = await self._get_override("models.registry")
         if override is not None:
             import json
+            from typing import cast
 
-            return json.loads(override)
+            return cast(list[dict[str, Any]], json.loads(override))
         yaml_data = await self._get_yaml()
-        return yaml_data.get("models", {}).get("registry", [])
+        from typing import cast
+
+        return cast(
+            list[dict[str, Any]], yaml_data.get("models", {}).get("registry", [])
+        )
 
     async def role_chains(self) -> dict[str, list[str]]:
         override = await self._get_override("models.roles")
         if override is not None:
             import json
+            from typing import cast
 
-            return json.loads(override)
+            return cast(dict[str, list[str]], json.loads(override))
         yaml_data = await self._get_yaml()
-        return yaml_data.get("models", {}).get("roles", {})
+        from typing import cast
+
+        return cast(
+            dict[str, list[str]], yaml_data.get("models", {}).get("roles", {})
+        )
 
     async def call_site_chain(
         self, call_site: str, project_id: str | None
