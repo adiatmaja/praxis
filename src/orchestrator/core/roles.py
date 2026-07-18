@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+
 MODEL_ROLES: tuple[str, ...] = ("plan", "review", "implement")
 ROLE_OF_CALL_SITE: dict[str, str] = {
     "plan_spec": "plan",
