@@ -82,7 +82,7 @@ def summarize_outcomes(runs: list[dict]) -> str:
         lambda: {"pass": 0, "fail": 0, "max_files": 0, "max_loc": 0}  # nosec B105 — dict keys, not passwords
     )
     for r in runs:
-        t = by_type[r.get("task_type", "unknown")]
+        t = by_type[r.get("task_type") or "unknown"]
         outcome = "pass" if r.get("outcome") == "pass" else "fail"
         t[outcome] += 1
         t["max_files"] = max(t["max_files"], int(r.get("files_touched", 0)))

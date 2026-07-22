@@ -20,7 +20,7 @@ dependencies = [
     "rich>=13.0",
     "bcrypt>=4.0",
     "sse-starlette>=2.0",
-    "mcp>=1.2",
+    "mcp>=1.28.1",
     "pyjwt>=2.8",
     "cryptography>=42.0",
 ]
@@ -72,6 +72,7 @@ warn_redundant_casts = true
 warn_unused_ignores = true
 strict_equality = true
 no_implicit_optional = true
+ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
