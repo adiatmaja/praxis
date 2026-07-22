@@ -319,8 +319,10 @@ class GitOps:
                     backoff,
                     stderr,
                 )
-                await _merge_sleep(backoff)
-        raise last_exc  # type: ignore[misc]
+        if last_exc is not None:
+            raise last_exc
+        err_msg = f"Git command failed: {' '.join(cmd)}\nExhausted {_MERGE_MAX_ATTEMPTS} attempts"
+        raise RuntimeError(err_msg)
 
     async def comment_on_pr(
         self,

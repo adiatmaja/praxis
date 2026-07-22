@@ -161,9 +161,6 @@ _TASK_STATUS_MAP = status_vocab.MCP_STATUS_ALIASES
 # Statuses that are gated (passed review but not yet merged into the base branch).
 _GATED_STATUSES = status_vocab.GATED_STATUSES
 
-# Terminal statuses that cannot progress further without intervention.
-_TERMINAL_STATUSES = status_vocab.TERMINAL_STATUSES
-
 
 def derive_plan_blocked_state(
     opus_plan_json: str | None,

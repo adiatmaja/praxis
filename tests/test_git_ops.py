@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from orchestrator.core import git_ops as git_ops_mod
 from orchestrator.core.git_ops import (
     GitOps,
     clone_with_token,
@@ -583,9 +584,6 @@ async def test_git_ops_remote_validation_raises():
 async def test_merge_pr_retries_on_transient_error_then_succeeds(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Transient error on attempt 1 then success on attempt 2 -> merge succeeds."""
-    import orchestrator.core.git_ops as git_ops_mod
-
     sleep_calls: list[float] = []
 
     async def fake_sleep(seconds: float) -> None:
@@ -633,9 +631,6 @@ async def test_merge_pr_retries_on_transient_error_then_succeeds(
 async def test_merge_pr_non_transient_error_raises_immediately(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Non-transient error must NOT retry — raises on first attempt."""
-    import orchestrator.core.git_ops as git_ops_mod
-
     sleep_calls: list[float] = []
 
     async def fake_sleep(seconds: float) -> None:
@@ -676,9 +671,6 @@ async def test_merge_pr_non_transient_error_raises_immediately(
 async def test_merge_pr_exhausts_retries_and_raises(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Transient error on every attempt -> raises after retry bound."""
-    import orchestrator.core.git_ops as git_ops_mod
-
     sleep_calls: list[float] = []
 
     async def fake_sleep(seconds: float) -> None:
