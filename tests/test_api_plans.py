@@ -229,13 +229,13 @@ async def test_get_plan_returns_error_reason(
 
 
 @pytest.mark.integration
-async def test_approve_merges_surfaces_exception_class_and_scrubbed_message(
+async def test_approve_merges_returns_generic_error_message(
     client: AsyncClient,
     db: Database,
     auth_headers: dict[str, str],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """approve-merges must include exc class + scrubbed message, not opaque string."""
+    """approve-merges must return a generic error message and log the exception details server-side."""
     secret_token = "ghp_AAAAAAAAAAAAAAAAAAA1234567890"
 
     async def fake_approve_raises(task_id: str, project: dict) -> None:
@@ -255,11 +255,5 @@ async def test_approve_merges_surfaces_exception_class_and_scrubbed_message(
     assert body["approved"] == 0
     assert len(body["errors"]) == 1
     err_msg = body["errors"][0]["error"]
-    # Must include exception class name
-    assert "RuntimeError" in err_msg
-    # Must include the failure context (non-secret part)
-    assert "Git command failed" in err_msg
-    # Must NOT leak the raw token
+    assert err_msg == "Failed to approve task merge due to an internal error"
     assert secret_token not in err_msg
-    # Must show redaction marker
-    assert "[REDACTED]" in err_msg
