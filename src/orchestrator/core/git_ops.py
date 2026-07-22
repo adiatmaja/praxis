@@ -319,6 +319,7 @@ class GitOps:
                     backoff,
                     stderr,
                 )
+                await _merge_sleep(backoff)
         if last_exc is not None:
             raise last_exc
         err_msg = f"Git command failed: {' '.join(cmd)}\nExhausted {_MERGE_MAX_ATTEMPTS} attempts"

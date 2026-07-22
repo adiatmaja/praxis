@@ -10,6 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel
 
 from orchestrator.api.auth import verify_token
+from orchestrator.core.context_scrub import scrub_context
 from orchestrator.core.markdown_utils import extract_frontmatter_field
 from orchestrator.core.plan_derive import PlanDeriveError, derive_opus_plan
 from orchestrator.models.schemas import (
@@ -228,12 +229,13 @@ async def approve_merges(request: Request, plan_id: str) -> dict[str, Any]:
         except ValueError as exc:
             msg = exc.args[0] if exc.args else "Validation error"
             errors.append({"task_id": task["id"], "error": msg})
-        except Exception:  # noqa: BLE001 - collect, keep going
+        except Exception as exc:  # noqa: BLE001 - collect, keep going
             logger.exception("Failed to approve task merge for task %s", task["id"])
+            scrubbed = scrub_context(str(exc)) or ""  # codeql[py/stack-trace-exposure]
             errors.append(
                 {
                     "task_id": task["id"],
-                    "error": "Failed to approve task merge due to an internal error",
+                    "error": f"{type(exc).__name__}: {scrubbed}",
                 }
             )
     return {"plan_id": plan_id, "approved": approved, "errors": errors}
