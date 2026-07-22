@@ -80,7 +80,7 @@ For every leaf you MUST also include:
 
 Set "depends_on" to the ids of any leaves whose output this leaf builds on (e.g.
 a leaf that edits a file another leaf creates). Only truly independent leaves get
-an empty list.
+an empty list. Do NOT add a dependency edge merely to impose an order on independent work: over-serializing the graph inflates dependency depth and can cause the whole plan to be rejected. A leaf depends on another ONLY when it genuinely consumes that leaf's output (edits a file the other creates, imports a symbol the other defines).
 
 If a leaf cannot be completed by this model (too complex for its parameter count,
 or irreducibly large), set "needs_stronger_model": true.

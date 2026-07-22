@@ -287,11 +287,16 @@ async def decompose_plan(
         if attempt < _DECOMPOSE_ATTEMPTS:
             feedback = format_violations_feedback(validation_result)
             prompt = f"{prompt}\n\n{feedback}"
+            violation_detail = "; ".join(
+                f"[{v.rule}] {v.task_id}: {v.message}"
+                for v in (*validation_result.hard, *validation_result.soft)
+            )
             logger.warning(
                 "Decomposition validation failed (attempt %d/%d); "
-                "re-invoking brain with feedback.",
+                "re-invoking brain with feedback. Violations: %s",
                 attempt,
                 _DECOMPOSE_ATTEMPTS,
+                violation_detail,
             )
             continue
 

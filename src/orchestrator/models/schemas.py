@@ -72,7 +72,7 @@ class CapabilityProfile(BaseModel):
     max_files_touched: int = 5
     max_loc_delta: int = 300
     max_checklist_items: int = 12
-    max_dep_depth: int = 3
+    max_dep_depth: int = 4
     escalate_task_types: list[str] = Field(default_factory=list)
 
 
