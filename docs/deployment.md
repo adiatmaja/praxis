@@ -501,6 +501,18 @@ Mitigation: keep `approval_gate` enabled so a human sees the diff before any mer
 occurs.  Do not point Praxis at repositories with untrusted external contributors
 unless you review diffs independently of the LLM verdict.
 
+### Model registry & role fallback
+
+Praxis supports a named model registry and per-role ordered fallback chains (`plan`, `review`, `implement`).
+
+- **Defaults**: Defined in `config/praxis.yaml` under `models.registry` and `models.roles`.
+- **Runtime Overrides**: Configured via REST API (`/api/settings/registry`, `/api/settings/roles`) or CLI (`praxis config`). Overrides take precedence over `praxis.yaml`.
+- **CLI Commands**:
+  - `praxis config show`: Display registered models, role fallback chains, and capability stats.
+  - `praxis config set-role <role> <model1,model2>`: Update an ordered fallback chain for a role.
+  - `praxis config add-model <name> <provider> [model]`: Add or replace a model in the registry.
+- **Capabilities**: Pre-bundled capability metrics live in `config/model_capabilities.json` (offline-first snapshot); exposed via `GET /api/settings/capabilities`.
+
 ---
 
 ## Troubleshooting

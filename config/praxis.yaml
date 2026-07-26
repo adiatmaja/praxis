@@ -17,3 +17,14 @@ capability:
 
 escalation:
   policy: block   # block | brain | paid_fallback
+
+models:
+  registry:
+    - { name: opus,   provider: claude, model: claude-opus-4-8,   effort: high }
+    - { name: sonnet, provider: claude, model: claude-sonnet-4-6, effort: null }
+    - { name: haiku,  provider: claude, model: claude-haiku-4-5,  effort: null }
+    - { name: local,  provider: local,  model: "",                effort: null }
+  roles:
+    plan:      [sonnet, opus]
+    review:    [sonnet, haiku]
+    implement: [local]

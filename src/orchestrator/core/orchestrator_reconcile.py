@@ -313,29 +313,9 @@ class ReconcileMixin:
         Returns:
             True when the logs reveal a provider/gateway error, False otherwise.
         """
-        provider_signals = (
-            # Cloudflare / reverse-proxy blocks
-            "Forbidden: request was blocked by a gateway or proxy",
-            "Error: Forbidden",
-            # HTTP status codes in log output
-            "HTTP 403",
-            "HTTP 429",
-            "HTTP 502",
-            "HTTP 503",
-            "HTTP 504",
-            # LM Studio / OpenAI-SDK error patterns
-            "rate_limit_exceeded",
-            "Too Many Requests",
-            "Service Unavailable",
-            "Bad Gateway",
-            "Gateway Timeout",
-            # Connection-level failures
-            "Connection refused",
-            "ECONNREFUSED",
-            "ECONNRESET",
-            "connect ENOENT",
-        )
-        return any(signal in logs for signal in provider_signals)
+        from orchestrator.core.provider_errors import is_provider_error as _shared
+
+        return _shared(logs)
 
     async def _resolve_failed_run_or_pause(
         self,

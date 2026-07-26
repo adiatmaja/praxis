@@ -310,6 +310,7 @@ the relevant subsystem. Condensed index:
   `fetch_recent_outcomes` (scoped `(model, project)` → `(model, *)`, worker-attributable rows
   only) into the prompt history slot; Wilson-bound learned limits and `GET /api/capability`
   remain Plan 6.
+- **Role fallback chains resolve before per-call-site overrides** — `EffectiveSettings.call_site_chain` maps a call-site to a role (`core/roles.ROLE_OF_CALL_SITE`, frozen + golden-tested) then to an ordered registry chain; an EMPTY chain falls through to the `models.<call_site>` override, then `CALL_SITE_DEFAULTS`. The router (`LLMRouter.run`) tries each entry and falls back ONLY on unavailability (`core/provider_errors.is_unavailability`: auth/rate-limit/gateway) — a bad-output error never falls back. `implement` role is NOT router-driven in v1 (worker model is spawn-baked).
 
 ## Documentation
 

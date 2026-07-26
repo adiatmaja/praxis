@@ -1,6 +1,6 @@
 # Role-Model Fallback Config Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** Add a named model registry, per-role ordered fallback chains (plan/implement/review), and a bundled coding-capability snapshot, exposed via a REST API, a `praxis config` CLI with first-run onboarding, and a dashboard "Models & Roles" tab; the router automatically falls back to the next model in a role's chain when the primary is unavailable.
 
@@ -60,7 +60,7 @@ You have zero prior conversation context. Key facts about this codebase:
 
 **Depends on:** None
 
-- [ ] **Step 1: Create the bundled snapshot**
+- [x] **Step 1: Create the bundled snapshot**
 
 Create `config/model_capabilities.json` with coding-relevant metrics (values are curated estimates sourced from artificialanalysis.ai; `swe_bench_verified` is a 0-1 fraction):
 
@@ -76,7 +76,7 @@ Create `config/model_capabilities.json` with coding-relevant metrics (values are
 }
 ```
 
-- [ ] **Step 2: Write the failing test**
+- [x] **Step 2: Write the failing test**
 
 Create `tests/test_capabilities.py`:
 
@@ -117,12 +117,12 @@ def test_all_returns_full_model_map(tmp_path) -> None:
     assert catalog.as_of == "2026-01-01"
 ```
 
-- [ ] **Step 3: Run test to verify it fails**
+- [x] **Step 3: Run test to verify it fails**
 
 Run: `uv run pytest tests/test_capabilities.py -v`
 Expected: FAIL with `ModuleNotFoundError: No module named 'orchestrator.core.capabilities'`.
 
-- [ ] **Step 4: Implement the loader**
+- [x] **Step 4: Implement the loader**
 
 Create `src/orchestrator/core/capabilities.py`:
 
@@ -177,12 +177,12 @@ class CapabilityCatalog:
         return dict(self._models)
 ```
 
-- [ ] **Step 5: Run tests to verify they pass**
+- [x] **Step 5: Run tests to verify they pass**
 
 Run: `uv run pytest tests/test_capabilities.py -v`
 Expected: PASS (4 passed).
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add config/model_capabilities.json src/orchestrator/core/capabilities.py tests/test_capabilities.py
@@ -200,7 +200,7 @@ git commit -m "feat(capabilities): add bundled coding-capability snapshot + load
 
 **Depends on:** None
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Create `tests/test_provider_errors.py`:
 
@@ -237,12 +237,12 @@ def test_bad_output_is_not_unavailability() -> None:
     assert is_unavailability(RuntimeError("claude failed (exit 2): SyntaxError")) is False
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `uv run pytest tests/test_provider_errors.py -v`
 Expected: FAIL with `ModuleNotFoundError: No module named 'orchestrator.core.provider_errors'`.
 
-- [ ] **Step 3: Implement the shared predicates**
+- [x] **Step 3: Implement the shared predicates**
 
 Create `src/orchestrator/core/provider_errors.py`:
 
@@ -314,7 +314,7 @@ def is_unavailability(exc: BaseException) -> bool:
     return False
 ```
 
-- [ ] **Step 4: Delegate the reconcile predicate to the shared helper**
+- [x] **Step 4: Delegate the reconcile predicate to the shared helper**
 
 In `src/orchestrator/core/orchestrator_reconcile.py`, replace the body of the existing `is_provider_error` staticmethod (starts at line 302) so it delegates, keeping the signature and docstring:
 
@@ -331,12 +331,12 @@ In `src/orchestrator/core/orchestrator_reconcile.py`, replace the body of the ex
         return _shared(logs)
 ```
 
-- [ ] **Step 5: Run tests to verify everything passes**
+- [x] **Step 5: Run tests to verify everything passes**
 
 Run: `uv run pytest tests/test_provider_errors.py tests/test_orchestrator_reconcile.py -v`
 Expected: PASS (new tests pass; existing reconcile provider-error tests still pass).
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add src/orchestrator/core/provider_errors.py src/orchestrator/core/orchestrator_reconcile.py tests/test_provider_errors.py
@@ -355,7 +355,7 @@ git commit -m "feat(provider-errors): shared unavailability predicate for router
 
 **Depends on:** None
 
-- [ ] **Step 1: Write the failing role-mapping test**
+- [x] **Step 1: Write the failing role-mapping test**
 
 Create `tests/test_roles.py`:
 
@@ -381,12 +381,12 @@ def test_model_roles_are_the_three_brain_bearing_roles() -> None:
     assert MODEL_ROLES == ("plan", "review", "implement")
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `uv run pytest tests/test_roles.py -v`
 Expected: FAIL with `ModuleNotFoundError: No module named 'orchestrator.core.roles'`.
 
-- [ ] **Step 3: Implement the role mapping**
+- [x] **Step 3: Implement the role mapping**
 
 Create `src/orchestrator/core/roles.py`:
 
@@ -421,12 +421,12 @@ ROLE_OF_CALL_SITE: dict[str, str] = {
 }
 ```
 
-- [ ] **Step 4: Run role tests to verify they pass**
+- [x] **Step 4: Run role tests to verify they pass**
 
 Run: `uv run pytest tests/test_roles.py -v`
 Expected: PASS (3 passed).
 
-- [ ] **Step 5: Add YAML defaults**
+- [x] **Step 5: Add YAML defaults**
 
 Append to `config/praxis.yaml` (after the `escalation:` block):
 
@@ -446,7 +446,7 @@ models:
     implement: [local]
 ```
 
-- [ ] **Step 6: Write the failing resolution test**
+- [x] **Step 6: Write the failing resolution test**
 
 Create `tests/test_effective_settings_chains.py`:
 
@@ -514,12 +514,12 @@ async def test_call_site_override_used_when_no_role_chain(es: EffectiveSettings)
     assert chain[0]["model"] == "claude-haiku-4-5"
 ```
 
-- [ ] **Step 7: Run test to verify it fails**
+- [x] **Step 7: Run test to verify it fails**
 
 Run: `uv run pytest tests/test_effective_settings_chains.py -v`
 Expected: FAIL with `AttributeError: 'EffectiveSettings' object has no attribute 'registered_models'`.
 
-- [ ] **Step 8: Implement resolution methods**
+- [x] **Step 8: Implement resolution methods**
 
 Add these methods to `EffectiveSettings` in `src/orchestrator/core/effective_settings.py` (place after `call_site_config`). Note `import json` and the roles import are needed:
 
@@ -582,12 +582,12 @@ Add these methods to `EffectiveSettings` in `src/orchestrator/core/effective_set
         return [single]
 ```
 
-- [ ] **Step 9: Run tests to verify they pass**
+- [x] **Step 9: Run tests to verify they pass**
 
 Run: `uv run pytest tests/test_effective_settings_chains.py tests/test_roles.py -v`
 Expected: PASS (all green).
 
-- [ ] **Step 10: Commit**
+- [x] **Step 10: Commit**
 
 ```bash
 git add src/orchestrator/core/roles.py src/orchestrator/core/effective_settings.py config/praxis.yaml tests/test_roles.py tests/test_effective_settings_chains.py
@@ -604,7 +604,7 @@ git commit -m "feat(roles): model registry + per-role fallback chain resolution"
 
 **Depends on:** Task 2, Task 3
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Create `tests/test_llm_router_fallback.py`:
 
@@ -700,12 +700,12 @@ async def test_exhausted_chain_raises_last_error() -> None:
         await r.run("plan_spec", "p", None)
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `uv run pytest tests/test_llm_router_fallback.py -v`
 Expected: FAIL — `LLMRouter.__init__` has no `resolve_chain`/`event_bus` params.
 
-- [ ] **Step 3: Refactor the router to a chain loop**
+- [x] **Step 3: Refactor the router to a chain loop**
 
 In `src/orchestrator/core/llm_router.py`:
 
@@ -818,17 +818,17 @@ class LLMRouter:
 
 Note: this moves the old `run` body verbatim into `_execute_one`, keyed off a single `cfg` dict instead of `await self._resolve(...)`. Keep `_run_local` unchanged.
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `uv run pytest tests/test_llm_router_fallback.py -v`
 Expected: PASS (4 passed).
 
-- [ ] **Step 5: Run the existing router tests (regression)**
+- [x] **Step 5: Run the existing router tests (regression)**
 
 Run: `uv run pytest tests/test_llm_router.py -v`
 Expected: Existing tests referencing the old `resolve=`/`run` single-config path will fail. Update them: construct `LLMRouter(resolve_chain=<async returns [cfg]>)` and, where they asserted single-config execution, wrap the single cfg in a one-element list. Do NOT change assertions about provider argv/output — those now live on `_execute_one` and are still exercised through `run` with a 1-element chain.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add src/orchestrator/core/llm_router.py tests/test_llm_router_fallback.py tests/test_llm_router.py
@@ -845,7 +845,7 @@ git commit -m "feat(router): ordered-chain fallback on model unavailability"
 
 **Depends on:** Task 3, Task 4
 
-- [ ] **Step 1: Update the router construction**
+- [x] **Step 1: Update the router construction**
 
 In `src/orchestrator/main.py`, change the `LLMRouter(...)` block (currently lines 100-104) to pass the chain resolver and the event bus. Because the router now needs the event bus, move `app.state.event_bus = EventBus()` (currently line 114) to BEFORE the router construction:
 
@@ -861,7 +861,7 @@ In `src/orchestrator/main.py`, change the `LLMRouter(...)` block (currently line
 
 Then delete the now-duplicate `app.state.event_bus = EventBus()` line that was at line 114.
 
-- [ ] **Step 2: Write a smoke test**
+- [x] **Step 2: Write a smoke test**
 
 Create `tests/test_main_wiring.py`:
 
@@ -882,12 +882,12 @@ async def test_router_uses_chain_resolver_and_bus() -> None:
         assert isinstance(chain, list) and chain
 ```
 
-- [ ] **Step 3: Run the test**
+- [x] **Step 3: Run the test**
 
 Run: `uv run pytest tests/test_main_wiring.py -v`
 Expected: PASS. (If lifespan needs env, the repo's `.env` / conftest already provide `AUTH_TOKEN`; if it errors on missing Docker, that is caught and non-fatal per existing startup handling.)
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add src/orchestrator/main.py tests/test_main_wiring.py
@@ -905,7 +905,7 @@ git commit -m "feat(main): wire router to role chains + event bus"
 
 **Depends on:** Task 1, Task 3
 
-- [ ] **Step 1: Add pydantic models**
+- [x] **Step 1: Add pydantic models**
 
 Append to `src/orchestrator/models/schemas.py`:
 
@@ -927,7 +927,7 @@ class RoleChains(BaseModel):
 
 (Confirm `from pydantic import BaseModel` is already imported at the top of the file; it is used by existing schemas.)
 
-- [ ] **Step 2: Write the failing API test**
+- [x] **Step 2: Write the failing API test**
 
 Create `tests/test_api_settings_registry.py`:
 
@@ -988,12 +988,12 @@ def test_capabilities_joins_registry(client, auth_headers) -> None:
 
 Note: `client` and `auth_headers` fixtures come from `tests/conftest.py` (already used by other `test_api_*.py` files).
 
-- [ ] **Step 3: Run test to verify it fails**
+- [x] **Step 3: Run test to verify it fails**
 
 Run: `uv run pytest tests/test_api_settings_registry.py -v`
 Expected: FAIL with 404s (routes not defined).
 
-- [ ] **Step 4: Implement the endpoints**
+- [x] **Step 4: Implement the endpoints**
 
 Add to `src/orchestrator/api/settings.py` (after the existing model endpoints). Add imports at the top: `from orchestrator.core.capabilities import CapabilityCatalog`, `from orchestrator.core.roles import MODEL_ROLES`, `from orchestrator.models.schemas import RegisteredModel, RoleChains`.
 
@@ -1056,12 +1056,12 @@ async def refresh_capabilities() -> dict[str, str]:
     }
 ```
 
-- [ ] **Step 5: Run tests to verify they pass**
+- [x] **Step 5: Run tests to verify they pass**
 
 Run: `uv run pytest tests/test_api_settings_registry.py -v`
 Expected: PASS (6 passed).
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add src/orchestrator/models/schemas.py src/orchestrator/api/settings.py tests/test_api_settings_registry.py
@@ -1079,7 +1079,7 @@ git commit -m "feat(api): registry/roles/capabilities settings endpoints"
 
 **Depends on:** Task 6
 
-- [ ] **Step 1: Add the `praxis` console script**
+- [x] **Step 1: Add the `praxis` console script**
 
 In `pyproject.toml`, under `[project.scripts]` (currently lines 39-41), add:
 
@@ -1087,7 +1087,7 @@ In `pyproject.toml`, under `[project.scripts]` (currently lines 39-41), add:
 praxis = "cli.main:app"
 ```
 
-- [ ] **Step 2: Write the failing CLI test**
+- [x] **Step 2: Write the failing CLI test**
 
 Create `tests/test_cli_config.py`:
 
@@ -1149,12 +1149,12 @@ def test_set_role_parses_csv(monkeypatch) -> None:
     assert captured["chains"] == {"plan": ["sonnet", "opus"]}
 ```
 
-- [ ] **Step 3: Run test to verify it fails**
+- [x] **Step 3: Run test to verify it fails**
 
 Run: `uv run pytest tests/test_cli_config.py -v`
 Expected: FAIL — `config` command group does not exist.
 
-- [ ] **Step 4: Implement the `config` sub-app**
+- [x] **Step 4: Implement the `config` sub-app**
 
 In `src/cli/main.py`, after the existing `app = typer.Typer(...)` line, add a config sub-app and register it. Add near the top-level commands:
 
@@ -1233,7 +1233,7 @@ def config_refresh_capabilities() -> None:
     console.print(f"[yellow]{data.get('status')}[/yellow]: {data.get('detail')}")
 ```
 
-- [ ] **Step 5: Add the onboarding hint**
+- [x] **Step 5: Add the onboarding hint**
 
 Add a top-level command that the onboarding path can call, and print a hint from `config show` when the registry override is unset. Simplest self-contained approach: add an `onboard` command:
 
@@ -1248,12 +1248,12 @@ def onboard() -> None:
     )
 ```
 
-- [ ] **Step 6: Run tests to verify they pass**
+- [x] **Step 6: Run tests to verify they pass**
 
 Run: `uv run pytest tests/test_cli_config.py -v`
 Expected: PASS (2 passed).
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add pyproject.toml src/cli/main.py tests/test_cli_config.py
@@ -1271,7 +1271,7 @@ git commit -m "feat(cli): praxis config sub-app (registry/roles/capabilities) + 
 
 **Depends on:** Task 6
 
-- [ ] **Step 1: Extend `loadModelsPanel` to render registry + roles + capabilities**
+- [x] **Step 1: Extend `loadModelsPanel` to render registry + roles + capabilities**
 
 In `web/app.js`, replace the `loadModelsPanel` function (around line 2052) so it fetches the three new endpoints and renders three blocks above the existing per-call-site rows. Keep the existing call-site rows below under a collapsible "Advanced: per-call-site overrides" heading. Full replacement:
 
@@ -1355,7 +1355,7 @@ In `web/app.js`, replace the `loadModelsPanel` function (around line 2052) so it
 
 Keep the existing `saveModel` and `resetModel` functions as-is.
 
-- [ ] **Step 2: Add minimal styling**
+- [x] **Step 2: Add minimal styling**
 
 Append to `web/styles.css`:
 
@@ -1365,7 +1365,7 @@ Append to `web/styles.css`:
 .reg-table th { color: var(--text-muted); font-weight: 500; }
 ```
 
-- [ ] **Step 3: Add the onboarding banner**
+- [x] **Step 3: Add the onboarding banner**
 
 In `web/index.html`, find where the main dashboard content begins (search for the first top-level view container, e.g. an element with `id="app"` or the projects view). Add a hidden banner element right inside it:
 
@@ -1402,11 +1402,11 @@ In `web/app.js`, add a check that runs on initial load (call it from the existin
     }
 ```
 
-- [ ] **Step 4: Manual verification**
+- [x] **Step 4: Manual verification**
 
 Run the server (`docker compose -f docker-compose.yml -f docker-compose.local.yml up --build -d`), open the dashboard, go to Settings → Models. Confirm: Registered Models table shows rows with SWE-bench/speed/price; Role Fallback Chains show editable comma-separated inputs; saving `plan` = `opus,ghost` shows an error (unknown model); the Advanced details block still lists all call-sites. There is no automated test for the static dashboard (consistent with the repo — the `web/` assets have no JS test harness).
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add web/app.js web/index.html web/styles.css
@@ -1423,7 +1423,7 @@ git commit -m "feat(dashboard): Models & Roles tab (registry + chains + capabili
 
 **Depends on:** Task 1-8
 
-- [ ] **Step 1: Add a gotcha line to CLAUDE.md**
+- [x] **Step 1: Add a gotcha line to CLAUDE.md**
 
 In `CLAUDE.md`, under the `## Gotchas` condensed index, add:
 
@@ -1431,11 +1431,11 @@ In `CLAUDE.md`, under the `## Gotchas` condensed index, add:
 - **Role fallback chains resolve before per-call-site overrides** — `EffectiveSettings.call_site_chain` maps a call-site to a role (`core/roles.ROLE_OF_CALL_SITE`, frozen + golden-tested) then to an ordered registry chain; an EMPTY chain falls through to the `models.<call_site>` override, then `CALL_SITE_DEFAULTS`. The router (`LLMRouter.run`) tries each entry and falls back ONLY on unavailability (`core/provider_errors.is_unavailability`: auth/rate-limit/gateway) — a bad-output error never falls back. `implement` role is NOT router-driven in v1 (worker model is spawn-baked).
 ```
 
-- [ ] **Step 2: Document the config surfaces in deployment.md**
+- [x] **Step 2: Document the config surfaces in deployment.md**
 
 Add a "Model registry & role fallback" section to `docs/deployment.md` covering: the `config/praxis.yaml` `models.registry`/`models.roles` defaults, the `/api/settings/registry|roles|capabilities` endpoints, `praxis config` CLI commands (`show`, `set-role`, `add-model`, `refresh-capabilities`), and that `config/model_capabilities.json` is a bundled offline snapshot. Match the existing prose style of that file.
 
-- [ ] **Step 3: Run the full suite + lint + types**
+- [x] **Step 3: Run the full suite + lint + types**
 
 Run:
 ```bash
@@ -1445,7 +1445,7 @@ uv run mypy src/orchestrator/ --ignore-missing-imports
 ```
 Expected: all tests pass, coverage ≥ 80%, ruff clean, mypy clean.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add CLAUDE.md docs/deployment.md

@@ -1060,3 +1060,9 @@
   overflow: hidden;
   text-overflow: ellipsis;
 }
+
+.reg-table { width: 100%; border-collapse: collapse; font-size: 12px; margin-top: 6px; }
+.reg-table th, .reg-table td { text-align: left; padding: 4px 8px; border-bottom: 1px solid var(--border); }
+.reg-table th { color: var(--text-muted); font-weight: 500; }
+.onboarding-banner { background: var(--accent-muted, #2a2a3a); color: var(--text); padding: 10px 14px; border-radius: 6px; margin: 8px 0; font-size: 13px; }
+
