@@ -2050,9 +2050,50 @@
     }
 
     async function loadModelsPanel() {
-      const data = await api("GET", "/api/settings/models");
+      const [registry, roles, caps] = await Promise.all([
+        api("GET", "/api/settings/registry"),
+        api("GET", "/api/settings/roles"),
+        api("GET", "/api/settings/capabilities"),
+      ]);
+      const capModels = (caps && caps.models) || {};
+
+      const regRows = registry.map(m => {
+        const c = capModels[m.model || ""] || {};
+        const swe = typeof c.swe_bench_verified === "number" ? Math.round(c.swe_bench_verified * 100) + "%" : "-";
+        return '<tr>' +
+          '<td>' + esc(m.name) + '</td>' +
+          '<td>' + esc(m.provider) + '</td>' +
+          '<td>' + esc(m.model || "-") + '</td>' +
+          '<td>' + esc(m.effort || "-") + '</td>' +
+          '<td>' + swe + '</td>' +
+          '<td>' + esc(String(c.speed_tps || "-")) + '</td>' +
+          '<td>' + esc(String(c.price_per_mtok_blended || "-")) + '</td>' +
+          '</tr>';
+      }).join("");
+      const regTable =
+        '<h3>Registered Models</h3>' +
+        '<table class="reg-table"><thead><tr>' +
+        '<th>Name</th><th>Provider</th><th>Model</th><th>Effort</th><th>SWE-bench</th><th>tok/s</th><th>$/Mtok</th>' +
+        '</tr></thead><tbody>' + regRows + '</tbody></table>' +
+        '<div class="doc-tag" style="margin-top:4px;">capabilities as of ' + esc(String(caps.as_of || "?")) + '</div>';
+
+      const roleRows = ["plan", "review", "implement"].map(role => {
+        const chain = (roles[role] || []).join(", ");
+        return '<div class="formrow">' +
+          '<label style="display:flex;align-items:center;gap:6px;color:var(--text-muted);font-size:12px;font-weight:500;margin-bottom:5px;">' + esc(role) + '</label>' +
+          '<div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;">' +
+            '<input id="role-' + role + '" value="' + esc(chain) + '" placeholder="model names, priority first (comma-separated)" style="flex:1;min-width:180px;">' +
+            '<button class="btn btn-compact" type="button" onclick="saveRole(\'' + role + '\')">Save</button>' +
+          '</div>' +
+          '</div>';
+      }).join("");
+      const roleBlock = '<h3 style="margin-top:16px;">Role Fallback Chains</h3>' +
+        '<div class="doc-tag" style="margin-bottom:8px;">First name = priority; later names are tried on rate-limit / auth / gateway errors.</div>' +
+        roleRows;
+
       const providers = ["claude", "agy", "codex", "local"];
-      const rows = Object.entries(data).map(([site, cfg]) => {
+      const data = await api("GET", "/api/settings/models");
+      const advRows = Object.entries(data).map(([site, cfg]) => {
         const opts = providers.map(p =>
           '<option value="' + p + '"' + (cfg.provider === p ? ' selected' : '') + '>' + p + '</option>'
         ).join("");
@@ -2070,8 +2111,40 @@
           '</div>' +
         '</div>';
       }).join("");
+      const advBlock = '<details style="margin-top:16px;"><summary style="cursor:pointer;color:var(--text-muted);font-size:12px;font-weight:500;">Advanced: per-call-site overrides</summary>' +
+        '<div style="margin-top:8px;">' + advRows + '<div style="margin-top:8px;"><button class="btn" type="button" onclick="resetModel(null)">Reset all</button></div></div></details>';
+
       document.getElementById("settings-panel-models").innerHTML =
-        rows + '<div style="margin-top:8px;"><button class="btn" type="button" onclick="resetModel(null)">Reset all</button></div>';
+        regTable + roleBlock + advBlock;
+    }
+
+    async function saveRole(role) {
+      const raw = document.getElementById("role-" + role).value;
+      const names = raw.split(",").map(s => s.trim()).filter(Boolean);
+      const roles = await api("GET", "/api/settings/roles");
+      roles[role] = names;
+      try {
+        await api("PUT", "/api/settings/roles", { chains: roles });
+        await loadModelsPanel();
+      } catch (e) {
+        alert("Could not save role chain: " + (e && e.message ? e.message : e));
+      }
+    }
+
+    async function checkOnboarding() {
+      try {
+        const roles = await api("GET", "/api/settings/roles");
+        const configured = roles && Object.values(roles).some(c => Array.isArray(c) && c.length);
+        const dismissed = localStorage.getItem("praxis_onboarding_dismissed") === "1";
+        const banner = document.getElementById("onboarding-banner");
+        if (banner) banner.style.display = (!configured && !dismissed) ? "block" : "none";
+      } catch (e) { /* non-fatal */ }
+    }
+
+    function dismissOnboarding() {
+      localStorage.setItem("praxis_onboarding_dismissed", "1");
+      const banner = document.getElementById("onboarding-banner");
+      if (banner) banner.style.display = "none";
     }
 
     async function saveModel(site) {

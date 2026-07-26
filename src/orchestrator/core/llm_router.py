@@ -147,15 +147,21 @@ def build_argv(
     raise UnknownProviderError(message)
 
 
-Resolver = Callable[[str, str | None], Awaitable[dict]]
+Resolver = Callable[[str, str | None], Awaitable[list[dict]]]
 
 
 class LLMRouter:
-    """Resolve a call-site to {provider, model, effort} and execute it."""
+    """Resolve a call-site to an ordered chain and execute with fallback."""
 
-    def __init__(self, resolve: Resolver, lm_studio_url: str = "") -> None:
-        self._resolve = resolve
+    def __init__(
+        self,
+        resolve_chain: Resolver,
+        lm_studio_url: str = "",
+        event_bus: object | None = None,
+    ) -> None:
+        self._resolve_chain = resolve_chain
         self._lm_studio_url = lm_studio_url
+        self._event_bus = event_bus
 
     async def run(
         self,
@@ -164,7 +170,34 @@ class LLMRouter:
         project_id: str | None,
         cwd: str | None = None,
     ) -> str:
-        cfg = await self._resolve(call_site, project_id)
+        from orchestrator.core.provider_errors import is_unavailability
+
+        chain = await self._resolve_chain(call_site, project_id)
+        last_exc: BaseException | None = None
+        for index, cfg in enumerate(chain):
+            try:
+                return await self._execute_one(cfg, prompt, cwd)
+            except Exception as exc:  # noqa: BLE001 - re-raised below
+                if not is_unavailability(exc) or index == len(chain) - 1:
+                    raise
+                last_exc = exc
+                nxt = chain[index + 1]
+                if self._event_bus is not None and hasattr(self._event_bus, "publish"):
+                    self._event_bus.publish(
+                        {
+                            "type": "model_fallback",
+                            "call_site": call_site,
+                            "from_model": cfg.get("model") or cfg.get("provider"),
+                            "to_model": nxt.get("model") or nxt.get("provider"),
+                            "reason": type(exc).__name__,
+                        }
+                    )
+        if last_exc is not None:
+            raise last_exc
+        message = f"no models configured for call-site {call_site}"
+        raise ProviderOutputError(message)
+
+    async def _execute_one(self, cfg: dict, prompt: str, cwd: str | None) -> str:
         provider = cfg["provider"]
         if provider == "local":
             return await self._run_local(prompt, cfg.get("model") or "")

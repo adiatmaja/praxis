@@ -56,11 +56,13 @@ def test_build_argv_unknown_provider():
 
 async def test_run_claude_provider(mocker):
     resolver = mocker.AsyncMock(
-        return_value={
-            "provider": "claude",
-            "model": "claude-opus-4-8",
-            "effort": "high",
-        }
+        return_value=[
+            {
+                "provider": "claude",
+                "model": "claude-opus-4-8",
+                "effort": "high",
+            }
+        ]
     )
     proc = mocker.AsyncMock()
     proc.communicate = mocker.AsyncMock(return_value=(b"OUT", b""))
@@ -68,7 +70,7 @@ async def test_run_claude_provider(mocker):
     mocker.patch(
         "asyncio.create_subprocess_exec", new=mocker.AsyncMock(return_value=proc)
     )
-    router = LLMRouter(resolve=resolver)
+    router = LLMRouter(resolve_chain=resolver)
     out = await router.run("plan_spec", "prompt", project_id=None)
     assert out == "OUT"
     resolver.assert_awaited_once()
@@ -90,13 +92,13 @@ def test_build_argv_codex_no_prompt_in_argv():
 
 async def test_run_agy_passes_prompt_as_argv_not_stdin(mocker):
     resolver = mocker.AsyncMock(
-        return_value={"provider": "agy", "model": "gemini", "effort": None}
+        return_value=[{"provider": "agy", "model": "gemini", "effort": None}]
     )
     proc = _mock_proc(mocker, stdout=b"PONG")
     create = mocker.patch(
         "asyncio.create_subprocess_exec", new=mocker.AsyncMock(return_value=proc)
     )
-    router = LLMRouter(resolve=resolver)
+    router = LLMRouter(resolve_chain=resolver)
     out = await router.run("plan_spec", "the-prompt", project_id=None)
     assert out == "PONG"
     # prompt is in argv, and stdin gets None (not the prompt bytes)
@@ -107,7 +109,7 @@ async def test_run_agy_passes_prompt_as_argv_not_stdin(mocker):
 async def test_run_codex_auth_failure_raises_provider_auth_error(mocker):
     # codex exits 0 while printing a 401 to stderr — must NOT pass through.
     resolver = mocker.AsyncMock(
-        return_value={"provider": "codex", "model": "", "effort": None}
+        return_value=[{"provider": "codex", "model": "", "effort": None}]
     )
     proc = _mock_proc(
         mocker,
@@ -118,7 +120,7 @@ async def test_run_codex_auth_failure_raises_provider_auth_error(mocker):
     mocker.patch(
         "asyncio.create_subprocess_exec", new=mocker.AsyncMock(return_value=proc)
     )
-    router = LLMRouter(resolve=resolver)
+    router = LLMRouter(resolve_chain=resolver)
     with pytest.raises(ProviderAuthError) as exc:
         await router.run("plan_spec", "p", project_id=None)
     assert exc.value.provider == "codex"
@@ -127,45 +129,45 @@ async def test_run_codex_auth_failure_raises_provider_auth_error(mocker):
 
 async def test_run_empty_output_raises_output_error(mocker):
     resolver = mocker.AsyncMock(
-        return_value={"provider": "agy", "model": "", "effort": None}
+        return_value=[{"provider": "agy", "model": "", "effort": None}]
     )
     proc = _mock_proc(mocker, stdout=b"   ", stderr=b"", returncode=0)
     mocker.patch(
         "asyncio.create_subprocess_exec", new=mocker.AsyncMock(return_value=proc)
     )
-    router = LLMRouter(resolve=resolver)
+    router = LLMRouter(resolve_chain=resolver)
     with pytest.raises(ProviderOutputError):
         await router.run("plan_spec", "p", project_id=None)
 
 
 async def test_run_agy_rejects_oversized_prompt(mocker):
     resolver = mocker.AsyncMock(
-        return_value={"provider": "agy", "model": "", "effort": None}
+        return_value=[{"provider": "agy", "model": "", "effort": None}]
     )
-    router = LLMRouter(resolve=resolver)
+    router = LLMRouter(resolve_chain=resolver)
     with pytest.raises(ProviderOutputError):
         await router.run("plan_spec", "x" * 40000, project_id=None)
 
 
 async def test_run_missing_binary_raises_provider_auth_error(mocker):
     resolver = mocker.AsyncMock(
-        return_value={"provider": "codex", "model": "", "effort": None}
+        return_value=[{"provider": "codex", "model": "", "effort": None}]
     )
     mocker.patch("orchestrator.core.llm_router.shutil.which", return_value=None)
-    router = LLMRouter(resolve=resolver)
+    router = LLMRouter(resolve_chain=resolver)
     with pytest.raises(ProviderAuthError):
         await router.run("plan_spec", "p", project_id=None)
 
 
 async def test_run_local_provider(mocker):
     resolver = mocker.AsyncMock(
-        return_value={"provider": "local", "model": "", "effort": None}
+        return_value=[{"provider": "local", "model": "", "effort": None}]
     )
     mocker.patch(
         "orchestrator.core.llm_router.LLMRouter._run_local",
         new=mocker.AsyncMock(return_value="LOCAL"),
     )
-    router = LLMRouter(resolve=resolver, lm_studio_url="http://lm:1234")
+    router = LLMRouter(resolve_chain=resolver, lm_studio_url="http://lm:1234")
     out = await router.run("derive_tasks", "p", project_id=None)
     assert out == "LOCAL"
 
@@ -173,11 +175,13 @@ async def test_run_local_provider(mocker):
 @pytest.mark.unit
 async def test_run_passes_cwd_to_subprocess(mocker):
     resolver = mocker.AsyncMock(
-        return_value={
-            "provider": "claude",
-            "model": "claude-sonnet-4-6",
-            "effort": None,
-        }
+        return_value=[
+            {
+                "provider": "claude",
+                "model": "claude-sonnet-4-6",
+                "effort": None,
+            }
+        ]
     )
     seen: dict[str, object] = {}
 
@@ -189,7 +193,7 @@ async def test_run_passes_cwd_to_subprocess(mocker):
         return proc
 
     mocker.patch("asyncio.create_subprocess_exec", side_effect=fake_exec)
-    router = LLMRouter(resolve=resolver)
+    router = LLMRouter(resolve_chain=resolver)
     await router.run(
         "review_diff_first", "prompt", project_id=None, cwd="/tmp/checkout"
     )

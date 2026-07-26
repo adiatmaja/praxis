@@ -566,3 +566,18 @@ class GitStateResponse(BaseModel):
     committed_at: str | None = None
     available: bool = True
     detail: str | None = None
+
+
+class RegisteredModel(BaseModel):
+    """One entry in the model registry."""
+
+    name: str
+    provider: str
+    model: str = ""
+    effort: str | None = None
+
+
+class RoleChains(BaseModel):
+    """Ordered fallback chains keyed by role name."""
+
+    chains: dict[str, list[str]]

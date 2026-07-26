@@ -97,9 +97,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     effective_settings = EffectiveSettings(settings, database)
     app.state.effective_settings = effective_settings
     app.state.task_queue = TaskQueue(database)
+    event_bus = EventBus()
+    app.state.event_bus = event_bus
     router = LLMRouter(
-        resolve=effective_settings.call_site_config,
+        resolve_chain=effective_settings.call_site_chain,
         lm_studio_url=settings.lm_studio_url,
+        event_bus=event_bus,
     )
     app.state.llm_router = router
     app.state.opus_bridge = OpusBridge(
@@ -111,7 +114,6 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     )
     git_ops = GitOps(credential_provider)
     app.state.git_ops = git_ops
-    app.state.event_bus = EventBus()
     try:
         app.state.agent_manager = AgentManager(
             lm_studio_url=settings.lm_studio_url,

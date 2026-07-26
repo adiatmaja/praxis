@@ -38,6 +38,7 @@ dev = [
 
 [project.scripts]
 orchestrator-cli = "cli.main:app"
+praxis = "cli.main:app"
 praxis-mcp = "mcp_server.__main__:main"
 
 [tool.setuptools.packages.find]

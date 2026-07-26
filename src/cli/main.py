@@ -242,5 +242,103 @@ def status() -> None:
     )
 
 
+config_app = typer.Typer(
+    name="config", help="Configure the model registry and role chains"
+)
+app.add_typer(config_app)
+
+
+@config_app.command("show")
+def config_show() -> None:
+    """Show registered models, role fallback chains, and capabilities."""
+    with _client() as client:
+        registry = _check_list(client.get("/api/settings/registry"))
+        roles = _check_dict(client.get("/api/settings/roles"))
+        caps = _check_dict(client.get("/api/settings/capabilities"))
+    cap_models = caps.get("models", {})
+
+    reg_table = Table(title="Registered Models")
+    for col in ("Name", "Provider", "Model", "Effort", "SWE-bench", "Speed", "$/Mtok"):
+        reg_table.add_column(col)
+    for m in registry:
+        cap = cap_models.get(m.get("model", ""), {})
+        swe = cap.get("swe_bench_verified")
+        reg_table.add_row(
+            m["name"],
+            m["provider"],
+            m.get("model") or "-",
+            m.get("effort") or "-",
+            f"{swe:.0%}" if isinstance(swe, (int, float)) else "-",
+            str(cap.get("speed_tps", "-")),
+            str(cap.get("price_per_mtok_blended", "-")),
+        )
+    console.print(reg_table)
+
+    role_table = Table(title="Role Fallback Chains (first = priority)")
+    role_table.add_column("Role")
+    role_table.add_column("Chain")
+    for role, chain in roles.items():
+        role_table.add_row(role, " -> ".join(chain) if chain else "(default)")
+    console.print(role_table)
+    console.print(f"[dim]Capabilities as of {caps.get('as_of')}[/dim]")
+
+
+@config_app.command("set-role")
+def config_set_role(
+    role: str = typer.Argument(..., help="plan | review | implement"),
+    chain: str = typer.Argument(
+        ..., help="Comma-separated model names, priority first"
+    ),
+) -> None:
+    """Set a role's ordered fallback chain."""
+    names = [n.strip() for n in chain.split(",") if n.strip()]
+    with _client() as client:
+        current = _check_dict(client.get("/api/settings/roles"))
+        current[role] = names
+        _check_dict(client.put("/api/settings/roles", json={"chains": current}))
+    console.print(f"[green]Set {role}:[/green] {' -> '.join(names)}")
+
+
+@config_app.command("add-model")
+def config_add_model(
+    name: str = typer.Argument(..., help="Registry name"),
+    provider: str = typer.Argument(..., help="claude | codex | agy | local"),
+    model: str = typer.Argument("", help="Provider model id"),
+    effort: str = typer.Option("", help="Optional effort (e.g. high)"),
+) -> None:
+    """Register (or replace) a model in the registry."""
+    with _client() as client:
+        registry = _check_list(client.get("/api/settings/registry"))
+        registry = [m for m in registry if m["name"] != name]
+        registry.append(
+            {
+                "name": name,
+                "provider": provider,
+                "model": model,
+                "effort": effort or None,
+            }
+        )
+        _check_list(client.put("/api/settings/registry", json=registry))
+    console.print(f"[green]Registered:[/green] {name} ({provider}/{model or '-'})")
+
+
+@config_app.command("refresh-capabilities")
+def config_refresh_capabilities() -> None:
+    """Attempt to refresh the capability snapshot (bundled-only in v1)."""
+    with _client() as client:
+        data = _check_dict(client.post("/api/settings/capabilities/refresh"))
+    console.print(f"[yellow]{data.get('status')}[/yellow]: {data.get('detail')}")
+
+
+@app.command()
+def onboard() -> None:
+    """First-run helper: point the operator at model configuration."""
+    console.print(
+        "[bold]Welcome to Praxis.[/bold] No models configured yet.\n"
+        "Run [cyan]praxis config[/cyan] to register models and set role fallback chains,\n"
+        "or [cyan]praxis config show[/cyan] to view the current defaults."
+    )
+
+
 if __name__ == "__main__":
     app()

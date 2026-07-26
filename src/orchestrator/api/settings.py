@@ -9,8 +9,11 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 
 from orchestrator.api.auth import verify_token
+from orchestrator.core.capabilities import CapabilityCatalog
 from orchestrator.core.effective_settings import EDITABLE_KEYS, EffectiveSettings
 from orchestrator.core.llm_router import CALL_SITE_DEFAULTS
+from orchestrator.core.roles import MODEL_ROLES
+from orchestrator.models.schemas import RegisteredModel, RoleChains
 
 
 router = APIRouter(tags=["settings"], dependencies=[Depends(verify_token)])
@@ -106,3 +109,61 @@ async def reset_models(request: Request, body: ModelReset) -> dict[str, str]:
     else:
         await db.execute("DELETE FROM settings_overrides WHERE key LIKE 'models.%'")
     return {"status": "ok"}
+
+
+@router.get("/settings/registry")
+async def get_registry(request: Request) -> list[dict[str, Any]]:
+    """Return the model registry (DB override or YAML default)."""
+    es = cast(EffectiveSettings, request.app.state.effective_settings)
+    return await es.registered_models()
+
+
+@router.put("/settings/registry")
+async def put_registry(
+    request: Request, body: list[RegisteredModel]
+) -> list[dict[str, Any]]:
+    """Replace the model registry."""
+    es = cast(EffectiveSettings, request.app.state.effective_settings)
+    payload = [m.model_dump() for m in body]
+    await es.set_override("models.registry", json.dumps(payload))
+    return await es.registered_models()
+
+
+@router.get("/settings/roles")
+async def get_roles(request: Request) -> dict[str, list[str]]:
+    """Return the per-role fallback chains."""
+    es = cast(EffectiveSettings, request.app.state.effective_settings)
+    return await es.role_chains()
+
+
+@router.put("/settings/roles")
+async def put_roles(request: Request, body: RoleChains) -> dict[str, list[str]]:
+    """Replace the per-role fallback chains (validated against the registry)."""
+    es = cast(EffectiveSettings, request.app.state.effective_settings)
+    known = {m["name"] for m in await es.registered_models()}
+    for role, chain in body.chains.items():
+        if role not in MODEL_ROLES:
+            raise HTTPException(422, detail=f"unknown role: {role}")
+        if not chain:
+            raise HTTPException(422, detail=f"role {role} chain must be non-empty")
+        unknown = [n for n in chain if n not in known]
+        if unknown:
+            raise HTTPException(422, detail=f"unknown models in {role}: {unknown}")
+    await es.set_override("models.roles", json.dumps(body.chains))
+    return await es.role_chains()
+
+
+@router.get("/settings/capabilities")
+async def get_capabilities(request: Request) -> dict[str, Any]:
+    """Return the bundled capability snapshot keyed by model id."""
+    catalog = CapabilityCatalog()
+    return {"as_of": catalog.as_of, "models": catalog.all()}
+
+
+@router.post("/settings/capabilities/refresh")
+async def refresh_capabilities() -> dict[str, str]:
+    """Soft refresh stub — bundled snapshot only for v1 (offline-first)."""
+    return {
+        "status": "skipped",
+        "detail": "Capability data is a bundled snapshot; live refresh not configured.",
+    }
