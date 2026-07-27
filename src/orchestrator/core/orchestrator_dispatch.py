@@ -193,12 +193,17 @@ class DispatchMixin:
 
         Runs the project's verify command against the plan branch once per wave
         boundary (memoized on ``merged_count``). Returns True when dispatch may
-        proceed (gate passed, skipped, errored, or already-verified for this
-        wave), False when a cross-leaf regression is detected — in which case a
-        ``plan_wave_verify_failed`` event is published and the wave is parked.
+        proceed (gate passed, skipped, or already-verified for this wave), False
+        when a cross-leaf regression is detected OR the gate errors out — in
+        which case a ``plan_wave_verify_failed`` event is published and the wave
+        is parked.
 
-        Errors and skips never block dispatch: this is an early-warning gate,
-        and the whole-plan gate in ``on_plan_completed`` is the final backstop.
+        Skips (no verify_cmd, no plan branch, no credential) never block
+        dispatch. A genuine failure or an infra error (clone/checkout/verify
+        raised) fails closed: an error is NOT memoized, so the next loop tick
+        retries the gate (transient clone/network faults self-heal); a real
+        regression stays parked. The whole-plan gate in ``on_plan_completed`` is
+        the final backstop.
         """
         verify_cmd = project.get("verify_cmd")
         if not verify_cmd:
@@ -218,26 +223,37 @@ class DispatchMixin:
         result = await cast(Any, self)._verify_plan_branch(
             repo_url, plan_branch, verify_cmd
         )
-        if result.status == "failed":
-            state[plan_id] = (merged_count, False)
+        if result.status in ("failed", "error"):
+            # Fail closed on a real regression AND on an infra error: a
+            # swallowed checkout error used to green the wave silently. Only a
+            # genuine ``failed`` is memoized; an ``error`` is left un-memoized so
+            # the next loop tick retries (transient clone/network faults
+            # self-heal) rather than permanently wedging the wave.
+            if result.status == "failed":
+                state[plan_id] = (merged_count, False)
             self._bus.publish(
                 {
                     "type": "plan_wave_verify_failed",
                     "plan_id": plan_id,
                     "merged_count": merged_count,
-                    "output": result.output,
+                    "output": result.output
+                    or (
+                        "plan verify gate errored (clone/checkout/verify raised); "
+                        "see orchestrator logs"
+                    ),
+                    "status": result.status,
                 }
             )
             logger.warning(
-                "Wave verify gate FAILED for plan %s after %d merged leaves; "
-                "parking the next wave (cross-leaf regression).",
+                "Wave verify gate %s for plan %s after %d merged leaves; "
+                "parking the next wave.",
+                result.status.upper(),
                 plan_id,
                 merged_count,
             )
             return False
 
-        # passed / skipped / error -> allow dispatch, memoize only a clean pass
-        # so a transient clone/error is retried next tick.
+        # passed / skipped -> allow dispatch, memoize only a clean pass.
         if result.status == "passed":
             state[plan_id] = (merged_count, True)
         return True

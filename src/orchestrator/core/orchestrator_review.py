@@ -677,10 +677,13 @@ class ReviewMixin:
             except Exception as exc:  # noqa: BLE001
                 logger.warning("Integration PR open failed for %s: %s", plan_id, exc)
 
-            if verify_status.status == "failed":
-                # Surface the failure on its own event so the plan does not
-                # silently advance; the integration PR is still opened above so
-                # the failure is visible on a real PR.
+            if verify_status.status in ("failed", "error"):
+                # Fail closed: surface both a real verify failure AND an
+                # infra error (clone/checkout/verify raised) on its own event so
+                # the plan does not silently advance. Previously an ``error`` was
+                # swallowed as a warning, which made the whole-plan backstop a
+                # no-op whenever the plan-branch checkout failed. The integration
+                # PR is still opened above so the failure is visible on a real PR.
                 self._bus.publish(
                     {
                         "type": "plan_verify_failed",
@@ -688,7 +691,11 @@ class ReviewMixin:
                         "plan_id": plan_id,
                         "plan_branch": plan_branch,
                         "base_branch": base,
-                        "output": verify_status.output,
+                        "output": verify_status.output
+                        or (
+                            "plan verify gate errored (clone/checkout/verify "
+                            "raised); see orchestrator logs"
+                        ),
                         "pr_url": pr_url,
                     }
                 )

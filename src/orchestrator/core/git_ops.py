@@ -90,6 +90,14 @@ def checkout_branch(workspace: str, branch: str, token: str) -> None:
     branch must be fetched explicitly before it can be checked out. The token
     is supplied via ``GH_TOKEN`` for the fetch, consistent with the other
     helpers here.
+
+    A plain ``git fetch origin <branch>`` only advances ``FETCH_HEAD``; it does
+    NOT create a local ``<branch>`` ref or a ``refs/remotes/origin/<branch>``
+    tracking ref, so a subsequent ``git checkout <branch>`` fails with
+    ``pathspec ... did not match`` (exit 1). We therefore check out the freshly
+    fetched commit directly via ``FETCH_HEAD``, creating/resetting the local
+    branch pointer with ``-B``. Both steps ``check=True`` so a genuine
+    fetch/checkout failure raises instead of being silently swallowed.
     """
     env = {**os.environ, "GH_TOKEN": token}
     subprocess.run(  # noqa: S603
@@ -100,7 +108,7 @@ def checkout_branch(workspace: str, branch: str, token: str) -> None:
         env=env,
     )
     subprocess.run(  # noqa: S603
-        ["git", "-C", workspace, "checkout", branch],
+        ["git", "-C", workspace, "checkout", "-B", branch, "FETCH_HEAD"],
         check=True,
         capture_output=True,
         text=True,

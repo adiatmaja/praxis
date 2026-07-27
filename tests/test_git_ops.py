@@ -10,6 +10,7 @@ import pytest
 from orchestrator.core import git_ops as git_ops_mod
 from orchestrator.core.git_ops import (
     GitOps,
+    checkout_branch,
     clone_with_token,
     commit_and_push,
 )
@@ -29,6 +30,33 @@ def test_clone_with_token_keeps_token_in_env_not_url(mock_run: object) -> None:
     # Token supplied via env, and a credential helper is configured
     assert call.kwargs["env"]["GH_TOKEN"] == "tok123"
     assert "credential.helper=" in argv
+
+
+@pytest.mark.unit
+@patch("orchestrator.core.git_ops.subprocess.run")
+def test_checkout_branch_fetches_then_checks_out_fetch_head(mock_run: object) -> None:
+    # A plain ``git fetch origin <branch>`` only advances FETCH_HEAD; it never
+    # creates a local/remote-tracking ref, so ``git checkout <branch>`` used to
+    # fail with exit 1 and silently no-op the plan verify gate. The checkout
+    # must therefore materialize the branch from FETCH_HEAD with ``-B``.
+    checkout_branch("/tmp/ws", "plan/execute-foo-abc123", "tok123")
+    cmds = [c.args[0] for c in mock_run.call_args_list]  # type: ignore[attr-defined]
+
+    fetch = next(c for c in cmds if "fetch" in c)
+    assert fetch[-2:] == ["origin", "plan/execute-foo-abc123"]
+    # Token supplied via env for the fetch, never embedded in argv.
+    fetch_call = next(
+        c
+        for c in mock_run.call_args_list  # type: ignore[attr-defined]
+        if "fetch" in c.args[0]
+    )
+    assert fetch_call.kwargs["env"]["GH_TOKEN"] == "tok123"
+
+    checkout = next(c for c in cmds if "checkout" in c)
+    assert checkout[-3:] == ["-B", "plan/execute-foo-abc123", "FETCH_HEAD"]
+    # Both steps fail loudly (check=True) so a genuine checkout error raises.
+    for call in mock_run.call_args_list:  # type: ignore[attr-defined]
+        assert call.kwargs["check"] is True
 
 
 @pytest.mark.unit
