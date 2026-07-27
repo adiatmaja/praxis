@@ -181,7 +181,7 @@ async def test_create_project_defaults_harness_opencode(
         },
     )
     assert resp.status_code == 201
-    assert resp.json()["harness"] == "opencode"
+    assert resp.json()["harness"] == client.app.state.settings.default_worker_harness
 
 
 @pytest.mark.integration
