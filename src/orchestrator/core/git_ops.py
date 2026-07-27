@@ -486,6 +486,67 @@ class GitOps:
         ref = f"refs/heads/{branch}"
         return any(ref == line.split("\t")[-1] for line in stdout.splitlines() if line)
 
+    async def list_remote_branches(self, repo_url: str) -> list[str]:
+        """Return a list of branch names present on the remote at ``repo_url``.
+
+        Runs ``git ls-remote --heads <repo_url>`` via the token-auth
+        credential helper.
+
+        Args:
+            repo_url: HTTPS or SSH URL of the remote repository.
+
+        Returns:
+            List of branch names (without ``refs/heads/`` prefix).
+
+        Raises:
+            RuntimeError: If the git command exits with a non-zero code.
+        """
+        token = await self._token_for_repo(repo_url)
+        cmd = [
+            "git",
+            *_token_git_args(),
+            "ls-remote",
+            "--heads",
+            repo_url,
+        ]
+        code, stdout, stderr = await self._run_command(cmd, token=token)
+        if code != 0:
+            msg = f"git ls-remote failed (exit {code}): {stderr}"
+            raise RuntimeError(msg)
+        branches: list[str] = []
+        for line in stdout.splitlines():
+            if not line:
+                continue
+            parts = line.split("\t")
+            if len(parts) == 2 and parts[1].startswith("refs/heads/"):
+                branches.append(parts[1].removeprefix("refs/heads/"))
+        return branches
+
+    async def delete_remote_branch(self, repo_url: str, branch: str) -> None:
+        """Delete ``branch`` on the remote repository at ``repo_url``.
+
+        Runs ``git push <repo_url> --delete <branch>`` via the token-auth
+        credential helper.
+
+        Args:
+            repo_url: HTTPS or SSH URL of the remote repository.
+            branch: Branch name to delete.
+
+        Raises:
+            RuntimeError: If the git push command exits with a non-zero code.
+        """
+        token = await self._token_for_repo(repo_url)
+        cmd = [
+            "git",
+            *_token_git_args(),
+            "push",
+            repo_url,
+            "--delete",
+            branch,
+        ]
+        await self._run_checked(cmd, token=token)
+        logger.info("Deleted remote branch %s on %s", branch, repo_url)
+
     async def remote_head_sha(self, repo_url: str, branch: str) -> str | None:
         """Return the commit sha at ``refs/heads/<branch>`` on the remote.
 
