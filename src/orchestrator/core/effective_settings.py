@@ -22,6 +22,7 @@ EDITABLE_KEYS: frozenset[str] = frozenset(
         "docs_root",
         "memory_md_path",
         "brainstorm_workspace",
+        "auto_delegate.enabled",
     }
 )
 
@@ -71,6 +72,17 @@ class EffectiveSettings:
             await self._get_override("brainstorm_workspace")
         ) or self._settings.brainstorm_workspace
 
+    async def auto_delegate_enabled(self) -> bool:
+        """Return True when auto-delegate mode is toggled on."""
+        return (await self._get_override("auto_delegate.enabled")) == "true"
+
+    def auto_delegate_worker(self) -> dict[str, str]:
+        """Return the worker used in auto-delegate mode (the global default)."""
+        return {
+            "harness": self._settings.default_worker_harness,
+            "model": self._settings.default_worker_model,
+        }
+
     async def all_editable(self) -> dict[str, dict[str, Any]]:
         """Return {key: {"value": <effective>, "overridden": <bool>}} for editable keys."""
         rows = await self._db.fetch_all("SELECT key, value FROM settings_overrides")
@@ -86,6 +98,7 @@ class EffectiveSettings:
             "docs_root": self.docs_root,
             "memory_md_path": self.memory_md_path,
             "brainstorm_workspace": self.brainstorm_workspace,
+            "auto_delegate.enabled": self.auto_delegate_enabled,
         }
 
         result: dict[str, dict[str, Any]] = {}
