@@ -7,7 +7,8 @@ from __future__ import annotations
 from orchestrator.main import app
 
 
-async def test_router_uses_chain_resolver_and_bus() -> None:
+async def test_router_uses_chain_resolver_and_bus(monkeypatch) -> None:
+    monkeypatch.setenv("AUTH_TOKEN", "test-token")
     async with app.router.lifespan_context(app):
         router = app.state.llm_router
         assert router._event_bus is app.state.event_bus
