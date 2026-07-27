@@ -167,3 +167,28 @@ async def refresh_capabilities() -> dict[str, str]:
         "status": "skipped",
         "detail": "Capability data is a bundled snapshot; live refresh not configured.",
     }
+
+
+class AutoDelegatePut(BaseModel):
+    enabled: bool
+
+
+@router.get("/settings/auto-delegate")
+async def get_auto_delegate(request: Request) -> dict[str, Any]:
+    """Return auto-delegate mode state and the resolved default worker."""
+    es = cast(EffectiveSettings, request.app.state.effective_settings)
+    return {
+        "enabled": await es.auto_delegate_enabled(),
+        "worker": es.auto_delegate_worker(),
+    }
+
+
+@router.put("/settings/auto-delegate")
+async def put_auto_delegate(request: Request, body: AutoDelegatePut) -> dict[str, Any]:
+    """Toggle auto-delegate mode on or off."""
+    es = cast(EffectiveSettings, request.app.state.effective_settings)
+    await es.set_override("auto_delegate.enabled", "true" if body.enabled else None)
+    return {
+        "enabled": await es.auto_delegate_enabled(),
+        "worker": es.auto_delegate_worker(),
+    }
