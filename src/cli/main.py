@@ -242,6 +242,28 @@ def status() -> None:
     )
 
 
+@app.command()
+def mode(action: str = typer.Argument(..., help="on | off | status")) -> None:
+    """Turn auto-delegate mode on/off or show its status."""
+    action_lower = action.lower()
+    if action_lower not in {"on", "off", "status"}:
+        console.print("action must be one of: on, off, status")
+        raise typer.Exit(code=2)
+    with _client() as client:
+        if action_lower == "status":
+            resp = client.get("/api/settings/auto-delegate")
+        else:
+            resp = client.put(
+                "/api/settings/auto-delegate", json={"enabled": action_lower == "on"}
+            )
+        data = _check_dict(resp)
+    enabled_str = "ON" if data.get("enabled") else "OFF"
+    worker = data.get("worker") or {}
+    harness = worker.get("harness", "")
+    model = worker.get("model") or "unset"
+    console.print(f"auto-delegate: {enabled_str} (worker: {harness} / {model})")
+
+
 config_app = typer.Typer(
     name="config", help="Configure the model registry and role chains"
 )
