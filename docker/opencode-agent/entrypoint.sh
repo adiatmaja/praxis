@@ -16,18 +16,23 @@ STATUS="completed"
 PR_URL=""
 QUESTION=""
 
-# Guard: workers must NEVER target a protected base branch (main/master/release*).
-# Doing so collapses two-tier branching and (worst case) points a PR at main.
+# Guard: in two-tier mode workers must NEVER target a protected base branch
+# (main/master/release*). Doing so collapses two-tier branching and (worst case)
+# points a PR at main. Single-branch mode (SINGLE_BRANCH=1, auto-delegate) is the
+# exception by design: the plan branch IS the single feature branch, cut from the
+# default branch and opening its PR back at it, so base=main is correct there.
 # Match case-insensitively and hard-exit before any clone/branch/push/PR.
-base_branch_lower=$(printf '%s' "${BASE_BRANCH}" | tr '[:upper:]' '[:lower:]')
-case "${base_branch_lower}" in
-    main | master | release*)
-        printf 'PRAXIS_FATAL_PROTECTED_BASE: base branch %s is protected; workers must never target it\n' \
-            "'${BASE_BRANCH}'"
-        STATUS="failed"
-        exit 1
-        ;;
-esac
+if [ "${SINGLE_BRANCH:-0}" != "1" ]; then
+    base_branch_lower=$(printf '%s' "${BASE_BRANCH}" | tr '[:upper:]' '[:lower:]')
+    case "${base_branch_lower}" in
+        main | master | release*)
+            printf 'PRAXIS_FATAL_PROTECTED_BASE: base branch %s is protected; workers must never target it\n' \
+                "'${BASE_BRANCH}'"
+            STATUS="failed"
+            exit 1
+            ;;
+    esac
+fi
 
 json_escape() {
     python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))'
@@ -103,7 +108,10 @@ git config user.email "${GIT_AUTHOR_EMAIL:-dev-bot@users.noreply.github.com}"
 
 echo "--- Setting up base branch ${BASE_BRANCH} ---"
 if git rev-parse --verify "origin/${BASE_BRANCH}" >/dev/null 2>&1; then
-    git checkout -b "${BASE_BRANCH}" "origin/${BASE_BRANCH}"
+    # -B (create-or-reset): in single-branch mode BASE_BRANCH is the default
+    # branch (e.g. main), which already exists locally after clone, so a plain
+    # -b would fatal "a branch named 'main' already exists".
+    git checkout -B "${BASE_BRANCH}" "origin/${BASE_BRANCH}"
 else
     echo "Base branch not on remote; creating from default"
     git checkout -b "${BASE_BRANCH}"
