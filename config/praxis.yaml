@@ -28,3 +28,7 @@ models:
     plan:      [sonnet, opus]
     review:    [sonnet, haiku]
     implement: [local]
+
+default_worker_harness: agy
+default_worker_model: "Gemini 3.6 Flash (High)"
+

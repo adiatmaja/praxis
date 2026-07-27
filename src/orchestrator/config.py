@@ -30,6 +30,8 @@ class Settings(BaseSettings):
     lm_studio_url: str = "http://host.docker.internal:1234"
     agent_model: str = "claude-opus-4-8"
     agent_model_effort: str | None = None
+    default_worker_harness: str = "opencode"
+    default_worker_model: str = ""
     host: str = "0.0.0.0"  # noqa: S104  # nosec B104 — intentional, overridden by compose/Caddy
     port: int = 8080
     # Git author identity agent containers commit under. Kept neutral (no Praxis
