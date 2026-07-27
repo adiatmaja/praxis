@@ -476,6 +476,10 @@ review verdict; a gitleaks-style secret regex pass over the diff. A local model
 prompted with repo context is a supply-chain surface; "worker added a
 dependency" must never auto-merge.
 
+### F16. Auto-delegate: capability-calibrated delegation (CADMAS-CTX) — Follow-up
+
+Auto-delegate mode provides a binary on/off switch for delegating implementation tasks. Future capability-aware delegation will evaluate `should_delegate()` as the decision seam, incorporating real-time capability calibration, context length estimates, and worker performance metrics (referencing CADMAS-CTX framework, arXiv:2604.17950) to dynamically route tasks between direct brain editing and worker delegation.
+
 ### Deliberately NOT building
 
 - Richer dashboard / terminal multiplexing / live worker interaction
