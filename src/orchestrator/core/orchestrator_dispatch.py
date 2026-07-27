@@ -90,6 +90,10 @@ class DispatchMixin:
             ):
                 return
 
+        single_branch = False
+        if self._effective_settings is not None:
+            single_branch = await self._effective_settings.auto_delegate_enabled()
+
         for task in dispatchable:
             prompt = self._task_prompt(task, project)
 
@@ -103,14 +107,20 @@ class DispatchMixin:
             plan_path: str | None = plan_task.get("plan_path")
             plan_text: str | None = plan_task.get("plan_text")
             context_text: str | None = plan_task.get("context_text")
-            base_branch = plan["plan_branch_name"] or project["default_branch"]
+
+            if single_branch:
+                branch = plan.get("plan_branch_name") or project["default_branch"]
+                base_branch = project["default_branch"]
+            else:
+                branch = task["branch_name"]
+                base_branch = plan.get("plan_branch_name") or project["default_branch"]
 
             # Build the Static Bible (goal + git-spine progress handover +
             # conventions), scrubbed and trimmed to the model's window, so the
             # goal/progress survive compaction and cross-run re-dispatch.
             try:
                 bible = await self._build_worker_bible(
-                    task, plan_task, project, base_branch, task["branch_name"]
+                    task, plan_task, project, base_branch, branch
                 )
             except ContextBudgetExceeded:
                 logger.warning(
@@ -128,7 +138,7 @@ class DispatchMixin:
                 container_id = await self._agents.spawn_agent(
                     task_id=task["id"],
                     repo_url=project["repo_url"],
-                    branch=task["branch_name"],
+                    branch=branch,
                     base_branch=base_branch,
                     task_prompt=prompt,
                     model_name=project["model_name"],
@@ -140,6 +150,7 @@ class DispatchMixin:
                     context_text=context_text,
                     bible_text=bible,
                     task_summary=f"{task['title']}\n\n{task['description']}",
+                    single_branch=single_branch,
                 )
             except RuntimeError as exc:
                 # Disk-headroom or concurrency-cap preflight failed. Leave the

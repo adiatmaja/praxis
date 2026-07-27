@@ -9,9 +9,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, cast
 
+from orchestrator.core import branch_sweeper
 from orchestrator.models.schemas import TaskStatus
 
 
@@ -21,6 +23,33 @@ if TYPE_CHECKING:
 
 
 logger = logging.getLogger(__name__)
+
+
+async def sweep_dead_branches(
+    repo_url: str,
+    list_remote_branches: Callable[[str], Awaitable[list[str]]],
+    delete_remote_branch: Callable[[str, str], Awaitable[None]],
+    ledger: dict[str, set[str]],
+) -> None:
+    """Sweep dead branches on repo_url using ledger sets best-effort."""
+    try:
+        remote_branches = await list_remote_branches(repo_url)
+    except Exception:
+        logger.exception("Failed to list remote branches for %s", repo_url)
+        return
+
+    dead = branch_sweeper.dead_branches(
+        remote_branches,
+        open_pr_branches=ledger.get("open_pr_branches", set()),
+        terminal_failed=ledger.get("terminal_failed", set()),
+        merged_plan=ledger.get("merged_plan", set()),
+    )
+
+    for branch in dead:
+        try:
+            await delete_remote_branch(repo_url, branch)
+        except Exception:
+            logger.exception("Failed to delete dead branch %s on %s", branch, repo_url)
 
 
 class ReconcileMixin:
@@ -35,6 +64,7 @@ class ReconcileMixin:
         _callback_grace: float
         _monitor_poll_interval: float
         _effective_settings: Any
+        _git: Any
 
     def _safe_logs(self, container_id: str) -> str:
         """Fetch full container logs, swallowing any backend errors."""
@@ -58,26 +88,77 @@ class ReconcileMixin:
         of hanging forever.
         """
         running = await self._tq.get_running_runs()
-        if not running:
-            return
+        if running:
+            if self._agents is None:
+                for run in running:
+                    await self._fail_orphan(run, "Agent manager unavailable")
+            else:
+                for run in running:
+                    monitor = self._monitors.get(run["id"])
+                    if monitor is not None and not monitor.done():
+                        continue
+                    status = self._agents.get_container_status(run["container_id"])
+                    if status is None:
+                        await self._fail_orphan(run, "Agent container missing")
+                        continue
+                    if status["status"] in {"exited", "dead"}:
+                        await self._reconcile_exited(run, status)
+                        continue
+                    self._start_monitor(run["id"], run["task_id"], run["container_id"])
 
-        if self._agents is None:
-            for run in running:
-                await self._fail_orphan(run, "Agent manager unavailable")
-            return
+        try:
+            projects = await self._tq._db.fetch_all(
+                "SELECT DISTINCT repo_url FROM projects"
+            )
+            git_ops = getattr(self, "_git", None)
+            if projects and git_ops is not None:
+                open_pr_rows = await self._tq._db.fetch_all(
+                    "SELECT branch_name FROM tasks WHERE pr_url IS NOT NULL AND pr_url != '' AND status NOT IN ('failed', 'merged')"
+                )
+                open_pr_branches = {
+                    row["branch_name"] for row in open_pr_rows if row.get("branch_name")
+                }
 
-        for run in running:
-            monitor = self._monitors.get(run["id"])
-            if monitor is not None and not monitor.done():
-                continue
-            status = self._agents.get_container_status(run["container_id"])
-            if status is None:
-                await self._fail_orphan(run, "Agent container missing")
-                continue
-            if status["status"] in {"exited", "dead"}:
-                await self._reconcile_exited(run, status)
-                continue
-            self._start_monitor(run["id"], run["task_id"], run["container_id"])
+                tf_task_rows = await self._tq._db.fetch_all(
+                    "SELECT branch_name FROM tasks WHERE status = 'failed'"
+                )
+                tf_plan_rows = await self._tq._db.fetch_all(
+                    "SELECT plan_branch_name FROM plans WHERE status IN ('failed', 'rejected') AND plan_branch_name IS NOT NULL AND plan_branch_name != ''"
+                )
+                terminal_failed = {
+                    row["branch_name"] for row in tf_task_rows if row.get("branch_name")
+                } | {
+                    row["plan_branch_name"]
+                    for row in tf_plan_rows
+                    if row.get("plan_branch_name")
+                }
+
+                mp_rows = await self._tq._db.fetch_all(
+                    "SELECT plan_branch_name FROM plans WHERE status IN ('completed', 'merged') AND plan_branch_name IS NOT NULL AND plan_branch_name != ''"
+                )
+                merged_plan = {
+                    row["plan_branch_name"]
+                    for row in mp_rows
+                    if row.get("plan_branch_name")
+                }
+
+                ledger = {
+                    "open_pr_branches": open_pr_branches,
+                    "terminal_failed": terminal_failed,
+                    "merged_plan": merged_plan,
+                }
+
+                for proj in projects:
+                    repo_url = proj.get("repo_url")
+                    if repo_url:
+                        await sweep_dead_branches(
+                            repo_url=repo_url,
+                            list_remote_branches=git_ops.list_remote_branches,
+                            delete_remote_branch=git_ops.delete_remote_branch,
+                            ledger=ledger,
+                        )
+        except Exception:  # noqa: BLE001 - sweeper call is best-effort
+            logger.exception("Failed to sweep dead branches during reconcile pass")
 
     def _start_monitor(self, run_id: str, task_id: str, container_id: str) -> None:
         task = asyncio.create_task(self.monitor_run(run_id, task_id, container_id))

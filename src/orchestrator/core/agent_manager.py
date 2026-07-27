@@ -89,6 +89,67 @@ def _container_host_url(url: str) -> str:
     return url
 
 
+def build_spawn_env(
+    repo_url: str,
+    branch: str,
+    base_branch: str,
+    task_prompt: str,
+    container_lm_url: str,
+    model_name: str,
+    harness_id: str,
+    gh_token: str,
+    callback_url: str,
+    task_id: str,
+    git_author_name: str | None = None,
+    git_author_email: str | None = None,
+    callback_token: str | None = None,
+    plan_path: str | None = None,
+    plan_text: str | None = None,
+    context_text: str | None = None,
+    bible_text: str | None = None,
+    task_summary: str | None = None,
+    single_branch: bool = False,
+    context_limit: int | None = None,
+) -> dict[str, str]:
+    """Build environment variables dictionary for spawned agent containers."""
+    environment: dict[str, str] = {
+        "REPO_URL": repo_url,
+        "BRANCH": branch,
+        "BASE_BRANCH": base_branch,
+        "TASK_PROMPT": task_prompt,
+        "OPENAI_API_BASE": f"{container_lm_url}/v1",
+        "MODEL": model_name,
+        "HARNESS": harness_id,
+        "GH_TOKEN": gh_token,
+        "CALLBACK_URL": callback_url,
+        "TASK_ID": task_id,
+    }
+    if git_author_name:
+        environment["GIT_AUTHOR_NAME"] = git_author_name
+    if git_author_email:
+        environment["GIT_AUTHOR_EMAIL"] = git_author_email
+    if callback_token is not None:
+        environment["CALLBACK_TOKEN"] = callback_token
+    if plan_path is not None:
+        environment["PLAN_PATH"] = plan_path
+    if plan_text is not None:
+        environment["PLAN_TEXT"] = plan_text
+    if context_text is not None:
+        environment["CONTEXT_TEXT"] = context_text
+    if bible_text is not None:
+        environment["BIBLE_TEXT"] = bible_text
+    if task_summary is not None:
+        # Clean, human-readable task text for the PR body (the wrapped
+        # TASK_PROMPT starts with a generic preamble, not the instruction).
+        environment["TASK_SUMMARY"] = task_summary
+    if single_branch:
+        environment["SINGLE_BRANCH"] = "1"
+    if context_limit is not None:
+        environment["MODEL_CONTEXT_LIMIT"] = str(context_limit)
+
+    return environment
+
+
 class AgentManager:
     """Manage harness agent Docker containers (OpenCode default, or agy)."""
 
@@ -140,6 +201,7 @@ class AgentManager:
         context_text: str | None = None,
         bible_text: str | None = None,
         task_summary: str | None = None,
+        single_branch: bool = False,
     ) -> str:
         harness_id = harness or default_harness_id()
         spec = REGISTRY[harness_id]
@@ -183,48 +245,33 @@ class AgentManager:
             lm_studio_url = self._lm_studio_url
         container_lm_url = _container_host_url(lm_studio_url)
         gh_token = await self._provider.token_for_repo(repo_url)
-        environment = {
-            "REPO_URL": repo_url,
-            "BRANCH": branch,
-            "BASE_BRANCH": base_branch,
-            "TASK_PROMPT": task_prompt,
-            "OPENAI_API_BASE": f"{container_lm_url}/v1",
-            "MODEL": model_name,
-            "HARNESS": harness_id,
-            "GH_TOKEN": gh_token,
-            "CALLBACK_URL": callback_url,
-            "TASK_ID": task_id,
-        }
-        # Commit author identity for the worker's git config (neutral, no Praxis
-        # footprint). Omitted -> entrypoint falls back to its own default.
-        if self._git_author_name:
-            environment["GIT_AUTHOR_NAME"] = self._git_author_name
-        if self._git_author_email:
-            environment["GIT_AUTHOR_EMAIL"] = self._git_author_email
-        if callback_token is not None:
-            environment["CALLBACK_TOKEN"] = callback_token
-        if plan_path is not None:
-            environment["PLAN_PATH"] = plan_path
-        if plan_text is not None:
-            environment["PLAN_TEXT"] = plan_text
-        if context_text is not None:
-            environment["CONTEXT_TEXT"] = context_text
-        if bible_text is not None:
-            environment["BIBLE_TEXT"] = bible_text
-        if task_summary is not None:
-            # Clean, human-readable task text for the PR body (the wrapped
-            # TASK_PROMPT starts with a generic preamble, not the instruction).
-            environment["TASK_SUMMARY"] = task_summary
-        # Detect the model's real context window so compaction-capable harnesses
-        # (OpenCode) can trigger at the right threshold instead of sailing past
-        # it into silent server-side truncation. Detected per-model, never
-        # hardcoded; omitted when LM Studio can't be reached.
-        # agy skips this: it talks to Google via OAuth, not LM Studio, so the
-        # /api/v0/models probe is irrelevant and would only generate noise.
+
+        context_limit: int | None = None
         if harness_id != "agy":
             context_limit = await detect_context_limit(lm_studio_url, model_name)
-            if context_limit is not None:
-                environment["MODEL_CONTEXT_LIMIT"] = str(context_limit)
+
+        environment = build_spawn_env(
+            repo_url=repo_url,
+            branch=branch,
+            base_branch=base_branch,
+            task_prompt=task_prompt,
+            container_lm_url=container_lm_url,
+            model_name=model_name,
+            harness_id=harness_id,
+            gh_token=gh_token,
+            callback_url=callback_url,
+            task_id=task_id,
+            git_author_name=self._git_author_name,
+            git_author_email=self._git_author_email,
+            callback_token=callback_token,
+            plan_path=plan_path,
+            plan_text=plan_text,
+            context_text=context_text,
+            bible_text=bible_text,
+            task_summary=task_summary,
+            single_branch=single_branch,
+            context_limit=context_limit,
+        )
 
         # Mount the agy OAuth credentials VOLUME. The credentials are Linux-native
         # (populated once by an interactive `agy login`, see docs/deployment.md)

@@ -221,6 +221,16 @@ Tables: `users`, `projects`, `plans`, `tasks`, `agent_runs`, `opus_state`,
   + repo/branch/callback vars). Each `docker/<harness>-agent/` image honors the
   same entrypoint contract.
 
+## Auto-Delegate Mode (daily-dev)
+
+When Praxis auto-delegate mode is ON (`GET /api/settings/auto-delegate` → `enabled:true`),
+the brain does NOT edit code directly. For each implementation task it designs the worker
+prompt, calls the MCP `dispatch_task` (which uses the global default worker — reference:
+Gemini 3.6 Flash High via agy), then reviews the resulting PR. Planning, prompt design, and
+review stay with the brain. Mode is sequential (one delegate in flight at a time) and uses a
+single caller-named work branch; dead branches are swept by the reconcile loop. Toggle:
+`praxis mode on|off|status`.
+
 ## Gotchas
 
 Full detail for every trap below lives in **`docs/gotchas.md`** — read it before touching

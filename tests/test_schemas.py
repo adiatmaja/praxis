@@ -357,9 +357,15 @@ def test_project_create_agent_model_optional():
 
 
 @pytest.mark.unit
-def test_project_create_defaults_harness_to_opencode() -> None:
+def test_project_create_defaults_harness_to_none() -> None:
     p = ProjectCreate(name="p", repo_url="https://x/y", model_name="m")
-    assert p.harness == "opencode"
+    assert p.harness is None
+
+
+@pytest.mark.unit
+def test_project_create_model_name_optional() -> None:
+    p = ProjectCreate(name="p", repo_url="https://x/y")
+    assert p.model_name is None
 
 
 @pytest.mark.unit

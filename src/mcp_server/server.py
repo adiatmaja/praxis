@@ -481,6 +481,15 @@ async def cancel_task_impl(client: Any, task_id: str) -> dict[str, Any]:
     return {"status": "cancelled", "stopped": data.get("stopped", 0)}
 
 
+async def get_mode_impl(client: Any) -> dict[str, Any]:
+    """Return auto-delegate mode state {enabled, worker:{harness,model}}."""
+    try:
+        data = await client.get_mode()
+    except PraxisClientError as exc:
+        return _error(exc)
+    return data if isinstance(data, dict) else {}
+
+
 def _dashboard_url(client: Any) -> str:
     base = getattr(client, "base_url", "").rstrip("/")
     return f"{base}/" if base else ""
@@ -631,6 +640,12 @@ async def get_project(repo_url: str) -> dict[str, Any]:
 async def list_projects() -> dict[str, Any]:
     """List all repos Praxis knows, each with its configured model + harness."""
     return await list_projects_impl(PraxisClient.from_env())
+
+
+@mcp.tool()
+async def get_mode() -> dict[str, Any]:
+    """Return auto-delegate mode state {enabled, worker:{harness,model}}."""
+    return await get_mode_impl(PraxisClient.from_env())
 
 
 @mcp.resource("praxis://guide/orchestration")
