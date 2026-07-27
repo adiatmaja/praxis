@@ -2197,6 +2197,7 @@
           settingsGlobalOriginal[key] = entry ? entry.value : null;
         }
         container.innerHTML = renderGlobalSettings(data);
+        await loadAutoDelegateSetting();
       } catch (e) {
         const msg = e.message || "Unknown error";
         const isAuth = msg.includes("401") || msg.toLowerCase().includes("unauthorized");
@@ -2204,6 +2205,39 @@
           '<div style="color:var(--btn-danger-text);font-size:13px;padding:8px 0;">' +
           esc(isAuth ? "Authentication failed. Check your API token." : "Failed to load settings: " + msg) +
           '</div>';
+      }
+    }
+
+    async function loadAutoDelegateSetting() {
+      const toggle = document.getElementById("auto-delegate-toggle");
+      const info = document.getElementById("auto-delegate-worker-info");
+      if (!toggle) return;
+      try {
+        const data = await api("GET", "/api/settings/auto-delegate");
+        toggle.checked = !!data.enabled;
+        if (info && data.worker) {
+          info.textContent = "Worker: " + (data.worker.harness || "default") + " / " + (data.worker.model || "default");
+        }
+      } catch (e) {
+        console.error("Failed to load auto-delegate setting:", e);
+      }
+    }
+
+    async function onAutoDelegateToggleChange(checked) {
+      clearSettingsFeedback();
+      const toggle = document.getElementById("auto-delegate-toggle");
+      const info = document.getElementById("auto-delegate-worker-info");
+      try {
+        const data = await api("PUT", "/api/settings/auto-delegate", { enabled: checked });
+        if (toggle) toggle.checked = !!data.enabled;
+        if (info && data.worker) {
+          info.textContent = "Worker: " + (data.worker.harness || "default") + " / " + (data.worker.model || "default");
+        }
+        showSettingsFeedback("Auto-delegate mode " + (data.enabled ? "enabled" : "disabled") + ".", false);
+      } catch (e) {
+        if (toggle) toggle.checked = !checked;
+        const msg = e.message || "Unknown error";
+        showSettingsFeedback("Failed to update auto-delegate mode: " + msg, true);
       }
     }
 

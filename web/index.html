@@ -163,6 +163,16 @@
       <div class="settings-body">
         <!-- Global tab -->
         <div class="settings-tab-panel active" id="settings-panel-global">
+          <div class="settings-field-row" style="padding:12px;background:var(--panel-alt);border:1px solid var(--border-subtle);border-radius:8px;margin-bottom:16px;">
+            <div style="display:flex;align-items:center;justify-content:space-between;">
+              <div>
+                <label for="auto-delegate-toggle" style="font-weight:600;font-size:13px;color:var(--text);margin-bottom:2px;">Auto-Delegate Mode</label>
+                <div class="settings-note" style="margin-top:0;">Delegate implementation tasks automatically to worker harness/model</div>
+              </div>
+              <input type="checkbox" id="auto-delegate-toggle" style="width:auto;cursor:pointer;" onchange="onAutoDelegateToggleChange(this.checked)">
+            </div>
+            <div id="auto-delegate-worker-info" class="settings-note" style="margin-top:6px;font-weight:500;">Worker: -</div>
+          </div>
           <div id="settings-global-content">
             <div style="color:var(--text-faint);font-size:13px;">Loading…</div>
           </div>
