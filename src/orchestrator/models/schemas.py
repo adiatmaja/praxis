@@ -124,7 +124,7 @@ class ProjectCreate(BaseModel):
 
     name: str
     repo_url: str
-    model_name: str
+    model_name: str | None = None
     default_branch: str = "main"
     approval_gate: bool = True
     confidence_threshold: float = Field(default=0.7, ge=0.0, le=1.0)
@@ -135,11 +135,13 @@ class ProjectCreate(BaseModel):
     verify_cmd: str | None = None
     agent_model: str | None = None
     agent_model_effort: str | None = None
-    harness: str = Field(default_factory=default_harness_id)
+    harness: str | None = None
 
     @field_validator("harness")
     @classmethod
-    def validate_harness(cls, value: str) -> str:
+    def validate_harness(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
         if value not in REGISTRY:
             allowed = ", ".join(sorted(REGISTRY))
             msg = f"harness must be one of: {allowed}"
@@ -187,12 +189,22 @@ class ProjectCreate(BaseModel):
     @field_validator(
         "name",
         "repo_url",
-        "model_name",
         "default_branch",
         "lm_studio_url",
     )
     @classmethod
     def validate_required_nonempty(cls, value: str) -> str:
+        trimmed = value.strip()
+        if not trimmed:
+            msg = "value must not be empty"
+            raise ValueError(msg)
+        return trimmed
+
+    @field_validator("model_name")
+    @classmethod
+    def validate_optional_model_name(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
         trimmed = value.strip()
         if not trimmed:
             msg = "value must not be empty"

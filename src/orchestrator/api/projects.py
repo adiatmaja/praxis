@@ -45,6 +45,14 @@ async def create_project(request: Request, body: ProjectCreate) -> dict[str, Any
     # rejecting it would be wrong. See core/merge_policy.is_protected_branch.
     # Preflight: validate remote reachability before inserting a project row.
     settings = request.app.state.settings
+    resolved_model = body.model_name or settings.default_worker_model
+    resolved_harness = body.harness or settings.default_worker_harness
+    if not resolved_model:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="model_name is required and no default_worker_model is configured",
+        )
+
     provider = build_credential_provider(settings)
     git = GitOps(provider)
     try:
@@ -78,8 +86,8 @@ async def create_project(request: Request, body: ProjectCreate) -> dict[str, Any
             body.max_retries,
             body.max_improvement_cycles,
             body.lm_studio_url,
-            body.model_name,
-            body.harness,
+            resolved_model,
+            resolved_harness,
             body.agent_model,
             body.agent_model_effort,
         ),
