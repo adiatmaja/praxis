@@ -8,7 +8,7 @@ instead of opaque stack traces.
 from __future__ import annotations
 
 import os
-from typing import Any
+from typing import Any, cast
 
 import httpx
 
@@ -114,7 +114,7 @@ class PraxisClient:
 
     async def get_mode(self) -> dict[str, Any]:
         """Return auto-delegate mode state {enabled, worker:{harness,model}}."""
-        return await self.get("/api/settings/auto-delegate")
+        return cast(dict[str, Any], await self.get("/api/settings/auto-delegate"))
 
 
 def _safe_detail(response: httpx.Response) -> str:
