@@ -103,7 +103,7 @@ cd "${WORKSPACE}"
 git config user.name "${GIT_AUTHOR_NAME:-dev-bot}"
 git config user.email "${GIT_AUTHOR_EMAIL:-dev-bot@users.noreply.github.com}"
 
-echo "--- Creating branch ${BRANCH} from ${BASE_BRANCH} ---"
+echo "--- Setting up base branch ${BASE_BRANCH} ---"
 if git rev-parse --verify "origin/${BASE_BRANCH}" >/dev/null 2>&1; then
     git checkout -b "${BASE_BRANCH}" "origin/${BASE_BRANCH}"
 else
@@ -115,7 +115,13 @@ else
         git reset --hard "origin/${BASE_BRANCH}"
     fi
 fi
-git checkout -b "${BRANCH}"
+if [ "${SINGLE_BRANCH:-0}" = "1" ] && git rev-parse --verify "origin/${BRANCH}" >/dev/null 2>&1; then
+    echo "--- Single-branch mode: reusing existing origin/${BRANCH} ---"
+    git checkout -b "${BRANCH}" "origin/${BRANCH}"
+else
+    echo "--- Creating branch ${BRANCH} from ${BASE_BRANCH} ---"
+    git checkout -b "${BRANCH}"
+fi
 
 echo "--- Writing Static Bible (task context, never committed) ---"
 # The Bible is the compaction-proof context slot: goal + handover + conventions.
@@ -266,7 +272,11 @@ fi
 echo "--- Pushing branch ---"
 # Force-push is safe here: each attempt is a full re-implementation starting
 # from the base branch, so the fresh branch is always authoritative.
-git push -u --force origin "${BRANCH}"
+if [ "${SINGLE_BRANCH:-0}" = "1" ]; then
+    git push -u origin "${BRANCH}"
+else
+    git push -u --force origin "${BRANCH}"
+fi
 
 echo "--- Creating PR ---"
 # A previous attempt may already have opened a PR for this branch; reuse it.
