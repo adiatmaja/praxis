@@ -104,6 +104,13 @@ capability-aware, and free to run" is the honest one-line comparison.
 5. **GitHub-native PR loop.** plan branch → per-task agent branches → squash
    merge on review pass → integration PR. Real PRs you can inspect, with
    parallel-branch race handling — not blind auto-commit.
+6. **Auto-delegate mode (daily-dev).** A single global toggle flips the brain
+   from "may edit code" to "plans and reviews only, always delegates the
+   coding" against one global default worker, on a single reused work branch
+   with a stale-branch sweeper. It is the daily-driver framing of the same
+   engine: the closest prior art (Aider's architect/editor split) runs
+   in-process with no isolation and no per-task PR; Praxis delegates to an
+   isolated, disposable worker and still gives you a reviewable PR per task.
 
 ## Why not just run OpenCode against a local model yourself?
 

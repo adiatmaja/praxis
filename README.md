@@ -140,6 +140,12 @@ the container exits, only the pushed branch and its PR remain.
 web dashboard, and the CLI are all thin clients of it, so you can drive the same loop from an
 AI assistant, a browser, or a terminal.
 
+**Auto-delegate mode (daily-dev).** A toggle that turns the brain into a pure planner and
+reviewer: with it on, the brain never edits code directly. For each implementation task it
+designs the worker prompt, dispatches to a single global default worker, then reviews the
+resulting PR. Planning, prompt design, and review stay with the brain; the coding is always
+delegated. It is the "use Praxis to build software all day" mode. See the section below.
+
 ## Quick Start
 
 ```bash
@@ -197,6 +203,38 @@ At a high level, one turn of the engine:
 A per-project approval gate can pause the loop after planning for your sign-off; leave it off
 for a fully autonomous run. Full workflow, orchestration cycle, and the swimlane diagram:
 [docs/workflow.md](docs/workflow.md).
+
+## Daily-dev: auto-delegate mode
+
+Auto-delegate mode is the "let the brain drive Praxis all day" switch. When it is ON, the
+brain (your planning/review seat) never touches code itself: it decomposes the plan, writes a
+worker prompt per task, dispatches each to a single global default worker, and reviews the
+returned PR. It is a global toggle, not per-project.
+
+```bash
+praxis mode on       # turn auto-delegate on
+praxis mode status   # show state + the resolved default worker
+praxis mode off      # turn it off (brain may implement directly again)
+```
+
+Three pieces make it work:
+
+- **Global default worker (fallback).** The worker used for every delegated task is resolved
+  from `default_worker_harness` / `default_worker_model` in `config/praxis.yaml`
+  (reference config: the `agy` harness driving `Gemini 3.6 Flash (High)`). A project that
+  omits its own `model_name` falls back to this default, so you can register a repo and start
+  delegating without picking a model. The product default outside this mode stays OpenCode.
+- **Single-branch discipline.** Delegated work reuses one caller-named work branch instead of
+  a fresh `agent/{slug}` per task. The `SINGLE_BRANCH=1` entrypoint flag makes each worker
+  reuse the existing remote branch (non-force push) rather than cutting a new one, so a
+  sequential daily-dev session accumulates on one branch.
+- **Stale-branch sweeper.** `core/branch_sweeper.py` runs on the reconcile loop and deletes
+  dead work branches (no open PR, no live run, never protected), keeping the remote clean as
+  sessions come and go. It is fail-safe: a sweep error is logged and never wedges the loop.
+
+The toggle is stored server-side (`GET`/`PUT /api/settings/auto-delegate`) and mirrored by the
+MCP `get_mode` tool, so the dashboard, CLI, and an MCP client all see the same state. Mode is
+sequential in v1 (one delegate in flight at a time). Full detail: [docs/workflow.md](docs/workflow.md).
 
 ## Documentation
 

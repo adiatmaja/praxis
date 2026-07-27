@@ -82,6 +82,7 @@ ever mounted — that approach does not work across operating systems.
 | `CALLBACK_URL` | Orchestrator callback (`/api/internal/agent-done`) |
 | `TASK_ID` | Task ID for the callback payload |
 | `RUN_ID` | Agent run ID for the callback payload |
+| `SINGLE_BRANCH` | `1` in auto-delegate mode: reuse the existing remote `BRANCH` (non-force push) instead of cutting a fresh `agent/{slug}`. Unset/`0` = normal two-tier branching |
 
 **Agent entrypoint pipeline** (`entrypoint.sh`):
 
@@ -225,6 +226,7 @@ Interactive docs available at `/docs` (Swagger UI) when the server is running.
 | `GET`/`PUT` | `/api/settings` | Global/project settings overrides |
 | `GET`/`PUT` | `/api/settings/models` | Per-call-site model config (provider/model/effort) |
 | `POST` | `/api/settings/models/reset` | Reset one call-site or all to defaults |
+| `GET`/`PUT` | `/api/settings/auto-delegate` | Auto-delegate mode toggle; returns `{enabled, worker:{harness,model}}` (the resolved global default worker) |
 | `GET` | `/api/harnesses` | Harness catalog (image + About) |
 
 ### Tasks
@@ -289,6 +291,22 @@ env vars); secrets (`AUTH_TOKEN`, GitHub App private key or `GITHUB_TOKEN`) stay
 | `HOST` | No | `0.0.0.0` | Bind address |
 | `PORT` | No | `12323` | Host port (uncommon by design to avoid 8080 collisions; MCP `PRAXIS_BASE_URL` and agent callbacks must match it) |
 | `GEMINI_CREDS_VOLUME` | No | `praxis-gemini-creds` | Docker volume holding agy OAuth creds; only used by the `agy` harness (see [agy setup](#agy-antigravity--gemini-harness--one-time-credential-setup)) |
+
+Global orchestrator defaults also live in `config/praxis.yaml` (env-overridable via `PRAXIS_*`),
+including the auto-delegate global default worker:
+
+| YAML key | Default | Description |
+|----------|---------|-------------|
+| `default_worker_harness` | `opencode` | Harness for the global default worker used in auto-delegate mode and as a project fallback. Reference config sets `agy` |
+| `default_worker_model` | `""` | Model for the global default worker. Reference config sets `Gemini 3.6 Flash (High)` |
+
+> **Gotcha:** the dev compose (`docker-compose.local.yml`) mounts `src/`, `web/`, `.git/`, and
+> `data/` for hot-reload, but **not** `config/`. Editing `config/praxis.yaml` therefore has no
+> effect until you rebuild the orchestrator image (the YAML is baked in), unlike a `src/` edit
+> which hot-reloads. Rebuild with `docker compose ... up --build -d` after changing it.
+
+The auto-delegate toggle itself is runtime state (`auto_delegate.enabled` in `settings_overrides`),
+set via `praxis mode on|off` or `PUT /api/settings/auto-delegate`, not a config file.
 
 ---
 

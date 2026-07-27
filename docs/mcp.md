@@ -20,6 +20,9 @@ model can't.
 | `poll_plan(plan_id)` | Get the plan status plus a one-line summary of every task (`task_id`, `title`, `status`, `pr_url`). Poll the `plan_id` from `execute_plan` until the plan is `completed` or all tasks are terminal. Tasks at `awaiting_merge` passed review and are parked for your PR approval; `awaiting_clarification` is blocked on a question. |
 | `poll_task(task_id)` | Get status, PR URL, review (and a dashboard link for wedged tasks). |
 | `list_providers()` | List brain providers + worker models available to dispatch to. |
+| `get_project(repo_url)` | Read a repo's configured worker model, harness, and settings (or null if unregistered). |
+| `list_projects()` | List every repo Praxis knows, each with its configured model + harness. |
+| `get_mode()` | Return auto-delegate mode state: `{enabled, worker:{harness,model}}`. Check this before implementing directly, when `enabled` is true the brain should delegate every task via `dispatch_task`/`execute_plan` rather than editing code itself. |
 | `get_task_logs(task_id)` | Return agent-run logs for failure triage. |
 | `cancel_task(task_id)` | Stop a running task. |
 

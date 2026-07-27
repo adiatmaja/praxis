@@ -103,6 +103,7 @@ MCP transport cannot surface.
 | `backfill.py` | One-time legacy `plans.spec` → repo spec doc (Spec 2 migration) |
 | `agent_manager.py` | Docker SDK: spawn/stop/cleanup harness containers |
 | `harnesses.py` | Harness registry (OpenCode/agy: image + About) |
+| `branch_sweeper.py` | `dead_branches` — pick reclaimable work branches (no open PR / live run, never protected) for the reconcile-loop sweeper (auto-delegate mode) |
 | `git_ops.py` | git/gh CLI wrappers: branch, push, PR, merge, diff |
 | `event_bus.py` | In-memory async pub/sub for SSE streaming |
 
@@ -115,7 +116,9 @@ MCP transport cannot surface.
 - `plans` keeps `opus_plan` (runtime task graph), `spec_path`, `plan_path`, status,
   branch — the free-text `spec` column was **dropped** in Spec 2.
 - Global orchestrator settings live in `config/praxis.yaml` (env-overridable); per-call-site
-  model overrides persist in `settings_overrides` (`models.<call_site>`).
+  model overrides persist in `settings_overrides` (`models.<call_site>`). The auto-delegate
+  toggle (`auto_delegate.enabled`) also persists there; the global default worker
+  (`default_worker_harness` / `default_worker_model`) lives in `config/praxis.yaml`.
 - Migrations: inline `CREATE TABLE IF NOT EXISTS` + additive `ALTER`/table-rebuild in `database.py`
 - Default admin user auto-seeded on first startup
 
@@ -184,6 +187,16 @@ main
 - Agent branches are isolated per task
 - PRs target the plan branch, not main
 - Integration PR from plan branch to main after all tasks pass
+
+**Single-branch discipline (auto-delegate mode).** When auto-delegate mode is ON the two-tier
+`plan/ + agent/{slug}` fan-out collapses to one reused caller-named work branch. The
+`SINGLE_BRANCH=1` entrypoint flag (honored by both harness images) makes the worker reuse the
+existing remote branch and non-force push onto it rather than cutting a fresh `agent/{slug}`
+per task, so a sequential daily-dev session accumulates on a single branch. Dead work branches
+(no open PR, no live run, never protected) are swept by `core/branch_sweeper.dead_branches`,
+wired into the reconcile loop (`ReconcileMixin.sweep_dead_branches`). Dispatch reads the mode
+via `EffectiveSettings.auto_delegate_enabled()` and threads `single_branch` into
+`AgentManager.spawn_agent`.
 
 ## Agent Isolation Model
 

@@ -272,3 +272,44 @@ keep the CLAUDE.md index in sync.
   secret regex over the PR diff. Any hit forces the human gate regardless of review
   verdict. A local model prompted with repo context is a supply-chain surface;
   "worker added a dependency" must never auto-merge.
+- **Plan-branch verify gates FETCH the branch and FAIL CLOSED** —
+  `_verify_plan_branch` (used by both `DispatchMixin._wave_verify_gate` and
+  `ReviewMixin.on_plan_completed`) clones the repo then calls
+  `git_ops.checkout_branch`, which `git fetch origin <branch>` and then
+  `git checkout -B <branch> FETCH_HEAD`. This matters: a plain
+  `git fetch origin <branch>` only advances `FETCH_HEAD` — it creates no local or
+  `refs/remotes/origin/<branch>` ref — so the old `git checkout <branch>` failed with
+  exit 1 (`pathspec ... did not match`). That error was caught and the gate returned
+  status `error`, which both callers used to treat as pass-through, so the whole-plan
+  verify backstop was SILENTLY SKIPPED on every plan (GitHub CI was the only real
+  aggregate gate). Now an `error` status is treated like `failed` (the wave is parked /
+  `plan_verify_failed` is published), but an `error` is NOT memoized in
+  `_wave_verify_state`, so a transient clone/network fault is retried on the next loop
+  tick; only `skipped` (no `verify_cmd`, no plan branch, or no credential) passes through.
+  Set the project `verify_cmd` mypy scope to match CI (`mypy src/`, not
+  `mypy src/orchestrator/`) so the loop gates cover the same surface CI does — a narrower
+  scope lets `src/mcp_server` / `src/cli` type errors slip past the worker and whole-plan
+  gates and fail only on CI.
+- **Auto-delegate mode: global toggle, global default worker, single branch, sweeper** —
+  `auto_delegate.enabled` (source of truth in `settings_overrides`) is read via
+  `EffectiveSettings.auto_delegate_enabled()` and toggled with `praxis mode on|off` /
+  `PUT /api/settings/auto-delegate` / MCP `get_mode`. When ON, the brain plans and reviews
+  only and delegates every implementation task to the global default worker,
+  `default_worker_harness` / `default_worker_model` in `config/praxis.yaml` (reference:
+  `agy` / `Gemini 3.6 Flash (High)`; the product default outside the mode stays
+  `opencode`). A project registered without a `model_name` falls back to that worker.
+  `dispatch_pending_tasks` then reuses one caller-named work branch and threads
+  `single_branch=True` → `SINGLE_BRANCH=1` into the container, so both harness entrypoints
+  REUSE the existing remote `BRANCH` with a non-force push instead of cutting a fresh
+  `agent/{slug}` (changing that behavior needs an agent IMAGE REBUILD). Dead work branches
+  (no open PR, no live run, never protected) are reclaimed by
+  `core/branch_sweeper.dead_branches` via `ReconcileMixin.sweep_dead_branches` on the
+  reconcile loop, which swallows its own errors so a sweep failure never wedges the loop.
+  Mode is sequential in v1 (one delegate in flight at a time).
+- **Dev compose does NOT mount `config/`** — `docker-compose.local.yml` bind-mounts
+  `src/`, `web/`, `.git/`, and `data/` for hot-reload but NOT `config/`, and
+  `config/praxis.yaml` is baked into the orchestrator image at build time. So editing the
+  YAML (e.g. `default_worker_harness` / `default_worker_model`) has no effect until you
+  rebuild the orchestrator image (`docker compose ... up --build -d`); a container restart
+  or a `src/` hot-reload alone will keep serving the baked-in defaults. Found live
+  2026-07-27 while enabling auto-delegate mode.

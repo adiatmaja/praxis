@@ -125,6 +125,45 @@ IN_PROGRESS -> NEEDS_CLARIFICATION -> (brain confident) -> PENDING (re-dispatch)
 Both harnesses (opencode, agy) parse the FINAL REPORT for block signals and
 route them through the same harness-agnostic callback.
 
+## Auto-Delegate Mode (daily-dev)
+
+Auto-delegate mode is a global toggle that reframes the same loop as a daily driver:
+with it ON, the brain never edits code directly. For every implementation task the brain
+designs the worker prompt, dispatches it to a single global default worker, and reviews the
+returned PR. Planning, prompt design, and review stay with the brain; the coding is always
+delegated. Mode is sequential in v1 (one delegate in flight at a time).
+
+Toggle it from any client:
+
+```bash
+praxis mode on | off | status          # CLI
+```
+```
+GET  /api/settings/auto-delegate        # {enabled, worker:{harness,model}}
+PUT  /api/settings/auto-delegate        # {enabled: true|false}
+```
+
+The MCP `get_mode` tool returns the same `{enabled, worker}` shape, so an MCP-driven brain can
+check whether it should delegate before touching code.
+
+Three mechanisms make the mode work:
+
+1. **Global default worker (fallback).** The delegated worker is resolved from
+   `default_worker_harness` / `default_worker_model` in `config/praxis.yaml` (reference config:
+   the `agy` harness driving `Gemini 3.6 Flash (High)`). A project registered without its own
+   `model_name` falls back to this default, so you can `praxis add-project` and start delegating
+   immediately. The product default outside this mode stays OpenCode.
+2. **Single-branch discipline.** `dispatch_pending_tasks` reads
+   `EffectiveSettings.auto_delegate_enabled()` and, when ON, reuses one caller-named work branch
+   (base = the project default branch) instead of a fresh `agent/{slug}` per task. It threads
+   `single_branch=True` into `AgentManager.spawn_agent`, which sets `SINGLE_BRANCH=1` in the
+   container. Both harness entrypoints honor the flag: reuse the existing remote branch and
+   non-force push onto it rather than cutting a new one.
+3. **Stale-branch sweeper.** `core/branch_sweeper.dead_branches` selects reclaimable work
+   branches (no open PR, no live run, never a protected branch) and the reconcile loop
+   (`ReconcileMixin.sweep_dead_branches`) deletes them. It is fail-safe: a sweep error is logged
+   and never wedges the loop.
+
 ## Per-Project Settings
 
 Each registered repository can be configured with:
