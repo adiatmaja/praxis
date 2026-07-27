@@ -185,6 +185,7 @@ def test_main_callable_and_registers_tools() -> None:
         "cancel_task",
         "get_project",
         "list_projects",
+        "get_mode",
     } <= tool_names
 
 

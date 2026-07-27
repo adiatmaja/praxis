@@ -104,6 +104,8 @@ calls: nothing streams to you, so you must poll.
 - `poll_task`, `get_task_logs`, `cancel_task` - lifecycle and triage (sections 4 and 6).
 - `get_project` — read a repo's configured worker model + harness (or null if unknown).
 - `list_projects` — list repos Praxis knows, each with its configured model + harness.
+- `get_mode` — return auto-delegate mode state ({enabled, worker:{harness,model}}).
+
 
 ## 3. What context to pass
 
