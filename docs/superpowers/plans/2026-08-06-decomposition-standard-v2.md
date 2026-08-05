@@ -1660,11 +1660,13 @@ orchestration loop; `_normalize_edit_locations` now handles it.
 
 **Deferred out of Phase A, in priority order:**
 
-1. `docs/decomposition-standard.md` section 4 still says sections "are cut from the
+1. ~~`docs/decomposition-standard.md` section 4 still says sections "are cut from the
    bottom". `core/token_budget.fit_sections` fills greedily and SKIPS what does not
    fit, so a larger high-priority section can lose to a smaller low-priority one.
    The code, both `worker_bible.py` docstrings, and the gotcha all say the accurate
-   thing; the contract doc does not. One sentence.
+   thing; the contract doc does not. One sentence.~~ **CLEARED 2026-08-06**, before
+   the product plan's Phase A: section 4 now states that fitting is greedy by
+   priority and names `core/token_budget.fit_sections`.
 2. Ranks `_P_GOAL` through `_P_HANDOVER` are inert, because `fit_sections` reads
    `priority` only for non-floor sections. They become load-bearing the moment a
    `floor=True` is removed, and nothing exercises them.

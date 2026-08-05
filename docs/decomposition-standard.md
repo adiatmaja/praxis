@@ -74,9 +74,12 @@ could not shape the work, which is itself evidence the leaf is under-specified.
 
 ## 4. Context pack priority order
 
-When the assembled context pack exceeds the worker's budget, sections are cut
-from the bottom. This order is fixed and tested
-(`tests/test_worker_bible_priority.py`).
+When the assembled context pack exceeds the worker's budget, sections are fitted
+greedily in this priority order: each is kept if it still fits the space that
+remains, and skipped if it does not. Fitting is greedy rather than a strict
+bottom-up cut, so a large high-priority section can be skipped while a smaller
+lower-priority one below it survives (`core/token_budget.fit_sections`). This
+order is fixed and tested (`tests/test_worker_bible_priority.py`).
 
 1. The leaf `plan_text`, verbatim. Never trimmed. If it alone exceeds the
    budget the leaf is invalid and F3 or the difficulty gate must reject it.
