@@ -79,6 +79,12 @@ async def stop_task(request: Request, task_id: str) -> dict[str, int]:
         await queue.complete_agent_run(run["id"], "stopped", "Stopped by user")
         stopped += 1
     await queue.update_task_status(task_id, TaskStatus.FAILED)
+    # A stopped container was killed mid-work, so it never reached its BLOCKED
+    # checkpoint. Any stored session handle therefore points at a conversation
+    # whose edits were never pushed, and resuming onto it would hand the worker
+    # back a memory the branch does not match. Drop it: this path sets FAILED
+    # directly rather than via fail_task, so it does not inherit that clearing.
+    await queue.clear_worker_session(task_id)
     return {"stopped": stopped}
 
 
