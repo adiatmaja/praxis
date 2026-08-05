@@ -389,3 +389,40 @@ keep the CLAUDE.md index in sync.
   the orchestrator does not mount either volume, so it cannot reach them from the reconcile
   loop without spawning a throwaway container, which the design spec judged to be more
   machinery than the problem currently justifies.
+- **Leaf templates are enforced, not suggested**: `core/leaf_templates.py` is the
+  single source of the per-`LeafType` `plan_text` section requirements, read by
+  BOTH the decompose prompt (`core/plan_review.build_review_prompt`) and the F3
+  validator (`core/leaf_validator._check_leaf_template`, a HARD rule). Adding a
+  `LeafType` value without adding its entry to `REQUIRED_SECTIONS` raises a
+  `KeyError` in `missing_sections`; the golden test
+  `test_every_leaf_type_has_a_section_tuple` catches that at test time. Section
+  matching is line-anchored on purpose: without `^`, the word "goal" appearing
+  inside prose satisfies the Goal requirement and the rule becomes vacuous.
+- **The context pack fits greedily by priority, not strictly left-to-right**:
+  `core/worker_bible.build_bible` orders sections by the fixed ranks in
+  `docs/decomposition-standard.md` section 4: leaf contract, edit locations,
+  acceptance check, previous-attempt feedback, and progress handover are all
+  `floor=True`; neighbor contracts, the working agreement, caller narrative, and
+  repo memory are fitted greedily in that priority order when the budget is
+  tight. Priority sets the preference for what to keep, not a strict drop order:
+  a section that does not fit is skipped and a smaller lower-priority one may
+  still survive. Do not "simplify" a floor back to a plain priority: a worker
+  that loses its edit locations or its acceptance check has been handed a
+  scoping judgment, which is exactly what the standard forbids.
+- **`LEAF_SCHEMA_VERSION` is 2 and the golden fixture asserts `model_dump()`
+  byte-for-byte**: any new `LeafTask` field, even one with a default, changes
+  `parse_review_response` output and breaks
+  `tests/fixtures/decompose/expected_leaf_graph.json`. Regenerate the fixture in
+  the same commit rather than loosening the golden test.
+- **`_normalize_edit_locations` must never raise**: the module-level
+  `_normalize_edit_locations` in `core/orchestrator_dispatch.py` (a plain function,
+  not a `DispatchMixin` method, so patch it on the mixin module) normalizes the
+  plan task's raw `files` value
+  before it becomes the Bible's EDIT LOCATIONS floor section, a section that can
+  never be dropped. On the plan_spec and improvement paths, `plan_task` is raw
+  brain JSON (only the decomposition path validates it through `LeafTask`), so
+  `files` can be any shape: a string, a list, a dict, or garbage. The normalizer
+  must extract paths and return newline-joined strings or None without raising,
+  because a `TypeError` here aborts the whole orchestration loop. Before it
+  existed, a bare string `files` value iterated character-by-character into the
+  floor section, and a non-iterable value raised an unhandled exception.

@@ -336,12 +336,25 @@ the relevant subsystem. Condensed index:
   failed push silently forces the next turn to start cold. Entrypoint change: needs an agent IMAGE
   REBUILD. **The agy JSON envelope shape is UNVERIFIED** (no real agy build was available while this
   was built); the happy path needs a live dogfood run before anyone relies on it.
+- **Leaf templates are enforced**: `core/leaf_templates.py` is the single source of
+  per-`LeafType` `plan_text` section requirements; the F3 validator enforces
+  `REQUIRED_SECTIONS` and missing sections raise `KeyError` at test time.
+- **Context pack fits greedily by priority**: floor sections (plan, edits,
+  acceptance, feedback, handover) never drop; remaining sections fit in priority
+  order so a section that doesn't fit is skipped but lower-priority ones may survive.
+- **`LEAF_SCHEMA_VERSION` is 2**: a new `LeafTask` field, even with a default,
+  changes `model_dump()` output and breaks `tests/fixtures/decompose/expected_leaf_graph.json`;
+  regenerate the fixture in the same commit.
+- **`_normalize_edit_locations` must never raise**: it normalizes raw brain JSON
+  `files` into the edit locations floor section; a `TypeError` aborts the loop, so
+  it returns None on garbage input rather than raising.
 
 ## Documentation
 
 - **Architecture & components:** `docs/architecture.md`
 - **Workflow & orchestration cycle:** `docs/workflow.md`
 - **Deployment, Docker & API reference:** `docs/deployment.md`
+- **Decomposition standard (cited contract):** `docs/decomposition-standard.md`
 - **Gotchas (full narrative):** `docs/gotchas.md`
 - **Design spec:** `docs/superpowers/specs/2026-06-01-ai-agent-orchestrator-design.md`
 - **Capability-engine roadmap (canonical, 2026-07-11):** `docs/superpowers/specs/2026-07-11-capability-engine-roadmap.md` — features F1-F15, standardization contracts S1-S11, 10-plan breakdown; next up = Plan 3 `outcome-recording`

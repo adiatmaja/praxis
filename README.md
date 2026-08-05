@@ -241,6 +241,7 @@ sequential in v1 (one delegate in flight at a time). Full detail: [docs/workflow
 | Topic | Doc |
 |-------|-----|
 | Architecture & component design | [docs/architecture.md](docs/architecture.md) |
+| Decomposition standard (cited contract) | [docs/decomposition-standard.md](docs/decomposition-standard.md) |
 | Workflow & orchestration cycle | [docs/workflow.md](docs/workflow.md) |
 | MCP control surface (drive Praxis from an AI assistant) | [docs/mcp.md](docs/mcp.md) |
 | Deployment, Docker, config, troubleshooting & API reference | [docs/deployment.md](docs/deployment.md) |
