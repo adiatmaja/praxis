@@ -251,8 +251,9 @@ echo "--- Running agy (headless) ---"
 # on stdout when stdout is not a TTY; if that also affects --output-format json, the
 # fallback path (RAW_LOG copied straight to OUTPUT_LOG) is what keeps this working.
 
-AGY_ARGS=(--dangerously-skip-permissions --mode accept-edits --print-timeout 30m
-          --output-format json --model "${MODEL}")
+AGY_BASE_ARGS=(--dangerously-skip-permissions --mode accept-edits --print-timeout 30m
+               --output-format json --model "${MODEL}")
+AGY_ARGS=("${AGY_BASE_ARGS[@]}")
 if [ -n "${WORKER_SESSION_ID:-}" ]; then
     echo "--- Resuming agy conversation ${WORKER_SESSION_ID} ---"
     AGY_ARGS+=(--conversation "${WORKER_SESSION_ID}")
@@ -272,8 +273,7 @@ set -e
 if [ "${agy_rc}" -ne 0 ] && [ -n "${WORKER_SESSION_ID:-}" ]; then
     # A stale or pruned conversation id must not fail the task. Retry once cold.
     echo "WARNING: resume with conversation ${WORKER_SESSION_ID} failed; retrying cold"
-    AGY_ARGS=(--dangerously-skip-permissions --mode accept-edits --print-timeout 30m
-              --output-format json --model "${MODEL}")
+    AGY_ARGS=("${AGY_BASE_ARGS[@]}")
     set +e
     agy "${AGY_ARGS[@]}" -p "${EFFECTIVE_PROMPT}" 2>&1 | tee "${RAW_LOG}"
     agy_rc="${PIPESTATUS[0]}"
@@ -307,35 +307,36 @@ if [ "${report_status}" = "BLOCKED" ] || [ "${report_status}" = "NEEDS_CONTEXT" 
 
     # Checkpoint so the resumed worker's tree matches its restored memory.
     # .praxis-bible.md is in .git/info/exclude, so `git add -A` cannot stage it.
-    #
-    # `git add` and `git commit` are guarded explicitly (never bare statements)
-    # because they run under `set -e`: a command inside an `if` CONDITION is
-    # exempt from errexit, but a bare command is not. An unguarded failure here
-    # would abort the script before STATUS is set to needs_clarification, so the
-    # generic `cleanup` EXIT trap would fire instead and report STATUS=failed
-    # with a lost/garbled question -- the orchestrator would never learn the
-    # worker actually asked something answerable. Wrapping both in `if ! ...`
-    # keeps them inside exempt conditions and lets checkpoint_ok=0 degrade
-    # gracefully to "no session resume" instead of aborting the callback.
+    # Every git step below is guarded as an `if` condition (never a bare
+    # statement) so a failure here cannot trip `set -e` and skip send_callback
+    # with STATUS still needs_clarification; it only flips checkpoint_ok,
+    # which blanks the session id instead.
     checkpoint_ok=1
     if ! git add -A; then
-        echo "WARNING: git add failed during checkpoint; continuing without staging"
+        echo "WARNING: checkpoint git add failed; suppressing session resume"
         checkpoint_ok=0
     fi
     if [ "${checkpoint_ok}" -eq 1 ] && ! git diff --cached --quiet; then
         if ! git commit -m "wip: checkpoint before clarification (${BRANCH})"; then
-            echo "WARNING: checkpoint commit failed"
+            echo "WARNING: checkpoint commit failed; suppressing session resume"
             checkpoint_ok=0
         fi
     fi
+    ahead=0
     if [ "${checkpoint_ok}" -eq 1 ] \
-        && [ "$(git rev-list --count "${BASE_BRANCH}..HEAD")" -gt 0 ]; then
+        && ! ahead=$(git rev-list --count "${BASE_BRANCH}..HEAD"); then
+        echo "WARNING: checkpoint rev-list failed; suppressing session resume"
+        checkpoint_ok=0
+        ahead=0
+    fi
+    if [ "${checkpoint_ok}" -eq 1 ] && [ "${ahead}" -gt 0 ]; then
         if ! git push -u origin "${BRANCH}"; then
             echo "WARNING: checkpoint push failed; suppressing session resume"
             checkpoint_ok=0
         fi
     fi
-    # Only report a conversation id once its checkpoint is on the remote.
+    # The invariant: only report a session id once its checkpoint is on the
+    # remote. Otherwise the next turn must start cold and rebuild from base.
     if [ "${checkpoint_ok}" -ne 1 ]; then
         CAPTURED_SESSION_ID=""
     fi
