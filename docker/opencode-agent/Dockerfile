@@ -29,4 +29,7 @@ WORKDIR /home/agent
 COPY --chown=agent:agent entrypoint.sh /home/agent/entrypoint.sh
 RUN chmod +x /home/agent/entrypoint.sh
 
+COPY --chown=agent:agent extract_session.py /usr/local/bin/extract_session.py
+ENV XDG_DATA_HOME=/home/agent/.local/share
+
 ENTRYPOINT ["/home/agent/entrypoint.sh"]
