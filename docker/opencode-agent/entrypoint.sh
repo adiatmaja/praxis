@@ -17,6 +17,17 @@ PR_URL=""
 QUESTION=""
 CAPTURED_SESSION_ID=""
 
+# Single source of truth for "this run reuses the existing remote branch
+# instead of rebuilding it from base": single-branch mode and a resume turn
+# both apply. Computed once here and tested everywhere else so the two spots
+# (branch checkout below, push guard further down) can never drift apart
+# again -- that drift is exactly what caused the force-push defect this
+# variable replaces.
+REUSING_BRANCH=0
+if [ "${SINGLE_BRANCH:-0}" = "1" ] || [ -n "${WORKER_SESSION_ID:-}" ]; then
+    REUSING_BRANCH=1
+fi
+
 # Guard: in two-tier mode workers must NEVER target a protected base branch
 # (main/master/release*). Doing so collapses two-tier branching and (worst case)
 # points a PR at main. Single-branch mode (SINGLE_BRANCH=1, auto-delegate) is the
@@ -127,7 +138,7 @@ else
         git reset --hard "origin/${BASE_BRANCH}"
     fi
 fi
-if { [ "${SINGLE_BRANCH:-0}" = "1" ] || [ -n "${WORKER_SESSION_ID:-}" ]; } \
+if [ "${REUSING_BRANCH}" = "1" ] \
     && git rev-parse --verify "origin/${BRANCH}" >/dev/null 2>&1; then
     # Reuse the existing remote branch. Required when resuming a session: the
     # restored conversation refers to edits checkpointed on this branch, so a
@@ -331,10 +342,14 @@ else
 fi
 
 echo "--- Pushing branch ---"
-# Retries rebuild the agent branch from base while the remote may still hold a
-# previous attempt's commits; each attempt is a full re-implementation, so the
-# fresh branch is authoritative and a force push is correct here.
-if [ "${SINGLE_BRANCH:-0}" = "1" ]; then
+# Force is correct only when the branch was just rebuilt fresh from base this
+# attempt, which makes it authoritative over whatever the remote holds. Both
+# single-branch mode and a resume turn instead REUSE the existing remote
+# branch (checked out above), so a force push there would silently discard
+# commits this run does not know about -- its own earlier checkpoint, or
+# someone else's. Non-force in both reuse cases; force only for a genuine
+# from-base rebuild retry.
+if [ "${REUSING_BRANCH}" = "1" ]; then
     git push -u origin "${BRANCH}"
 else
     git push -u --force origin "${BRANCH}"
