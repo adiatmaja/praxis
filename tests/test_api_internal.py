@@ -7,6 +7,8 @@ from unittest.mock import AsyncMock
 import pytest
 from httpx import AsyncClient
 
+from orchestrator.core.clarification_states import ANSWERED_BY_BRAIN
+from orchestrator.core.session_resume import resolve_resume_session
 from orchestrator.core.task_queue import TaskQueue
 from orchestrator.database import Database
 from orchestrator.models.schemas import TaskStatus
@@ -261,3 +263,55 @@ async def test_agent_done_without_session_id_leaves_existing_handle_untouched(
     task = await queue.get_task(task_id)
     assert task["worker_session_id"] == "ses_prior_456"
     assert task["worker_session_harness"] == "agy"
+
+
+@pytest.mark.integration
+async def test_plain_failure_retry_after_resume_clears_session_handle(
+    client: AsyncClient,
+    db: Database,
+    auth_headers: dict[str, str],
+) -> None:
+    """A resumed run that then fails ordinarily must not stay resumable.
+
+    Reproduces the exact defect: a task was clarified once (state=
+    answered_by_brain, a stored session handle, attempt below max_retries),
+    so the immediately-following resume dispatch was correct per design.
+    That resumed run then fails for an unrelated reason (flaky test, model
+    gives up) with NO session_id on the callback -- an ordinary crash, not a
+    fresh BLOCKED checkpoint. Because attempt < max_retries, the callback
+    takes the plain-retry branch (queue.retry_task), not fail_task. Before
+    the fix, retry_task never touched worker_session_id/harness, so the
+    stale handle plus the still-answered_by_brain clarification_state would
+    let the NEXT dispatch wrongly resume a conversation about a branch that
+    retry_task just rebuilt from base.
+    """
+    _, task_id = await _setup_plan_with_task(client, db, auth_headers, harness="agy")
+    queue: TaskQueue = client.app.state.task_queue  # type: ignore[attr-defined]
+
+    # Seed the state right after a successful resume dispatch.
+    await queue.record_worker_session(task_id, "ses_resumed_789", "agy")
+    await db.execute(
+        "UPDATE tasks SET clarification_state = ?, attempt = ? WHERE id = ?",
+        (ANSWERED_BY_BRAIN, 1, task_id),
+    )
+    seeded = await queue.get_task(task_id)
+    assert seeded["clarification_state"] == ANSWERED_BY_BRAIN
+    assert seeded["worker_session_id"] == "ses_resumed_789"
+    assert seeded["worker_session_harness"] == "agy"
+    assert int(seeded["attempt"]) == 1
+
+    # Ordinary crash: status="failed", no session_id at all.
+    resp = await client.post(
+        "/api/internal/agent-done",
+        headers={"X-Praxis-Callback-Token": "test-auth"},
+        json={"task_id": task_id, "status": "failed"},
+    )
+    assert resp.status_code == 200
+
+    task = await queue.get_task(task_id)
+    assert task["status"] == TaskStatus.PENDING
+    assert int(task["attempt"]) == 2
+    assert task["worker_session_id"] is None
+
+    # The property that actually matters: the gate refuses to resume.
+    assert resolve_resume_session(task, "agy") is None

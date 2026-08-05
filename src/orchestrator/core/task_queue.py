@@ -218,6 +218,18 @@ class TaskQueue:
         )
 
     async def retry_task(self, task_id: str) -> None:
+        """Requeue a task for a plain retry and drop any worker session handle.
+
+        A retry always rebuilds the branch from base, so a stored
+        ``worker_session_id`` would describe a tree that no longer exists.
+        Clearing the id here (not ``clarification_state``) is the
+        load-bearing part: ``session_resume.resolve_resume_session`` refuses
+        to resume without a stored id regardless of what
+        ``clarification_state`` still says, so this alone closes the gate.
+        ``clarification_state`` is left untouched deliberately -- resetting
+        it is a broader behavior change to the clarification flow that is
+        out of scope here, and is not needed to prevent the resume bug.
+        """
         task = await self.get_task(task_id)
         if task is None:
             message = f"Task {task_id} not found"
@@ -225,7 +237,8 @@ class TaskQueue:
         now = datetime.now(UTC).isoformat()
         await self._db.execute(
             """UPDATE tasks
-               SET status = ?, attempt = ?, updated_at = ?
+               SET status = ?, attempt = ?, updated_at = ?,
+                   worker_session_id = NULL, worker_session_harness = NULL
                WHERE id = ?""",
             (TaskStatus.PENDING, int(task["attempt"]) + 1, now, task_id),
         )
