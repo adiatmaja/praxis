@@ -17,6 +17,7 @@ WORKSPACE="/home/agent/workspace"
 STATUS="completed"
 PR_URL=""
 QUESTION=""
+CAPTURED_SESSION_ID=""
 
 # Guard: in two-tier mode workers must NEVER target a protected base branch
 # (main/master/release*). Doing so collapses two-tier branching and (worst case)
@@ -55,7 +56,12 @@ send_callback() {
         question_json=$(printf "%s" "${QUESTION}" | json_escape)
     fi
 
-    local payload="{\"task_id\":\"${TASK_ID}\",\"run_id\":${run_json},\"status\":\"${STATUS}\",\"pr_url\":${pr_json},\"question\":${question_json}}"
+    local session_json="null"
+    if [ -n "${CAPTURED_SESSION_ID:-}" ]; then
+        session_json=$(printf "%s" "${CAPTURED_SESSION_ID}" | json_escape)
+    fi
+
+    local payload="{\"task_id\":\"${TASK_ID}\",\"run_id\":${run_json},\"status\":\"${STATUS}\",\"pr_url\":${pr_json},\"question\":${question_json},\"session_id\":${session_json}}"
     local max_attempts="${CALLBACK_MAX_ATTEMPTS:-5}"
     local attempt=1
     while [ "${attempt}" -le "${max_attempts}" ]; do
@@ -123,8 +129,11 @@ else
         git reset --hard "origin/${BASE_BRANCH}"
     fi
 fi
-if [ "${SINGLE_BRANCH:-0}" = "1" ] && git rev-parse --verify "origin/${BRANCH}" >/dev/null 2>&1; then
-    echo "--- Single-branch mode: reusing existing origin/${BRANCH} ---"
+if { [ "${SINGLE_BRANCH:-0}" = "1" ] || [ -n "${WORKER_SESSION_ID:-}" ]; } \
+    && git rev-parse --verify "origin/${BRANCH}" >/dev/null 2>&1; then
+    # Reuse the existing remote branch. Required when resuming a conversation:
+    # the restored context refers to edits checkpointed on this branch.
+    echo "--- Reusing existing origin/${BRANCH} ---"
     git checkout -b "${BRANCH}" "origin/${BRANCH}"
 else
     echo "--- Creating branch ${BRANCH} from ${BASE_BRANCH} ---"
@@ -232,26 +241,105 @@ echo "--- Running agy (headless) ---"
 # Note: --headless and --approve are NOT valid flags in v1.1.x; removed.
 # agy reads OAuth creds from ~/.gemini (a named Docker volume mounted read-write
 # by the orchestrator, name set via GEMINI_CREDS_VOLUME). No OPENAI_API_BASE needed.
+#
+# UNVERIFIED: --output-format json and --conversation are not confirmed against a
+# real agy build (no image/creds available in this environment). extract_session.py
+# tries several plausible envelope keys and fails closed (exit 1, no stdout) on any
+# shape it does not recognize, so the fallback branch below always keeps the worker
+# usable even if these flags are wrong or the JSON envelope has a different shape.
+# There is also a known upstream bug (antigravity-cli#76) where --print emits nothing
+# on stdout when stdout is not a TTY; if that also affects --output-format json, the
+# fallback path (RAW_LOG copied straight to OUTPUT_LOG) is what keeps this working.
 
+AGY_ARGS=(--dangerously-skip-permissions --mode accept-edits --print-timeout 30m
+          --output-format json --model "${MODEL}")
+if [ -n "${WORKER_SESSION_ID:-}" ]; then
+    echo "--- Resuming agy conversation ${WORKER_SESSION_ID} ---"
+    AGY_ARGS+=(--conversation "${WORKER_SESSION_ID}")
+fi
+
+# NOTE: piped through `tee` (not a plain `>` redirect) so container log streaming
+# behaves exactly as it did before this feature: the orchestrator tails container
+# logs live, and buffering the whole run into a file before printing it would delay
+# visibility for the entire task duration. RAW_LOG still captures everything for the
+# JSON-envelope split below.
+RAW_LOG="$(mktemp)"
 OUTPUT_LOG="$(mktemp)"
 set +e
-agy --dangerously-skip-permissions --mode accept-edits --print-timeout 30m \
-    --model "${MODEL}" -p "${EFFECTIVE_PROMPT}" \
-    2>&1 | tee "${OUTPUT_LOG}"
+agy "${AGY_ARGS[@]}" -p "${EFFECTIVE_PROMPT}" 2>&1 | tee "${RAW_LOG}"
 agy_rc="${PIPESTATUS[0]}"
 set -e
+if [ "${agy_rc}" -ne 0 ] && [ -n "${WORKER_SESSION_ID:-}" ]; then
+    # A stale or pruned conversation id must not fail the task. Retry once cold.
+    echo "WARNING: resume with conversation ${WORKER_SESSION_ID} failed; retrying cold"
+    AGY_ARGS=(--dangerously-skip-permissions --mode accept-edits --print-timeout 30m
+              --output-format json --model "${MODEL}")
+    set +e
+    agy "${AGY_ARGS[@]}" -p "${EFFECTIVE_PROMPT}" 2>&1 | tee "${RAW_LOG}"
+    agy_rc="${PIPESTATUS[0]}"
+    set -e
+fi
 if [ "${agy_rc}" -ne 0 ]; then
     exit "${agy_rc}"
+fi
+
+echo "--- Splitting agy JSON envelope (best effort) ---"
+if SPLIT=$(python3 /usr/local/bin/extract_session.py < "${RAW_LOG}" 2>/dev/null); then
+    CAPTURED_SESSION_ID=$(printf '%s' "${SPLIT}" | head -n1)
+    printf '%s' "${SPLIT}" | tail -n +2 > "${OUTPUT_LOG}"
+    echo "Conversation id: ${CAPTURED_SESSION_ID:-<none>}"
+else
+    # Envelope unparseable: fall back to treating raw output as the transcript,
+    # exactly as before this feature existed.
+    CAPTURED_SESSION_ID=""
+    cp "${RAW_LOG}" "${OUTPUT_LOG}"
+    echo "Envelope unparseable; continuing without conversation id"
 fi
 
 report_status=$(grep -oE '^Status:[[:space:]]*[A-Z_]+' "${OUTPUT_LOG}" \
     | tail -n1 | sed -E 's/^Status:[[:space:]]*//' ) || true
 
 if [ "${report_status}" = "BLOCKED" ] || [ "${report_status}" = "NEEDS_CONTEXT" ]; then
-    echo "--- Worker reported ${report_status}; sending clarification request (no PR) ---"
+    echo "--- Worker reported ${report_status}; checkpointing WIP (no PR) ---"
     QUESTION=$(awk '/^Concerns/{flag=1;next}/^====/{flag=0}flag' "${OUTPUT_LOG}" \
         | sed '/^[[:space:]]*$/d')
     [ -z "${QUESTION}" ] && QUESTION="Worker reported ${report_status} without details."
+
+    # Checkpoint so the resumed worker's tree matches its restored memory.
+    # .praxis-bible.md is in .git/info/exclude, so `git add -A` cannot stage it.
+    #
+    # `git add` and `git commit` are guarded explicitly (never bare statements)
+    # because they run under `set -e`: a command inside an `if` CONDITION is
+    # exempt from errexit, but a bare command is not. An unguarded failure here
+    # would abort the script before STATUS is set to needs_clarification, so the
+    # generic `cleanup` EXIT trap would fire instead and report STATUS=failed
+    # with a lost/garbled question -- the orchestrator would never learn the
+    # worker actually asked something answerable. Wrapping both in `if ! ...`
+    # keeps them inside exempt conditions and lets checkpoint_ok=0 degrade
+    # gracefully to "no session resume" instead of aborting the callback.
+    checkpoint_ok=1
+    if ! git add -A; then
+        echo "WARNING: git add failed during checkpoint; continuing without staging"
+        checkpoint_ok=0
+    fi
+    if [ "${checkpoint_ok}" -eq 1 ] && ! git diff --cached --quiet; then
+        if ! git commit -m "wip: checkpoint before clarification (${BRANCH})"; then
+            echo "WARNING: checkpoint commit failed"
+            checkpoint_ok=0
+        fi
+    fi
+    if [ "${checkpoint_ok}" -eq 1 ] \
+        && [ "$(git rev-list --count "${BASE_BRANCH}..HEAD")" -gt 0 ]; then
+        if ! git push -u origin "${BRANCH}"; then
+            echo "WARNING: checkpoint push failed; suppressing session resume"
+            checkpoint_ok=0
+        fi
+    fi
+    # Only report a conversation id once its checkpoint is on the remote.
+    if [ "${checkpoint_ok}" -ne 1 ]; then
+        CAPTURED_SESSION_ID=""
+    fi
+
     STATUS="needs_clarification"
     send_callback
     trap - EXIT
