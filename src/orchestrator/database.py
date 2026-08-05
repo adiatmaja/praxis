@@ -209,6 +209,23 @@ async def _migration_0005_task_outcomes(connection: aiosqlite.Connection) -> Non
     )
 
 
+async def _migration_0006_worker_session(connection: aiosqlite.Connection) -> None:
+    """Add tasks.worker_session_id / worker_session_harness for session resume.
+
+    The harness is stored alongside the id because a project's harness can
+    change between dispatches, and an agy conversation id is meaningless to
+    OpenCode. Replay checks both.
+    """
+    cursor = await connection.execute("PRAGMA table_info(tasks)")
+    cols = {row[1] for row in await cursor.fetchall()}
+    if "worker_session_id" not in cols:
+        await connection.execute("ALTER TABLE tasks ADD COLUMN worker_session_id TEXT")
+    if "worker_session_harness" not in cols:
+        await connection.execute(
+            "ALTER TABLE tasks ADD COLUMN worker_session_harness TEXT"
+        )
+
+
 MIGRATIONS: list[Migration] = [
     Migration(1, "baseline: schema as of 2026-07-02", _migration_0001_baseline),
     Migration(
@@ -230,6 +247,11 @@ MIGRATIONS: list[Migration] = [
         5,
         "add task_outcomes calibration table",
         _migration_0005_task_outcomes,
+    ),
+    Migration(
+        6,
+        "add tasks.worker_session_id/worker_session_harness for session resume",
+        _migration_0006_worker_session,
     ),
 ]
 
