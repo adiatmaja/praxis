@@ -34,6 +34,194 @@ Per the spec's section 9 sequencing exemption, no dogfood run is required betwee
 
 ---
 
+## Dispatch guide: agent type per task
+
+Read this before dispatching anything.
+
+Model AND reasoning effort both come from the agent DEFINITION, not from the
+Agent tool call. The tool call accepts `subagent_type`, `model`, `isolation`,
+`run_in_background`, `description`, and `prompt`; it has no `effort` parameter.
+The `effort` frontmatter field in `.claude/agents/*.md` **overrides the session
+effort level** for the duration of that subagent (options `low`, `medium`,
+`high`, `xhigh`, `max`; the available set depends on the model). So the clean
+way to run this plan is to define the agent types below once, then dispatch each
+task by `subagent_type` and change nothing else.
+
+Set the ORCHESTRATING session to `high` (or `xhigh` for the phases marked
+below). That governs your own planning, the between-task review, and the diff
+audit; each subagent overrides it with its own effort.
+
+Higher effort usually costs LESS in total here, not more: every task is a test,
+run, implement, run, mutate, run, commit loop, so turn count dominates and
+under-setting effort adds turns.
+
+### Agent types to define once
+
+Create these in `.claude/agents/` before starting. They are reused by all three
+Usable Praxis plans.
+
+```yaml
+# .claude/agents/praxis-impl-light.md
+---
+name: praxis-impl-light
+description: Mechanical Praxis plan tasks - doc index edits, single registry entries, small additive models.
+model: haiku
+effort: medium
+---
+Execute exactly one task from a Praxis implementation plan, following its steps
+verbatim. Write the failing test first and confirm it fails for the stated
+reason before implementing. Run every mutation check the task specifies. Do not
+touch a file the task does not name.
+```
+
+```yaml
+# .claude/agents/praxis-impl-standard.md
+---
+name: praxis-impl-standard
+description: Standard Praxis plan implementation tasks - well-specified modules, validators, endpoints, and their tests.
+model: sonnet
+effort: high
+---
+Execute exactly one task from a Praxis implementation plan, following its steps
+verbatim. Write the failing test first and confirm it fails for the stated
+reason before implementing. Run every mutation check the task specifies; if a
+mutation check does not fail, the test is vacuous - fix the test and redo the
+check. Do not touch a file the task does not name. Report every file you
+changed.
+```
+
+```yaml
+# .claude/agents/praxis-impl-critical.md
+---
+name: praxis-impl-critical
+description: High-risk Praxis plan tasks - load-bearing invariants, the review path, architecture seams, shell entrypoints.
+model: opus
+effort: xhigh
+---
+Execute exactly one task from a Praxis implementation plan. This task was marked
+critical because a subtle error in it fails silently rather than loudly.
+
+Before implementing, state in one paragraph what the load-bearing invariant is
+and how the task's tests pin it. Write the failing test first and confirm it
+fails for the stated reason. Run every mutation check the task specifies and
+report its output; a mutation check that does not fail means the test is
+vacuous, so fix the test and redo the check. Do not touch a file the task does
+not name. Report every file you changed and every assumption you made.
+```
+
+```yaml
+# .claude/agents/praxis-impl-max.md
+---
+name: praxis-impl-max
+description: The single highest-stakes Praxis plan task, where an undetected error invalidates downstream work.
+model: opus
+effort: max
+---
+Execute exactly one task from a Praxis implementation plan. Correctness here
+matters more than cost: an undetected error invalidates every result that
+depends on this task, and the failure is not visible until much later.
+
+Before implementing, state what would have to be true for this task's output to
+be silently wrong, and how the task's tests would catch it. Write the failing
+test first. Run every mutation check and report its full output. Verify the
+result independently of the tests where the task tells you how. Do not touch a
+file the task does not name.
+```
+
+```yaml
+# .claude/agents/praxis-review-first.md
+---
+name: praxis-review-first
+description: First-pass review of a completed Praxis plan task against the plan text.
+model: sonnet
+effort: high
+tools: Read, Grep, Glob, Bash
+---
+Review one completed task against its plan text. Check: every step was done,
+the tests match what the plan specified, the mutation checks actually ran, no
+file outside the task's declared list was touched, and no em dash was
+introduced. Report findings only; do not fix anything.
+```
+
+```yaml
+# .claude/agents/praxis-review-adversarial.md
+---
+name: praxis-review-adversarial
+description: Adversarial second-pass review of a critical Praxis plan task.
+model: opus
+effort: xhigh
+tools: Read, Grep, Glob, Bash
+---
+Try to break this task's implementation. Assume the tests are wrong until you
+have checked them. For each test, ask what mutation would leave it passing, and
+say so if one exists. Check the load-bearing invariant the task names is
+actually enforced, not merely asserted. Report findings only; do not fix
+anything.
+```
+
+```yaml
+# .claude/agents/praxis-review-recheck.md
+---
+name: praxis-review-recheck
+description: Cheap re-review of a Praxis plan task after review fixes were applied.
+model: haiku
+effort: medium
+tools: Read, Grep, Glob, Bash
+---
+Confirm that each previously reported finding was addressed and that nothing
+else changed. Report findings only; do not fix anything.
+```
+
+If a model rejects an effort level (the available set depends on the model),
+drop the `effort` line from that definition and let it inherit the session.
+
+**Review pairing:** `praxis-review-first` after every task; then
+`praxis-review-adversarial` for any task dispatched to `praxis-impl-critical` or
+`praxis-impl-max`, and `praxis-review-recheck` for everything else.
+`praxis-review-recheck` also handles every re-review after fixes.
+
+**Never take a subagent's report at face value.** Diff every file it touched
+before accepting the task. Subagents on this repo have historically done
+unrequested work and under-reported it.
+
+### Session baseline
+
+| Phase | Tasks | Orchestrating-session effort |
+|-------|-------|------------------------------|
+| A | 1 to 7 | `high` |
+| B | 8 to 18 | `xhigh` (the hardest phase across the three plans) |
+| C | 19 to 23 | `high` |
+
+### Per task
+
+| Task | `subagent_type` | Effective model / effort | Why this tier |
+|------|-----------------|--------------------------|---------------|
+| 1 Standard doc | `praxis-impl-standard` | sonnet / high | Writing a cited doc; no code risk |
+| 2 LeafType and LeafTask fields | `praxis-impl-standard` | sonnet / high | Mechanical, but regenerates a golden fixture |
+| 3 `core/leaf_templates.py` | `praxis-impl-standard` | sonnet / high | Small pure module |
+| 4 Prompt injection | `praxis-impl-standard` | sonnet / high | One format argument and a prompt block |
+| 5 F3 template rule | `praxis-impl-standard` | sonnet / high | One validator rule in an established pattern |
+| 6 Context-pack reorder | `praxis-impl-critical` | opus / xhigh | Changes what EVERY worker sees. A wrong floor or priority silently degrades every dispatch and no test outside this task would catch it |
+| 7 Close out Phase A | `praxis-impl-light` | haiku / medium | Doc index and link edits |
+| 8 Migration 7 | `praxis-impl-standard` | sonnet / high | Additive, idempotent, guarded |
+| 9 `TriageDecision` and fixtures | `praxis-impl-standard` | sonnet / high | Pydantic plus golden files |
+| 10 Register the call site | `praxis-impl-light` | haiku / medium | One dict entry and one role mapping |
+| 11 `core/leaf_split.py` | `praxis-impl-critical` | opus / xhigh | Carries the positional opus_plan-to-row invariant. A subtle bug here silently mis-associates every task after the split |
+| 12 `core/escalation.py` and config | `praxis-impl-standard` | sonnet / high | Small pure module plus YAML |
+| 13 `core/leaf_triage.py` | `praxis-impl-critical` | opus / xhigh | A new brain call with hard bounds and downgrade logic; the fail-closed paths are the point |
+| 14 TaskQueue split insertion | `praxis-impl-critical` | opus / xhigh | Same positional invariant, plus SUPERSEDED semantics in the dispatch and completion queries |
+| 15 SUPERSEDED consumer sweep | `praxis-impl-critical` | opus / xhigh | A cross-cutting audit needing judgment about what terminal means in each consumer. Missing one wedges split plans |
+| 16 Wire triage into review | `praxis-impl-critical` | opus / xhigh | The most delicate path in the codebase. Get the retry, clarification, or provider-error interaction wrong and every task's lifecycle changes |
+| 17 Dispatch escalation and attribution | `praxis-impl-standard` | sonnet / high | Two well-specified substitutions |
+| 18 Close out Phase B | `praxis-impl-standard` | sonnet / high | Dashboard handlers plus gotchas |
+| 19 `core/difficulty.py` | `praxis-impl-standard` | sonnet / high | Pure module. Expect to tune `DEFAULT_BIAS` on the first run; the task says so |
+| 20 Two capability events | `praxis-impl-light` | haiku / medium | Two Pydantic models and a registry entry |
+| 21 Gate decomposition on the score | `praxis-impl-critical` | opus / xhigh | Edits the decompose loop's shared round budget. Easy to break the F3 re-ask path while adding the difficulty one |
+| 22 Flagged-leaf dispatch | `praxis-impl-standard` | sonnet / high | Additive event fields plus one Bible fallback |
+| 23 Close out Phase C | `praxis-impl-light` | haiku / medium | Docs, plus correcting a stale CLAUDE.md claim |
+
+---
+
 ## Standing constraints (read before Task 1)
 
 These are project gotchas that this plan touches directly. Full narrative in `docs/gotchas.md`.

@@ -32,6 +32,188 @@ place in it:
 
 ---
 
+## Dispatch guide: agent type per task
+
+Read this before dispatching anything.
+
+Model AND reasoning effort both come from the agent DEFINITION, not from the
+Agent tool call. The tool call accepts `subagent_type`, `model`, `isolation`,
+`run_in_background`, `description`, and `prompt`; it has no `effort` parameter.
+The `effort` frontmatter field in `.claude/agents/*.md` **overrides the session
+effort level** for the duration of that subagent (options `low`, `medium`,
+`high`, `xhigh`, `max`; the available set depends on the model). So the clean
+way to run this plan is to define the agent types below once, then dispatch each
+task by `subagent_type` and change nothing else.
+
+Set the ORCHESTRATING session to `high` (or `xhigh` for the phases marked
+below). That governs your own planning, the between-task review, and the diff
+audit; each subagent overrides it with its own effort.
+
+Higher effort usually costs LESS in total here, not more: every task is a test,
+run, implement, run, mutate, run, commit loop, so turn count dominates and
+under-setting effort adds turns.
+
+### Agent types to define once
+
+Create these in `.claude/agents/` before starting. They are reused by all three
+Usable Praxis plans.
+
+```yaml
+# .claude/agents/praxis-impl-light.md
+---
+name: praxis-impl-light
+description: Mechanical Praxis plan tasks - doc index edits, single registry entries, small additive models.
+model: haiku
+effort: medium
+---
+Execute exactly one task from a Praxis implementation plan, following its steps
+verbatim. Write the failing test first and confirm it fails for the stated
+reason before implementing. Run every mutation check the task specifies. Do not
+touch a file the task does not name.
+```
+
+```yaml
+# .claude/agents/praxis-impl-standard.md
+---
+name: praxis-impl-standard
+description: Standard Praxis plan implementation tasks - well-specified modules, validators, endpoints, and their tests.
+model: sonnet
+effort: high
+---
+Execute exactly one task from a Praxis implementation plan, following its steps
+verbatim. Write the failing test first and confirm it fails for the stated
+reason before implementing. Run every mutation check the task specifies; if a
+mutation check does not fail, the test is vacuous - fix the test and redo the
+check. Do not touch a file the task does not name. Report every file you
+changed.
+```
+
+```yaml
+# .claude/agents/praxis-impl-critical.md
+---
+name: praxis-impl-critical
+description: High-risk Praxis plan tasks - load-bearing invariants, the review path, architecture seams, shell entrypoints.
+model: opus
+effort: xhigh
+---
+Execute exactly one task from a Praxis implementation plan. This task was marked
+critical because a subtle error in it fails silently rather than loudly.
+
+Before implementing, state in one paragraph what the load-bearing invariant is
+and how the task's tests pin it. Write the failing test first and confirm it
+fails for the stated reason. Run every mutation check the task specifies and
+report its output; a mutation check that does not fail means the test is
+vacuous, so fix the test and redo the check. Do not touch a file the task does
+not name. Report every file you changed and every assumption you made.
+```
+
+```yaml
+# .claude/agents/praxis-impl-max.md
+---
+name: praxis-impl-max
+description: The single highest-stakes Praxis plan task, where an undetected error invalidates downstream work.
+model: opus
+effort: max
+---
+Execute exactly one task from a Praxis implementation plan. Correctness here
+matters more than cost: an undetected error invalidates every result that
+depends on this task, and the failure is not visible until much later.
+
+Before implementing, state what would have to be true for this task's output to
+be silently wrong, and how the task's tests would catch it. Write the failing
+test first. Run every mutation check and report its full output. Verify the
+result independently of the tests where the task tells you how. Do not touch a
+file the task does not name.
+```
+
+```yaml
+# .claude/agents/praxis-review-first.md
+---
+name: praxis-review-first
+description: First-pass review of a completed Praxis plan task against the plan text.
+model: sonnet
+effort: high
+tools: Read, Grep, Glob, Bash
+---
+Review one completed task against its plan text. Check: every step was done,
+the tests match what the plan specified, the mutation checks actually ran, no
+file outside the task's declared list was touched, and no em dash was
+introduced. Report findings only; do not fix anything.
+```
+
+```yaml
+# .claude/agents/praxis-review-adversarial.md
+---
+name: praxis-review-adversarial
+description: Adversarial second-pass review of a critical Praxis plan task.
+model: opus
+effort: xhigh
+tools: Read, Grep, Glob, Bash
+---
+Try to break this task's implementation. Assume the tests are wrong until you
+have checked them. For each test, ask what mutation would leave it passing, and
+say so if one exists. Check the load-bearing invariant the task names is
+actually enforced, not merely asserted. Report findings only; do not fix
+anything.
+```
+
+```yaml
+# .claude/agents/praxis-review-recheck.md
+---
+name: praxis-review-recheck
+description: Cheap re-review of a Praxis plan task after review fixes were applied.
+model: haiku
+effort: medium
+tools: Read, Grep, Glob, Bash
+---
+Confirm that each previously reported finding was addressed and that nothing
+else changed. Report findings only; do not fix anything.
+```
+
+If a model rejects an effort level (the available set depends on the model),
+drop the `effort` line from that definition and let it inherit the session.
+
+**Review pairing:** `praxis-review-first` after every task; then
+`praxis-review-adversarial` for any task dispatched to `praxis-impl-critical` or
+`praxis-impl-max`, and `praxis-review-recheck` for everything else.
+`praxis-review-recheck` also handles every re-review after fixes.
+
+**Never take a subagent's report at face value.** Diff every file it touched
+before accepting the task. Subagents on this repo have historically done
+unrequested work and under-reported it.
+
+### Session baseline
+
+| Phase | Tasks | Orchestrating-session effort |
+|-------|-------|------------------------------|
+| A | 1 to 6 | `xhigh` |
+| B | 7 to 12 | `xhigh` |
+| C | 13 to 17 | `high` |
+
+### Per task
+
+| Task | `subagent_type` | Effective model / effort | Why this tier |
+|------|-----------------|--------------------------|---------------|
+| 1 `GitBackend` seam | `praxis-impl-critical` | opus / xhigh | An architecture seam every later task builds on. Getting the protocol shape wrong is expensive to undo |
+| 2 Route review through the backend | `praxis-impl-critical` | opus / xhigh | Touches `review_task`, `approve_task_merge`, and `reject_task_merge`. GitHub behavior must stay byte-identical |
+| 3 Local preflight | `praxis-impl-standard` | sonnet / high | Additive branch in an established pattern |
+| 4 Bind-mount the bare repo | `praxis-impl-standard` | sonnet / high | Env and volume wiring |
+| 5 Both entrypoints | `praxis-impl-critical` | opus / xhigh | Shell plus an image rebuild, in the exact area where a printf bug once shipped past `bash -n`. The task requires EXECUTING the guards, not syntax-checking them |
+| 6 End-to-end and docs | `praxis-impl-standard` | sonnet / high | Integration test against real git |
+| 7 Bench skeleton | `praxis-impl-standard` | sonnet / high | Config data plus packaging exclusions |
+| 8 Prepare instances | `praxis-impl-max` | opus / max | The highest-stakes task across the three plans. If the gold patch stays reachable, every number the full matrix produces is invalid and you will not find out until the whole run is spent. Its mutation check is the single most important verification in the three plans |
+| 9 Stratified sampler | `praxis-impl-standard` | sonnet / high | Pure function plus a committed draw |
+| 10 Metrics schema | `praxis-impl-standard` | sonnet / high | A dataclass and two file helpers |
+| 11 Runner and grader | `praxis-impl-critical` | opus / xhigh | Owns the confounded-design guard and the mapping from the official harness's fields to the outcome flags. A wrong mapping publishes a wrong number |
+| 12 Run the pilot | **You, not an agent** | n/a | Judging the three exit criteria is a human call, and step 6 is a hand-check by definition |
+| 13 Bench-mode double gate | `praxis-impl-standard` | sonnet / high | Small and heavily tested, but read the literal-"1" rationale before touching it |
+| 14 Conditions C and D | `praxis-impl-standard` | sonnet / high | Two pure translators |
+| 15 Analysis math | `praxis-impl-critical` | opus / xhigh | Wilson and McNemar go straight into a published report. Known-answer fixtures pin them, but a mis-derived interval that happens to pass the fixture is the failure mode |
+| 16 Report renderer | `praxis-impl-standard` | sonnet / high | Template filling, with the caveats structural |
+| 17 Full run and publish | **You, not an agent** | n/a | Running the matrix and hand-classifying ten failures |
+
+---
+
 ## Standing constraints (read before Task 1)
 
 - **`gh pr` calls need `--repo <owner/name>`** or they resolve against the
