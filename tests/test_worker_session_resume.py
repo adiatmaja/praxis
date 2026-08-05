@@ -11,6 +11,7 @@ from pathlib import Path
 import pytest
 
 from orchestrator.config import Settings
+from orchestrator.core.agent_manager import build_spawn_env
 from orchestrator.core.task_queue import TaskQueue
 from orchestrator.database import CURRENT_SCHEMA_VERSION, Database
 from tests.conftest import seed_user
@@ -280,3 +281,37 @@ async def test_clear_worker_session_nulls_both_columns(queue, task_row):
     task = await queue.get_task(task_row["id"])
     assert task["worker_session_id"] is None
     assert task["worker_session_harness"] is None
+
+
+def _base_env_kwargs(**overrides: object) -> dict:
+    kwargs = {
+        "repo_url": "https://github.com/o/r",
+        "branch": "agent/x",
+        "base_branch": "plan/y",
+        "task_prompt": "do the thing",
+        "container_lm_url": "http://host.docker.internal:1234",
+        "model_name": "qwen3",
+        "harness_id": "opencode",
+        "gh_token": "tok",
+        "callback_url": "http://host:12323/api/internal/agent-done",
+        "task_id": "t-1",
+    }
+    kwargs.update(overrides)
+    return kwargs
+
+
+def test_build_spawn_env_sets_worker_session_id_when_given():
+    env = build_spawn_env(**_base_env_kwargs(worker_session_id="ses_abc"))
+    assert env["WORKER_SESSION_ID"] == "ses_abc"
+
+
+def test_build_spawn_env_omits_worker_session_id_when_absent():
+    env = build_spawn_env(**_base_env_kwargs())
+    assert "WORKER_SESSION_ID" not in env
+
+
+def test_build_spawn_env_omits_worker_session_id_when_empty_string():
+    """An empty string is a plausible caller mistake, not a real session id;
+    it must be treated the same as None, not passed through verbatim."""
+    env = build_spawn_env(**_base_env_kwargs(worker_session_id=""))
+    assert "WORKER_SESSION_ID" not in env

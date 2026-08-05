@@ -789,3 +789,112 @@ async def test_agy_uses_correct_image(mock_docker: MagicMock) -> None:
     )
 
     assert mock_client.containers.run.call_args.kwargs["image"] == "agy-agent:latest"
+
+
+# ---------------------------------------------------------------------------
+# opencode harness: session-state volume mount
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+@patch("orchestrator.core.agent_manager.docker")
+async def test_opencode_mounts_sessions_volume_when_configured(
+    mock_docker: MagicMock,
+) -> None:
+    """When opencode_sessions_volume is set, spawn adds a read-write mount."""
+    mock_client = MagicMock()
+    mock_docker.from_env.return_value = mock_client
+    mock_client.containers.run.return_value = _mock_container()
+
+    manager = AgentManager(
+        lm_studio_url="http://localhost:1234",
+        github_token="ghp_x",
+        opencode_sessions_volume="praxis-opencode-sessions",
+    )
+    await manager.spawn_agent(
+        task_id="oc-t1",
+        repo_url="https://github.com/u/r.git",
+        branch="agent/oc-task",
+        base_branch="plan/oc",
+        task_prompt="do it",
+        model_name="qwen3",
+        callback_url="http://cb/",
+        harness="opencode",
+    )
+
+    call_kwargs = mock_client.containers.run.call_args.kwargs
+    mounts = call_kwargs.get("volumes") or {}
+    assert isinstance(mounts, dict), f"Expected volumes dict, got: {mounts}"
+    assert "praxis-opencode-sessions" in mounts, (
+        f"Expected named-volume mount in volumes, got: {mounts}"
+    )
+    entry = mounts["praxis-opencode-sessions"]
+    assert entry["bind"] == "/home/agent/.local/share/opencode"
+    assert entry["mode"] == "rw"
+
+
+@pytest.mark.unit
+@patch("orchestrator.core.agent_manager.docker")
+async def test_opencode_skips_sessions_mount_when_unconfigured(
+    mock_docker: MagicMock,
+) -> None:
+    """When opencode_sessions_volume is empty, spawn proceeds without mount.
+
+    Empty means no persistence and cold starts on resume, a supported
+    outcome, not an error, so this must not raise.
+    """
+    mock_client = MagicMock()
+    mock_docker.from_env.return_value = mock_client
+    mock_client.containers.run.return_value = _mock_container()
+
+    manager = AgentManager(
+        lm_studio_url="http://localhost:1234",
+        github_token="ghp_x",
+        opencode_sessions_volume="",  # explicitly disabled
+    )
+    await manager.spawn_agent(
+        task_id="oc-t2",
+        repo_url="https://github.com/u/r.git",
+        branch="agent/oc-task2",
+        base_branch="plan/oc",
+        task_prompt="do it",
+        model_name="qwen3",
+        callback_url="http://cb/",
+        harness="opencode",
+    )
+
+    call_kwargs = mock_client.containers.run.call_args.kwargs
+    volumes = call_kwargs.get("volumes") or {}
+    assert "praxis-opencode-sessions" not in volumes
+
+
+@pytest.mark.unit
+@patch("orchestrator.core.agent_manager.docker")
+async def test_agy_spawn_does_not_get_opencode_sessions_mount(
+    mock_docker: MagicMock,
+) -> None:
+    """The opencode sessions volume is opencode-specific; agy must not get it
+    even when the setting is configured, since agy has its own creds volume."""
+    mock_client = MagicMock()
+    mock_docker.from_env.return_value = mock_client
+    mock_client.containers.run.return_value = _mock_container()
+
+    manager = AgentManager(
+        lm_studio_url="http://localhost:1234",
+        github_token="ghp_x",
+        opencode_sessions_volume="praxis-opencode-sessions",
+    )
+    await manager.spawn_agent(
+        task_id="agy-t5",
+        repo_url="https://github.com/u/r.git",
+        branch="agent/agy-task5",
+        base_branch="plan/agy",
+        task_prompt="do it",
+        model_name="Gemini 3.5 Flash (High)",
+        callback_url="http://cb/",
+        harness="agy",
+    )
+
+    call_kwargs = mock_client.containers.run.call_args.kwargs
+    volumes = call_kwargs.get("volumes") or {}
+    assert "praxis-opencode-sessions" not in volumes

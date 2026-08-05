@@ -110,6 +110,7 @@ def build_spawn_env(
     task_summary: str | None = None,
     single_branch: bool = False,
     context_limit: int | None = None,
+    worker_session_id: str | None = None,
 ) -> dict[str, str]:
     """Build environment variables dictionary for spawned agent containers."""
     environment: dict[str, str] = {
@@ -146,6 +147,10 @@ def build_spawn_env(
         environment["SINGLE_BRANCH"] = "1"
     if context_limit is not None:
         environment["MODEL_CONTEXT_LIMIT"] = str(context_limit)
+    if worker_session_id:
+        # Presence of this var means BOTH "resume the conversation" and "reuse
+        # the existing remote branch": memory and tree must move together.
+        environment["WORKER_SESSION_ID"] = worker_session_id
 
     return environment
 
@@ -164,12 +169,14 @@ class AgentManager:
         max_agent_concurrency: int = _DEFAULT_MAX_AGENT_CONCURRENCY,
         min_free_disk_bytes: int = _MIN_FREE_DISK_BYTES,
         gemini_creds_volume: str = "",
+        opencode_sessions_volume: str = "",
     ) -> None:
         self._lm_studio_url = lm_studio_url
         self._effective_settings = effective_settings
         self._git_author_name = git_author_name
         self._git_author_email = git_author_email
         self._gemini_creds_volume = gemini_creds_volume
+        self._opencode_sessions_volume = opencode_sessions_volume
         self._max_agent_concurrency = max_agent_concurrency
         self._min_free_disk_bytes = min_free_disk_bytes
         if credentials is not None:
@@ -202,6 +209,7 @@ class AgentManager:
         bible_text: str | None = None,
         task_summary: str | None = None,
         single_branch: bool = False,
+        worker_session_id: str | None = None,
     ) -> str:
         harness_id = harness or default_harness_id()
         spec = REGISTRY[harness_id]
@@ -271,6 +279,7 @@ class AgentManager:
             task_summary=task_summary,
             single_branch=single_branch,
             context_limit=context_limit,
+            worker_session_id=worker_session_id,
         )
 
         # Mount the agy OAuth credentials VOLUME. The credentials are Linux-native
@@ -293,6 +302,14 @@ class AgentManager:
                     "and authentication will fail. Run the one-time `agy login` "
                     "setup described in docs/deployment.md."
                 )
+        if harness_id == "opencode" and self._opencode_sessions_volume:
+            # OpenCode keeps session state under XDG_DATA_HOME. Without this
+            # mount it dies with the container and resume degrades to a cold
+            # start (which is a supported outcome, not an error).
+            volumes[self._opencode_sessions_volume] = {
+                "bind": "/home/agent/.local/share/opencode",
+                "mode": "rw",
+            }
 
         container_name = f"praxis-agent-{task_id[:8]}"
         self._remove_existing_container(container_name)
