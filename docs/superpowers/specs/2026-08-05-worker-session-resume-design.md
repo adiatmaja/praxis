@@ -169,8 +169,14 @@ setting follows the `GEMINI_CREDS_VOLUME` pattern; unset means no persistence an
 starts, never an error.
 
 **Growth.** Both stores accumulate across tasks. v1 clears `worker_session_id` on terminal
-task status and adds a dated prune to the reconcile sweeper alongside `sweep_dead_branches`,
-using the same fail-safe discipline (swallow its own errors, never wedge the loop).
+task status, so a stale id is never replayed, and otherwise leaves the stores alone.
+
+Pruning is explicitly deferred. The orchestrator does not mount either volume, so it cannot
+reach these stores from the reconcile loop without spawning a throwaway container, which is
+more machinery than the problem currently justifies. The agy store is already unmanaged
+today and this spec does not change that. When growth becomes real, the cheap fix is an
+entrypoint-side prune (each container already mounts its own store) rather than an
+orchestrator-side sweeper.
 
 ### 6. Error handling
 
@@ -223,5 +229,7 @@ required for agy.
   acks, and no implicit tool authorization from a received message.
 - Mapping the frozen `core/status_vocab.py` vocabulary onto A2A task states, which would
   make Praxis tasks legible to A2A-speaking callers.
+- Entrypoint-side pruning of the OpenCode session volume and the agy conversation store,
+  once accumulation is measured to matter.
 - A PTY wrapper for agy to close the non-TTY stdout gap (upstream
   `google-antigravity/antigravity-cli#76`), which would also unblock agy as a brain.
