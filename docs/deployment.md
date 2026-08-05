@@ -71,10 +71,18 @@ ever mounted — that approach does not work across operating systems.
 
 To let a re-dispatched worker resume its own conversation after a clarification round
 (`WORKER_SESSION_ID`, see the session-resume gotchas), OpenCode's session state needs to
-survive past its container. The orchestrator mounts a named Docker volume,
-`praxis-opencode-sessions` by default, read-write at `/home/agent/.local/share/opencode` (the
-OpenCode `XDG_DATA_HOME` path, pinned explicitly in the Dockerfile). The volume name is
-configurable with `OPENCODE_SESSIONS_VOLUME`.
+survive past its container. The orchestrator mounts a named Docker volume read-write at
+`/home/agent/.local/share/opencode` (the OpenCode `XDG_DATA_HOME` path, pinned explicitly in
+the Dockerfile).
+
+**The volume is scoped per task, not shared.** `OPENCODE_SESSIONS_VOLUME` (default
+`praxis-opencode-sessions`) supplies only the BASE name; the mounted volume is
+`<base>-<sanitized-task-id>`, derived by `_opencode_session_volume_name` in
+`core/agent_manager.py`. The name is deterministic for a given task, which is what makes
+resume work, and unique per task, which is what makes it safe. A shared store would not be:
+a dispatch wave runs several OpenCode containers concurrently, and the capture step picks the
+newest entry from `opencode session list`, so a container could read a sibling's session and
+report another task's conversation id against its own task.
 
 Unlike the agy creds volume above, **this one needs no interactive seeding.** Docker creates
 it automatically the first time a container mounts it; there is no login step, no chown step,
@@ -313,7 +321,7 @@ env vars); secrets (`AUTH_TOKEN`, GitHub App private key or `GITHUB_TOKEN`) stay
 | `HOST` | No | `0.0.0.0` | Bind address |
 | `PORT` | No | `12323` | Host port (uncommon by design to avoid 8080 collisions; MCP `PRAXIS_BASE_URL` and agent callbacks must match it) |
 | `GEMINI_CREDS_VOLUME` | No | `praxis-gemini-creds` | Docker volume holding agy OAuth creds; only used by the `agy` harness (see [agy setup](#agy-antigravity--gemini-harness--one-time-credential-setup)) |
-| `OPENCODE_SESSIONS_VOLUME` | No | `praxis-opencode-sessions` | Docker volume holding OpenCode session state, used for worker session resume (see [OpenCode session volume](#opencode-session-volume-no-setup-required)). Unlike `GEMINI_CREDS_VOLUME`, needs no interactive seeding; unset disables persistence (cold starts, never an error) |
+| `OPENCODE_SESSIONS_VOLUME` | No | `praxis-opencode-sessions` | BASE name for the per-task OpenCode session volumes used by worker session resume; the actual volume is `<base>-<task-id>` (see [OpenCode session volume](#opencode-session-volume-no-setup-required)). Unlike `GEMINI_CREDS_VOLUME`, needs no interactive seeding; unset disables persistence (cold starts, never an error) |
 
 Global orchestrator defaults also live in `config/praxis.yaml` (env-overridable via `PRAXIS_*`),
 including the auto-delegate global default worker:

@@ -349,11 +349,22 @@ keep the CLAUDE.md index in sync.
 - **Capture is asymmetric between the two harnesses on purpose** — OpenCode's `opencode run`
   invocation and its existing `Status:` grep are left byte-for-byte untouched; after the run
   returns, the entrypoint separately calls `opencode session list --format json` and pipes it
-  through `extract_session.py` (a fresh container has exactly one session, so "the only entry"
-  is unambiguous). agy has no session-list equivalent, so its invocation itself switches to
+  through `extract_session.py`, which picks the newest entry by `time.created`. agy has no
+  session-list equivalent, so its invocation itself switches to
   `--output-format json`, and its `extract_session.py` splits the envelope: the conversation id
   is printed on the first line, the response body on the rest, which the entrypoint feeds back
   into the SAME `Status:` grep used before this feature existed.
+- **The OpenCode session volume is scoped PER TASK, and must stay that way:**
+  `OPENCODE_SESSIONS_VOLUME` is only the base name; the mounted volume is
+  `<base>-<sanitized-task-id>`, built by `_opencode_session_volume_name` in
+  `core/agent_manager.py`. Deterministic per task so a re-dispatch finds its own session,
+  unique per task so nothing else can see it. Do not "simplify" this back to one shared
+  volume. A dispatch wave runs up to `AgentManager._max_agent_concurrency` OpenCode containers
+  at once, all mounting the same path; since capture picks the NEWEST session in the store,
+  a container could read a concurrently-running sibling's session and report another task's
+  conversation id against its own task id. That is cross-task memory bleed on the next resume,
+  not a degradation to a cold start, and no test catches it because the race needs two live
+  containers. The per-task name removes it by construction rather than by heuristic.
 - **The agy JSON envelope shape is UNVERIFIED.** No `agy-agent:latest` image and no
   `praxis-gemini-creds` volume were available while this was built, so `--output-format json`
   and `--conversation <id>` are unconfirmed against a real agy v1.1.2 build. `conversation_id`
@@ -367,10 +378,14 @@ keep the CLAUDE.md index in sync.
   dogfood run before anyone should rely on it. Both extractors are baked into their images at
   `/usr/local/bin/extract_session.py`, so a change here needs an agent IMAGE REBUILD like any
   other entrypoint edit (see the standalone-images gotcha above).
-- **Neither session store is pruned in v1** — `TaskQueue.mark_merged` and `TaskQueue.fail_task`
-  clear `worker_session_id`/`worker_session_harness` on terminal status, so a stale id is never
-  replayed, but nothing reclaims disk in the `praxis-opencode-sessions` volume or the agy
-  `.gemini` conversation store; both accumulate across tasks indefinitely. This is deliberate:
+- **Neither session store is pruned in v1:** `TaskQueue.mark_merged`, `TaskQueue.fail_task`
+  and `TaskQueue.retry_task` clear `worker_session_id`/`worker_session_harness` in the same
+  UPDATE as the status change, and `api/tasks.py::stop_task` clears it explicitly because it
+  sets FAILED directly rather than through `fail_task`. So a stale id is never replayed. But
+  nothing reclaims disk: OpenCode allocates **one volume per task** (`<base>-<task-id>`, see
+  the per-task scoping note below) and the agy `.gemini` conversation store grows in place.
+  Per-task volumes make this growth worse than a single shared volume would, which was the
+  accepted price of removing a cross-task session-bleed race. This is deliberate:
   the orchestrator does not mount either volume, so it cannot reach them from the reconcile
   loop without spawning a throwaway container, which the design spec judged to be more
   machinery than the problem currently justifies.
