@@ -5,12 +5,15 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+import uuid
 from pathlib import Path
 
 import pytest
 
 from orchestrator.config import Settings
+from orchestrator.core.task_queue import TaskQueue
 from orchestrator.database import CURRENT_SCHEMA_VERSION, Database
+from tests.conftest import seed_user
 
 
 OPENCODE_EXTRACTOR = (
@@ -224,3 +227,56 @@ def test_opencode_sessions_volume_env_override(monkeypatch):
         github_token="test-gh-token",
     )
     assert settings.opencode_sessions_volume == "custom-sessions-vol"
+
+
+@pytest.fixture
+def queue(db: Database) -> TaskQueue:
+    return TaskQueue(db)
+
+
+@pytest.fixture
+async def task_row(db: Database) -> dict:
+    """Insert a bare task row directly.
+
+    Tasks normally arrive via activate_plan, which needs a project and a plan;
+    neither is relevant to the session handle itself, but FK enforcement
+    (PRAGMA foreign_keys=ON) means plans.project_id and tasks.plan_id must
+    still point at real rows, so a minimal project+plan is seeded first.
+    """
+    user_id = await seed_user(db)
+    project_id = str(uuid.uuid4())
+    await db.execute(
+        "INSERT INTO projects (id, user_id, name, repo_url) VALUES (?, ?, ?, ?)",
+        (project_id, user_id, "p", "https://github.com/u/p"),
+    )
+    plan_id = str(uuid.uuid4())
+    await db.execute(
+        "INSERT INTO plans (id, project_id) VALUES (?, ?)",
+        (plan_id, project_id),
+    )
+    task_id = str(uuid.uuid4())
+    await db.execute(
+        "INSERT INTO tasks (id, plan_id, title, description, branch_name) "
+        "VALUES (?, ?, ?, ?, ?)",
+        (task_id, plan_id, "t", "d", "agent/t"),
+    )
+    return {"id": task_id}
+
+
+@pytest.mark.asyncio
+async def test_record_worker_session_persists_id_and_harness(queue, task_row):
+    """The handle is stored as a pair so replay can check the harness."""
+    await queue.record_worker_session(task_row["id"], "conv_abc", "agy")
+    task = await queue.get_task(task_row["id"])
+    assert task["worker_session_id"] == "conv_abc"
+    assert task["worker_session_harness"] == "agy"
+
+
+@pytest.mark.asyncio
+async def test_clear_worker_session_nulls_both_columns(queue, task_row):
+    """A terminal task must never leave a replayable id behind."""
+    await queue.record_worker_session(task_row["id"], "conv_abc", "agy")
+    await queue.clear_worker_session(task_row["id"])
+    task = await queue.get_task(task_row["id"])
+    assert task["worker_session_id"] is None
+    assert task["worker_session_harness"] is None

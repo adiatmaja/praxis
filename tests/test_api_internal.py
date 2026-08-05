@@ -172,3 +172,101 @@ async def test_agent_done_needs_clarification_parks_task(
     task = await queue.get_task(task_id)
     assert task["status"] == TaskStatus.NEEDS_CLARIFICATION
     assert task["clarification_question"] == "Which config file holds the API base?"
+
+
+async def _setup_plan_with_task_and_harness(
+    client: AsyncClient,
+    db: Database,
+    auth_headers: dict[str, str],
+    harness: str,
+) -> tuple[str, str]:
+    """Like _setup_plan_with_task, but pins the project's harness explicitly.
+
+    Project creation otherwise resolves an unset harness from
+    settings.default_worker_harness, which is a deployment-configurable
+    default (config/praxis.yaml) unrelated to what this test verifies.
+    """
+    await seed_user(db)
+    project = await client.post(
+        "/api/projects",
+        json={
+            "name": "App",
+            "repo_url": "https://github.com/u/a",
+            "model_name": "m",
+            "harness": harness,
+        },
+        headers=auth_headers,
+    )
+    queue: TaskQueue = client.app.state.task_queue  # type: ignore[attr-defined]
+    plan_id = await queue.create_plan(project.json()["id"], "Build auth")
+    await queue.activate_plan(
+        plan_id,
+        {
+            "plan_summary": "Auth",
+            "plan_slug": "auth",
+            "tasks": [
+                {
+                    "title": "Login",
+                    "slug": "login",
+                    "description": "Build login",
+                    "depends_on": [],
+                }
+            ],
+        },
+        "plan/2026-06-01-auth",
+    )
+    task_id = (await queue.get_tasks_for_plan(plan_id))[0]["id"]
+    await queue.update_task_status(task_id, TaskStatus.IN_PROGRESS)
+    await queue.create_agent_run(task_id, "container-abc")
+    return plan_id, task_id
+
+
+@pytest.mark.integration
+async def test_agent_done_persists_session_id_with_project_harness(
+    client: AsyncClient,
+    db: Database,
+    auth_headers: dict[str, str],
+) -> None:
+    """The callback's session_id is stored paired with the project's harness."""
+    _, task_id = await _setup_plan_with_task_and_harness(
+        client, db, auth_headers, harness="opencode"
+    )
+    queue: TaskQueue = client.app.state.task_queue  # type: ignore[attr-defined]
+
+    resp = await client.post(
+        "/api/internal/agent-done",
+        headers={"X-Praxis-Callback-Token": "test-auth"},
+        json={
+            "task_id": task_id,
+            "status": "needs_clarification",
+            "question": "Which config file holds the API base?",
+            "session_id": "ses_live_123",
+        },
+    )
+    assert resp.status_code == 200
+
+    task = await queue.get_task(task_id)
+    assert task["worker_session_id"] == "ses_live_123"
+    assert task["worker_session_harness"] == "opencode"
+
+
+@pytest.mark.integration
+async def test_agent_done_without_session_id_leaves_columns_untouched(
+    client: AsyncClient,
+    db: Database,
+    auth_headers: dict[str, str],
+) -> None:
+    """No session_id on the callback must not touch the session columns."""
+    _, task_id = await _setup_plan_with_task(client, db, auth_headers)
+    queue: TaskQueue = client.app.state.task_queue  # type: ignore[attr-defined]
+
+    resp = await client.post(
+        "/api/internal/agent-done",
+        headers={"X-Praxis-Callback-Token": "test-auth"},
+        json={"task_id": task_id, "status": "completed"},
+    )
+    assert resp.status_code == 200
+
+    task = await queue.get_task(task_id)
+    assert task["worker_session_id"] is None
+    assert task["worker_session_harness"] is None

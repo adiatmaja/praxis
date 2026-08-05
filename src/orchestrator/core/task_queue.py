@@ -229,6 +229,30 @@ class TaskQueue:
             (pr_url, now, task_id),
         )
 
+    async def record_worker_session(
+        self, task_id: str, session_id: str, harness: str
+    ) -> None:
+        """Store the worker's harness-native session handle for later resume.
+
+        The harness is stored with the id because replay must refuse a handle
+        minted by a different harness.
+        """
+        now = datetime.now(UTC).isoformat()
+        await self._db.execute(
+            "UPDATE tasks SET worker_session_id = ?, worker_session_harness = ?, "
+            "updated_at = ? WHERE id = ?",
+            (session_id, harness, now, task_id),
+        )
+
+    async def clear_worker_session(self, task_id: str) -> None:
+        """Drop the session handle so a terminal task never replays a stale id."""
+        now = datetime.now(UTC).isoformat()
+        await self._db.execute(
+            "UPDATE tasks SET worker_session_id = NULL, "
+            "worker_session_harness = NULL, updated_at = ? WHERE id = ?",
+            (now, task_id),
+        )
+
     async def get_dispatchable_tasks(self, plan_id: str) -> list[dict[str, Any]]:
         """Return pending tasks whose declared dependencies are merged."""
         plan = await self.get_plan(plan_id)
