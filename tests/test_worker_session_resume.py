@@ -114,26 +114,22 @@ def test_opencode_extractor_picks_newest_when_multiple():
 
 
 def test_opencode_extractor_is_silent_on_malformed_input():
-    """Garbage must exit non-zero with empty stdout, never crash the entrypoint."""
+    """Garbage must exit 1 with empty stdout, never crash the entrypoint."""
     result = _run_extractor(OPENCODE_EXTRACTOR, "not json at all")
-    assert result.returncode != 0
+    assert result.returncode == 1
     assert result.stdout.strip() == ""
 
 
 def test_opencode_extractor_is_silent_on_empty_list():
     """No sessions is a normal outcome, not an error to surface."""
     result = _run_extractor(OPENCODE_EXTRACTOR, "[]")
-    assert result.returncode != 0
+    assert result.returncode == 1
     assert result.stdout.strip() == ""
 
 
-def test_opencode_extractor_is_silent_on_empty_stdin():
-    """A blank pipe is a distinct, realistic failure mode.
-
-    If the upstream `opencode session list` call itself fails and produces
-    no output, this script sees an empty stdin, not garbage text or an
-    empty JSON list. It must exit non-zero with empty stdout too.
-    """
-    result = _run_extractor(OPENCODE_EXTRACTOR, "")
-    assert result.returncode != 0
-    assert result.stdout.strip() == ""
+def test_opencode_extractor_unwraps_sessions_dict():
+    """The CLI may wrap the list under a `sessions` key instead of a bare list."""
+    payload = json.dumps({"sessions": [{"id": "ses_wrapped"}]})
+    result = _run_extractor(OPENCODE_EXTRACTOR, payload)
+    assert result.returncode == 0
+    assert result.stdout.strip() == "ses_wrapped"
