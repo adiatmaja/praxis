@@ -148,20 +148,27 @@ class TaskQueue:
         )
 
     async def mark_merged(self, task_id: str) -> None:
-        """Mark a task merged and stamp the approval time."""
+        """Mark a task merged and stamp the approval time.
+
+        Clears the worker session handle in the same statement: the task is
+        terminal, so the handle can only ever be stale from here.
+        """
         now = datetime.now(UTC).isoformat()
         await self._db.execute(
             """UPDATE tasks
-               SET status = ?, approved_at = ?, updated_at = ?
+               SET status = ?, approved_at = ?, updated_at = ?,
+                   worker_session_id = NULL, worker_session_harness = NULL
                WHERE id = ?""",
             (TaskStatus.MERGED, now, now, task_id),
         )
 
     async def fail_task(self, task_id: str, feedback: str) -> None:
+        """Mark a task failed and drop any worker session handle."""
         now = datetime.now(UTC).isoformat()
         await self._db.execute(
             """UPDATE tasks
-               SET status = ?, review_feedback = ?, updated_at = ?
+               SET status = ?, review_feedback = ?, updated_at = ?,
+                   worker_session_id = NULL, worker_session_harness = NULL
                WHERE id = ?""",
             (TaskStatus.FAILED, feedback, now, task_id),
         )

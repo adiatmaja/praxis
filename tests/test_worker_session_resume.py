@@ -18,6 +18,7 @@ from orchestrator.core.orchestrator import Orchestrator
 from orchestrator.core.session_resume import resolve_resume_session
 from orchestrator.core.task_queue import TaskQueue
 from orchestrator.database import CURRENT_SCHEMA_VERSION, Database
+from orchestrator.models.schemas import TaskStatus
 from tests.conftest import seed_user
 
 
@@ -285,6 +286,30 @@ async def test_clear_worker_session_nulls_both_columns(queue, task_row):
     task = await queue.get_task(task_row["id"])
     assert task["worker_session_id"] is None
     assert task["worker_session_harness"] is None
+
+
+@pytest.mark.asyncio
+async def test_fail_task_clears_worker_session(queue, task_row):
+    """A failed task must not leave a replayable handle behind."""
+    await queue.record_worker_session(task_row["id"], "ses_1", "opencode")
+    await queue.fail_task(task_row["id"], "gave up")
+    task = await queue.get_task(task_row["id"])
+    assert task["worker_session_id"] is None
+    assert task["worker_session_harness"] is None
+    assert task["status"] == TaskStatus.FAILED
+    assert task["review_feedback"] == "gave up"
+
+
+@pytest.mark.asyncio
+async def test_mark_merged_clears_worker_session(queue, task_row):
+    """A merged task's session is finished; drop the handle."""
+    await queue.record_worker_session(task_row["id"], "ses_1", "opencode")
+    await queue.mark_merged(task_row["id"])
+    task = await queue.get_task(task_row["id"])
+    assert task["worker_session_id"] is None
+    assert task["worker_session_harness"] is None
+    assert task["status"] == TaskStatus.MERGED
+    assert task["approved_at"] is not None
 
 
 def _base_env_kwargs(**overrides: object) -> dict:
