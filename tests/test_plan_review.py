@@ -9,7 +9,7 @@ from orchestrator.core.plan_review import (
     build_review_prompt,
     parse_review_response,
 )
-from orchestrator.models.schemas import CapabilityProfile
+from orchestrator.models.schemas import CapabilityProfile, LeafType
 
 
 PROFILE = CapabilityProfile(
@@ -220,3 +220,49 @@ def test_parse_accepts_extended_leaf_fields():
     assert plan["tasks"][0]["task_type"] == "feature"
     assert plan["tasks"][0]["estimated_loc"] == 85
     assert "curl" in plan["tasks"][0]["verification"]
+
+
+# Local helper for the leaf-type-block tests below, deliberately named
+# differently from the module's existing `_profile()` (line 91) so this
+# addition cannot shadow it and change what the earlier tests exercise.
+def _leaf_type_profile() -> CapabilityProfile:
+    return CapabilityProfile(
+        model_name="test-model",
+        parameter_count_b=30,
+        context_window=8192,
+    )
+
+
+@pytest.mark.unit
+def test_prompt_lists_every_leaf_type():
+    prompt = build_review_prompt(
+        "plan body", _leaf_type_profile(), "(no history)", 3276
+    )
+    for leaf_type in LeafType:
+        assert leaf_type.value in prompt
+
+
+@pytest.mark.unit
+def test_prompt_demands_the_base_sections():
+    prompt = build_review_prompt(
+        "plan body", _leaf_type_profile(), "(no history)", 3276
+    )
+    for section in ("Goal", "Files", "Steps", "Acceptance"):
+        assert section in prompt
+
+
+@pytest.mark.unit
+def test_prompt_json_example_carries_a_leaf_type_key():
+    prompt = build_review_prompt(
+        "plan body", _leaf_type_profile(), "(no history)", 3276
+    )
+    assert '"leaf_type"' in prompt
+
+
+@pytest.mark.unit
+def test_prompt_still_carries_the_hard_constraint_numbers():
+    profile = _leaf_type_profile()
+    prompt = build_review_prompt("plan body", profile, "(no history)", 3276)
+    assert str(profile.max_files_touched) in prompt
+    assert str(profile.max_loc_delta) in prompt
+    assert str(profile.max_dep_depth) in prompt

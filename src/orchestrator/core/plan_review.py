@@ -15,6 +15,7 @@ import re
 
 from pydantic import ValidationError
 
+from orchestrator.core.leaf_templates import render_template_block
 from orchestrator.models.schemas import CapabilityProfile, LeafTask
 
 
@@ -43,6 +44,8 @@ HARD CONSTRAINTS (non-negotiable):
 - Dependency depth no deeper than {max_dep_depth}.
 - Every leaf MUST include a "verification" string >40 characters describing
   how to confirm the leaf's work is correct.
+
+{leaf_type_block}
 
 Plan to decompose:
 {plan_text}
@@ -77,6 +80,7 @@ For every leaf you MUST also include:
 - "task_type": one of "feature", "bugfix", "refactor", "test", "chore".
 - "estimated_loc": integer estimate of lines added or changed.
 - "verification": string >40 characters describing how to verify correctness.
+- "leaf_type": one of the leaf types listed above.
 
 Set "depends_on" to the ids of any leaves whose output this leaf builds on (e.g.
 a leaf that edits a file another leaf creates). Only truly independent leaves get
@@ -93,6 +97,7 @@ Respond with ONLY valid JSON:
       "needs_stronger_model": false,
       "files": ["src/foo.py", "tests/test_foo.py"],
       "task_type": "feature",
+      "leaf_type": "function_add",
       "estimated_loc": 85,
       "verification": "Run the test suite and confirm all tests pass"}}
   ]
@@ -130,6 +135,7 @@ def build_review_prompt(
         max_loc_delta=profile.max_loc_delta,
         max_checklist_items=profile.max_checklist_items,
         max_dep_depth=profile.max_dep_depth,
+        leaf_type_block=render_template_block(),
         plan_text=plan_text,
     )
 
