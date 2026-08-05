@@ -195,12 +195,11 @@ def test_leaf_task_accepts_a_declared_leaf_type():
 
 @pytest.mark.unit
 def test_leaf_task_rejects_an_unknown_leaf_type():
-    import pytest as _pytest
     from pydantic import ValidationError
 
     from orchestrator.models.schemas import LeafTask
 
-    with _pytest.raises(ValidationError):
+    with pytest.raises(ValidationError):
         LeafTask(id="t1", title="x", leaf_type="not_a_real_type")
 
 

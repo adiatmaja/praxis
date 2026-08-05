@@ -21,15 +21,15 @@ def test_standard_doc_exists():
 def test_standard_doc_cites_every_source():
     text = DOC.read_text(encoding="utf-8")
     for citation in (
-        "2502.15964",   # MinionS
-        "2605.14163",   # machine-checkable acceptance
-        "2309.12499",   # CodePlan
-        "2604.07789",   # ORACLE-SWE
-        "2505.23419",   # SWE-bench Goes Live (numeric anchors)
-        "2311.05772",   # ADaPT
-        "2605.15425",   # runtime-structured decomposition
-        "2511.09030",   # MAKER
-        "2305.05176",   # FrugalGPT
+        "2502.15964",  # MinionS
+        "2605.14163",  # machine-checkable acceptance
+        "2309.12499",  # CodePlan
+        "2604.07789",  # ORACLE-SWE
+        "2505.23419",  # SWE-bench Goes Live (numeric anchors)
+        "2311.05772",  # ADaPT
+        "2605.15425",  # runtime-structured decomposition
+        "2511.09030",  # MAKER
+        "2305.05176",  # FrugalGPT
     ):
         assert citation in text, f"standard doc is missing citation {citation}"
 
