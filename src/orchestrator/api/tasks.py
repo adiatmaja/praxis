@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel
 
 from orchestrator.api.auth import verify_token
+from orchestrator.core.clarification_states import RESOLVED
 from orchestrator.models.schemas import TaskResponse, TaskStatus
 
 
@@ -266,5 +267,5 @@ async def clarify_task(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="answer must not be empty",
         )
-    await queue.record_clarification_answer(task_id, answer, state="resolved")
+    await queue.record_clarification_answer(task_id, answer, state=RESOLVED)
     return {"status": "requeued"}

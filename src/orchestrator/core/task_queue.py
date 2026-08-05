@@ -8,6 +8,7 @@ import uuid
 from datetime import UTC, datetime
 from typing import Any
 
+from orchestrator.core.clarification_states import ASKED
 from orchestrator.database import Database
 from orchestrator.models.schemas import PlanStatus, TaskStatus
 
@@ -179,9 +180,9 @@ class TaskQueue:
         await self._db.execute(
             """UPDATE tasks
                SET status = ?, clarification_question = ?,
-                   clarification_state = 'asked', updated_at = ?
+                   clarification_state = ?, updated_at = ?
                WHERE id = ?""",
-            (TaskStatus.NEEDS_CLARIFICATION, question, now, task_id),
+            (TaskStatus.NEEDS_CLARIFICATION, question, ASKED, now, task_id),
         )
 
     async def record_clarification_answer(

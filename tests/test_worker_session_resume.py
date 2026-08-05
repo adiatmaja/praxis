@@ -27,6 +27,100 @@ OPENCODE_EXTRACTOR = (
 )
 
 
+# ---------------------------------------------------------------------------
+# clarification_states: single source of truth for clarification_state values
+# ---------------------------------------------------------------------------
+
+
+def test_clarification_states_module_exists() -> None:
+    """The clarification_states module is importable from orchestrator.core."""
+    from orchestrator.core import clarification_states
+
+    assert clarification_states is not None
+
+
+def test_clarification_state_constant_values() -> None:
+    """Each named constant holds exactly the string value it always has."""
+    from orchestrator.core.clarification_states import (
+        ANSWERED_BY_BRAIN,
+        ASKED,
+        AWAITING_HUMAN,
+        RESOLVED,
+    )
+
+    assert ASKED == "asked"
+    assert ANSWERED_BY_BRAIN == "answered_by_brain"
+    assert AWAITING_HUMAN == "awaiting_human"
+    assert RESOLVED == "resolved"
+
+
+def test_all_clarification_states_is_exhaustive() -> None:
+    """The full vocabulary is exactly these four values, no more, no fewer.
+
+    A future addition to the ``clarification_state`` column that updates this
+    frozenset without updating this assertion (or vice versa) fails CI here,
+    the same discipline `test_status_vocab.py` applies to TaskStatus."""
+    from orchestrator.core.clarification_states import ALL_CLARIFICATION_STATES
+
+    assert {
+        "asked",
+        "answered_by_brain",
+        "awaiting_human",
+        "resolved",
+    } == ALL_CLARIFICATION_STATES
+
+
+def test_resumable_clarification_states_is_exactly_the_two_post_answer_states() -> None:
+    """The resume gate's allowlist is exactly {answered_by_brain, resolved}.
+
+    This is the exact set `core.session_resume.resolve_resume_session` checks
+    against; if it drifts from this assertion without the gate changing too
+    (or vice versa), the resume feature silently stops firing."""
+    from orchestrator.core.clarification_states import RESUMABLE_CLARIFICATION_STATES
+
+    assert {"answered_by_brain", "resolved"} == RESUMABLE_CLARIFICATION_STATES
+
+
+def test_resumable_states_are_a_subset_of_all_states() -> None:
+    """Every resumable state must also be a valid clarification_state value."""
+    from orchestrator.core.clarification_states import (
+        ALL_CLARIFICATION_STATES,
+        RESUMABLE_CLARIFICATION_STATES,
+    )
+
+    assert RESUMABLE_CLARIFICATION_STATES <= ALL_CLARIFICATION_STATES
+
+
+def test_session_resume_gate_shares_the_canonical_resumable_constant() -> None:
+    """The gate must read the shared constant, not hold its own copy.
+
+    Regression guard for the exact bug this module was built to prevent: two
+    independent copies of {answered_by_brain, resolved} that can drift apart
+    silently."""
+    from orchestrator.core import clarification_states, session_resume
+
+    assert (
+        session_resume.RESUMABLE_CLARIFICATION_STATES
+        is clarification_states.RESUMABLE_CLARIFICATION_STATES
+    )
+
+
+def test_write_sites_import_clarification_states_constants() -> None:
+    """The three write sites and the read site all import from the shared
+    vocabulary module rather than re-typing the string literal locally."""
+    import inspect
+
+    from orchestrator.api import tasks as tasks_api
+    from orchestrator.core import orchestrator_review, session_resume, task_queue
+
+    for module in (task_queue, orchestrator_review, tasks_api, session_resume):
+        source = inspect.getsource(module)
+        assert "clarification_states" in source, (
+            f"{module.__name__} no longer imports orchestrator.core."
+            "clarification_states"
+        )
+
+
 def _run_extractor(script: Path, stdin_text: str) -> subprocess.CompletedProcess:
     return subprocess.run(
         [sys.executable, str(script)],

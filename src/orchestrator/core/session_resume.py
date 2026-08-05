@@ -8,11 +8,7 @@ from __future__ import annotations
 
 from typing import Any
 
-
-# States set by TaskQueue.record_clarification_answer once a blocked worker's
-# question has been answered. Any other state means this is a failure retry,
-# which deliberately rebuilds the branch from base.
-RESUMABLE_CLARIFICATION_STATES = frozenset({"answered_by_brain", "resolved"})
+from orchestrator.core.clarification_states import RESUMABLE_CLARIFICATION_STATES
 
 
 def resolve_resume_session(task: dict[str, Any], harness: str) -> str | None:
@@ -26,8 +22,11 @@ def resolve_resume_session(task: dict[str, Any], harness: str) -> str | None:
         The stored session id when all three replay conditions hold, else None.
     """
     session_id = task.get("worker_session_id")
+    # An id is only ever stored after the previous turn's checkpoint push
+    # succeeded, so its absence means there is nothing safe to resume onto.
     if not session_id:
         return None
+    # A conversation id minted by one harness is meaningless to the other.
     if task.get("worker_session_harness") != harness:
         return None
     if task.get("clarification_state") not in RESUMABLE_CLARIFICATION_STATES:
