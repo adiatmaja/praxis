@@ -326,6 +326,16 @@ the relevant subsystem. Condensed index:
 - **Single-branch discipline is entrypoint-driven** — in auto-delegate mode `dispatch_pending_tasks` reuses one caller-named work branch and threads `single_branch=True` → `SINGLE_BRANCH=1` into the container; both harness entrypoints then REUSE the existing remote `BRANCH` with a non-force push instead of cutting a fresh `agent/{slug}`. Changing this behavior needs an agent IMAGE REBUILD (entrypoint change), not just a src edit.
 - **Stale-branch sweeper is fail-safe and reconcile-driven** — `core/branch_sweeper.dead_branches` picks reclaimable branches (no open PR, no live run, never protected); `ReconcileMixin.sweep_dead_branches` deletes them each reconcile pass and swallows its own errors (never wedges the loop).
 - **Dev compose does NOT mount `config/`** — `docker-compose.local.yml` mounts `src/`, `web/`, `.git/`, `data/` for hot-reload but NOT `config/`, and `config/praxis.yaml` is baked into the orchestrator image. So YAML changes (e.g. `default_worker_*`) need an orchestrator IMAGE REBUILD to take effect, not just a container restart or a src hot-reload (found live 2026-07-27).
+- **Session resume is gated to answered clarifications**: `core/session_resume.resolve_resume_session`
+  returns an id only when a stored `worker_session_id`, a matching `worker_session_harness`, and a
+  `clarification_state` of `answered_by_brain`/`resolved` all line up; a plain failure retry never
+  satisfies that last condition, and its branch is rebuilt from base anyway, so restored memory can
+  never describe a tree that no longer exists. `WORKER_SESSION_ID` means BOTH "resume the
+  conversation" and "reuse the remote branch": they move together, or restored memory contradicts
+  the tree. A worker reports its session id ONLY after its BLOCKED checkpoint push succeeds, so a
+  failed push silently forces the next turn to start cold. Entrypoint change: needs an agent IMAGE
+  REBUILD. **The agy JSON envelope shape is UNVERIFIED** (no real agy build was available while this
+  was built); the happy path needs a live dogfood run before anyone relies on it.
 
 ## Documentation
 

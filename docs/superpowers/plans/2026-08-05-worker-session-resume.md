@@ -1422,10 +1422,22 @@ git commit -m "docs: document worker session resume gotchas and volume setup"
 
 ## Parallel Execution Map
 
-- **Wave 1:** Task 1, Task 2, Task 3, Task 4 (no dependencies, run in parallel)
-- **Wave 2:** Task 5 (depends on Task 1), Task 6 (depends on Task 4), Task 8 (depends on Task 2), Task 9 (depends on Task 3)
-- **Wave 3:** Task 7 (depends on Task 5, Task 6), Task 10 (depends on Task 5)
-- **Wave 4:** Task 11 (depends on Task 7, Task 8, Task 9, Task 10)
+**Shared-file constraint:** Tasks 1, 2, 3, 4, 5, 6, 7 and 10 all append to the single file
+`tests/test_worker_session_resume.py`. Concurrent subagents in one working tree would clobber
+each other's edits and contend on the git index, so those eight tasks are **strictly
+sequential** despite having no logical dependency on one another. Only Tasks 8, 9 and 11
+touch disjoint files.
+
+- **Wave 1 (sequential):** Task 1 → Task 2 → Task 3 → Task 4 → Task 5 → Task 6 → Task 7 → Task 10
+- **Wave 2 (parallel with each other, and safe to run alongside Wave 1 once their deps land):**
+  Task 8 (needs Task 2), Task 9 (needs Task 3) — entrypoints and Dockerfiles only, no overlap
+  with the test file or with each other
+- **Wave 3:** Task 11 (needs Task 7, Task 8, Task 9, Task 10)
+
+The logical dependency graph, for reference if the tasks are ever split across isolated
+worktrees where the shared-file constraint does not apply: Task 5 needs Task 1; Task 6 needs
+Task 4; Task 7 needs Tasks 5 and 6; Task 8 needs Task 2; Task 9 needs Task 3; Task 10 needs
+Task 5; Task 11 needs Tasks 7, 8, 9 and 10.
 
 ---
 

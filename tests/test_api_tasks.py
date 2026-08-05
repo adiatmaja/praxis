@@ -91,6 +91,33 @@ async def test_stop_task(
 
 
 @pytest.mark.integration
+async def test_stop_task_clears_worker_session(
+    client: AsyncClient,
+    db: Database,
+    auth_headers: dict[str, str],
+) -> None:
+    """A stopped container never checkpointed, so its session must not survive.
+
+    This path sets FAILED directly rather than through ``fail_task``, so it does
+    not inherit that method's clearing. Without an explicit clear, ``retry_task``
+    could hand the worker back a conversation whose edits were never pushed.
+    """
+    _, task_id = await _setup_plan_with_task(client, db, auth_headers)
+    queue = client.app.state.task_queue  # type: ignore[attr-defined]
+    await queue.update_task_status(task_id, TaskStatus.IN_PROGRESS)
+    await queue.create_agent_run(task_id, "container-abc")
+    await queue.record_worker_session(task_id, "ses_mid_flight", "agy")
+
+    response = await client.post(f"/api/tasks/{task_id}/stop", headers=auth_headers)
+    task = await queue.get_task(task_id)
+
+    assert response.status_code == 200
+    assert task["status"] == TaskStatus.FAILED
+    assert task["worker_session_id"] is None
+    assert task["worker_session_harness"] is None
+
+
+@pytest.mark.integration
 async def test_retry_task_success(
     client: AsyncClient,
     db: Database,

@@ -67,6 +67,35 @@ name is configurable with `GEMINI_CREDS_VOLUME` (default `praxis-gemini-creds`).
 long-lived once seeded; re-run step 2 only if login is revoked. No host `~/.gemini` path is
 ever mounted — that approach does not work across operating systems.
 
+#### OpenCode session volume: no setup required
+
+To let a re-dispatched worker resume its own conversation after a clarification round
+(`WORKER_SESSION_ID`, see the session-resume gotchas), OpenCode's session state needs to
+survive past its container. The orchestrator mounts a named Docker volume read-write at
+`/home/agent/.local/share/opencode` (the OpenCode `XDG_DATA_HOME` path, pinned explicitly in
+the Dockerfile).
+
+**The volume is scoped per task, not shared.** `OPENCODE_SESSIONS_VOLUME` (default
+`praxis-opencode-sessions`) supplies only the BASE name; the mounted volume is
+`<base>-<sanitized-task-id>`, derived by `_opencode_session_volume_name` in
+`core/agent_manager.py`. The name is deterministic for a given task, which is what makes
+resume work, and unique per task, which is what makes it safe. A shared store would not be:
+a dispatch wave runs several OpenCode containers concurrently, and the capture step picks the
+newest entry from `opencode session list`, so a container could read a sibling's session and
+report another task's conversation id against its own task.
+
+Unlike the agy creds volume above, **this one needs no interactive seeding.** Docker creates
+it automatically the first time a container mounts it; there is no login step, no chown step,
+nothing to run by hand. Leaving `OPENCODE_SESSIONS_VOLUME` unset simply disables persistence:
+workers then always start cold on every dispatch, which is a supported outcome, not an error.
+
+Like the agy conversation store, this volume is never pruned automatically: session data
+accumulates across tasks. The orchestrator clears the DB-side `worker_session_id` handle on
+terminal task status so a stale id is never replayed, but nothing reclaims volume disk. The
+orchestrator does not mount either session volume itself, so it cannot reach them from the
+reconcile loop without spawning a throwaway container; that tradeoff is deliberate for v1 (see
+`docs/superpowers/specs/2026-08-05-worker-session-resume-design.md`), not an oversight.
+
 **Agent container environment variables** (harness-agnostic contract, set by AgentManager):
 
 | Variable | Description |
@@ -83,6 +112,7 @@ ever mounted — that approach does not work across operating systems.
 | `TASK_ID` | Task ID for the callback payload |
 | `RUN_ID` | Agent run ID for the callback payload |
 | `SINGLE_BRANCH` | `1` in auto-delegate mode: reuse the existing remote `BRANCH` (non-force push) instead of cutting a fresh `agent/{slug}`. Unset/`0` = normal two-tier branching |
+| `WORKER_SESSION_ID` | Set only when the gate in `core/session_resume.resolve_resume_session` allows replay. Means BOTH "resume this harness-native session/conversation" and "reuse the existing remote `BRANCH`" (non-force push); the two behave as one gate, never independently. Unset = normal cold start |
 
 **Agent entrypoint pipeline** (`entrypoint.sh`):
 
@@ -291,6 +321,7 @@ env vars); secrets (`AUTH_TOKEN`, GitHub App private key or `GITHUB_TOKEN`) stay
 | `HOST` | No | `0.0.0.0` | Bind address |
 | `PORT` | No | `12323` | Host port (uncommon by design to avoid 8080 collisions; MCP `PRAXIS_BASE_URL` and agent callbacks must match it) |
 | `GEMINI_CREDS_VOLUME` | No | `praxis-gemini-creds` | Docker volume holding agy OAuth creds; only used by the `agy` harness (see [agy setup](#agy-antigravity--gemini-harness--one-time-credential-setup)) |
+| `OPENCODE_SESSIONS_VOLUME` | No | `praxis-opencode-sessions` | BASE name for the per-task OpenCode session volumes used by worker session resume; the actual volume is `<base>-<task-id>` (see [OpenCode session volume](#opencode-session-volume-no-setup-required)). Unlike `GEMINI_CREDS_VOLUME`, needs no interactive seeding; unset disables persistence (cold starts, never an error) |
 
 Global orchestrator defaults also live in `config/praxis.yaml` (env-overridable via `PRAXIS_*`),
 including the auto-delegate global default worker:

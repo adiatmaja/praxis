@@ -313,3 +313,79 @@ keep the CLAUDE.md index in sync.
   rebuild the orchestrator image (`docker compose ... up --build -d`); a container restart
   or a `src/` hot-reload alone will keep serving the baked-in defaults. Found live
   2026-07-27 while enabling auto-delegate mode.
+- **Session resume replays only across an answered clarification** — `core/session_resume.
+  resolve_resume_session` returns a session id to replay only when three conditions all hold:
+  a `worker_session_id` is stored on the task, `worker_session_harness` matches the harness
+  about to be spawned (a project's harness can change between dispatches, and an agy
+  conversation id means nothing to OpenCode), and `clarification_state` is `answered_by_brain`
+  or `resolved` (the frozen `RESUMABLE_CLARIFICATION_STATES` set). A plain failure retry
+  (`TaskQueue.retry_task`, invoked from `api/internal.py` when a task fails and retries
+  remain) never sets `clarification_state` to either value, so the third condition alone
+  excludes it. More fundamentally, a failure retry's branch is force-pushed and rebuilt from
+  base by the entrypoint: a deliberate clean re-implementation. Resuming a worker's memory
+  there would have it confidently reference edits that no longer exist on the tree it is
+  handed, which is worse than a cold start.
+- **`WORKER_SESSION_ID` means BOTH "resume the conversation" and "reuse the remote branch"** —
+  the two concerns are one gate, not two independent flags. `AgentManager.build_spawn_env`
+  sets the var only when replay is eligible, and both `opencode-agent/entrypoint.sh` and
+  `agy-agent/entrypoint.sh` reuse `origin/${BRANCH}` (instead of cutting a fresh branch from
+  `BASE_BRANCH`) whenever EITHER `SINGLE_BRANCH=1` or `WORKER_SESSION_ID` is set, pushing
+  non-force for the same reason single-branch mode does. Restoring a worker's memory without
+  restoring the tree it refers to is the exact failure mode this design exists to prevent, so
+  the two behaviors are wired to the same variable on purpose.
+- **`Status: BLOCKED` / `NEEDS_CONTEXT` is now a checkpoint, not a discard** — before sending
+  the `needs_clarification` callback, both entrypoints stage, commit
+  (`wip: checkpoint before clarification (${BRANCH})`), and push the working tree to `BRANCH`,
+  still opening no PR (the clarification contract toward the orchestrator is unchanged). A
+  clean tree at BLOCKED is normal, not an error: the checkpoint steps are skipped and the
+  callback proceeds as before. The invariant that makes replay safe: a session id is only ever
+  reported once its checkpoint is confirmed on the remote. Every git step in the checkpoint
+  block is gated behind an `if` (never a bare statement), so a failure there trips a local
+  `checkpoint_ok` flag instead of `set -e`, which would otherwise skip `send_callback`
+  entirely; when `checkpoint_ok` is not 1, `CAPTURED_SESSION_ID` is blanked before the callback
+  is sent. A failed push therefore silently forces the next turn to start cold and rebuild
+  from base, which is intended degradation, not a bug: resume is an optimization and must
+  never be allowed to fail a task.
+- **Capture is asymmetric between the two harnesses on purpose** — OpenCode's `opencode run`
+  invocation and its existing `Status:` grep are left byte-for-byte untouched; after the run
+  returns, the entrypoint separately calls `opencode session list --format json` and pipes it
+  through `extract_session.py`, which picks the newest entry by `time.created`. agy has no
+  session-list equivalent, so its invocation itself switches to
+  `--output-format json`, and its `extract_session.py` splits the envelope: the conversation id
+  is printed on the first line, the response body on the rest, which the entrypoint feeds back
+  into the SAME `Status:` grep used before this feature existed.
+- **The OpenCode session volume is scoped PER TASK, and must stay that way:**
+  `OPENCODE_SESSIONS_VOLUME` is only the base name; the mounted volume is
+  `<base>-<sanitized-task-id>`, built by `_opencode_session_volume_name` in
+  `core/agent_manager.py`. Deterministic per task so a re-dispatch finds its own session,
+  unique per task so nothing else can see it. Do not "simplify" this back to one shared
+  volume. A dispatch wave runs up to `AgentManager._max_agent_concurrency` OpenCode containers
+  at once, all mounting the same path; since capture picks the NEWEST session in the store,
+  a container could read a concurrently-running sibling's session and report another task's
+  conversation id against its own task id. That is cross-task memory bleed on the next resume,
+  not a degradation to a cold start, and no test catches it because the race needs two live
+  containers. The per-task name removes it by construction rather than by heuristic.
+- **The agy JSON envelope shape is UNVERIFIED.** No `agy-agent:latest` image and no
+  `praxis-gemini-creds` volume were available while this was built, so `--output-format json`
+  and `--conversation <id>` are unconfirmed against a real agy v1.1.2 build. `conversation_id`
+  is a single guessed key with no fallback; the response-body key is a genuine multi-candidate
+  guess (`response`, `text`, `output`, `content`, `message`, tried in that order in
+  `docker/agy-agent/extract_session.py`). Malformed or unrecognized JSON makes the extractor
+  exit 1, and the entrypoint falls back to treating the raw agy output as the transcript
+  exactly as it did before this feature, so a wrong guess degrades to today's behavior rather
+  than breaking the task. But the agy resume happy path (an id captured, stored, and
+  successfully replayed) has never been exercised against real output; it needs a live
+  dogfood run before anyone should rely on it. Both extractors are baked into their images at
+  `/usr/local/bin/extract_session.py`, so a change here needs an agent IMAGE REBUILD like any
+  other entrypoint edit (see the standalone-images gotcha above).
+- **Neither session store is pruned in v1:** `TaskQueue.mark_merged`, `TaskQueue.fail_task`
+  and `TaskQueue.retry_task` clear `worker_session_id`/`worker_session_harness` in the same
+  UPDATE as the status change, and `api/tasks.py::stop_task` clears it explicitly because it
+  sets FAILED directly rather than through `fail_task`. So a stale id is never replayed. But
+  nothing reclaims disk: OpenCode allocates **one volume per task** (`<base>-<task-id>`, see
+  the per-task scoping note below) and the agy `.gemini` conversation store grows in place.
+  Per-task volumes make this growth worse than a single shared volume would, which was the
+  accepted price of removing a cross-task session-bleed race. This is deliberate:
+  the orchestrator does not mount either volume, so it cannot reach them from the reconcile
+  loop without spawning a throwaway container, which the design spec judged to be more
+  machinery than the problem currently justifies.

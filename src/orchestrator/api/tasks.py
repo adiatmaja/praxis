@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel
 
 from orchestrator.api.auth import verify_token
+from orchestrator.core.clarification_states import RESOLVED
 from orchestrator.models.schemas import TaskResponse, TaskStatus
 
 
@@ -78,6 +79,12 @@ async def stop_task(request: Request, task_id: str) -> dict[str, int]:
         await queue.complete_agent_run(run["id"], "stopped", "Stopped by user")
         stopped += 1
     await queue.update_task_status(task_id, TaskStatus.FAILED)
+    # A stopped container was killed mid-work, so it never reached its BLOCKED
+    # checkpoint. Any stored session handle therefore points at a conversation
+    # whose edits were never pushed, and resuming onto it would hand the worker
+    # back a memory the branch does not match. Drop it: this path sets FAILED
+    # directly rather than via fail_task, so it does not inherit that clearing.
+    await queue.clear_worker_session(task_id)
     return {"stopped": stopped}
 
 
@@ -266,5 +273,5 @@ async def clarify_task(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="answer must not be empty",
         )
-    await queue.record_clarification_answer(task_id, answer, state="resolved")
+    await queue.record_clarification_answer(task_id, answer, state=RESOLVED)
     return {"status": "requeued"}

@@ -9,7 +9,11 @@ import docker.errors
 import httpx
 import pytest
 
-from orchestrator.core.agent_manager import AgentManager, detect_context_limit
+from orchestrator.core.agent_manager import (
+    AgentManager,
+    _opencode_session_volume_name,
+    detect_context_limit,
+)
 
 
 def _mock_async_client(
@@ -789,3 +793,158 @@ async def test_agy_uses_correct_image(mock_docker: MagicMock) -> None:
     )
 
     assert mock_client.containers.run.call_args.kwargs["image"] == "agy-agent:latest"
+
+
+# ---------------------------------------------------------------------------
+# opencode harness: session-state volume mount
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_opencode_session_volume_name_differs_per_task() -> None:
+    """Two different task ids must never resolve to the same volume name.
+
+    This is the property that actually prevents cross-task session bleed:
+    if two concurrently running OpenCode containers ever mounted the same
+    volume, ``opencode session list`` inside one would see the other's
+    sessions (see the docstring on ``_opencode_session_volume_name``).
+    """
+    base = "praxis-opencode-sessions"
+    name_a = _opencode_session_volume_name(base, "11111111-aaaa-4bbb-cccc-111111111111")
+    name_b = _opencode_session_volume_name(base, "22222222-aaaa-4bbb-cccc-222222222222")
+
+    assert name_a == "praxis-opencode-sessions-11111111-aaaa-4bbb-cccc-11111111"
+    assert name_b == "praxis-opencode-sessions-22222222-aaaa-4bbb-cccc-22222222"
+    assert name_a != name_b
+
+
+@pytest.mark.unit
+def test_opencode_session_volume_name_empty_base_stays_empty() -> None:
+    """An unconfigured base volume must resolve to '' regardless of task id.
+
+    '' is the sentinel callers use to skip the mount entirely (cold start,
+    no persistence, no error); it must not be turned into a truthy name by
+    appending a task id.
+    """
+    assert _opencode_session_volume_name("", "any-task-id") == ""
+
+
+@pytest.mark.unit
+def test_opencode_session_volume_name_sanitizes_illegal_characters() -> None:
+    """Characters outside Docker's volume-name charset must be replaced.
+
+    Task ids are UUID4 strings in this codebase (already legal), but the
+    helper must not assume that blindly; anything outside
+    ``[a-zA-Z0-9_.-]`` has to be substituted so the mount call can never
+    fail with an invalid-name error from the Docker daemon.
+    """
+    name = _opencode_session_volume_name(
+        "praxis-opencode-sessions", "weird id/with:chars"
+    )
+
+    assert name == "praxis-opencode-sessions-weird-id-with-chars"
+
+
+@pytest.mark.unit
+@patch("orchestrator.core.agent_manager.docker")
+async def test_opencode_mounts_sessions_volume_when_configured(
+    mock_docker: MagicMock,
+) -> None:
+    """When opencode_sessions_volume is set, spawn adds a read-write mount."""
+    mock_client = MagicMock()
+    mock_docker.from_env.return_value = mock_client
+    mock_client.containers.run.return_value = _mock_container()
+
+    manager = AgentManager(
+        lm_studio_url="http://localhost:1234",
+        github_token="ghp_x",
+        opencode_sessions_volume="praxis-opencode-sessions",
+    )
+    await manager.spawn_agent(
+        task_id="oc-t1",
+        repo_url="https://github.com/u/r.git",
+        branch="agent/oc-task",
+        base_branch="plan/oc",
+        task_prompt="do it",
+        model_name="qwen3",
+        callback_url="http://cb/",
+        harness="opencode",
+    )
+
+    call_kwargs = mock_client.containers.run.call_args.kwargs
+    mounts = call_kwargs.get("volumes") or {}
+    assert isinstance(mounts, dict), f"Expected volumes dict, got: {mounts}"
+    expected_name = "praxis-opencode-sessions-oc-t1"
+    assert list(mounts.keys()) == [expected_name], (
+        f"Expected exactly the per-task volume {expected_name!r}, got: {mounts}"
+    )
+    entry = mounts[expected_name]
+    assert entry["bind"] == "/home/agent/.local/share/opencode"
+    assert entry["mode"] == "rw"
+
+
+@pytest.mark.unit
+@patch("orchestrator.core.agent_manager.docker")
+async def test_opencode_skips_sessions_mount_when_unconfigured(
+    mock_docker: MagicMock,
+) -> None:
+    """When opencode_sessions_volume is empty, spawn proceeds without mount.
+
+    Empty means no persistence and cold starts on resume, a supported
+    outcome, not an error, so this must not raise.
+    """
+    mock_client = MagicMock()
+    mock_docker.from_env.return_value = mock_client
+    mock_client.containers.run.return_value = _mock_container()
+
+    manager = AgentManager(
+        lm_studio_url="http://localhost:1234",
+        github_token="ghp_x",
+        opencode_sessions_volume="",  # explicitly disabled
+    )
+    await manager.spawn_agent(
+        task_id="oc-t2",
+        repo_url="https://github.com/u/r.git",
+        branch="agent/oc-task2",
+        base_branch="plan/oc",
+        task_prompt="do it",
+        model_name="qwen3",
+        callback_url="http://cb/",
+        harness="opencode",
+    )
+
+    call_kwargs = mock_client.containers.run.call_args.kwargs
+    volumes = call_kwargs.get("volumes") or {}
+    assert volumes == {}
+
+
+@pytest.mark.unit
+@patch("orchestrator.core.agent_manager.docker")
+async def test_agy_spawn_does_not_get_opencode_sessions_mount(
+    mock_docker: MagicMock,
+) -> None:
+    """The opencode sessions volume is opencode-specific; agy must not get it
+    even when the setting is configured, since agy has its own creds volume."""
+    mock_client = MagicMock()
+    mock_docker.from_env.return_value = mock_client
+    mock_client.containers.run.return_value = _mock_container()
+
+    manager = AgentManager(
+        lm_studio_url="http://localhost:1234",
+        github_token="ghp_x",
+        opencode_sessions_volume="praxis-opencode-sessions",
+    )
+    await manager.spawn_agent(
+        task_id="agy-t5",
+        repo_url="https://github.com/u/r.git",
+        branch="agent/agy-task5",
+        base_branch="plan/agy",
+        task_prompt="do it",
+        model_name="Gemini 3.5 Flash (High)",
+        callback_url="http://cb/",
+        harness="agy",
+    )
+
+    call_kwargs = mock_client.containers.run.call_args.kwargs
+    volumes = call_kwargs.get("volumes") or {}
+    assert volumes == {}

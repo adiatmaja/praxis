@@ -8,6 +8,7 @@ import secrets
 from fastapi import APIRouter, HTTPException, Request, status
 from pydantic import BaseModel
 
+from orchestrator.core.harnesses import default_harness_id
 from orchestrator.models.schemas import TaskStatus
 
 
@@ -26,6 +27,7 @@ class AgentDonePayload(BaseModel):
     status: str
     pr_url: str | None = None
     question: str | None = None
+    session_id: str | None = None
 
 
 def _verify_callback_token(request: Request) -> None:
@@ -90,6 +92,24 @@ async def agent_done(request: Request, body: AgentDonePayload) -> dict[str, str]
     if body.pr_url is not None:
         await queue.set_task_pr_url(body.task_id, body.pr_url)
 
+    # Resolved once and shared: the session-id branch below needs the
+    # project's harness, and the failure branch further down needs
+    # max_retries. Two independent lookups were two chances to diverge.
+    plan = await queue.get_plan(task["plan_id"])
+    project = await queue.get_project(plan["project_id"]) if plan else None
+
+    if body.session_id:
+        # The worker only reports a session id after its checkpoint is safely
+        # pushed, so storing it here is what makes resume eligible next turn.
+        if project is None:
+            logger.warning(
+                "Task %s has no resolvable plan/project; storing session "
+                "handle under the default harness, which may be wrong",
+                task_id,
+            )
+        harness = (project or {}).get("harness") or default_harness_id()
+        await queue.record_worker_session(body.task_id, body.session_id, harness)
+
     if body.status == "completed":
         await queue.update_task_status(body.task_id, TaskStatus.REVIEWING)
         logger.info("Task %s ready for review", task_id)
@@ -100,8 +120,6 @@ async def agent_done(request: Request, body: AgentDonePayload) -> dict[str, str]
     else:
         from orchestrator.core.orchestrator_reconcile import ReconcileMixin
 
-        plan = await queue.get_plan(task["plan_id"])
-        project = await queue.get_project(plan["project_id"]) if plan else None
         max_retries = int(project["max_retries"]) if project else 0
         feedback = body.question or f"Agent finished with status {body.status}"
 

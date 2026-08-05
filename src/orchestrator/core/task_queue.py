@@ -8,6 +8,7 @@ import uuid
 from datetime import UTC, datetime
 from typing import Any
 
+from orchestrator.core.clarification_states import ASKED
 from orchestrator.database import Database
 from orchestrator.models.schemas import PlanStatus, TaskStatus
 
@@ -148,20 +149,27 @@ class TaskQueue:
         )
 
     async def mark_merged(self, task_id: str) -> None:
-        """Mark a task merged and stamp the approval time."""
+        """Mark a task merged and stamp the approval time.
+
+        Clears the worker session handle in the same statement: the task is
+        terminal, so the handle can only ever be stale from here.
+        """
         now = datetime.now(UTC).isoformat()
         await self._db.execute(
             """UPDATE tasks
-               SET status = ?, approved_at = ?, updated_at = ?
+               SET status = ?, approved_at = ?, updated_at = ?,
+                   worker_session_id = NULL, worker_session_harness = NULL
                WHERE id = ?""",
             (TaskStatus.MERGED, now, now, task_id),
         )
 
     async def fail_task(self, task_id: str, feedback: str) -> None:
+        """Mark a task failed and drop any worker session handle."""
         now = datetime.now(UTC).isoformat()
         await self._db.execute(
             """UPDATE tasks
-               SET status = ?, review_feedback = ?, updated_at = ?
+               SET status = ?, review_feedback = ?, updated_at = ?,
+                   worker_session_id = NULL, worker_session_harness = NULL
                WHERE id = ?""",
             (TaskStatus.FAILED, feedback, now, task_id),
         )
@@ -172,9 +180,9 @@ class TaskQueue:
         await self._db.execute(
             """UPDATE tasks
                SET status = ?, clarification_question = ?,
-                   clarification_state = 'asked', updated_at = ?
+                   clarification_state = ?, updated_at = ?
                WHERE id = ?""",
-            (TaskStatus.NEEDS_CLARIFICATION, question, now, task_id),
+            (TaskStatus.NEEDS_CLARIFICATION, question, ASKED, now, task_id),
         )
 
     async def record_clarification_answer(
@@ -210,6 +218,18 @@ class TaskQueue:
         )
 
     async def retry_task(self, task_id: str) -> None:
+        """Requeue a task for a plain retry and drop any worker session handle.
+
+        A retry always rebuilds the branch from base, so a stored
+        ``worker_session_id`` would describe a tree that no longer exists.
+        Clearing the id here (not ``clarification_state``) is the
+        load-bearing part: ``session_resume.resolve_resume_session`` refuses
+        to resume without a stored id regardless of what
+        ``clarification_state`` still says, so this alone closes the gate.
+        ``clarification_state`` is left untouched deliberately -- resetting
+        it is a broader behavior change to the clarification flow that is
+        out of scope here, and is not needed to prevent the resume bug.
+        """
         task = await self.get_task(task_id)
         if task is None:
             message = f"Task {task_id} not found"
@@ -217,7 +237,8 @@ class TaskQueue:
         now = datetime.now(UTC).isoformat()
         await self._db.execute(
             """UPDATE tasks
-               SET status = ?, attempt = ?, updated_at = ?
+               SET status = ?, attempt = ?, updated_at = ?,
+                   worker_session_id = NULL, worker_session_harness = NULL
                WHERE id = ?""",
             (TaskStatus.PENDING, int(task["attempt"]) + 1, now, task_id),
         )
@@ -227,6 +248,30 @@ class TaskQueue:
         await self._db.execute(
             "UPDATE tasks SET pr_url = ?, updated_at = ? WHERE id = ?",
             (pr_url, now, task_id),
+        )
+
+    async def record_worker_session(
+        self, task_id: str, session_id: str, harness: str
+    ) -> None:
+        """Store the worker's harness-native session handle for later resume.
+
+        The harness is stored with the id because replay must refuse a handle
+        minted by a different harness.
+        """
+        now = datetime.now(UTC).isoformat()
+        await self._db.execute(
+            "UPDATE tasks SET worker_session_id = ?, worker_session_harness = ?, "
+            "updated_at = ? WHERE id = ?",
+            (session_id, harness, now, task_id),
+        )
+
+    async def clear_worker_session(self, task_id: str) -> None:
+        """Drop the session handle so a terminal task never replays a stale id."""
+        now = datetime.now(UTC).isoformat()
+        await self._db.execute(
+            "UPDATE tasks SET worker_session_id = NULL, "
+            "worker_session_harness = NULL, updated_at = ? WHERE id = ?",
+            (now, task_id),
         )
 
     async def get_dispatchable_tasks(self, plan_id: str) -> list[dict[str, Any]]:

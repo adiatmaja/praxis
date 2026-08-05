@@ -15,6 +15,18 @@ WORKSPACE="/home/agent/workspace"
 STATUS="completed"
 PR_URL=""
 QUESTION=""
+CAPTURED_SESSION_ID=""
+
+# Single source of truth for "this run reuses the existing remote branch
+# instead of rebuilding it from base": single-branch mode and a resume turn
+# both apply. Computed once here and tested everywhere else so the two spots
+# (branch checkout below, push guard further down) can never drift apart
+# again -- that drift is exactly what caused the force-push defect this
+# variable replaces.
+REUSING_BRANCH=0
+if [ "${SINGLE_BRANCH:-0}" = "1" ] || [ -n "${WORKER_SESSION_ID:-}" ]; then
+    REUSING_BRANCH=1
+fi
 
 # Guard: in two-tier mode workers must NEVER target a protected base branch
 # (main/master/release*). Doing so collapses two-tier branching and (worst case)
@@ -53,7 +65,12 @@ send_callback() {
         question_json=$(printf "%s" "${QUESTION}" | json_escape)
     fi
 
-    local payload="{\"task_id\":\"${TASK_ID}\",\"run_id\":${run_json},\"status\":\"${STATUS}\",\"pr_url\":${pr_json},\"question\":${question_json}}"
+    local session_json="null"
+    if [ -n "${CAPTURED_SESSION_ID:-}" ]; then
+        session_json=$(printf "%s" "${CAPTURED_SESSION_ID}" | json_escape)
+    fi
+
+    local payload="{\"task_id\":\"${TASK_ID}\",\"run_id\":${run_json},\"status\":\"${STATUS}\",\"pr_url\":${pr_json},\"question\":${question_json},\"session_id\":${session_json}}"
     local max_attempts="${CALLBACK_MAX_ATTEMPTS:-5}"
     local attempt=1
     while [ "${attempt}" -le "${max_attempts}" ]; do
@@ -121,8 +138,12 @@ else
         git reset --hard "origin/${BASE_BRANCH}"
     fi
 fi
-if [ "${SINGLE_BRANCH:-0}" = "1" ] && git rev-parse --verify "origin/${BRANCH}" >/dev/null 2>&1; then
-    echo "--- Single-branch mode: reusing existing origin/${BRANCH} ---"
+if [ "${REUSING_BRANCH}" = "1" ] \
+    && git rev-parse --verify "origin/${BRANCH}" >/dev/null 2>&1; then
+    # Reuse the existing remote branch. Required when resuming a session: the
+    # restored conversation refers to edits checkpointed on this branch, so a
+    # fresh branch cut from base would contradict the worker's memory.
+    echo "--- Reusing existing origin/${BRANCH} ---"
     git checkout -b "${BRANCH}" "origin/${BRANCH}"
 else
     echo "--- Creating branch ${BRANCH} from ${BASE_BRANCH} ---"
@@ -215,23 +236,86 @@ elif [ -n "${PLAN_TEXT:-}" ]; then
 ${TASK_PROMPT}"
 fi
 
+OPENCODE_BASE_ARGS=(run --model "lmstudio/${MODEL}")
+OPENCODE_ARGS=("${OPENCODE_BASE_ARGS[@]}")
+if [ -n "${WORKER_SESSION_ID:-}" ]; then
+    echo "--- Resuming OpenCode session ${WORKER_SESSION_ID} ---"
+    OPENCODE_ARGS+=(--session "${WORKER_SESSION_ID}")
+fi
+
 OUTPUT_LOG="$(mktemp)"
 set +e
-opencode run --model "lmstudio/${MODEL}" "${EFFECTIVE_PROMPT}" 2>&1 | tee "${OUTPUT_LOG}"
+opencode "${OPENCODE_ARGS[@]}" "${EFFECTIVE_PROMPT}" 2>&1 | tee "${OUTPUT_LOG}"
 opencode_rc="${PIPESTATUS[0]}"
 set -e
+if [ "${opencode_rc}" -ne 0 ] && [ -n "${WORKER_SESSION_ID:-}" ]; then
+    # A stale or pruned session id must not fail the task. Retry once cold,
+    # reusing the same base args (never a second hand-copied literal) so a
+    # future flag added to OPENCODE_BASE_ARGS can't be forgotten here.
+    echo "WARNING: resume with session ${WORKER_SESSION_ID} failed; retrying cold"
+    set +e
+    opencode "${OPENCODE_BASE_ARGS[@]}" "${EFFECTIVE_PROMPT}" 2>&1 | tee "${OUTPUT_LOG}"
+    opencode_rc="${PIPESTATUS[0]}"
+    set -e
+fi
 if [ "${opencode_rc}" -ne 0 ]; then
     exit "${opencode_rc}"
+fi
+
+echo "--- Capturing OpenCode session id (best effort) ---"
+if CAPTURED_SESSION_ID=$(opencode session list --format json 2>/dev/null \
+    | python3 /usr/local/bin/extract_session.py 2>/dev/null); then
+    echo "Session id: ${CAPTURED_SESSION_ID}"
+else
+    CAPTURED_SESSION_ID=""
+    echo "No session id captured; next dispatch will start cold"
 fi
 
 report_status=$(grep -oE '^Status:[[:space:]]*[A-Z_]+' "${OUTPUT_LOG}" \
     | tail -n1 | sed -E 's/^Status:[[:space:]]*//' ) || true
 
 if [ "${report_status}" = "BLOCKED" ] || [ "${report_status}" = "NEEDS_CONTEXT" ]; then
-    echo "--- Worker reported ${report_status}; sending clarification request (no PR) ---"
+    echo "--- Worker reported ${report_status}; checkpointing WIP (no PR) ---"
     QUESTION=$(awk '/^Concerns/{flag=1;next}/^====/{flag=0}flag' "${OUTPUT_LOG}" \
         | sed '/^[[:space:]]*$/d')
     [ -z "${QUESTION}" ] && QUESTION="Worker reported ${report_status} without details."
+
+    # Checkpoint so the resumed worker's tree matches its restored memory.
+    # .praxis-bible.md is in .git/info/exclude, so `git add -A` cannot stage it.
+    # Every git step below is guarded as an `if` condition (never a bare
+    # statement) so a failure here cannot trip `set -e` and skip send_callback;
+    # it only flips checkpoint_ok, which blanks the session id instead.
+    checkpoint_ok=1
+    if ! git add -A; then
+        echo "WARNING: checkpoint git add failed; suppressing session resume"
+        checkpoint_ok=0
+    fi
+    if [ "${checkpoint_ok}" -eq 1 ] && ! git diff --cached --quiet; then
+        if ! git commit -m "wip: checkpoint before clarification (${BRANCH})"; then
+            echo "WARNING: checkpoint commit failed; suppressing session resume"
+            checkpoint_ok=0
+        fi
+    fi
+    ahead=0
+    if [ "${checkpoint_ok}" -eq 1 ]; then
+        if ! ahead=$(git rev-list --count "${BASE_BRANCH}..HEAD"); then
+            echo "WARNING: checkpoint rev-list failed; suppressing session resume"
+            checkpoint_ok=0
+            ahead=0
+        fi
+    fi
+    if [ "${checkpoint_ok}" -eq 1 ] && [ "${ahead}" -gt 0 ]; then
+        if ! git push -u origin "${BRANCH}"; then
+            echo "WARNING: checkpoint push failed; suppressing session resume"
+            checkpoint_ok=0
+        fi
+    fi
+    # The invariant: only report a session id once its checkpoint is on the
+    # remote. Otherwise the next turn must start cold and rebuild from base.
+    if [ "${checkpoint_ok}" -ne 1 ]; then
+        CAPTURED_SESSION_ID=""
+    fi
+
     STATUS="needs_clarification"
     send_callback
     trap - EXIT
@@ -258,10 +342,14 @@ else
 fi
 
 echo "--- Pushing branch ---"
-# Retries rebuild the agent branch from base while the remote may still hold a
-# previous attempt's commits; each attempt is a full re-implementation, so the
-# fresh branch is authoritative and a force push is correct here.
-if [ "${SINGLE_BRANCH:-0}" = "1" ]; then
+# Force is correct only when the branch was just rebuilt fresh from base this
+# attempt, which makes it authoritative over whatever the remote holds. Both
+# single-branch mode and a resume turn instead REUSE the existing remote
+# branch (checked out above), so a force push there would silently discard
+# commits this run does not know about -- its own earlier checkpoint, or
+# someone else's. Non-force in both reuse cases; force only for a genuine
+# from-base rebuild retry.
+if [ "${REUSING_BRANCH}" = "1" ]; then
     git push -u origin "${BRANCH}"
 else
     git push -u --force origin "${BRANCH}"

@@ -13,7 +13,9 @@ import logging
 from typing import TYPE_CHECKING, Any, cast
 
 from orchestrator.core.agent_manager import detect_context_limit
+from orchestrator.core.harnesses import default_harness_id
 from orchestrator.core.progress_handover import ChecklistItem, render_handover
+from orchestrator.core.session_resume import resolve_resume_session
 from orchestrator.core.token_budget import ContextBudgetExceeded
 from orchestrator.core.worker_bible import BibleSources, build_bible
 from orchestrator.models.schemas import TaskStatus
@@ -134,6 +136,9 @@ class DispatchMixin:
                 )
                 continue
 
+            harness_id = project.get("harness") or default_harness_id()
+            resume_session = resolve_resume_session(task, harness_id)
+
             try:
                 container_id = await self._agents.spawn_agent(
                     task_id=task["id"],
@@ -142,7 +147,7 @@ class DispatchMixin:
                     base_branch=base_branch,
                     task_prompt=prompt,
                     model_name=project["model_name"],
-                    harness=project.get("harness"),
+                    harness=harness_id,
                     callback_url=self._callback_url,
                     callback_token=self._callback_token,
                     plan_path=plan_path,
@@ -151,6 +156,7 @@ class DispatchMixin:
                     bible_text=bible,
                     task_summary=f"{task['title']}\n\n{task['description']}",
                     single_branch=single_branch,
+                    worker_session_id=resume_session,
                 )
             except RuntimeError as exc:
                 # Disk-headroom or concurrency-cap preflight failed. Leave the

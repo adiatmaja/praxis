@@ -34,4 +34,10 @@ ENV PATH="/home/agent/.local/bin:${PATH}"
 COPY --chown=agent:agent entrypoint.sh /home/agent/entrypoint.sh
 RUN chmod +x /home/agent/entrypoint.sh
 
+# extract_session.py is invoked as `python3 /usr/local/bin/extract_session.py`
+# (never executed directly), so it only needs to be readable by the agent user;
+# COPY runs as root internally regardless of the active USER, so writing under
+# /usr/local/bin here is fine even after the USER agent switch above.
+COPY --chown=agent:agent extract_session.py /usr/local/bin/extract_session.py
+
 ENTRYPOINT ["/home/agent/entrypoint.sh"]

@@ -15,6 +15,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from orchestrator.core.clarification_states import (
+    ANSWERED_BY_BRAIN,
+    ASKED,
+    AWAITING_HUMAN,
+)
 from orchestrator.core.diff_guard import (
     added_dependencies,
     destructive_deletions,
@@ -283,7 +288,7 @@ class ReviewMixin:
             return
         if (
             task["status"] != TaskStatus.NEEDS_CLARIFICATION
-            or task.get("clarification_state") != "asked"
+            or task.get("clarification_state") != ASKED
         ):
             return
 
@@ -348,7 +353,7 @@ class ReviewMixin:
             return
         if (
             refetched["status"] != TaskStatus.NEEDS_CLARIFICATION
-            or refetched.get("clarification_state") != "asked"
+            or refetched.get("clarification_state") != ASKED
         ):
             return
 
@@ -360,7 +365,7 @@ class ReviewMixin:
 
         if resolved:
             await self._tq.record_clarification_answer(
-                task_id, answer, state="answered_by_brain"
+                task_id, answer, state=ANSWERED_BY_BRAIN
             )
             self._bus.publish(
                 {
@@ -384,8 +389,8 @@ class ReviewMixin:
     ) -> None:
         """Set clarification_state to awaiting_human and publish task_needs_clarification."""
         await self._tq._db.execute(
-            "UPDATE tasks SET clarification_state = 'awaiting_human' WHERE id = ?",
-            (task_id,),
+            "UPDATE tasks SET clarification_state = ? WHERE id = ?",
+            (AWAITING_HUMAN, task_id),
         )
         self._bus.publish(
             {
