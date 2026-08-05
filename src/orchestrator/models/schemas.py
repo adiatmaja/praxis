@@ -76,7 +76,26 @@ class CapabilityProfile(BaseModel):
     escalate_task_types: list[str] = Field(default_factory=list)
 
 
-LEAF_SCHEMA_VERSION = 1
+class LeafType(StrEnum):
+    """Fixed task shapes a decomposed leaf may take.
+
+    Free-form decomposition invites free-form ambiguity; fixed templates
+    outperform open-ended planning (Agentless arXiv 2407.01489, CodeR
+    arXiv 2406.01304).  Each type declares which ``plan_text`` sections are
+    mandatory; see ``core/leaf_templates.REQUIRED_SECTIONS``.
+    """
+
+    BUGFIX_REPRO = "bugfix_repro"
+    FUNCTION_ADD = "function_add"
+    ENDPOINT_ADD = "endpoint_add"
+    REFACTOR_RENAME = "refactor_rename"
+    TEST_ADD = "test_add"
+    CONFIG_CHANGE = "config_change"
+    DOC_CHANGE = "doc_change"
+    GENERIC = "generic"
+
+
+LEAF_SCHEMA_VERSION = 2
 
 
 class LeafChecklistItem(BaseModel):
@@ -107,6 +126,8 @@ class LeafTask(BaseModel):
     task_type: str | None = None
     estimated_loc: int | None = None
     verification: str | None = None
+    leaf_type: LeafType = LeafType.GENERIC
+    neighbor_contracts: str | None = None
 
     @model_validator(mode="after")
     def _apply_title_defaults(self) -> LeafTask:

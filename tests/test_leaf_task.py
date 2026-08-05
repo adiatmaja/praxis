@@ -159,3 +159,60 @@ def test_parse_review_response_rejects_missing_title():
     raw = '{"tasks": [{"id": "t1"}]}'
     with pytest.raises(PlanReviewError):
         parse_review_response(raw)
+
+
+@pytest.mark.unit
+def test_leaf_type_enum_has_the_eight_standard_values():
+    from orchestrator.models.schemas import LeafType
+
+    assert {t.value for t in LeafType} == {
+        "bugfix_repro",
+        "function_add",
+        "endpoint_add",
+        "refactor_rename",
+        "test_add",
+        "config_change",
+        "doc_change",
+        "generic",
+    }
+
+
+@pytest.mark.unit
+def test_leaf_task_defaults_leaf_type_to_generic():
+    from orchestrator.models.schemas import LeafTask, LeafType
+
+    leaf = LeafTask(id="t1", title="Add a helper")
+    assert leaf.leaf_type is LeafType.GENERIC
+
+
+@pytest.mark.unit
+def test_leaf_task_accepts_a_declared_leaf_type():
+    from orchestrator.models.schemas import LeafTask, LeafType
+
+    leaf = LeafTask(id="t1", title="Fix the off-by-one", leaf_type="bugfix_repro")
+    assert leaf.leaf_type is LeafType.BUGFIX_REPRO
+
+
+@pytest.mark.unit
+def test_leaf_task_rejects_an_unknown_leaf_type():
+    import pytest as _pytest
+    from pydantic import ValidationError
+
+    from orchestrator.models.schemas import LeafTask
+
+    with _pytest.raises(ValidationError):
+        LeafTask(id="t1", title="x", leaf_type="not_a_real_type")
+
+
+@pytest.mark.unit
+def test_leaf_task_neighbor_contracts_defaults_to_none():
+    from orchestrator.models.schemas import LeafTask
+
+    assert LeafTask(id="t1", title="x").neighbor_contracts is None
+
+
+@pytest.mark.unit
+def test_leaf_schema_version_is_two():
+    from orchestrator.models.schemas import LEAF_SCHEMA_VERSION
+
+    assert LEAF_SCHEMA_VERSION == 2
