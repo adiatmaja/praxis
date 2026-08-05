@@ -67,6 +67,14 @@ def test_missing_sections_is_case_insensitive():
 
 
 @pytest.mark.unit
+def test_missing_sections_is_case_insensitive_for_every_label_form():
+    # The plain-colon case above would still pass if IGNORECASE were lost on
+    # only the heading and bold branches, so exercise all three forms.
+    text = "## GOAL\nx\n**files:** src/a.py\n### Steps\n1. do\n**ACCEPTANCE:** `pytest`"
+    assert missing_sections(text, LeafType.FUNCTION_ADD) == []
+
+
+@pytest.mark.unit
 def test_missing_sections_reports_every_absent_section_in_order():
     text = "Goal: ship it"
     assert missing_sections(text, LeafType.FUNCTION_ADD) == [
@@ -97,3 +105,24 @@ def test_render_template_block_names_every_type_and_its_extras():
         assert leaf_type.value in block
     assert "Reproduction" in block
     assert "Renames" in block
+
+
+@pytest.mark.unit
+def test_render_template_block_attaches_each_extra_to_its_own_type():
+    # Membership in the whole block is not enough: swapping Reproduction and
+    # Renames between the two types would leave that assertion green while
+    # telling the brain the wrong shape.
+    lines = {
+        leaf_type: next(
+            line
+            for line in render_template_block().splitlines()
+            if line.startswith(f'- "{leaf_type.value}"')
+        )
+        for leaf_type in LeafType
+    }
+    assert "Reproduction" in lines[LeafType.BUGFIX_REPRO]
+    assert "Renames" in lines[LeafType.REFACTOR_RENAME]
+    for leaf_type, line in lines.items():
+        for extra in ("Reproduction", "Renames"):
+            if extra not in REQUIRED_SECTIONS[leaf_type]:
+                assert extra not in line, f"{leaf_type.value} must not claim {extra}"
