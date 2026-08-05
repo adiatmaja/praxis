@@ -593,6 +593,10 @@ async def test_decompose_raises_plan_rejected_on_persistent_hard_violations():
             project_id=None,
         )
     assert len(router.calls) == 2
+    # This fixture now trips two HARD rules, so pin the one the test was
+    # written for: a regression that dropped the verification check must not
+    # be able to hide behind leaf_template.
+    assert "[verification]" in router.calls[1][1]
 
 
 async def test_decompose_attaches_validation_warnings_on_soft_only():
@@ -755,6 +759,9 @@ async def test_decompose_emits_plan_rejected_on_hard_violations():
     assert rejected[0].plan_id == "plan-789"
     assert rejected[0].rounds == 2
     assert len(rejected[0].violations) > 0
+    # This fixture now trips two HARD rules, so pin the one the test was
+    # written for rather than accepting any non-empty violation list.
+    assert any(v.startswith("[verification]") for v in rejected[0].violations)
 
 
 async def test_decompose_no_emit_when_emitter_is_none():
