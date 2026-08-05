@@ -10,6 +10,7 @@ from __future__ import annotations
 import contextlib
 import json
 import logging
+from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any, cast
 
 from orchestrator.core.agent_manager import detect_context_limit
@@ -27,6 +28,44 @@ if TYPE_CHECKING:
 
 
 logger = logging.getLogger(__name__)
+
+
+def _normalize_edit_locations(files: Any) -> str | None:
+    """Return the leaf's edit locations as newline-joined paths, or None.
+
+    ``plan_task`` is raw brain JSON on the plan_spec and improvement paths (only
+    the decomposition path validates it through ``LeafTask``), so ``files`` can
+    be any shape. The result lands in a Bible floor section that can never be
+    dropped, so an unusable value must yield nothing rather than garbage, and
+    this must never raise: a ``TypeError`` here aborts the whole loop pass.
+
+    Args:
+        files: The raw ``files`` value from the plan task: a path string, a
+            sequence of path strings or ``{"path"|"file": ...}`` mappings, or
+            anything else.
+
+    Returns:
+        The newline-joined paths, or None when nothing usable was found.
+    """
+    if isinstance(files, str):
+        entries: list[Any] = [files]
+    elif isinstance(files, list | tuple):
+        entries = list(files)
+    else:
+        return None
+
+    paths: list[str] = []
+    for entry in entries:
+        if isinstance(entry, str):
+            path = entry
+        elif isinstance(entry, Mapping):
+            candidate = entry.get("path") or entry.get("file")
+            path = candidate if isinstance(candidate, str) else ""
+        else:
+            continue
+        if path.strip():
+            paths.append(path)
+    return "\n".join(paths) or None
 
 
 class DispatchMixin:
@@ -302,8 +341,7 @@ class DispatchMixin:
             else None
         ) or 8192
 
-        files = plan_task.get("files") or []
-        edit_locations = "\n".join(str(f) for f in files) or None
+        edit_locations = _normalize_edit_locations(plan_task.get("files"))
 
         return build_bible(
             BibleSources(

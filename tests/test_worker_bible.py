@@ -50,7 +50,15 @@ def test_none_sources_are_skipped():
 
 
 @pytest.mark.unit
-def test_bible_includes_review_feedback_as_floor_section():
+def test_bible_includes_review_feedback_section():
+    """The feedback renders; this budget cannot observe whether it is a floor.
+
+    At 8192 tok nothing is trimmed, so the section is kept whether or not it is
+    a floor.  Floor-ness is pinned by the raise-based
+    ``test_edit_locations_and_acceptance_are_floors_not_cheap_optionals`` in
+    tests/test_worker_bible_priority.py, where one token of slack makes every
+    floor load-bearing.
+    """
     src = BibleSources(
         goal="do it",
         handover="# PROGRESS",
@@ -95,8 +103,17 @@ def test_verify_cmd_absent_when_none():
 
 
 @pytest.mark.unit
-def test_verify_cmd_survives_tight_budget():
-    """The acceptance section is floor=True so it survives trimming (repo_memory dropped)."""
+def test_oversized_repo_memory_is_dropped_while_acceptance_is_kept():
+    """Only the drop is observable here, not the acceptance section's floor flag.
+
+    Nothing droppable outranks the acceptance section, so it is kept whenever
+    the pack fits at all; presence therefore cannot distinguish a floor from a
+    cheap high-priority section.  Floor-ness is pinned by the raise-based
+    ``test_edit_locations_and_acceptance_are_floors_not_cheap_optionals`` in
+    tests/test_worker_bible_priority.py.  What this test does pin is that a
+    repo memory far larger than the budget is trimmed away rather than
+    overflowing the worker's window.
+    """
     src = BibleSources(
         goal="Do x",
         handover="# PROGRESS",

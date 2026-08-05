@@ -1,12 +1,14 @@
 """Assemble the worker's Static Bible: one scrubbed, budgeted reference doc.
 
 The Bible is written into the harness's always-resent slot so the goal,
-conventions, and progress survive compaction. Sources are prioritized by
-``docs/decomposition-standard.md`` section 4; under a tight token budget the
-least-important tail (repo memory, then caller narrative, then the working
-agreement, then neighbor contracts) is dropped, while the goal, the leaf
-contract, its edit locations, its acceptance check, review feedback, and the
-progress handover are floor sections.
+conventions, and progress survive compaction. The goal, the leaf contract, its
+edit locations, its acceptance check, review feedback, and the progress
+handover are floor sections and are never dropped; if they alone overflow the
+budget, assembly raises. Everything else is fitted into what is left greedily
+in the priority order of ``docs/decomposition-standard.md`` section 4, so
+priority is the preference for what to keep, not a strict drop order: a
+section that does not fit is skipped and a smaller lower-priority one may
+still be kept.
 """
 
 from __future__ import annotations
@@ -36,10 +38,12 @@ class BibleSources:
     """Raw inputs for the Bible.
 
     Field order mirrors the context-pack priority in
-    ``docs/decomposition-standard.md`` section 4.  When the pack exceeds the
-    worker's budget, sections are dropped from the bottom of that order; the
-    leaf contract, its edit locations, and its acceptance check are floors and
-    are never dropped.
+    ``docs/decomposition-standard.md`` section 4.  The leaf contract, its edit
+    locations, and its acceptance check are floors and are never dropped.  When
+    the pack exceeds the worker's budget the rest are fitted greedily in that
+    order, so it sets the preference for what to keep rather than a strict drop
+    order: a section that does not fit is skipped, and a smaller lower-priority
+    one may still be kept.
     """
 
     goal: str
