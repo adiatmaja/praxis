@@ -161,7 +161,12 @@ def test_validate_leaves_clean_plan():
         LeafTask(
             id="t1",
             title="Add config loader",
-            plan_text="def load_config(path: str) -> dict: ...",
+            plan_text=(
+                "## Goal\nAdd a config loader.\n"
+                "## Files\nsrc/config.py\n"
+                "## Steps\n1. def load_config(path: str) -> dict: ...\n"
+                "## Acceptance\nRun `pytest tests/test_config.py`"
+            ),
             depends_on=[],
             files=["src/config.py"],
             estimated_loc=50,
@@ -170,7 +175,12 @@ def test_validate_leaves_clean_plan():
         LeafTask(
             id="t2",
             title="Wire config",
-            plan_text="Wire config into settings module",
+            plan_text=(
+                "## Goal\nWire config into settings module.\n"
+                "## Files\nsrc/settings.py\n"
+                "## Steps\n1. Wire config into settings module.\n"
+                "## Acceptance\nRun `pytest tests/test_settings.py`"
+            ),
             depends_on=["t1"],
             files=["src/settings.py"],
             estimated_loc=30,
@@ -729,3 +739,109 @@ def test_validate_leaves_no_leaves_arg():
 
     result = validate_leaves(opus_plan, profile, source)
     assert result.clean is True
+
+
+# ---------------------------------------------------------------------------
+# HARD: leaf_template
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_leaf_template_rule_passes_a_complete_generic_leaf():
+    from orchestrator.core.leaf_validator import validate_leaves
+    from orchestrator.models.schemas import CapabilityProfile, LeafTask
+
+    leaf = LeafTask(
+        id="t1",
+        title="Add helper",
+        plan_text=(
+            "## Goal\nAdd a helper.\n"
+            "## Files\nsrc/a.py\n"
+            "## Steps\n1. Write it.\n"
+            "## Acceptance\nRun `uv run pytest tests/test_a.py`"
+        ),
+        verification="Run `uv run pytest tests/test_a.py` and confirm it passes",
+        leaf_type="generic",
+    )
+    result = validate_leaves(
+        {},
+        CapabilityProfile(model_name="m", parameter_count_b=30, context_window=8192),
+        leaf.plan_text,
+        [leaf],
+    )
+    assert [v for v in result.hard if v.rule == "leaf_template"] == []
+
+
+@pytest.mark.unit
+def test_leaf_template_rule_hard_rejects_a_missing_section():
+    from orchestrator.core.leaf_validator import validate_leaves
+    from orchestrator.models.schemas import CapabilityProfile, LeafTask
+
+    leaf = LeafTask(
+        id="t1",
+        title="Add helper",
+        plan_text="## Goal\nAdd a helper.\n## Files\nsrc/a.py",
+        verification="Run `uv run pytest tests/test_a.py` and confirm it passes",
+        leaf_type="generic",
+    )
+    result = validate_leaves(
+        {},
+        CapabilityProfile(model_name="m", parameter_count_b=30, context_window=8192),
+        leaf.plan_text,
+        [leaf],
+    )
+    violations = [v for v in result.hard if v.rule == "leaf_template"]
+    assert len(violations) == 1
+    assert "Steps" in violations[0].message
+    assert "Acceptance" in violations[0].message
+
+
+@pytest.mark.unit
+def test_leaf_template_rule_enforces_the_type_specific_section():
+    from orchestrator.core.leaf_validator import validate_leaves
+    from orchestrator.models.schemas import CapabilityProfile, LeafTask
+
+    leaf = LeafTask(
+        id="t1",
+        title="Fix the crash",
+        plan_text=(
+            "## Goal\nStop the crash.\n"
+            "## Files\nsrc/a.py\n"
+            "## Steps\n1. Guard the None.\n"
+            "## Acceptance\nRun `uv run pytest tests/test_a.py`"
+        ),
+        verification="Run `uv run pytest tests/test_a.py` and confirm it passes",
+        leaf_type="bugfix_repro",
+    )
+    result = validate_leaves(
+        {},
+        CapabilityProfile(model_name="m", parameter_count_b=30, context_window=8192),
+        leaf.plan_text,
+        [leaf],
+    )
+    violations = [v for v in result.hard if v.rule == "leaf_template"]
+    assert len(violations) == 1
+    assert "Reproduction" in violations[0].message
+
+
+@pytest.mark.unit
+def test_leaf_template_violation_is_hard_not_soft():
+    from orchestrator.core.leaf_validator import validate_leaves
+    from orchestrator.models.schemas import CapabilityProfile, LeafTask
+
+    leaf = LeafTask(
+        id="t1",
+        title="Add helper",
+        plan_text="Goal: do a thing",
+        verification="Run `uv run pytest` and confirm it passes cleanly",
+        leaf_type="generic",
+    )
+    result = validate_leaves(
+        {},
+        CapabilityProfile(model_name="m", parameter_count_b=30, context_window=8192),
+        leaf.plan_text,
+        [leaf],
+    )
+    assert any(v.rule == "leaf_template" for v in result.hard)
+    assert not any(v.rule == "leaf_template" for v in result.soft)
+    assert result.dispatchable is False

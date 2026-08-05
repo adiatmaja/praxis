@@ -49,10 +49,15 @@ async def test_decompose_plan_returns_normalized_opus_plan():
     raw = (
         '{"tasks":[{"id":"t1","title":"A","description":"d",'
         '"depends_on":[],"files":["src/a.py"],"task_type":"feature",'
-        '"estimated_loc":50,"verification":"Run pytest and confirm all tests pass"},'
+        '"estimated_loc":50,"verification":"Run pytest and confirm all tests pass",'
+        '"plan_text":"## Goal\\nAdd A.\\n## Files\\nsrc/a.py\\n## Steps\\n'
+        '1. Implement it.\\n## Acceptance\\nRun `pytest` and confirm it passes"},'
         '{"id":"t2","title":"B","description":"d",'
         '"depends_on":["t1"],"files":["src/b.py"],"task_type":"feature",'
-        '"estimated_loc":60,"verification":"Run pytest and confirm all tests pass"}]}'
+        '"estimated_loc":60,"verification":"Run pytest and confirm all tests pass",'
+        '"plan_text":"## Goal\\nAdd B.\\n## Files\\nsrc/b.py\\n## Steps\\n'
+        '1. Implement it.\\n## Acceptance\\nRun `pytest` and confirm it passes"'
+        "}]}"
     )
     router = _FakeRouter(raw)
     opus_plan = await decompose_plan(
@@ -71,7 +76,14 @@ async def test_decompose_plan_returns_normalized_opus_plan():
 
 
 async def test_decompose_plan_threads_context_onto_tasks():
-    raw = '{"tasks":[{"id":"t1","title":"X","description":"d","depends_on":[],"files":["src/x.py"],"task_type":"feature","estimated_loc":40,"verification":"Run pytest and confirm all tests pass"}]}'
+    raw = (
+        '{"tasks":[{"id":"t1","title":"X","description":"d","depends_on":[],'
+        '"files":["src/x.py"],"task_type":"feature","estimated_loc":40,'
+        '"verification":"Run pytest and confirm all tests pass",'
+        '"plan_text":"## Goal\\nAdd X.\\n## Files\\nsrc/x.py\\n## Steps\\n'
+        '1. Implement it.\\n## Acceptance\\nRun `pytest` and confirm it passes"'
+        "}]}"
+    )
     router = _FakeRouter(raw)
     opus_plan = await decompose_plan(
         plan="do something",
@@ -85,7 +97,14 @@ async def test_decompose_plan_threads_context_onto_tasks():
 
 
 async def test_decompose_plan_no_context_skips_context_text():
-    raw = '{"tasks":[{"id":"t1","title":"X","description":"d","depends_on":[],"files":["src/x.py"],"task_type":"feature","estimated_loc":40,"verification":"Run pytest and confirm all tests pass"}]}'
+    raw = (
+        '{"tasks":[{"id":"t1","title":"X","description":"d","depends_on":[],'
+        '"files":["src/x.py"],"task_type":"feature","estimated_loc":40,'
+        '"verification":"Run pytest and confirm all tests pass",'
+        '"plan_text":"## Goal\\nAdd X.\\n## Files\\nsrc/x.py\\n## Steps\\n'
+        '1. Implement it.\\n## Acceptance\\nRun `pytest` and confirm it passes"'
+        "}]}"
+    )
     router = _FakeRouter(raw)
     opus_plan = await decompose_plan(
         plan="do something",
@@ -116,7 +135,10 @@ async def test_decompose_retries_once_on_parse_failure():
     good = (
         '{"tasks": [{"id": "t1", "title": "A", "description": "d", "depends_on": [],'
         '"files": ["src/a.py"], "task_type": "feature", "estimated_loc": 50,'
-        '"verification": "Run pytest and confirm all tests pass"}]}'
+        '"verification": "Run pytest and confirm all tests pass",'
+        '"plan_text": "## Goal\\nAdd A.\\n## Files\\nsrc/a.py\\n## Steps\\n'
+        '1. Implement it.\\n## Acceptance\\nRun `pytest` and confirm it passes"'
+        "}]}"
     )
     router = _FlakyRouter(good)
     opus_plan = await decompose_plan(
@@ -154,7 +176,14 @@ async def test_decompose_raises_after_all_retries_exhausted():
 
 
 async def test_decompose_threads_local_context_as_repo_memory():
-    raw = '{"tasks":[{"id":"t1","title":"X","description":"d","depends_on":[],"files":["src/x.py"],"task_type":"feature","estimated_loc":40,"verification":"Run pytest and confirm all tests pass"}]}'
+    raw = (
+        '{"tasks":[{"id":"t1","title":"X","description":"d","depends_on":[],'
+        '"files":["src/x.py"],"task_type":"feature","estimated_loc":40,'
+        '"verification":"Run pytest and confirm all tests pass",'
+        '"plan_text":"## Goal\\nAdd X.\\n## Files\\nsrc/x.py\\n## Steps\\n'
+        '1. Implement it.\\n## Acceptance\\nRun `pytest` and confirm it passes"'
+        "}]}"
+    )
     router = _FakeRouter(raw)
     opus_plan = await decompose_plan(
         plan="do something",
@@ -169,7 +198,14 @@ async def test_decompose_threads_local_context_as_repo_memory():
 
 
 async def test_decompose_no_local_context_skips_repo_memory():
-    raw = '{"tasks":[{"id":"t1","title":"X","description":"d","depends_on":[],"files":["src/x.py"],"task_type":"feature","estimated_loc":40,"verification":"Run pytest and confirm all tests pass"}]}'
+    raw = (
+        '{"tasks":[{"id":"t1","title":"X","description":"d","depends_on":[],'
+        '"files":["src/x.py"],"task_type":"feature","estimated_loc":40,'
+        '"verification":"Run pytest and confirm all tests pass",'
+        '"plan_text":"## Goal\\nAdd X.\\n## Files\\nsrc/x.py\\n## Steps\\n'
+        '1. Implement it.\\n## Acceptance\\nRun `pytest` and confirm it passes"'
+        "}]}"
+    )
     router = _FakeRouter(raw)
     opus_plan = await decompose_plan(
         plan="do something",
@@ -184,7 +220,14 @@ async def test_decompose_no_local_context_skips_repo_memory():
 
 async def test_decompose_scrubs_local_context_server_side():
     """Secret tokens in local_context are scrubbed before threading onto tasks."""
-    raw = '{"tasks":[{"id":"t1","title":"X","description":"d","depends_on":[],"files":["src/x.py"],"task_type":"feature","estimated_loc":40,"verification":"Run pytest and confirm all tests pass"}]}'
+    raw = (
+        '{"tasks":[{"id":"t1","title":"X","description":"d","depends_on":[],'
+        '"files":["src/x.py"],"task_type":"feature","estimated_loc":40,'
+        '"verification":"Run pytest and confirm all tests pass",'
+        '"plan_text":"## Goal\\nAdd X.\\n## Files\\nsrc/x.py\\n## Steps\\n'
+        '1. Implement it.\\n## Acceptance\\nRun `pytest` and confirm it passes"'
+        "}]}"
+    )
     router = _FakeRouter(raw)
     opus_plan = await decompose_plan(
         plan="do something",
@@ -357,7 +400,14 @@ def test_count_plan_tasks_allows_trailing_text_and_case_insensitive():
 
 async def test_decompose_warning_set_when_leaves_fewer_than_authored():
     """Router drops a leaf (2 authored -> 1 leaf): decompose_warning is attached."""
-    raw = '{"tasks":[{"id":"t1","title":"A","description":"d","depends_on":[],"files":["src/a.py"],"task_type":"feature","estimated_loc":50,"verification":"Run pytest and confirm all tests pass"}]}'
+    raw = (
+        '{"tasks":[{"id":"t1","title":"A","description":"d","depends_on":[],'
+        '"files":["src/a.py"],"task_type":"feature","estimated_loc":50,'
+        '"verification":"Run pytest and confirm all tests pass",'
+        '"plan_text":"## Goal\\nAdd the leaf.\\n## Files\\nsrc/a.py\\n## Steps\\n'
+        '1. Implement it.\\n## Acceptance\\nRun `pytest` and confirm it passes"'
+        "}]}"
+    )
     router = _FakeRouter(raw)
     plan = "### Task 1\nfirst\n\n### Task 2\nsecond\n"
     opus_plan = await decompose_plan(
@@ -376,8 +426,17 @@ async def test_decompose_warning_set_when_leaves_fewer_than_authored():
 
 async def test_decompose_warning_absent_when_leaves_equal_authored():
     raw = (
-        '{"tasks":[{"id":"t1","title":"A","description":"d","depends_on":[],"files":["src/a.py"],"task_type":"feature","estimated_loc":50,"verification":"Run pytest and confirm all tests pass"},'
-        '{"id":"t2","title":"B","description":"d","depends_on":[],"files":["src/b.py"],"task_type":"feature","estimated_loc":60,"verification":"Run pytest and confirm all tests pass"}]}'
+        '{"tasks":[{"id":"t1","title":"A","description":"d","depends_on":[],'
+        '"files":["src/a.py"],"task_type":"feature","estimated_loc":50,'
+        '"verification":"Run pytest and confirm all tests pass",'
+        '"plan_text":"## Goal\\nAdd A.\\n## Files\\nsrc/a.py\\n## Steps\\n'
+        '1. Implement it.\\n## Acceptance\\nRun `pytest` and confirm it passes"},'
+        '{"id":"t2","title":"B","description":"d","depends_on":[],'
+        '"files":["src/b.py"],"task_type":"feature","estimated_loc":60,'
+        '"verification":"Run pytest and confirm all tests pass",'
+        '"plan_text":"## Goal\\nAdd B.\\n## Files\\nsrc/b.py\\n## Steps\\n'
+        '1. Implement it.\\n## Acceptance\\nRun `pytest` and confirm it passes"'
+        "}]}"
     )
     router = _FakeRouter(raw)
     plan = "### Task 1\nfirst\n\n### Task 2\nsecond\n"
@@ -394,7 +453,14 @@ async def test_decompose_warning_absent_when_leaves_equal_authored():
 
 async def test_decompose_warning_absent_when_no_authored_headers():
     """No '### Task N' headers means authored count is 0; never warn."""
-    raw = '{"tasks":[{"id":"t1","title":"A","description":"d","depends_on":[],"files":["src/a.py"],"task_type":"feature","estimated_loc":50,"verification":"Run pytest and confirm all tests pass"}]}'
+    raw = (
+        '{"tasks":[{"id":"t1","title":"A","description":"d","depends_on":[],'
+        '"files":["src/a.py"],"task_type":"feature","estimated_loc":50,'
+        '"verification":"Run pytest and confirm all tests pass",'
+        '"plan_text":"## Goal\\nAdd the leaf.\\n## Files\\nsrc/a.py\\n## Steps\\n'
+        '1. Implement it.\\n## Acceptance\\nRun `pytest` and confirm it passes"'
+        "}]}"
+    )
     router = _FakeRouter(raw)
     opus_plan = await decompose_plan(
         plan="free-form plan with no task headers",
@@ -480,7 +546,10 @@ async def test_decompose_retries_on_validation_failure_with_feedback():
     good = (
         '{"tasks":[{"id":"t1","title":"A","description":"d",'
         '"depends_on":[],"files":["src/a.py"],"task_type":"feature",'
-        '"estimated_loc":50,"verification":"Run pytest and confirm all tests pass"}]}'
+        '"estimated_loc":50,"verification":"Run pytest and confirm all tests pass",'
+        '"plan_text":"## Goal\\nAdd A.\\n## Files\\nsrc/a.py\\n## Steps\\n'
+        '1. Implement it.\\n## Acceptance\\nRun `pytest` and confirm it passes"'
+        "}]}"
     )
     router = _FeedbackRouter(bad, good)
     opus_plan = await decompose_plan(
@@ -532,7 +601,11 @@ async def test_decompose_attaches_validation_warnings_on_soft_only():
     raw = (
         '{"tasks":[{"id":"t1","title":"Refactor module","description":"d",'
         '"depends_on":[],"files":["src/a.py"],"task_type":"refactor",'
-        '"estimated_loc":50,"verification":"Run pytest and confirm all tests pass"}]}'
+        '"estimated_loc":50,"verification":"Run pytest and confirm all tests pass",'
+        '"plan_text":"## Goal\\nRefactor the module.\\n## Files\\nsrc/a.py\\n'
+        "## Steps\\n1. Refactor it.\\n## Acceptance\\nRun `pytest` and confirm "
+        'it passes"'
+        "}]}"
     )
     router = _FakeRouter(raw)
     opus_plan = await decompose_plan(
@@ -553,7 +626,10 @@ async def test_decompose_plan_id_and_emitter_params_accepted():
     raw = (
         '{"tasks":[{"id":"t1","title":"A","description":"d",'
         '"depends_on":[],"files":["src/a.py"],"task_type":"feature",'
-        '"estimated_loc":50,"verification":"Run pytest and confirm all tests pass"}]}'
+        '"estimated_loc":50,"verification":"Run pytest and confirm all tests pass",'
+        '"plan_text":"## Goal\\nAdd A.\\n## Files\\nsrc/a.py\\n## Steps\\n'
+        '1. Implement it.\\n## Acceptance\\nRun `pytest` and confirm it passes"'
+        "}]}"
     )
     router = _FakeRouter(raw)
     opus_plan = await decompose_plan(
@@ -590,7 +666,10 @@ async def test_decompose_emits_decompose_input_event():
     raw = (
         '{"tasks":[{"id":"t1","title":"A","description":"d",'
         '"depends_on":[],"files":["src/a.py"],"task_type":"feature",'
-        '"estimated_loc":50,"verification":"Run pytest and confirm all tests pass"}]}'
+        '"estimated_loc":50,"verification":"Run pytest and confirm all tests pass",'
+        '"plan_text":"## Goal\\nAdd A.\\n## Files\\nsrc/a.py\\n## Steps\\n'
+        '1. Implement it.\\n## Acceptance\\nRun `pytest` and confirm it passes"'
+        "}]}"
     )
     router = _FakeRouter(raw)
     emitter = _CapturingEmitter()
@@ -615,10 +694,15 @@ async def test_decompose_emits_leaf_validated_on_clean():
     raw = (
         '{"tasks":[{"id":"t1","title":"A","description":"d",'
         '"depends_on":[],"files":["src/a.py"],"task_type":"feature",'
-        '"estimated_loc":50,"verification":"Run pytest and confirm all tests pass"},'
+        '"estimated_loc":50,"verification":"Run pytest and confirm all tests pass",'
+        '"plan_text":"## Goal\\nAdd A.\\n## Files\\nsrc/a.py\\n## Steps\\n'
+        '1. Implement it.\\n## Acceptance\\nRun `pytest` and confirm it passes"},'
         '{"id":"t2","title":"B","description":"d",'
         '"depends_on":["t1"],"files":["src/b.py"],"task_type":"feature",'
-        '"estimated_loc":60,"verification":"Run pytest and confirm all tests pass"}]}'
+        '"estimated_loc":60,"verification":"Run pytest and confirm all tests pass",'
+        '"plan_text":"## Goal\\nAdd B.\\n## Files\\nsrc/b.py\\n## Steps\\n'
+        '1. Implement it.\\n## Acceptance\\nRun `pytest` and confirm it passes"'
+        "}]}"
     )
     router = _FakeRouter(raw)
     emitter = _CapturingEmitter()
@@ -678,7 +762,10 @@ async def test_decompose_no_emit_when_emitter_is_none():
     raw = (
         '{"tasks":[{"id":"t1","title":"A","description":"d",'
         '"depends_on":[],"files":["src/a.py"],"task_type":"feature",'
-        '"estimated_loc":50,"verification":"Run pytest and confirm all tests pass"}]}'
+        '"estimated_loc":50,"verification":"Run pytest and confirm all tests pass",'
+        '"plan_text":"## Goal\\nAdd A.\\n## Files\\nsrc/a.py\\n## Steps\\n'
+        '1. Implement it.\\n## Acceptance\\nRun `pytest` and confirm it passes"'
+        "}]}"
     )
     router = _FakeRouter(raw)
     opus_plan = await decompose_plan(
@@ -699,7 +786,10 @@ async def test_decompose_no_emit_when_plan_id_is_none():
     raw = (
         '{"tasks":[{"id":"t1","title":"A","description":"d",'
         '"depends_on":[],"files":["src/a.py"],"task_type":"feature",'
-        '"estimated_loc":50,"verification":"Run pytest and confirm all tests pass"}]}'
+        '"estimated_loc":50,"verification":"Run pytest and confirm all tests pass",'
+        '"plan_text":"## Goal\\nAdd A.\\n## Files\\nsrc/a.py\\n## Steps\\n'
+        '1. Implement it.\\n## Acceptance\\nRun `pytest` and confirm it passes"'
+        "}]}"
     )
     router = _FakeRouter(raw)
     emitter = _CapturingEmitter()
@@ -750,7 +840,10 @@ async def test_decompose_uses_fetched_outcome_history_when_db_provided(db):
     raw = (
         '{"tasks":[{"id":"t1","title":"A","description":"d",'
         '"depends_on":[],"files":["src/a.py"],"task_type":"feature",'
-        '"estimated_loc":50,"verification":"Run pytest and confirm all tests pass"}]}'
+        '"estimated_loc":50,"verification":"Run pytest and confirm all tests pass",'
+        '"plan_text":"## Goal\\nAdd A.\\n## Files\\nsrc/a.py\\n## Steps\\n'
+        '1. Implement it.\\n## Acceptance\\nRun `pytest` and confirm it passes"'
+        "}]}"
     )
     router = _FakeRouter(raw)
 
@@ -773,6 +866,11 @@ async def test_decompose_uses_fetched_outcome_history_when_db_provided(db):
                         "task_type": "feature",
                         "estimated_loc": 50,
                         "verification": "Run pytest and confirm all tests pass",
+                        "plan_text": (
+                            "## Goal\nAdd A.\n## Files\nsrc/a.py\n## Steps\n"
+                            "1. Implement it.\n## Acceptance\n"
+                            "Run `pytest` and confirm it passes"
+                        ),
                     }
                 ]
             }

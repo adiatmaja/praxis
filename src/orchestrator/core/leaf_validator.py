@@ -12,6 +12,7 @@ import re
 from dataclasses import dataclass, field
 from difflib import SequenceMatcher
 
+from orchestrator.core.leaf_templates import missing_sections
 from orchestrator.models.schemas import CapabilityProfile, LeafTask
 
 
@@ -343,6 +344,31 @@ def _check_escalate_mismatch(
             )
 
 
+def _check_leaf_template(
+    leaves: list[LeafTask],
+    result: ValidationResult,
+) -> None:
+    """HARD: every leaf's plan_text carries its type's required sections.
+
+    Rule 2 of the standard (no branching decision left to the worker) is
+    enforced structurally: a leaf that does not state its Goal, Files, Steps,
+    and Acceptance has left scoping judgment to the worker by omission.
+    """
+    for leaf in leaves:
+        absent = missing_sections(leaf.plan_text, leaf.leaf_type)
+        if absent:
+            result.add(
+                Violation(
+                    rule="leaf_template",
+                    task_id=leaf.id,
+                    message=(
+                        f"leaf_type '{leaf.leaf_type.value}' requires plan_text "
+                        f"sections that are missing: {', '.join(absent)}"
+                    ),
+                )
+            )
+
+
 def _check_plan_text_verbatim(
     leaves: list[LeafTask],
     source: str,
@@ -469,6 +495,7 @@ def validate_leaves(
     _check_max_loc(leaves, profile, result)
     _check_verification(leaves, result)
     _check_escalate_mismatch(leaves, profile, result)
+    _check_leaf_template(leaves, result)
 
     # SOFT rules
     _check_plan_text_verbatim(leaves, source_plan, result)
