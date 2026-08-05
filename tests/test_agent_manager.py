@@ -9,7 +9,11 @@ import docker.errors
 import httpx
 import pytest
 
-from orchestrator.core.agent_manager import AgentManager, detect_context_limit
+from orchestrator.core.agent_manager import (
+    AgentManager,
+    _opencode_session_volume_name,
+    detect_context_limit,
+)
 
 
 def _mock_async_client(
@@ -797,6 +801,51 @@ async def test_agy_uses_correct_image(mock_docker: MagicMock) -> None:
 
 
 @pytest.mark.unit
+def test_opencode_session_volume_name_differs_per_task() -> None:
+    """Two different task ids must never resolve to the same volume name.
+
+    This is the property that actually prevents cross-task session bleed:
+    if two concurrently running OpenCode containers ever mounted the same
+    volume, ``opencode session list`` inside one would see the other's
+    sessions (see the docstring on ``_opencode_session_volume_name``).
+    """
+    base = "praxis-opencode-sessions"
+    name_a = _opencode_session_volume_name(base, "11111111-aaaa-4bbb-cccc-111111111111")
+    name_b = _opencode_session_volume_name(base, "22222222-aaaa-4bbb-cccc-222222222222")
+
+    assert name_a == "praxis-opencode-sessions-11111111-aaaa-4bbb-cccc-11111111"
+    assert name_b == "praxis-opencode-sessions-22222222-aaaa-4bbb-cccc-22222222"
+    assert name_a != name_b
+
+
+@pytest.mark.unit
+def test_opencode_session_volume_name_empty_base_stays_empty() -> None:
+    """An unconfigured base volume must resolve to '' regardless of task id.
+
+    '' is the sentinel callers use to skip the mount entirely (cold start,
+    no persistence, no error); it must not be turned into a truthy name by
+    appending a task id.
+    """
+    assert _opencode_session_volume_name("", "any-task-id") == ""
+
+
+@pytest.mark.unit
+def test_opencode_session_volume_name_sanitizes_illegal_characters() -> None:
+    """Characters outside Docker's volume-name charset must be replaced.
+
+    Task ids are UUID4 strings in this codebase (already legal), but the
+    helper must not assume that blindly; anything outside
+    ``[a-zA-Z0-9_.-]`` has to be substituted so the mount call can never
+    fail with an invalid-name error from the Docker daemon.
+    """
+    name = _opencode_session_volume_name(
+        "praxis-opencode-sessions", "weird id/with:chars"
+    )
+
+    assert name == "praxis-opencode-sessions-weird-id-with-chars"
+
+
+@pytest.mark.unit
 @patch("orchestrator.core.agent_manager.docker")
 async def test_opencode_mounts_sessions_volume_when_configured(
     mock_docker: MagicMock,
@@ -825,10 +874,11 @@ async def test_opencode_mounts_sessions_volume_when_configured(
     call_kwargs = mock_client.containers.run.call_args.kwargs
     mounts = call_kwargs.get("volumes") or {}
     assert isinstance(mounts, dict), f"Expected volumes dict, got: {mounts}"
-    assert "praxis-opencode-sessions" in mounts, (
-        f"Expected named-volume mount in volumes, got: {mounts}"
+    expected_name = "praxis-opencode-sessions-oc-t1"
+    assert list(mounts.keys()) == [expected_name], (
+        f"Expected exactly the per-task volume {expected_name!r}, got: {mounts}"
     )
-    entry = mounts["praxis-opencode-sessions"]
+    entry = mounts[expected_name]
     assert entry["bind"] == "/home/agent/.local/share/opencode"
     assert entry["mode"] == "rw"
 
@@ -865,7 +915,7 @@ async def test_opencode_skips_sessions_mount_when_unconfigured(
 
     call_kwargs = mock_client.containers.run.call_args.kwargs
     volumes = call_kwargs.get("volumes") or {}
-    assert "praxis-opencode-sessions" not in volumes
+    assert volumes == {}
 
 
 @pytest.mark.unit
@@ -897,4 +947,4 @@ async def test_agy_spawn_does_not_get_opencode_sessions_mount(
 
     call_kwargs = mock_client.containers.run.call_args.kwargs
     volumes = call_kwargs.get("volumes") or {}
-    assert "praxis-opencode-sessions" not in volumes
+    assert volumes == {}

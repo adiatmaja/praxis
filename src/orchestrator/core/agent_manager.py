@@ -7,6 +7,7 @@ default; agy/Antigravity is the experimental Gemini-backed alternative).
 from __future__ import annotations
 
 import logging
+import re
 import shutil
 from typing import TYPE_CHECKING, Any
 
@@ -87,6 +88,49 @@ def _container_host_url(url: str) -> str:
             f"//{loopback}/", "//host.docker.internal/"
         )
     return url
+
+
+def _opencode_session_volume_name(base_volume: str, task_id: str) -> str:
+    """Derive a per-task Docker volume name for OpenCode session storage.
+
+    Why per-task, not one shared volume: ``orchestrator_dispatch`` dispatches
+    every currently-dispatchable task in a wave, bounded only by
+    ``AgentManager._max_agent_concurrency`` (default 3), so two or more
+    OpenCode containers for the SAME PROJECT can run concurrently. If they
+    all mounted one shared volume, ``opencode session list --format json``
+    inside container A would also see sessions created by container B, and
+    ``docker/opencode-agent/extract_session.py``'s "newest by ``time.created``
+    wins" heuristic would then attribute B's session id to A's task. A's next
+    resume would then replay a DIFFERENT TASK's conversation into A's
+    container. This is a real concurrency race that reproduces on any wave
+    with 2+ concurrent OpenCode tasks, not a hypothetical edge case, so do
+    not simplify this back to a single shared volume name.
+
+    The name must still be deterministic per task id, because a re-dispatch
+    of the SAME task (the resume path) must mount the SAME volume to find
+    its own prior session.
+
+    Args:
+        base_volume: The configured base volume name
+            (``Settings.opencode_sessions_volume``). Callers must treat an
+            empty string as "session persistence disabled" and skip the
+            mount entirely; this function returns "" unchanged in that case.
+        task_id: The dispatched task's id. Task ids in this codebase are
+            UUID4 strings, which are already legal Docker volume-name
+            characters, but this function sanitizes rather than assuming
+            that blindly, and truncates the task-id component to keep the
+            resulting name reasonably short.
+
+    Returns:
+        The per-task volume name, or "" when ``base_volume`` is empty.
+    """
+    if not base_volume:
+        return ""
+    # Docker volume names must match [a-zA-Z0-9][a-zA-Z0-9_.-]*. The base
+    # name is a validated config value and supplies the required leading
+    # character, so only the task-id suffix needs sanitizing here.
+    safe_id = re.sub(r"[^a-zA-Z0-9_.-]", "-", task_id)[:32] or "task"
+    return f"{base_volume}-{safe_id}"
 
 
 def build_spawn_env(
@@ -305,8 +349,15 @@ class AgentManager:
         if harness_id == "opencode" and self._opencode_sessions_volume:
             # OpenCode keeps session state under XDG_DATA_HOME. Without this
             # mount it dies with the container and resume degrades to a cold
-            # start (which is a supported outcome, not an error).
-            volumes[self._opencode_sessions_volume] = {
+            # start (which is a supported outcome, not an error). The volume
+            # is scoped PER TASK (see _opencode_session_volume_name) so that
+            # concurrent containers in the same wave never share one session
+            # store, which would otherwise let one container's session id
+            # bleed into another task's resume.
+            session_volume = _opencode_session_volume_name(
+                self._opencode_sessions_volume, task_id
+            )
+            volumes[session_volume] = {
                 "bind": "/home/agent/.local/share/opencode",
                 "mode": "rw",
             }
