@@ -310,7 +310,7 @@ test in it assumes them.
 
 **Depends on:** None
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Create `tests/test_decomposition_standard_doc.py`:
 
@@ -368,12 +368,12 @@ def test_standard_doc_states_the_numeric_anchors_are_correlational():
     assert "correlational" in text
 ```
 
-- [ ] **Step 2: Run the test to verify it fails**
+- [x] **Step 2: Run the test to verify it fails**
 
 Run: `uv run pytest tests/test_decomposition_standard_doc.py -v`
 Expected: FAIL. `test_standard_doc_exists` fails on the missing file; `test_standard_doc_lists_every_leaf_type` fails with `ImportError: cannot import name 'LeafType'`.
 
-- [ ] **Step 3: Write the document**
+- [x] **Step 3: Write the document**
 
 Create `docs/decomposition-standard.md`. Write exactly this content:
 
@@ -507,12 +507,12 @@ in code and covered by tests.
 | Escalation attempts | the length of `implement_escalation` | `core/escalation.py` |
 ````
 
-- [ ] **Step 4: Run the test to verify the doc tests pass**
+- [x] **Step 4: Run the test to verify the doc tests pass**
 
 Run: `uv run pytest tests/test_decomposition_standard_doc.py -v`
 Expected: `test_standard_doc_exists`, `test_standard_doc_cites_every_source`, and `test_standard_doc_states_the_numeric_anchors_are_correlational` PASS. `test_standard_doc_lists_every_leaf_type` still FAILS with `ImportError` (Task 2 adds `LeafType`).
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add docs/decomposition-standard.md tests/test_decomposition_standard_doc.py
@@ -535,7 +535,7 @@ validator, and the benchmark all cite this file."
 
 **Depends on:** None
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Append to `tests/test_leaf_task.py`:
 
@@ -597,12 +597,12 @@ def test_leaf_schema_version_is_two():
     assert LEAF_SCHEMA_VERSION == 2
 ```
 
-- [ ] **Step 2: Run the tests to verify they fail**
+- [x] **Step 2: Run the tests to verify they fail**
 
 Run: `uv run pytest tests/test_leaf_task.py -v -k "leaf_type or neighbor_contracts or schema_version"`
 Expected: FAIL with `ImportError: cannot import name 'LeafType' from 'orchestrator.models.schemas'` and `assert 1 == 2`.
 
-- [ ] **Step 3: Add the enum and the fields**
+- [x] **Step 3: Add the enum and the fields**
 
 In `src/orchestrator/models/schemas.py`, add the enum immediately after the `CapabilityProfile` class (before `LEAF_SCHEMA_VERSION`):
 
@@ -639,12 +639,12 @@ Add two fields to `LeafTask`, immediately after `verification: str | None = None
     neighbor_contracts: str | None = None
 ```
 
-- [ ] **Step 4: Run the tests to verify they pass**
+- [x] **Step 4: Run the tests to verify they pass**
 
 Run: `uv run pytest tests/test_leaf_task.py -v`
 Expected: PASS.
 
-- [ ] **Step 5: Repair the golden fixture**
+- [x] **Step 5: Repair the golden fixture**
 
 Run: `uv run pytest tests/test_decompose_golden.py -v`
 Expected: FAIL. `parse_review_response` now emits `leaf_type`, `neighbor_contracts`, and `schema_version: 2` in each dumped leaf, which the frozen fixture lacks.
@@ -670,23 +670,23 @@ Then read the regenerated file and confirm by eye that every leaf now carries
 `"schema_version": 2`, `"leaf_type": "generic"`, and `"neighbor_contracts": null`,
 and that nothing else changed.
 
-- [ ] **Step 6: Run the golden test to verify it passes**
+- [x] **Step 6: Run the golden test to verify it passes**
 
 Run: `uv run pytest tests/test_decompose_golden.py -v`
 Expected: PASS.
 
-- [ ] **Step 7: Mutation-check the type validation**
+- [x] **Step 7: Mutation-check the type validation**
 
 Temporarily change `leaf_type: LeafType = LeafType.GENERIC` to `leaf_type: str = "generic"`.
 Run: `uv run pytest tests/test_leaf_task.py::test_leaf_task_rejects_an_unknown_leaf_type -v`
 Expected: FAIL (a plain `str` accepts `"not_a_real_type"`). Restore the enum annotation and re-run to confirm PASS. If the test passed with the mutation in place it is vacuous; fix the test before continuing.
 
-- [ ] **Step 8: Run the full suite**
+- [x] **Step 8: Run the full suite**
 
 Run: `uv run pytest -q`
 Expected: all tests pass. If `tests/test_execute_plan_decompose.py` or `tests/test_leaf_validator.py` assert on exact leaf dicts, update those expectations to include the two new keys.
 
-- [ ] **Step 9: Commit**
+- [x] **Step 9: Commit**
 
 ```bash
 git add src/orchestrator/models/schemas.py tests/test_leaf_task.py tests/fixtures/decompose/expected_leaf_graph.json tests/test_decomposition_standard_doc.py
@@ -706,7 +706,7 @@ fixture, which asserts the exact model_dump shape."
 
 **Depends on:** Task 2
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Create `tests/test_leaf_templates.py`:
 
@@ -809,12 +809,12 @@ def test_render_template_block_names_every_type_and_its_extras():
     assert "Renames" in block
 ```
 
-- [ ] **Step 2: Run the test to verify it fails**
+- [x] **Step 2: Run the test to verify it fails**
 
 Run: `uv run pytest tests/test_leaf_templates.py -v`
 Expected: FAIL with `ModuleNotFoundError: No module named 'orchestrator.core.leaf_templates'`.
 
-- [ ] **Step 3: Write the module**
+- [x] **Step 3: Write the module**
 
 Create `src/orchestrator/core/leaf_templates.py`:
 
@@ -917,18 +917,18 @@ def render_template_block() -> str:
     return "\n".join(lines)
 ```
 
-- [ ] **Step 4: Run the test to verify it passes**
+- [x] **Step 4: Run the test to verify it passes**
 
 Run: `uv run pytest tests/test_leaf_templates.py -v`
 Expected: PASS (13 tests).
 
-- [ ] **Step 5: Mutation-check the line anchoring**
+- [x] **Step 5: Mutation-check the line anchoring**
 
 Temporarily remove `^\s*` from the start of the pattern in `_section_pattern` (leaving `rf"(?:\#{{1,6}}..."`).
 Run: `uv run pytest tests/test_leaf_templates.py::test_missing_sections_does_not_match_a_word_inside_prose -v`
 Expected: FAIL (unanchored, "the goal of this" matches). Restore the anchor and re-run to confirm PASS.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add src/orchestrator/core/leaf_templates.py tests/test_leaf_templates.py
@@ -948,7 +948,7 @@ shape the brain is asked for and the shape it is graded on cannot drift."
 
 **Depends on:** Task 3
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Create or append to `tests/test_plan_review.py`:
 
@@ -996,12 +996,12 @@ def test_prompt_still_carries_the_hard_constraint_numbers():
     assert str(profile.max_dep_depth) in prompt
 ```
 
-- [ ] **Step 2: Run the test to verify it fails**
+- [x] **Step 2: Run the test to verify it fails**
 
 Run: `uv run pytest tests/test_plan_review.py -v`
 Expected: FAIL. `test_prompt_lists_every_leaf_type` fails on `bugfix_repro` not being in the prompt.
 
-- [ ] **Step 3: Modify the prompt**
+- [x] **Step 3: Modify the prompt**
 
 In `src/orchestrator/core/plan_review.py`, add the import at the top of the module (after the existing `from orchestrator.models.schemas import ...` line):
 
@@ -1050,12 +1050,12 @@ In `build_review_prompt`, add the new format argument:
     )
 ```
 
-- [ ] **Step 4: Run the test to verify it passes**
+- [x] **Step 4: Run the test to verify it passes**
 
 Run: `uv run pytest tests/test_plan_review.py tests/test_leaf_templates.py -v`
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/orchestrator/core/plan_review.py tests/test_plan_review.py
@@ -1075,7 +1075,7 @@ brain is asked for exactly the sections F3 will grade."
 
 **Depends on:** Task 3, Task 4
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Append to `tests/test_leaf_validator.py`:
 
@@ -1169,12 +1169,12 @@ def test_leaf_template_violation_is_hard_not_soft():
     assert result.dispatchable is False
 ```
 
-- [ ] **Step 2: Run the tests to verify they fail**
+- [x] **Step 2: Run the tests to verify they fail**
 
 Run: `uv run pytest tests/test_leaf_validator.py -v -k leaf_template`
 Expected: FAIL. All four fail because no `leaf_template` rule exists, so the violation lists are empty.
 
-- [ ] **Step 3: Implement the rule**
+- [x] **Step 3: Implement the rule**
 
 In `src/orchestrator/core/leaf_validator.py`, add the import after the existing schema import:
 
@@ -1217,23 +1217,23 @@ Register it in `validate_leaves`, in the HARD block after `_check_escalate_misma
     _check_leaf_template(leaves, result)
 ```
 
-- [ ] **Step 4: Run the tests to verify they pass**
+- [x] **Step 4: Run the tests to verify they pass**
 
 Run: `uv run pytest tests/test_leaf_validator.py -v`
 Expected: PASS. Existing validator tests that build leaves with bare `plan_text` will now also emit a `leaf_template` violation; those tests assert on specific rules (`v.rule == "..."`) so they should be unaffected. If any test asserts `result.clean` or `result.dispatchable` on a leaf with unstructured `plan_text`, update that fixture's `plan_text` to carry the four base sections rather than weakening the rule.
 
-- [ ] **Step 5: Mutation-check the severity**
+- [x] **Step 5: Mutation-check the severity**
 
 Temporarily add `severity="soft"` to the `Violation(...)` in `_check_leaf_template`.
 Run: `uv run pytest tests/test_leaf_validator.py::test_leaf_template_violation_is_hard_not_soft -v`
 Expected: FAIL. Restore and re-run to confirm PASS.
 
-- [ ] **Step 6: Run the full suite**
+- [x] **Step 6: Run the full suite**
 
 Run: `uv run pytest -q`
 Expected: all tests pass.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add src/orchestrator/core/leaf_validator.py tests/test_leaf_validator.py
@@ -1253,7 +1253,7 @@ Deterministic, fail-closed, shares the existing informed re-ask rounds."
 
 **Depends on:** Task 1
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Create `tests/test_worker_bible_priority.py`:
 
@@ -1340,12 +1340,12 @@ def test_a_plan_text_that_alone_blows_the_budget_raises():
         build_bible(src)
 ```
 
-- [ ] **Step 2: Run the test to verify it fails**
+- [x] **Step 2: Run the test to verify it fails**
 
 Run: `uv run pytest tests/test_worker_bible_priority.py -v`
 Expected: FAIL with `TypeError: BibleSources.__init__() got an unexpected keyword argument 'edit_locations'`.
 
-- [ ] **Step 3: Reorder and extend the Bible**
+- [x] **Step 3: Reorder and extend the Bible**
 
 Replace the body of `src/orchestrator/core/worker_bible.py` from the
 `@dataclass` line to the end of `build_bible` with:
@@ -1468,12 +1468,12 @@ def build_bible(src: BibleSources) -> str:
     return "\n\n".join(s.text for s in kept)
 ```
 
-- [ ] **Step 4: Run the test to verify it passes**
+- [x] **Step 4: Run the test to verify it passes**
 
 Run: `uv run pytest tests/test_worker_bible_priority.py -v`
 Expected: PASS (6 tests). If a boundary test lands on the wrong side of a cut, adjust only the `context_window` numbers in `_sources(...)` calls in the test, never the priority constants.
 
-- [ ] **Step 5: Feed the new slots from dispatch**
+- [x] **Step 5: Feed the new slots from dispatch**
 
 In `src/orchestrator/core/orchestrator_dispatch.py`, replace the `build_bible(BibleSources(...))` call at the end of `_build_worker_bible` with:
 
@@ -1505,17 +1505,17 @@ In `src/orchestrator/core/orchestrator_dispatch.py`, replace the `build_bible(Bi
         )
 ```
 
-- [ ] **Step 6: Run the dispatch tests**
+- [x] **Step 6: Run the dispatch tests**
 
 Run: `uv run pytest tests/test_orchestrator.py -v -k bible`
 Expected: PASS. Existing assertions on Bible content still hold because every prior slot is still emitted; only the section headings for the plan slice changed (`# PLAN` became `# LEAF CONTRACT (verbatim, do not reinterpret)`). Update any test asserting the literal string `"# PLAN"` to the new heading.
 
-- [ ] **Step 7: Run the full suite**
+- [x] **Step 7: Run the full suite**
 
 Run: `uv run pytest -q`
 Expected: all tests pass.
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```bash
 git add src/orchestrator/core/worker_bible.py src/orchestrator/core/orchestrator_dispatch.py tests/test_worker_bible_priority.py
@@ -1537,7 +1537,7 @@ Matches docs/decomposition-standard.md section 4."
 
 **Depends on:** Task 1, Task 2, Task 3, Task 4, Task 5, Task 6
 
-- [ ] **Step 1: Link the standard from the README**
+- [x] **Step 1: Link the standard from the README**
 
 In `README.md`, in the documentation links section, add:
 
@@ -1545,7 +1545,7 @@ In `README.md`, in the documentation links section, add:
 - **The decomposition standard:** [`docs/decomposition-standard.md`](docs/decomposition-standard.md): the cited rules that decide when a task is small enough for the model implementing it
 ```
 
-- [ ] **Step 2: Add the gotchas**
+- [x] **Step 2: Add the gotchas**
 
 Append to `docs/gotchas.md`:
 
@@ -1575,7 +1575,7 @@ Append to `docs/gotchas.md`:
   the same commit rather than loosening the golden test.
 ```
 
-- [ ] **Step 3: Add the CLAUDE.md index lines**
+- [x] **Step 3: Add the CLAUDE.md index lines**
 
 In `CLAUDE.md`, in the Gotchas index list, add three one-line entries mirroring
 the three gotchas above (one line each, matching the existing terse style), and
@@ -1585,7 +1585,7 @@ add to the Documentation section:
 - **Decomposition standard (cited contract):** `docs/decomposition-standard.md`
 ```
 
-- [ ] **Step 4: Verify the whole gate**
+- [x] **Step 4: Verify the whole gate**
 
 Run these four commands in order; every one must be clean before committing:
 
@@ -1598,7 +1598,7 @@ uv run pytest --cov=orchestrator --cov-fail-under=80 -q
 
 Expected: ruff reports no remaining issues, mypy reports `Success`, pytest passes with coverage at or above 80 percent.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add README.md CLAUDE.md docs/gotchas.md
@@ -1608,6 +1608,73 @@ git commit -m "docs: index the decomposition standard and its two new gotchas"
 **Phase A is complete.** Per the cross-plan execution order, the next work is
 `2026-08-06-usable-praxis-product.md` Phase A, then `2026-08-06-praxis-bench.md`
 Phase A, before returning here for Phase B.
+
+### Phase A execution record (2026-08-06)
+
+Executed 2026-08-06, tasks 1 to 7, all committed on `main` and not pushed. Gate at
+the end: ruff format and check clean, mypy clean on 79 files, 1130 tests passing at
+90.67 percent coverage.
+
+Task commits, in order: `361d54b`, `9209478`, `73ccc36`, `412aa75`, `7abbe2b`,
+`0229a8c`, `5a42ea3`. Four additional commits came out of review findings:
+`07e8566`, `32323a4`, `0284d2a`, `416c482`.
+
+**Three bugs in this plan's own verbatim code, corrected during execution.** Fix
+them here before anyone re-runs these tasks:
+
+1. Task 3's `_section_pattern` bold alternative was `\*\*{name}\*\*\s*:?`, which
+   matches `**Goal**:` but NOT `**Goal:**`. The task's own fixture and the
+   function's own docstring both use `**Goal:**`, so Step 4 could not have gone
+   green as written. Shipped as `\*\*{name}:?\*\*\s*:?`.
+2. Task 3's fixture for `test_missing_sections_does_not_match_a_word_inside_prose`
+   was `"This describes the goal of this change and nothing else."`, which matches
+   neither the anchored nor the unanchored pattern (no colon follows "goal"), so
+   the Step 5 mutation check could never fail. Replaced with a fixture carrying a
+   real mid-line `Goal:`.
+3. Task 6's four boundary `context_window` values (1400, 1150, 900, 900) were all
+   too generous: the droppable tail costs 261 tokens and even the tightest window
+   left 276 free, so nothing was ever cut and three tests failed outright. Step 4
+   authorized tuning these, which is what happened.
+
+Two smaller ones: Task 2's test text uses `import pytest as _pytest`, which trips
+ruff `PT013`; and its Step 5 regeneration script uses `Path.write_text`, which on
+Windows rewrites the golden fixture in CRLF and flips all 47 lines. Phase B Task 9
+reuses that same heredoc pattern for the triage fixtures.
+
+**Four tests the plan specified were vacuous and were strengthened.** Task 3's
+`render_template_block` test passed while the renderer attached each extra section
+to the wrong leaf type; its case-insensitivity test only covered plain-colon
+labels; Task 6's handover floor test passed with `floor=True` removed; and Task 5's
+new HARD rule made the two plan-rejection tests trip two violations while naming
+neither, so removing `_check_verification` entirely left them green.
+
+**Task 6 needed an adversarial pass and got five real findings.** The `edits` and
+`acceptance` floors are provably undetectable by presence assertion, because both
+outrank every droppable section, so only a raise-based test can pin them. The
+`_P_AGREEMENT` over `_P_CALLER` boundary, the one droppable rank the standard fixes
+explicitly, was untested. `review_feedback` was never set in the priority fixture,
+leaving its floor unprotected. And the `files` to `edit_locations` transform read
+raw brain JSON, so a bare string iterated character by character into an undroppable
+floor section and a non-iterable raised a `TypeError` that escaped into the
+orchestration loop; `_normalize_edit_locations` now handles it.
+
+**Deferred out of Phase A, in priority order:**
+
+1. `docs/decomposition-standard.md` section 4 still says sections "are cut from the
+   bottom". `core/token_budget.fit_sections` fills greedily and SKIPS what does not
+   fit, so a larger high-priority section can lose to a smaller low-priority one.
+   The code, both `worker_bible.py` docstrings, and the gotcha all say the accurate
+   thing; the contract doc does not. One sentence.
+2. Ranks `_P_GOAL` through `_P_HANDOVER` are inert, because `fit_sections` reads
+   `priority` only for non-floor sections. They become load-bearing the moment a
+   `floor=True` is removed, and nothing exercises them.
+3. `verify_cmd` is unreachable from dispatch now, and a leaf-supplied `verification`
+   shadows the project `verify_cmd` that the mechanical gate actually runs. The
+   `plan_spec` and improvement paths never call `validate_leaves`, so an unvalidated
+   `"verification": "manual review"` can become the acceptance floor.
+4. `DispatchRequest` and MCP `dispatch_task` cannot populate `files`, `verification`,
+   or `neighbor_contracts`, so standard ranks 2 and 4 are unreachable on the primary
+   surface. Relevant to the product plan's Phase A MCP task.
 
 ---
 
