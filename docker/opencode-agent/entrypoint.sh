@@ -225,7 +225,8 @@ elif [ -n "${PLAN_TEXT:-}" ]; then
 ${TASK_PROMPT}"
 fi
 
-OPENCODE_ARGS=(run --model "lmstudio/${MODEL}")
+OPENCODE_BASE_ARGS=(run --model "lmstudio/${MODEL}")
+OPENCODE_ARGS=("${OPENCODE_BASE_ARGS[@]}")
 if [ -n "${WORKER_SESSION_ID:-}" ]; then
     echo "--- Resuming OpenCode session ${WORKER_SESSION_ID} ---"
     OPENCODE_ARGS+=(--session "${WORKER_SESSION_ID}")
@@ -237,10 +238,12 @@ opencode "${OPENCODE_ARGS[@]}" "${EFFECTIVE_PROMPT}" 2>&1 | tee "${OUTPUT_LOG}"
 opencode_rc="${PIPESTATUS[0]}"
 set -e
 if [ "${opencode_rc}" -ne 0 ] && [ -n "${WORKER_SESSION_ID:-}" ]; then
-    # A stale or pruned session id must not fail the task. Retry once cold.
+    # A stale or pruned session id must not fail the task. Retry once cold,
+    # reusing the same base args (never a second hand-copied literal) so a
+    # future flag added to OPENCODE_BASE_ARGS can't be forgotten here.
     echo "WARNING: resume with session ${WORKER_SESSION_ID} failed; retrying cold"
     set +e
-    opencode run --model "lmstudio/${MODEL}" "${EFFECTIVE_PROMPT}" 2>&1 | tee "${OUTPUT_LOG}"
+    opencode "${OPENCODE_BASE_ARGS[@]}" "${EFFECTIVE_PROMPT}" 2>&1 | tee "${OUTPUT_LOG}"
     opencode_rc="${PIPESTATUS[0]}"
     set -e
 fi
@@ -282,8 +285,15 @@ if [ "${report_status}" = "BLOCKED" ] || [ "${report_status}" = "NEEDS_CONTEXT" 
             checkpoint_ok=0
         fi
     fi
-    if [ "${checkpoint_ok}" -eq 1 ] \
-        && [ "$(git rev-list --count "${BASE_BRANCH}..HEAD")" -gt 0 ]; then
+    ahead=0
+    if [ "${checkpoint_ok}" -eq 1 ]; then
+        if ! ahead=$(git rev-list --count "${BASE_BRANCH}..HEAD"); then
+            echo "WARNING: checkpoint rev-list failed; suppressing session resume"
+            checkpoint_ok=0
+            ahead=0
+        fi
+    fi
+    if [ "${checkpoint_ok}" -eq 1 ] && [ "${ahead}" -gt 0 ]; then
         if ! git push -u origin "${BRANCH}"; then
             echo "WARNING: checkpoint push failed; suppressing session resume"
             checkpoint_ok=0
