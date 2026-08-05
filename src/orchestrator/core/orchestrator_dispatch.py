@@ -302,12 +302,22 @@ class DispatchMixin:
             else None
         ) or 8192
 
+        files = plan_task.get("files") or []
+        edit_locations = "\n".join(str(f) for f in files) or None
+
         return build_bible(
             BibleSources(
                 goal=goal,
                 handover=handover,
                 context_window=context_window,
                 plan_slice=plan_task.get("plan_text"),
+                # Rank 2 of the standard: where to edit, before any narrative.
+                edit_locations=edit_locations,
+                # Rank 3: the leaf's own acceptance check, falling back to the
+                # project-wide verify command when the leaf declares none.
+                acceptance=plan_task.get("verification") or project.get("verify_cmd"),
+                # Rank 4: signatures of direct neighbors, optional.
+                neighbor_contracts=plan_task.get("neighbor_contracts"),
                 caller_context=plan_task.get("context_text"),
                 # Client-gathered manifest of NON-committed context (gitignored
                 # config shapes, user-scope conventions). Committed repo files

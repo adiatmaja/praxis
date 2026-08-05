@@ -1,9 +1,12 @@
 """Assemble the worker's Static Bible: one scrubbed, budgeted reference doc.
 
 The Bible is written into the harness's always-resent slot so the goal,
-conventions, and progress survive compaction. Sources are prioritized; under a
-tight token budget the least-important tail (repo memory, then plan slice) is
-dropped, but the goal, handover, and caller context are floor sections.
+conventions, and progress survive compaction. Sources are prioritized by
+``docs/decomposition-standard.md`` section 4; under a tight token budget the
+least-important tail (repo memory, then caller narrative, then the working
+agreement, then neighbor contracts) is dropped, while the goal, the leaf
+contract, its edit locations, its acceptance check, review feedback, and the
+progress handover are floor sections.
 """
 
 from __future__ import annotations
@@ -30,12 +33,22 @@ _WORKING_AGREEMENT = (
 
 @dataclass
 class BibleSources:
-    """Raw inputs for the Bible, highest-value first."""
+    """Raw inputs for the Bible.
+
+    Field order mirrors the context-pack priority in
+    ``docs/decomposition-standard.md`` section 4.  When the pack exceeds the
+    worker's budget, sections are dropped from the bottom of that order; the
+    leaf contract, its edit locations, and its acceptance check are floors and
+    are never dropped.
+    """
 
     goal: str
     handover: str
     context_window: int
     plan_slice: str | None = None
+    edit_locations: str | None = None
+    acceptance: str | None = None
+    neighbor_contracts: str | None = None
     caller_context: str | None = None
     repo_memory: str | None = None
     review_feedback: str | None = None
@@ -43,25 +56,59 @@ class BibleSources:
     reserve_fraction: float = WORKER_RESERVE_FRACTION
 
 
+# Priority ranks. Lower is kept longer; ``floor`` sections are never dropped.
+# Ranks 1 to 3 of the standard (plan_text, edit locations, acceptance) are
+# floors by construction. ``goal`` and ``handover`` are Praxis-specific floors:
+# dropping the handover makes a re-dispatched worker redo completed work, which
+# is a worse failure than losing narrative.
+_P_GOAL = 0
+_P_PLAN = 1
+_P_EDITS = 2
+_P_ACCEPT = 3
+_P_FEEDBACK = 4
+_P_HANDOVER = 5
+_P_NEIGHBORS = 6
+_P_AGREEMENT = 7
+_P_CALLER = 8
+_P_REPO = 9
+
+
 def build_bible(src: BibleSources) -> str:
-    """Return the assembled, scrubbed, budget-trimmed Bible markdown."""
+    """Return the assembled, scrubbed, budget-trimmed Bible markdown.
+
+    Raises:
+        ContextBudgetExceeded: If the floor sections alone exceed the budget.
+            A leaf whose ``plan_slice`` alone overflows is invalid; F3 and the
+            pre-dispatch difficulty gate exist to catch it earlier.
+    """
     raw_sections: list[Section] = [
-        Section("goal", f"# GOAL (do not lose this)\n{src.goal}", 0, floor=True),
-        Section("handover", src.handover, 1, floor=True),
-        Section("agreement", _WORKING_AGREEMENT, 2, floor=True),
+        Section("goal", f"# GOAL (do not lose this)\n{src.goal}", _P_GOAL, floor=True),
     ]
-    if src.caller_context:
-        raw_sections.append(
-            Section("caller", f"# CONTEXT\n{src.caller_context}", 3, floor=True)
-        )
-    if src.verify_cmd:
+    if src.plan_slice:
         raw_sections.append(
             Section(
-                "validate",
-                "# HOW TO VALIDATE\n"
-                "Run this to check your change before finishing:\n"
-                f"{src.verify_cmd}",
-                3,
+                "plan",
+                f"# LEAF CONTRACT (verbatim, do not reinterpret)\n{src.plan_slice}",
+                _P_PLAN,
+                floor=True,
+            )
+        )
+    if src.edit_locations:
+        raw_sections.append(
+            Section(
+                "edits",
+                f"# EDIT LOCATIONS\n{src.edit_locations}",
+                _P_EDITS,
+                floor=True,
+            )
+        )
+    acceptance = src.acceptance or src.verify_cmd
+    if acceptance:
+        raw_sections.append(
+            Section(
+                "acceptance",
+                f"# ACCEPTANCE (run this before you finish)\n{acceptance}",
+                _P_ACCEPT,
                 floor=True,
             )
         )
@@ -71,14 +118,28 @@ def build_bible(src: BibleSources) -> str:
                 "feedback",
                 "# PREVIOUS ATTEMPT FEEDBACK (fix these before anything else)\n"
                 f"{src.review_feedback}",
-                3,
+                _P_FEEDBACK,
                 floor=True,
             )
         )
-    if src.plan_slice:
-        raw_sections.append(Section("plan", f"# PLAN\n{src.plan_slice}", 4))
+    raw_sections.append(Section("handover", src.handover, _P_HANDOVER, floor=True))
+    if src.neighbor_contracts:
+        raw_sections.append(
+            Section(
+                "neighbors",
+                f"# NEIGHBOR INTERFACES (signatures only)\n{src.neighbor_contracts}",
+                _P_NEIGHBORS,
+            )
+        )
+    raw_sections.append(Section("agreement", _WORKING_AGREEMENT, _P_AGREEMENT))
+    if src.caller_context:
+        raw_sections.append(
+            Section("caller", f"# CONTEXT\n{src.caller_context}", _P_CALLER)
+        )
     if src.repo_memory:
-        raw_sections.append(Section("repo", f"# REPO MEMORY\n{src.repo_memory}", 9))
+        raw_sections.append(
+            Section("repo", f"# REPO MEMORY\n{src.repo_memory}", _P_REPO)
+        )
 
     for s in raw_sections:
         s.text = scrub_context(s.text) or s.text
