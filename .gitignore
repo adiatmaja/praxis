@@ -17,6 +17,7 @@ CLAUDE.local.md
 
 # Local Claude Code / MCP config
 .claude/settings.local.json
+.claude/scheduled_tasks.lock
 .mcp.json
 
 htmlcov/
