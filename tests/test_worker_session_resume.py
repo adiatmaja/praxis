@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 
+from orchestrator.config import Settings
 from orchestrator.database import CURRENT_SCHEMA_VERSION, Database
 
 
@@ -202,3 +203,24 @@ def test_agy_extractor_falls_back_to_later_response_key():
     first, _, body = result.stdout.partition("\n")
     assert first.strip() == "conv_1"
     assert "fallback body" in body
+
+
+def test_opencode_sessions_volume_has_default():
+    """The OpenCode session volume mirrors the gemini creds volume pattern."""
+    settings = Settings(
+        _env_file=None,
+        auth_token="test-token",
+        github_token="test-gh-token",
+    )
+    assert settings.opencode_sessions_volume == "praxis-opencode-sessions"
+
+
+def test_opencode_sessions_volume_env_override(monkeypatch):
+    """OPENCODE_SESSIONS_VOLUME env var overrides the default, per settings precedence."""
+    monkeypatch.setenv("OPENCODE_SESSIONS_VOLUME", "custom-sessions-vol")
+    settings = Settings(
+        _env_file=None,
+        auth_token="test-token",
+        github_token="test-gh-token",
+    )
+    assert settings.opencode_sessions_volume == "custom-sessions-vol"

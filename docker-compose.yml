@@ -63,6 +63,7 @@ services:
       # it once with an interactive `agy login` (see docs/deployment.md); the
       # orchestrator mounts it RW into agy-agent containers at /home/agent/.gemini.
       - GEMINI_CREDS_VOLUME=${GEMINI_CREDS_VOLUME:-praxis-gemini-creds}
+      - OPENCODE_SESSIONS_VOLUME=${OPENCODE_SESSIONS_VOLUME:-praxis-opencode-sessions}
     restart: unless-stopped
     extra_hosts:
       - "host.docker.internal:host-gateway"

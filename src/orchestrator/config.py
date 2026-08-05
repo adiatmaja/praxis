@@ -72,6 +72,12 @@ class Settings(BaseSettings):
     # When empty, the agy harness proceeds without mounting credentials (a
     # warning is logged) so unconfigured setups do not crash.
     gemini_creds_volume: str = "praxis-gemini-creds"
+    # Named Docker volume holding OpenCode session state, mounted read-write at
+    # /home/agent/.local/share/opencode so a re-dispatched worker can resume its
+    # conversation with `opencode run --session <id>`. Unlike the agy creds
+    # volume this needs no interactive seeding; Docker creates it on first use.
+    # Empty disables persistence: workers then always start cold, never error.
+    opencode_sessions_volume: str = "praxis-opencode-sessions"
 
     def dashboard_url(self) -> str:
         """Return the human-reachable dashboard URL for use in API responses.
