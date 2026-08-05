@@ -186,8 +186,8 @@ unrequested work and under-reported it.
 
 | Phase | Tasks | Orchestrating-session effort |
 |-------|-------|------------------------------|
-| A | 1 to 8 | `high` |
-| B | 9 to 12 | `high` |
+| A | 1 to 9 | `high` |
+| B | 10 to 13 | `high` |
 
 ### Per task
 
@@ -200,11 +200,12 @@ unrequested work and under-reported it.
 | 5 Doctor probes and surfaces | `praxis-impl-standard` | sonnet / high | Eleven small pure functions plus two thin surfaces |
 | 6 `praxis init` | `praxis-impl-critical` | opus / xhigh | Writes `.env` and runs Docker. The non-destructive merge is what stops a re-run eating an operator's other settings |
 | 7 Approvals digest | `praxis-impl-standard` | sonnet / high | Query, rate limiter, and four surfaces |
-| 8 Timed walkthrough | **You, not an agent** | n/a | The number only means something if a human runs the clock on a clean machine |
-| 9 Docs restructure | `praxis-impl-critical` | opus / xhigh | A large what-do-I-cut judgment against hard budgets. Low blast radius if wrong, but expensive to redo |
-| 10 Framing | `praxis-impl-standard` | sonnet / high | Text edits pinned by a ratchet test |
-| 11 Demo artifact | **You, not an agent** | n/a | Recording a real session |
-| 12 Launch checklist | **You, not an agent** | n/a | Four gates, each a judgment call |
+| 8 MCP surface | `praxis-impl-standard` | sonnet / high | Bounded log tail plus a leading summary key. The tail direction and the truncation notice are the parts with a real failure mode |
+| 9 Timed walkthrough | **You, not an agent** | n/a | The number only means something if a human runs the clock on a clean machine |
+| 10 Docs restructure | `praxis-impl-critical` | opus / xhigh | A large what-do-I-cut judgment against hard budgets. Low blast radius if wrong, but expensive to redo |
+| 11 Framing | `praxis-impl-standard` | sonnet / high | Text edits pinned by a ratchet test |
+| 12 Demo artifact | **You, not an agent** | n/a | Recording a real session |
+| 13 Launch checklist | **You, not an agent** | n/a | Four gates, each a judgment call |
 
 ---
 
@@ -271,7 +272,7 @@ test in it assumes them.
 | Modify `src/cli/main.py` | Register both commands |
 | Create `src/orchestrator/core/approvals.py` | Parked-work digest query |
 | Create `src/orchestrator/api/approvals.py` | `GET /api/approvals/pending` |
-| Modify `src/mcp_server/server.py` | `pending_approvals` tool; digest line on `poll_task` and `poll_plan` |
+| Modify `src/mcp_server/server.py` | `pending_approvals` tool; digest line on `poll_task` and `poll_plan`; then (Task 8) the `get_task_logs` tail, the leading `summary` key on every state-returning tool, and the server `instructions` |
 | Modify `src/orchestrator/core/orchestrator.py` | Publish `approvals_digest` on the loop |
 | Modify `web/app.js`, `web/styles.css` | Persistent approvals badge |
 
@@ -289,7 +290,7 @@ test in it assumes them.
 
 ---
 
-## Phase A: setup, doctor, presets, and the approvals digest
+## Phase A: setup, doctor, presets, the approvals digest, and the MCP surface
 
 ### Task 1: Compose builds the agent images
 
@@ -2756,14 +2757,357 @@ this product category dies."
 
 ---
 
-### Task 8: Close out Phase A with a timed fresh-machine walkthrough
+### Task 8: Make the MCP surface readable and bounded
+
+**Files:**
+- Modify: `src/mcp_server/server.py`
+- Test: `tests/test_mcp_surface.py`
+
+**Depends on:** Task 7
+
+MCP is the primary surface by design: the spec's decision 4 is that every doc,
+demo, and default assumes the user drives Praxis from the assistant session they
+already have open. Two things currently undercut that. `get_task_logs` returns
+unbounded concatenated container output, so the tool you reach for to diagnose a
+wedged task is the one most likely to be truncated by the client. And every
+state-returning tool answers with a raw dict, so the transcript shows JSON where
+one line of prose would do.
+
+Scope note, so nobody re-litigates it: a 2 KB truncation limit applies to MCP
+tool descriptions, and Praxis was measured against it on 2026-08-06. The largest
+description is `execute_plan` at 942 B and all eleven are well clear. **There is
+nothing to fix there; do not "audit" or shorten the descriptions.**
+
+- [ ] **Step 1: Write the failing test**
+
+Create `tests/test_mcp_surface.py`:
+
+```python
+"""The MCP surface must be readable in a transcript and bounded in size.
+
+Claude Code warns above 10,000 tokens of MCP output and hard-caps at 25,000 by
+default, so an unbounded log dump is truncated exactly when it is needed most.
+"""
+
+from unittest.mock import AsyncMock
+
+import pytest
+
+from mcp_server.server import (
+    LOG_TAIL_CHARS,
+    get_task_logs_impl,
+    poll_plan_impl,
+    poll_task_impl,
+)
+
+
+def _client(**routes) -> AsyncMock:
+    client = AsyncMock()
+
+    async def _get(path: str):
+        for prefix, value in routes.items():
+            if path.startswith(prefix.replace("_", "/")):
+                return value
+        return {}
+
+    client.get.side_effect = _get
+    return client
+
+
+@pytest.mark.unit
+async def test_short_logs_are_returned_whole():
+    client = AsyncMock()
+    client.get.return_value = {"runs": [{"logs": "boom\n"}]}
+    result = await get_task_logs_impl(client, "t1")
+    assert result["logs"] == "boom\n"
+    assert result["truncated"] is False
+
+
+@pytest.mark.unit
+async def test_long_logs_are_tailed_not_headed():
+    """Triage needs the END of the log; the failure is at the bottom."""
+    client = AsyncMock()
+    body = "".join(f"line {i}\n" for i in range(200_000))
+    client.get.return_value = {"runs": [{"logs": body + "FINAL FAILURE\n"}]}
+    result = await get_task_logs_impl(client, "t1")
+    assert "FINAL FAILURE" in result["logs"]
+    assert "line 0\n" not in result["logs"]
+
+
+@pytest.mark.unit
+async def test_tailed_logs_respect_the_cap():
+    client = AsyncMock()
+    client.get.return_value = {"runs": [{"logs": "x" * 5_000_000}]}
+    result = await get_task_logs_impl(client, "t1")
+    assert len(result["logs"]) <= LOG_TAIL_CHARS + 200
+
+
+@pytest.mark.unit
+async def test_truncation_is_announced_not_silent():
+    """A silently clipped log makes the reader trust an incomplete picture."""
+    client = AsyncMock()
+    client.get.return_value = {"runs": [{"logs": "x" * 5_000_000}]}
+    result = await get_task_logs_impl(client, "t1")
+    assert result["truncated"] is True
+    assert result["total_chars"] == 5_000_000
+    assert "truncated" in result["logs"].lower()
+
+
+@pytest.mark.unit
+async def test_logs_from_every_run_are_still_concatenated_before_tailing():
+    client = AsyncMock()
+    client.get.return_value = {
+        "runs": [{"logs": "first\n"}, {"logs": "second\n"}]
+    }
+    result = await get_task_logs_impl(client, "t1")
+    assert result["logs"] == "first\nsecond\n"
+
+
+@pytest.mark.unit
+async def test_poll_task_leads_with_a_one_line_summary():
+    client = AsyncMock()
+    client.get.return_value = {
+        "task": {
+            "id": "t1",
+            "title": "Add the widget",
+            "status": "passed",
+            "pr_url": "https://github.com/o/r/pull/7",
+            "attempt": 2,
+        },
+        "runs": [],
+    }
+    result = await poll_task_impl(client, "t1")
+    assert list(result)[0] == "summary"
+    assert "Add the widget" in result["summary"]
+    assert "awaiting_merge" in result["summary"]
+
+
+@pytest.mark.unit
+async def test_poll_plan_summary_counts_leaves_by_state():
+    client = AsyncMock()
+
+    async def _get(path: str):
+        if path.endswith("/tasks"):
+            return [
+                {"id": "1", "title": "a", "status": "merged"},
+                {"id": "2", "title": "b", "status": "merged"},
+                {"id": "3", "title": "c", "status": "passed"},
+                {"id": "4", "title": "d", "status": "pending"},
+            ]
+        return {"status": "active", "opus_plan": None}
+
+    client.get.side_effect = _get
+    result = await poll_plan_impl(client, "p1")
+    assert list(result)[0] == "summary"
+    assert "2 of 4" in result["summary"]
+    assert "1 awaiting approval" in result["summary"]
+
+
+@pytest.mark.unit
+async def test_an_errored_response_still_leads_with_a_summary():
+    from mcp_server.client import PraxisClientError
+
+    client = AsyncMock()
+    client.get.side_effect = PraxisClientError("connection refused")
+    result = await poll_task_impl(client, "t1")
+    assert "summary" in result
+    assert "connection refused" in result["summary"]
+```
+
+Read `src/mcp_server/server.py` and `src/mcp_server/client.py` first and match
+`_error`'s real shape and `PraxisClientError`'s real constructor before running.
+
+- [ ] **Step 2: Run the test to verify it fails**
+
+Run: `uv run pytest tests/test_mcp_surface.py -v`
+Expected: FAIL with `ImportError: cannot import name 'LOG_TAIL_CHARS'`.
+
+- [ ] **Step 3: Bound `get_task_logs`**
+
+In `src/mcp_server/server.py`, add near the other module constants:
+
+```python
+# Claude Code warns above 10,000 tokens of MCP output and caps at 25,000 by
+# default (roughly 100 KB of text). Container logs for a retried task exceed
+# that easily, so the tool tails rather than dumps: for failure triage the
+# useful end of a log is the bottom, not the top. Raising the client-side limit
+# would not help; the head of a 5 MB log is noise either way.
+LOG_TAIL_CHARS = 40_000
+```
+
+Replace `get_task_logs_impl` with:
+
+```python
+async def get_task_logs_impl(client: Any, task_id: str) -> dict[str, Any]:
+    """Return the TAIL of a task's agent-run logs (inline failure triage).
+
+    Logs are concatenated across every run for the task, then clipped to the
+    last ``LOG_TAIL_CHARS`` characters.  Truncation is announced in the payload
+    and inline in the text: a silently clipped log invites the reader to trust
+    an incomplete picture, which is worse than a short one.
+    """
+    try:
+        data = await client.get(f"/api/tasks/{task_id}")
+    except PraxisClientError as exc:
+        return _error(exc)
+    runs = data.get("runs", [])
+    logs = "".join(str(run.get("logs") or "") for run in runs)
+    total = len(logs)
+    truncated = total > LOG_TAIL_CHARS
+    if truncated:
+        logs = (
+            f"[truncated: showing the last {LOG_TAIL_CHARS} of {total} "
+            "characters; the tail is what matters for triage]\n"
+            + logs[-LOG_TAIL_CHARS:]
+        )
+    return {
+        "task_id": task_id,
+        "logs": logs,
+        "truncated": truncated,
+        "total_chars": total,
+    }
+```
+
+- [ ] **Step 4: Lead every state-returning tool with a summary**
+
+Add a summary builder next to the other helpers:
+
+```python
+def _task_summary(task: dict[str, Any]) -> str:
+    """One human-readable line for a task, as the first key of the payload."""
+    title = task.get("title") or task.get("id") or "task"
+    status = _TASK_STATUS_MAP.get(task.get("status", ""), task.get("status"))
+    parts = [f"{title}: {status}"]
+    if task.get("pr_url"):
+        parts.append(str(task["pr_url"]))
+    attempt = task.get("attempt")
+    if isinstance(attempt, int) and attempt > 1:
+        parts.append(f"attempt {attempt}")
+    return ", ".join(parts)
+
+
+def _plan_summary(tasks: list[dict[str, Any]]) -> str:
+    """One human-readable line for a plan's leaf states."""
+    total = len(tasks)
+    merged = sum(1 for t in tasks if t.get("status") == "merged")
+    gated = sum(1 for t in tasks if str(t.get("status")) in _GATED_STATUSES)
+    failed = sum(1 for t in tasks if t.get("status") == "failed")
+    parts = [f"{merged} of {total} leaves merged"]
+    if gated:
+        parts.append(f"{gated} awaiting approval")
+    if failed:
+        parts.append(f"{failed} failed")
+    return ", ".join(parts)
+```
+
+Then make `summary` the FIRST key of the returned dict in `poll_task_impl`,
+`poll_plan_impl`, `dispatch_task_impl`, `execute_plan_impl`,
+`pending_approvals_impl` (Task 7), and `list_projects_impl`. Python dicts
+preserve insertion order and the MCP client renders them in that order, so
+placing it first is what puts the line at the top of the transcript.
+
+Give `_error` a `summary` too, so a failed call is readable as well:
+
+```python
+def _error(exc: PraxisClientError) -> dict[str, Any]:
+    return {"summary": f"Praxis error: {exc}", "error": str(exc)}
+```
+
+Match the existing `_error` return shape; add the key, do not change the rest.
+
+- [ ] **Step 5: Give the server instructions**
+
+`FastMCP("praxis")` currently passes no `instructions`, so a fresh client is
+told nothing about how to drive Praxis beyond the
+`praxis://guide/orchestration` resource, which only helps if the client fetches
+it. Server instructions truncate at 2 KB, so keep this short and put the
+pointer first:
+
+```python
+mcp = FastMCP(
+    "praxis",
+    instructions=(
+        "Praxis delegates implementation to another provider or harness and "
+        "hands back a reviewed pull request. Read the praxis://guide/orchestration "
+        "resource before your first dispatch. Typical loop: get_project to read a "
+        "repo's configured worker, dispatch_task or execute_plan to delegate, "
+        "poll_task or poll_plan until a task reports awaiting_merge, then relay "
+        "the PR URL to the human for approval. Praxis never merges without them."
+    ),
+)
+```
+
+- [ ] **Step 6: Run the test to verify it passes**
+
+Run: `uv run pytest tests/test_mcp_surface.py tests/test_mcp_server.py -v`
+Expected: PASS. Existing MCP tests assert on individual keys rather than whole
+dicts, so adding a leading key should not break them; where one compares a whole
+payload, add `summary` to the expectation rather than dropping the key.
+
+- [ ] **Step 7: Mutation-check the tail direction**
+
+Temporarily change `logs[-LOG_TAIL_CHARS:]` to `logs[:LOG_TAIL_CHARS]`.
+Run: `uv run pytest tests/test_mcp_surface.py::test_long_logs_are_tailed_not_headed -v`
+Expected: FAIL. Restore and re-run to confirm PASS. The direction is the whole
+point: the head of a failing run's log is startup banner.
+
+- [ ] **Step 8: Mutation-check the truncation announcement**
+
+Temporarily drop the `[truncated: ...]` prefix, keeping the slice.
+Run: `uv run pytest tests/test_mcp_surface.py::test_truncation_is_announced_not_silent -v`
+Expected: FAIL. Restore and re-run to confirm PASS.
+
+- [ ] **Step 9: Verify against a live client**
+
+Restart the MCP server in your client and call `poll_plan` on any real plan.
+Expected: the transcript's first rendered line is the summary sentence, not
+`{"plan_id": ...`. If it still leads with JSON, the `summary` key is not first
+in the dict; check insertion order rather than adding formatting.
+
+- [ ] **Step 10: Add the gotcha**
+
+Append to `docs/gotchas.md`:
+
+```markdown
+- **MCP payloads lead with a `summary` key, and `get_task_logs` tails**:
+  every state-returning MCP tool puts a one-line human summary first in its
+  returned dict, because dict insertion order is what the client renders and the
+  first line is what a reader actually sees. `get_task_logs` clips to the LAST
+  `LOG_TAIL_CHARS` (40 KB) and says so both in the payload (`truncated`,
+  `total_chars`) and inline in the text: Claude Code warns above 10,000 tokens of
+  MCP output and caps at 25,000 by default, so an unbounded dump is truncated by
+  the client exactly when a task has run long enough to wedge. Tail, never head:
+  the top of a failing run's log is startup banner. Note that MCP tool
+  DESCRIPTIONS also truncate, at 2 KB each, but Praxis was measured on
+  2026-08-06 and its largest is 942 B, so there is nothing to fix there.
+```
+
+Add a matching one-line CLAUDE.md index entry.
+
+- [ ] **Step 11: Commit**
+
+```bash
+git add src/mcp_server/server.py tests/test_mcp_surface.py docs/gotchas.md CLAUDE.md
+git commit -m "feat(mcp): bound get_task_logs and lead every payload with a summary
+
+get_task_logs tailed to 40 KB with the truncation announced, because the
+client caps MCP output at 25,000 tokens and an unbounded dump fails exactly
+when a task has run long enough to need diagnosing. Every state-returning
+tool now leads with a one-line summary so the transcript reads as prose
+rather than JSON, and the server carries instructions pointing at the
+orchestration guide."
+```
+
+---
+
+### Task 9: Close out Phase A with a timed fresh-machine walkthrough
 
 **Files:**
 - Create: `docs/walkthrough-15min.md`
 - Modify: `docs/gotchas.md`
 - Modify: `CLAUDE.md`
 
-**Depends on:** Task 1, Task 2, Task 3, Task 5, Task 6, Task 7
+**Depends on:** Task 1, Task 2, Task 3, Task 5, Task 6, Task 7, Task 8
 
 The spec attaches a number to simplicity: clone to first reviewed PR in 15
 minutes or less, measured by walkthrough. This task measures it.
@@ -2893,7 +3237,7 @@ benchmark's Phases B and C, before returning here for Phase B.
 
 ## Phase B: documentation restructure, framing, and launch
 
-Phase B runs LAST. Task 12 (the launch checklist) is gated on the benchmark
+Phase B runs LAST. Task 13 (the launch checklist) is gated on the benchmark
 plan's published report.
 
 **Target shape.** The user-facing corpus roughly halves, from about 2,400 lines
@@ -2906,7 +3250,7 @@ to about 1,200. Current sizes for reference: `README.md` 266,
 **Kill criterion, applied to every page:** a sentence that does not change what
 the reader does next is cut.
 
-### Task 9: Restructure the user-facing documentation
+### Task 10: Restructure the user-facing documentation
 
 **Files:**
 - Rewrite: `README.md`
@@ -2916,7 +3260,7 @@ the reader does next is cut.
 - Rewrite as stubs: `docs/architecture.md`, `docs/workflow.md`, `docs/deployment.md`, `docs/mcp.md`, `docs/decompose.md`, `docs/positioning.md`, `docs/social-launch-drafts.md`, `docs/workflow-diagram.md`, `docs/open-weight-models-complete.md`, `docs/open-weight-models-lmstudio.md`
 - Test: `tests/test_docs_shape.py`
 
-**Depends on:** Task 8, and the benchmark plan's Task 17 (the report must exist to be linked)
+**Depends on:** Task 9, and the benchmark plan's Task 17 (the report must exist to be linked)
 
 - [ ] **Step 1: Write the failing test**
 
@@ -3199,7 +3543,7 @@ praxis doctor."
 
 ---
 
-### Task 10: Framing
+### Task 11: Framing
 
 **Files:**
 - Modify: `README.md`
@@ -3207,7 +3551,7 @@ praxis doctor."
 - Modify: `src/mcp_server/server.py` (server description)
 - Test: `tests/test_framing.py`
 
-**Depends on:** Task 9
+**Depends on:** Task 10
 
 - [ ] **Step 1: Write the failing test**
 
@@ -3345,14 +3689,14 @@ the banned category words, the preferred vocabulary, and the no-em-dash rule."
 
 ---
 
-### Task 11: The demo artifact
+### Task 12: The demo artifact
 
 **Files:**
 - Create: `docs/demo.md`
 - Create: `docs/assets/demo.gif` or `docs/assets/demo.cast`
 - Modify: `README.md`
 
-**Depends on:** Task 10
+**Depends on:** Task 11
 
 - [ ] **Step 1: Rehearse the demo path**
 
@@ -3392,7 +3736,7 @@ One line in the README, above the quickstart:
 [See it work](docs/demo.md), 90 seconds: one request in an assistant session, one reviewed pull request back.
 ```
 
-Note the punctuation: a comma and a colon, never an em dash. Task 10's
+Note the punctuation: a comma and a colon, never an em dash. Task 11's
 `test_no_em_dashes_in_any_user_facing_doc` covers the README, so a slip here
 fails the suite rather than shipping.
 
@@ -3418,13 +3762,13 @@ transcript is complete on its own for readers who will not play a recording."
 
 ---
 
-### Task 12: Execute the launch checklist
+### Task 13: Execute the launch checklist
 
 **Files:**
 - Create: `docs/internal/launch-log.md`
 - Modify: `docs/internal/social-launch-drafts.md`
 
-**Depends on:** Task 11, and the benchmark plan's Task 17
+**Depends on:** Task 12, and the benchmark plan's Task 17
 
 The spec's checklist is gated and ordered. Work it in order and stop at the
 first gate that does not pass.
@@ -3510,11 +3854,12 @@ documented decision not to launch yet."
 - **Wave 3:** Task 4 (Tasks 1, 2, 3)
 - **Wave 4:** Task 5 (Task 4)
 - **Wave 5:** Task 6 (Tasks 3, 5), Task 7 (Task 5)
-- **Wave 6:** Task 8 (Tasks 1, 2, 3, 5, 6, 7), Phase A gate and the timed walkthrough
-- **Wave 7:** Task 9 (Task 8, plus the benchmark plan's Task 17)
-- **Wave 8:** Task 10 (Task 9)
+- **Wave 6:** Task 8 (Task 7)
+- **Wave 7:** Task 9 (Tasks 1, 2, 3, 5, 6, 7, 8), Phase A gate and the timed walkthrough
+- **Wave 8:** Task 10 (Task 9, plus the benchmark plan's Task 17)
 - **Wave 9:** Task 11 (Task 10)
-- **Wave 10:** Task 12 (Task 11, plus the benchmark plan's Task 17)
+- **Wave 10:** Task 12 (Task 11)
+- **Wave 11:** Task 13 (Task 12, plus the benchmark plan's Task 17)
 
 Tasks 1 and 2 are genuinely independent: one edits compose services, the other
 edits the config path and the compose volumes. If they run concurrently, resolve
@@ -3527,15 +3872,21 @@ digest) and both depend only on doctor.
 Mapped from the umbrella spec's section 10:
 
 5. **Fresh-machine walkthrough: clone to first reviewed PR in 15 minutes or
-   less, recorded.** Task 8 measures it and records the real number. If the
+   less, recorded.** Task 9 measures it and records the real number. If the
    number is not met, the doc says so and names the blocking step.
 6. **README at 120 lines or fewer; user-facing docs corpus at about 1,200 lines
-   or fewer; every troubleshooting entry starts from `praxis doctor`.** Task 9,
+   or fewer; every troubleshooting entry starts from `praxis doctor`.** Task 10,
    enforced by `tests/test_docs_shape.py` rather than by discipline.
 7. **Launch executed per spec 5.2, or a documented decision not to launch yet.**
-   Task 12, with the four gates and their evidence in
+   Task 13, with the four gates and their evidence in
    `docs/internal/launch-log.md`.
 
 Plus the spec's section 4 items that carry no numbered definition-of-done entry:
 one-command setup (Tasks 1, 2, 6), `praxis init` and `praxis doctor` (Tasks 4,
 5, 6), worker presets (Task 3), and the merge-gate digest (Task 7).
+
+Task 8 (the MCP surface) serves the spec's decision 4 rather than a numbered
+done-item: MCP is the distribution wedge, so the surface a user actually reads
+has to be readable, and the tool they reach for when a task wedges has to survive
+the client's output cap. It is also a prerequisite for the Task 12 demo being
+representative, since that demo is an MCP transcript.
