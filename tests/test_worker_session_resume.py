@@ -133,3 +133,72 @@ def test_opencode_extractor_unwraps_sessions_dict():
     result = _run_extractor(OPENCODE_EXTRACTOR, payload)
     assert result.returncode == 0
     assert result.stdout.strip() == "ses_wrapped"
+
+
+AGY_EXTRACTOR = (
+    Path(__file__).parent.parent / "docker" / "agy-agent" / "extract_session.py"
+)
+
+
+def test_agy_extractor_emits_conversation_id_and_response():
+    """Line 1 is the conversation id; the rest is the response body."""
+    payload = json.dumps(
+        {"conversation_id": "conv_xyz", "response": "Status: BLOCKED\nneed the schema"}
+    )
+    result = _run_extractor(AGY_EXTRACTOR, payload)
+    assert result.returncode == 0
+    first, _, body = result.stdout.partition("\n")
+    assert first.strip() == "conv_xyz"
+    assert "Status: BLOCKED" in body
+
+
+def test_agy_extractor_tolerates_missing_conversation_id():
+    """Response text still flows through; the id line is empty."""
+    payload = json.dumps({"response": "all done"})
+    result = _run_extractor(AGY_EXTRACTOR, payload)
+    assert result.returncode == 0
+    first, _, body = result.stdout.partition("\n")
+    assert first.strip() == ""
+    assert "all done" in body
+
+
+def test_agy_extractor_fails_on_malformed_input():
+    """Garbage exits 1 so the entrypoint falls back to text mode."""
+    result = _run_extractor(AGY_EXTRACTOR, "<<not json>>")
+    assert result.returncode == 1
+    assert result.stdout.strip() == ""
+
+
+def test_agy_extractor_fails_on_non_dict_input():
+    """A JSON list or scalar envelope has no keys to read; treat as malformed."""
+    result = _run_extractor(AGY_EXTRACTOR, "[1, 2, 3]")
+    assert result.returncode == 1
+    assert result.stdout.strip() == ""
+
+
+def test_agy_extractor_ignores_non_string_conversation_id():
+    """A non-string id (e.g. a stray int) is dropped rather than printed raw."""
+    payload = json.dumps({"conversation_id": 12345, "response": "ok"})
+    result = _run_extractor(AGY_EXTRACTOR, payload)
+    assert result.returncode == 0
+    first, _, body = result.stdout.partition("\n")
+    assert first.strip() == ""
+    assert "ok" in body
+
+
+def test_agy_extractor_prints_id_only_when_no_response_key_matches():
+    """No known response key present: id line still prints, body stays empty."""
+    payload = json.dumps({"conversation_id": "conv_only"})
+    result = _run_extractor(AGY_EXTRACTOR, payload)
+    assert result.returncode == 0
+    assert result.stdout == "conv_only\n"
+
+
+def test_agy_extractor_falls_back_to_later_response_key():
+    """`response` is absent; a later key in the fallback order still wins."""
+    payload = json.dumps({"conversation_id": "conv_1", "output": "fallback body"})
+    result = _run_extractor(AGY_EXTRACTOR, payload)
+    assert result.returncode == 0
+    first, _, body = result.stdout.partition("\n")
+    assert first.strip() == "conv_1"
+    assert "fallback body" in body
