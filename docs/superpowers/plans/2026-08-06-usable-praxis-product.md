@@ -52,6 +52,27 @@ place in it:
   introduce a bundler.
 - **No em dashes** in any prose, doc, code comment, or commit message.
 
+### Test-harness facts (verified against the repo on 2026-08-06)
+
+Do not re-derive these; they were checked while this plan was written and every
+test in it assumes them.
+
+| Fact | Detail |
+|------|--------|
+| Database fixture | **`db`** (not `test_db`), an async fixture yielding an initialized `Database` |
+| API client fixture | **`client` is an httpx `AsyncClient`**, not a sync `TestClient`. Every API test is `async def` and every call is awaited |
+| Auth fixture | `auth_headers` returns `{"Authorization": "Bearer test-auth"}` |
+| Event bus | **`EventBus` has no callback API.** It is `subscribe() -> asyncio.Queue`, `unsubscribe(queue)`, `publish(event)`. Anything collecting events drains a queue |
+| Foreign keys | `PRAGMA foreign_keys=ON`. A `projects` row needs its `users` row inserted first |
+| Plan creation | `TaskQueue.create_plan(project_id, summary=None, source="user", ...) -> plan_id` |
+| Agent run completion | `TaskQueue.complete_agent_run(run_id, status, logs)`. There is no `finish_agent_run` |
+| Dead branches | `branch_sweeper.dead_branches(branches, *, open_pr_branches, terminal_failed, merged_plan)`, all keyword-only |
+| Dispatch contract | `DispatchRequest` is keyed on **`repo_url`** plus `instructions`, `model`, `harness`, `branch`. There is no `project_id` field; the endpoint reuses an existing project matching `repo_url` |
+| Execute-plan contract | `ExecutePlanRequest` is keyed on **`repo_url`** plus `plan`, `model`, `harness`, `branch` |
+| Async mode | `asyncio_mode = "auto"`, so async tests need no decorator |
+| Markers | `unit`, `integration`, `slow` are registered in `pyproject.toml` |
+
+
 ---
 
 ## File Structure
@@ -325,7 +346,7 @@ def test_a_missing_file_yields_empty_settings_not_a_crash(monkeypatch, tmp_path)
 
 
 @pytest.mark.unit
-async def test_effective_settings_reads_the_overridden_path(test_db, monkeypatch, tmp_path):
+async def test_effective_settings_reads_the_overridden_path(db, monkeypatch, tmp_path):
     """No caller may hardcode 'config/praxis.yaml' any more."""
     target = tmp_path / "elsewhere.yaml"
     target.write_text("max_leaves_per_plan: 7\n", encoding="utf-8")
@@ -334,7 +355,7 @@ async def test_effective_settings_reads_the_overridden_path(test_db, monkeypatch
     from orchestrator.config import Settings
     from orchestrator.core.effective_settings import EffectiveSettings
 
-    settings = EffectiveSettings(Settings(auth_token="t", _env_file=None), test_db)
+    settings = EffectiveSettings(Settings(auth_token="t", _env_file=None), db)
     assert await settings.max_leaves_per_plan() == 7
 
 
@@ -794,30 +815,32 @@ import pytest
 
 
 @pytest.mark.integration
-def test_presets_endpoint_requires_auth(client):
-    assert client.get("/api/settings/presets").status_code == 401
+async def test_presets_endpoint_requires_auth(client):
+    response = await client.get("/api/settings/presets")
+    assert response.status_code == 401
 
 
 @pytest.mark.integration
-def test_presets_endpoint_returns_the_shipped_presets(client, auth_headers):
-    response = client.get("/api/settings/presets", headers=auth_headers)
+async def test_presets_endpoint_returns_the_shipped_presets(client, auth_headers):
+    response = await client.get("/api/settings/presets", headers=auth_headers)
     assert response.status_code == 200
     names = {p["name"] for p in response.json()["presets"]}
     assert {"local-lmstudio", "hosted-openweight", "gemini-agy"} <= names
 
 
 @pytest.mark.integration
-def test_every_preset_exposes_the_three_fields(client, auth_headers):
-    for preset in client.get("/api/settings/presets", headers=auth_headers).json()[
-        "presets"
-    ]:
+async def test_every_preset_exposes_the_three_fields(client, auth_headers):
+    response = await client.get("/api/settings/presets", headers=auth_headers)
+    for preset in response.json()["presets"]:
         assert preset["harness"]
         assert preset["model"]
         assert "endpoint" in preset
         assert isinstance(preset["requires"], list)
 ```
 
-Use the real `client` and `auth_headers` fixture names from `tests/conftest.py`.
+`client` in `tests/conftest.py` is an httpx **AsyncClient**, not a sync
+TestClient, so every API test is `async def` and every call is awaited.
+`auth_headers` is `{"Authorization": "Bearer test-auth"}`.
 
 - [ ] **Step 7: Run the tests to verify they pass**
 
@@ -1598,29 +1621,30 @@ import pytest
 
 
 @pytest.mark.integration
-def test_doctor_requires_auth(client):
-    assert client.get("/api/doctor").status_code == 401
+async def test_doctor_requires_auth(client):
+    response = await client.get("/api/doctor")
+    assert response.status_code == 401
 
 
 @pytest.mark.integration
-def test_doctor_returns_every_check(client, auth_headers):
+async def test_doctor_returns_every_check(client, auth_headers):
     from orchestrator.core.doctor import CHECK_IDS
 
-    body = client.get("/api/doctor", headers=auth_headers).json()
-    assert {c["check_id"] for c in body["checks"]} == set(CHECK_IDS)
+    response = await client.get("/api/doctor", headers=auth_headers)
+    assert {c["check_id"] for c in response.json()["checks"]} == set(CHECK_IDS)
 
 
 @pytest.mark.integration
-def test_doctor_is_http_200_even_when_checks_are_red(client, auth_headers):
+async def test_doctor_is_http_200_even_when_checks_are_red(client, auth_headers):
     """A diagnosis is a successful response, whatever it diagnoses."""
-    response = client.get("/api/doctor", headers=auth_headers)
+    response = await client.get("/api/doctor", headers=auth_headers)
     assert response.status_code == 200
     assert response.json()["status"] in {"green", "amber", "red"}
 
 
 @pytest.mark.integration
-def test_every_red_check_in_the_response_carries_a_hint(client, auth_headers):
-    body = client.get("/api/doctor", headers=auth_headers).json()
+async def test_every_red_check_in_the_response_carries_a_hint(client, auth_headers):
+    body = (await client.get("/api/doctor", headers=auth_headers)).json()
     for check in body["checks"]:
         if check["status"] == "red":
             assert check["hint"]

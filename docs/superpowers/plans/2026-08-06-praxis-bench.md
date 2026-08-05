@@ -55,6 +55,27 @@ place in it:
   operation.
 - **No em dashes** in any prose, doc, code comment, or commit message.
 
+### Test-harness facts (verified against the repo on 2026-08-06)
+
+Do not re-derive these; they were checked while this plan was written and every
+test in it assumes them.
+
+| Fact | Detail |
+|------|--------|
+| Database fixture | **`db`** (not `test_db`), an async fixture yielding an initialized `Database` |
+| API client fixture | **`client` is an httpx `AsyncClient`**, not a sync `TestClient`. Every API test is `async def` and every call is awaited |
+| Auth fixture | `auth_headers` returns `{"Authorization": "Bearer test-auth"}` |
+| Event bus | **`EventBus` has no callback API.** It is `subscribe() -> asyncio.Queue`, `unsubscribe(queue)`, `publish(event)`. Anything collecting events drains a queue |
+| Foreign keys | `PRAGMA foreign_keys=ON`. A `projects` row needs its `users` row inserted first |
+| Plan creation | `TaskQueue.create_plan(project_id, summary=None, source="user", ...) -> plan_id` |
+| Agent run completion | `TaskQueue.complete_agent_run(run_id, status, logs)`. There is no `finish_agent_run` |
+| Dead branches | `branch_sweeper.dead_branches(branches, *, open_pr_branches, terminal_failed, merged_plan)`, all keyword-only |
+| Dispatch contract | `DispatchRequest` is keyed on **`repo_url`** plus `instructions`, `model`, `harness`, `branch`. There is no `project_id` field; the endpoint reuses an existing project matching `repo_url` |
+| Execute-plan contract | `ExecutePlanRequest` is keyed on **`repo_url`** plus `plan`, `model`, `harness`, `branch` |
+| Async mode | `asyncio_mode = "auto"`, so async tests need no decorator |
+| Markers | `unit`, `integration`, `slow` are registered in `pyproject.toml` |
+
+
 ---
 
 ## File Structure
@@ -2959,8 +2980,20 @@ class BenchClient:
         await self._client.aclose()
 
     async def register_project(
-        self, name: str, repo_url: str, worker: Worker, verify_cmd: str | None
+        self,
+        name: str,
+        repo_url: str,
+        worker: Worker,
+        verify_cmd: str | None,
+        adaptive_split: bool,
     ) -> str:
+        """Create the project row that carries this condition's switches.
+
+        ``/api/dispatch`` and ``/api/execute-plan`` are keyed on ``repo_url``
+        and reuse an existing project for it (``SELECT * FROM projects WHERE
+        repo_url = ?``), so registering first is how per-condition settings
+        (``verify_cmd``, ``max_retries``, ``auto_merge``) reach the run.
+        """
         response = await self._client.post(
             "/api/projects",
             json={
@@ -2970,6 +3003,10 @@ class BenchClient:
                 "harness": worker.harness,
                 "default_branch": "main",
                 "verify_cmd": verify_cmd,
+                # Only condition D reaches the second worker-attributable
+                # failure that triggers adaptive triage; the others cap at one
+                # attempt so triage can never fire. See bench/README.md.
+                "max_retries": 3 if adaptive_split else 1,
                 # The bench measures the engine, not the human gate.
                 "auto_merge": True,
                 "approval_gate": False,
@@ -2978,18 +3015,32 @@ class BenchClient:
         response.raise_for_status()
         return str(response.json()["id"])
 
-    async def dispatch(self, project_id: str, prompt: str) -> str:
+    async def dispatch(self, repo_url: str, instructions: str, worker: Worker) -> str:
+        """Monolithic condition A. DispatchRequest is keyed on repo_url."""
         response = await self._client.post(
             "/api/dispatch",
-            json={"project_id": project_id, "prompt": prompt, "branch": "main"},
+            json={
+                "repo_url": repo_url,
+                "instructions": instructions,
+                "model": worker.model,
+                "harness": worker.harness,
+                "branch": "main",
+            },
         )
         response.raise_for_status()
         return str(response.json()["task_id"])
 
-    async def execute_plan(self, project_id: str, plan: str) -> str:
+    async def execute_plan(self, repo_url: str, plan: str, worker: Worker) -> str:
+        """Decomposed conditions B, C, D. ExecutePlanRequest is keyed on repo_url."""
         response = await self._client.post(
             "/api/execute-plan",
-            json={"project_id": project_id, "plan": plan, "branch": "main"},
+            json={
+                "repo_url": repo_url,
+                "plan": plan,
+                "model": worker.model,
+                "harness": worker.harness,
+                "branch": "main",
+            },
         )
         response.raise_for_status()
         return str(response.json()["plan_id"])
@@ -3036,7 +3087,7 @@ async def run_attempt(
     clarifications = 0
 
     try:
-        project_id = await client.register_project(
+        await client.register_project(
             name=f"bench-{instance['instance_id']}-{attempt.condition.key}-{uuid.uuid4().hex[:6]}",
             repo_url=str(bare),
             worker=attempt.worker,
@@ -3044,10 +3095,13 @@ async def run_attempt(
             verify_cmd=(
                 instance.get("verify_cmd") if attempt.condition.verify_gate else None
             ),
+            adaptive_split=attempt.condition.adaptive_split,
         )
 
         if attempt.condition.decompose:
-            plan_id = await client.execute_plan(project_id, _issue_prompt(instance))
+            plan_id = await client.execute_plan(
+                str(bare), _issue_prompt(instance), attempt.worker
+            )
             deadline = time.monotonic() + _ATTEMPT_TIMEOUT_S
             while time.monotonic() < deadline:
                 plan = await client.poll_plan(plan_id)
@@ -3063,7 +3117,9 @@ async def run_attempt(
                 1 for t in tasks if t.get("clarification_question")
             )
         else:
-            task_id = await client.dispatch(project_id, _issue_prompt(instance))
+            task_id = await client.dispatch(
+                str(bare), _issue_prompt(instance), attempt.worker
+            )
             deadline = time.monotonic() + _ATTEMPT_TIMEOUT_S
             leaf_count = 1
             while time.monotonic() < deadline:
@@ -3926,22 +3982,17 @@ def condition_project_overrides(condition: Condition) -> dict[str, Any]:
     }
 ```
 
-Adaptive split is controlled by the engine plan's `implement_escalation` and
-triage path, which are always on once merged. For conditions A, B, and C the
-runner therefore disables triage per project rather than per process: register
-those projects with `max_retries=1`, so a leaf never reaches the second
-worker-attributable failure that triggers triage. Add to
-`BenchClient.register_project`:
+Adaptive split is controlled by the engine plan's triage path, which is always
+on once merged. Conditions A, B, and C therefore disable it per project rather
+than per process, via `max_retries=1`: a leaf never reaches the second
+worker-attributable failure that triggers triage. `BenchClient.register_project`
+already takes `adaptive_split` and sets `"max_retries": 3 if adaptive_split
+else 1` (Task 11), so no client change is needed here; `condition_project_overrides`
+only has to report the same fact as data.
 
-```python
-                "max_retries": 3 if adaptive_split else 1,
-```
-
-and thread `adaptive_split=attempt.condition.adaptive_split` from `run_attempt`.
-
-Document this in `bench/README.md` under a "How each condition is realized"
-heading, naming `max_retries=1` as the mechanism that keeps A, B, and C free of
-adaptive split. A reader must be able to see how the arm was implemented.
+Document the mechanism in `bench/README.md` under a "How each condition is
+realized" heading, naming `max_retries=1` explicitly. A reader must be able to
+see how each arm was implemented, not just what it claims to isolate.
 
 - [ ] **Step 4: Run the test to verify it passes**
 

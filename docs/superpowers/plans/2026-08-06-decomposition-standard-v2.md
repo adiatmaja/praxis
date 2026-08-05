@@ -45,6 +45,27 @@ These are project gotchas that this plan touches directly. Full narrative in `do
 - **`get_dispatchable_tasks` maps opus_plan tasks to DB rows POSITIONALLY** (`core/task_queue.py:285-289`, `zip` by index over `opus_plan["tasks"]` and `get_tasks_for_plan` ordered by `rowid`). Split children must be **appended** to both lists in the same order, and the superseded parent must **never be removed** from either, or every slug-to-task mapping after it shifts by one.
 - **No em dashes** in any prose, doc, code comment, or commit message. Use a comma, colon, or semicolon.
 
+### Test-harness facts (verified against the repo on 2026-08-06)
+
+Do not re-derive these; they were checked while this plan was written and every
+test in it assumes them.
+
+| Fact | Detail |
+|------|--------|
+| Database fixture | **`db`** (not `test_db`), an async fixture yielding an initialized `Database` |
+| API client fixture | **`client` is an httpx `AsyncClient`**, not a sync `TestClient`. Every API test is `async def` and every call is awaited |
+| Auth fixture | `auth_headers` returns `{"Authorization": "Bearer test-auth"}` |
+| Event bus | **`EventBus` has no callback API.** It is `subscribe() -> asyncio.Queue`, `unsubscribe(queue)`, `publish(event)`. Anything collecting events drains a queue |
+| Foreign keys | `PRAGMA foreign_keys=ON`. A `projects` row needs its `users` row inserted first |
+| Plan creation | `TaskQueue.create_plan(project_id, summary=None, source="user", ...) -> plan_id` |
+| Agent run completion | `TaskQueue.complete_agent_run(run_id, status, logs)`. There is no `finish_agent_run` |
+| Dead branches | `branch_sweeper.dead_branches(branches, *, open_pr_branches, terminal_failed, merged_plan)`, all keyword-only |
+| Dispatch contract | `DispatchRequest` is keyed on **`repo_url`** plus `instructions`, `model`, `harness`, `branch`. There is no `project_id` field; the endpoint reuses an existing project matching `repo_url` |
+| Execute-plan contract | `ExecutePlanRequest` is keyed on **`repo_url`** plus `plan`, `model`, `harness`, `branch` |
+| Async mode | `asyncio_mode = "auto"`, so async tests need no decorator |
+| Markers | `unit`, `integration`, `slow` are registered in `pyproject.toml` |
+
+
 ---
 
 ## File Structure
@@ -2218,17 +2239,17 @@ def test_a_negative_index_is_treated_as_zero():
 
 
 @pytest.mark.unit
-async def test_effective_settings_reads_the_ladder_from_yaml(test_db):
+async def test_effective_settings_reads_the_ladder_from_yaml(db):
     from orchestrator.config import Settings
     from orchestrator.core.effective_settings import EffectiveSettings
 
-    settings = EffectiveSettings(Settings(auth_token="t", _env_file=None), test_db)
+    settings = EffectiveSettings(Settings(auth_token="t", _env_file=None), db)
     ladder = await settings.implement_escalation()
     assert isinstance(ladder, list)
     assert all("harness" in entry and "model" in entry for entry in ladder)
 ```
 
-The `test_db` fixture already exists in `tests/conftest.py`; confirm its name by
+The `db` fixture already exists in `tests/conftest.py`; confirm its name by
 reading that file before running, and use the project's in-memory database
 fixture whatever it is called.
 
@@ -2975,10 +2996,16 @@ from orchestrator.models.schemas import LeafTask, TaskStatus
 
 async def _seed(db) -> tuple[TaskQueue, str, list[str]]:
     tq = TaskQueue(db)
+    # PRAGMA foreign_keys is ON (database.py connect), so the user row must
+    # exist before the project that references it.
+    await db.execute(
+        "INSERT INTO users (id, name, token_hash) VALUES ('u1', 'T', 'h')"
+    )
     await db.execute(
         "INSERT INTO projects (id, user_id, name, repo_url, default_branch) "
         "VALUES ('proj1', 'u1', 'p', 'https://github.com/o/r', 'main')"
     )
+    # create_plan(project_id, summary=None, source="user", ...) -> plan_id
     plan_id = await tq.create_plan("proj1", "test")
     opus_plan = {
         "tasks": [
@@ -2993,8 +3020,8 @@ async def _seed(db) -> tuple[TaskQueue, str, list[str]]:
 
 
 @pytest.mark.unit
-async def test_supersede_sets_the_status_and_records_the_decision(test_db):
-    tq, plan_id, ids = await _seed(test_db)
+async def test_supersede_sets_the_status_and_records_the_decision(db):
+    tq, plan_id, ids = await _seed(db)
     await tq.supersede_task(ids[1], "split", "too big")
     task = await tq.get_task(ids[1])
     assert task["status"] == TaskStatus.SUPERSEDED
@@ -3003,8 +3030,8 @@ async def test_supersede_sets_the_status_and_records_the_decision(test_db):
 
 
 @pytest.mark.unit
-async def test_record_triage_decision_without_superseding(test_db):
-    tq, plan_id, ids = await _seed(test_db)
+async def test_record_triage_decision_without_superseding(db):
+    tq, plan_id, ids = await _seed(db)
     await tq.record_triage_decision(ids[1], "retry")
     task = await tq.get_task(ids[1])
     assert task["triage_decision"] == "retry"
@@ -3012,8 +3039,8 @@ async def test_record_triage_decision_without_superseding(test_db):
 
 
 @pytest.mark.unit
-async def test_insert_split_children_appends_rows_in_plan_order(test_db):
-    tq, plan_id, ids = await _seed(test_db)
+async def test_insert_split_children_appends_rows_in_plan_order(db):
+    tq, plan_id, ids = await _seed(db)
     children = [
         LeafTask(id="x1", title="B one", plan_text="Goal: one"),
         LeafTask(id="x2", title="B two", plan_text="Goal: two"),
@@ -3034,8 +3061,8 @@ async def test_insert_split_children_appends_rows_in_plan_order(test_db):
 
 
 @pytest.mark.unit
-async def test_split_children_carry_the_parent_id(test_db):
-    tq, plan_id, ids = await _seed(test_db)
+async def test_split_children_carry_the_parent_id(db):
+    tq, plan_id, ids = await _seed(db)
     children = [
         LeafTask(id="x1", title="B one", plan_text="Goal: one"),
         LeafTask(id="x2", title="B two", plan_text="Goal: two"),
@@ -3047,8 +3074,8 @@ async def test_split_children_carry_the_parent_id(test_db):
 
 
 @pytest.mark.unit
-async def test_split_children_start_with_a_reduced_retry_budget(test_db):
-    tq, plan_id, ids = await _seed(test_db)
+async def test_split_children_start_with_a_reduced_retry_budget(db):
+    tq, plan_id, ids = await _seed(db)
     children = [
         LeafTask(id="x1", title="B one", plan_text="Goal: one"),
         LeafTask(id="x2", title="B two", plan_text="Goal: two"),
@@ -3061,8 +3088,8 @@ async def test_split_children_start_with_a_reduced_retry_budget(test_db):
 
 
 @pytest.mark.unit
-async def test_split_children_carry_their_leaf_type(test_db):
-    tq, plan_id, ids = await _seed(test_db)
+async def test_split_children_carry_their_leaf_type(db):
+    tq, plan_id, ids = await _seed(db)
     children = [
         LeafTask(id="x1", title="B one", plan_text="Goal: one", leaf_type="test_add"),
         LeafTask(id="x2", title="B two", plan_text="Goal: two"),
@@ -3074,8 +3101,8 @@ async def test_split_children_carry_their_leaf_type(test_db):
 
 
 @pytest.mark.unit
-async def test_a_superseded_parent_does_not_block_plan_completion(test_db):
-    tq, plan_id, ids = await _seed(test_db)
+async def test_a_superseded_parent_does_not_block_plan_completion(db):
+    tq, plan_id, ids = await _seed(db)
     await tq.supersede_task(ids[1], "split", "too big")
     for task_id in (ids[0], ids[2]):
         await tq.update_task_status(task_id, TaskStatus.MERGED)
@@ -3084,9 +3111,9 @@ async def test_a_superseded_parent_does_not_block_plan_completion(test_db):
 
 @pytest.mark.unit
 async def test_a_child_of_a_superseded_parent_is_dispatchable_after_its_deps_merge(
-    test_db,
+    db,
 ):
-    tq, plan_id, ids = await _seed(test_db)
+    tq, plan_id, ids = await _seed(db)
     children = [
         LeafTask(id="x1", title="B one", plan_text="Goal: one"),
         LeafTask(id="x2", title="B two", plan_text="Goal: two"),
@@ -3103,8 +3130,8 @@ async def test_a_child_of_a_superseded_parent_is_dispatchable_after_its_deps_mer
 
 
 @pytest.mark.unit
-async def test_set_task_implementer_persists_the_escalated_pair(test_db):
-    tq, plan_id, ids = await _seed(test_db)
+async def test_set_task_implementer_persists_the_escalated_pair(db):
+    tq, plan_id, ids = await _seed(db)
     await tq.set_task_implementer(ids[0], "agy", "gemini-3.6-flash-high", index=1)
     task = await tq.get_task(ids[0])
     assert task["implement_harness"] == "agy"
@@ -3429,7 +3456,7 @@ Expected: at least `test_mcp_treats_superseded_as_terminal` FAILs.
                 if task is not None and task["status"] == TaskStatus.SUPERSEDED:
                     # The leaf was replaced by split children; its container is
                     # abandoned work, not a run to retry.
-                    await self._tq.finish_agent_run(run["id"], "stopped", "")
+                    await self._tq.complete_agent_run(run["id"], "stopped", "")
                     continue
 ```
 
@@ -3473,21 +3500,63 @@ the dashboard renders the status."
 
 - [ ] **Step 1: Add the two shared fixtures**
 
-Append to `tests/conftest.py`. Model the construction on the existing
-orchestrator setup in `tests/test_orchestrator.py`; read that file first and
-reuse its stub shapes rather than inventing new ones.
+Append to `tests/conftest.py`.
+
+Three facts about the existing conftest that these fixtures must respect
+(verified against `tests/conftest.py`, do not re-derive them):
+
+1. The database fixture is named **`db`**, not `test_db`, and it is an
+   `async` fixture yielding an initialized `Database`.
+2. There is **no `event_bus` fixture**; `tests/conftest.py` constructs an
+   `EventBus()` inline inside the `client` fixture. These fixtures construct
+   their own.
+3. **`EventBus` has no callback subscription.** Its API is
+   `subscribe() -> asyncio.Queue`, `unsubscribe(queue)`, and `publish(event)`.
+   A `captured_events` fixture therefore drains a queue; it does not register a
+   listener.
 
 ```python
 @pytest.fixture
-async def captured_events(event_bus):
-    """Collect every event published during a test."""
-    seen: list[dict] = []
-    event_bus.subscribe_sync(seen.append)  # match the real EventBus API
-    return seen
+def event_bus() -> EventBus:
+    """A bare EventBus for orchestrator-level tests."""
+    return EventBus()
 
 
 @pytest.fixture
-async def orchestrator_fixture(test_db, event_bus):
+def captured_events(event_bus: EventBus) -> list[dict]:
+    """A live view of every event published during a test.
+
+    EventBus is queue-based with no callback API, so this drains the queue on
+    read. The returned object is a list-like proxy: index it or iterate it at
+    assertion time and it pulls whatever has been published so far.
+    """
+
+    queue = event_bus.subscribe()
+    drained: list[dict] = []
+
+    class _Captured(list):
+        def _pump(self) -> None:
+            while not queue.empty():
+                drained.append(queue.get_nowait())
+            self[:] = drained
+
+        def __iter__(self):
+            self._pump()
+            return super().__iter__()
+
+        def __len__(self) -> int:
+            self._pump()
+            return super().__len__()
+
+        def __getitem__(self, index):
+            self._pump()
+            return super().__getitem__(index)
+
+    return _Captured()
+
+
+@pytest.fixture
+async def orchestrator_fixture(db, event_bus):
     """An Orchestrator with one task parked in REVIEWING and a failing review.
 
     Yields (orchestrator, task_id, project_dict).
@@ -3498,8 +3567,11 @@ async def orchestrator_fixture(test_db, event_bus):
     from orchestrator.core.task_queue import TaskQueue
     from orchestrator.models.schemas import TaskStatus
 
-    tq = TaskQueue(test_db)
-    await test_db.execute(
+    tq = TaskQueue(db)
+    await db.execute(
+        "INSERT INTO users (id, name, token_hash) VALUES ('u1', 'T', 'h')"
+    )
+    await db.execute(
         "INSERT INTO projects (id, user_id, name, repo_url, default_branch, "
         "model_name, harness, max_retries) VALUES "
         "('proj1', 'u1', 'p', 'https://github.com/o/r', 'main', "
@@ -4452,11 +4524,11 @@ def test_the_scorer_satisfies_the_protocol():
 
 
 @pytest.mark.unit
-async def test_effective_settings_reads_the_weights_and_thresholds(test_db):
+async def test_effective_settings_reads_the_weights_and_thresholds(db):
     from orchestrator.config import Settings
     from orchestrator.core.effective_settings import EffectiveSettings
 
-    settings = EffectiveSettings(Settings(auth_token="t", _env_file=None), test_db)
+    settings = EffectiveSettings(Settings(auth_token="t", _env_file=None), db)
     config = await settings.difficulty_config()
     assert set(config["weights"]) == set(DEFAULT_WEIGHTS)
     assert 0.0 < config["reject_below"] < config["flag_below"] < 1.0
