@@ -7,11 +7,15 @@ import subprocess
 import sys
 import uuid
 from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from orchestrator.config import Settings
 from orchestrator.core.agent_manager import build_spawn_env
+from orchestrator.core.event_bus import EventBus
+from orchestrator.core.orchestrator import Orchestrator
+from orchestrator.core.session_resume import resolve_resume_session
 from orchestrator.core.task_queue import TaskQueue
 from orchestrator.database import CURRENT_SCHEMA_VERSION, Database
 from tests.conftest import seed_user
@@ -315,3 +319,183 @@ def test_build_spawn_env_omits_worker_session_id_when_empty_string():
     it must be treated the same as None, not passed through verbatim."""
     env = build_spawn_env(**_base_env_kwargs(worker_session_id=""))
     assert "WORKER_SESSION_ID" not in env
+
+
+def test_resume_allowed_after_brain_answered_clarification():
+    task = {
+        "worker_session_id": "ses_1",
+        "worker_session_harness": "opencode",
+        "clarification_state": "answered_by_brain",
+    }
+    assert resolve_resume_session(task, "opencode") == "ses_1"
+
+
+def test_resume_allowed_after_human_resolved_clarification():
+    task = {
+        "worker_session_id": "ses_1",
+        "worker_session_harness": "agy",
+        "clarification_state": "resolved",
+    }
+    assert resolve_resume_session(task, "agy") == "ses_1"
+
+
+def test_resume_refused_on_plain_failure_retry():
+    """A retry rebuilds from base; restoring memory would contradict the tree."""
+    task = {
+        "worker_session_id": "ses_1",
+        "worker_session_harness": "opencode",
+        "clarification_state": None,
+    }
+    assert resolve_resume_session(task, "opencode") is None
+
+
+def test_resume_refused_when_harness_changed():
+    task = {
+        "worker_session_id": "conv_1",
+        "worker_session_harness": "agy",
+        "clarification_state": "resolved",
+    }
+    assert resolve_resume_session(task, "opencode") is None
+
+
+def test_resume_refused_without_stored_id():
+    """No id means the previous turn's checkpoint push never succeeded."""
+    task = {
+        "worker_session_id": None,
+        "worker_session_harness": "opencode",
+        "clarification_state": "resolved",
+    }
+    assert resolve_resume_session(task, "opencode") is None
+
+
+def test_resume_refused_when_still_awaiting_answer():
+    """`asked` means the worker's question has not been answered yet; a
+    re-dispatch in this state should never happen, but the gate must still
+    refuse defensively rather than replay a stale in-flight conversation."""
+    task = {
+        "worker_session_id": "ses_1",
+        "worker_session_harness": "opencode",
+        "clarification_state": "asked",
+    }
+    assert resolve_resume_session(task, "opencode") is None
+
+
+def test_resume_refused_when_task_missing_session_keys():
+    """A pre-migration row or a partially-built dict may lack these keys
+    entirely; missing keys must behave exactly like explicit None/mismatch,
+    not raise a KeyError."""
+    task: dict = {}
+    assert resolve_resume_session(task, "opencode") is None
+
+
+async def _setup_task_for_resume(
+    db: Database, harness: str
+) -> tuple[TaskQueue, str, str]:
+    """Create a project (with the given harness) + active plan + one task."""
+    await db.execute(
+        "INSERT INTO users (id, name, token_hash) VALUES (?, ?, ?)",
+        ("u-resume", "User", "hash"),
+    )
+    await db.execute(
+        """INSERT INTO projects (id, user_id, name, repo_url, model_name,
+                                  max_retries, harness)
+           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+        (
+            "p-resume",
+            "u-resume",
+            "App",
+            "https://github.com/u/a",
+            "deepseek",
+            3,
+            harness,
+        ),
+    )
+    task_queue = TaskQueue(db)
+    plan_id = await task_queue.create_plan("p-resume", "Build auth")
+    opus_plan = {
+        "plan_summary": "Auth",
+        "plan_slug": "auth",
+        "tasks": [
+            {
+                "title": "Login",
+                "slug": "login",
+                "description": "Build login",
+                "depends_on": [],
+            }
+        ],
+    }
+    await task_queue.activate_plan(plan_id, opus_plan, "plan/2026-08-05-auth")
+    task_id = str((await task_queue.get_tasks_for_plan(plan_id))[0]["id"])
+    return task_queue, plan_id, task_id
+
+
+@pytest.mark.integration
+async def test_dispatch_passes_resume_session_id_after_clarification(
+    db: Database,
+) -> None:
+    """Integration: a re-dispatch that follows a resolved clarification must
+    thread the stored session id through to spawn_agent, not just leave it
+    resolvable in isolation. The project harness is 'agy' (not the opencode
+    default) so a hardcoded/default harness bug in the wiring would surface."""
+    task_queue, plan_id, task_id = await _setup_task_for_resume(db, "agy")
+    await task_queue.mark_needs_clarification(task_id, "which schema?")
+    await task_queue.record_worker_session(task_id, "conv_resume_1", "agy")
+    await task_queue.record_clarification_answer(
+        task_id, "use schema v2", state="answered_by_brain"
+    )
+
+    mock_agent_manager = MagicMock()
+    mock_agent_manager.spawn_agent = AsyncMock(return_value="container-resume")
+    mock_git = AsyncMock()
+    mock_git.branch_commit_log = AsyncMock(return_value=[])
+
+    orch = Orchestrator(
+        task_queue=task_queue,
+        agent_manager=mock_agent_manager,
+        opus_bridge=AsyncMock(),
+        git_ops=mock_git,
+        event_bus=EventBus(),
+    )
+    orch._start_monitor = lambda *_: None  # type: ignore[assignment, method-assign]
+    orch._effective_settings = None
+
+    project = await db.fetch_one("SELECT * FROM projects WHERE id = 'p-resume'")
+    assert project is not None
+    await orch.dispatch_pending_tasks(plan_id, project)
+
+    mock_agent_manager.spawn_agent.assert_called_once()
+    kwargs = mock_agent_manager.spawn_agent.call_args.kwargs
+    assert kwargs["worker_session_id"] == "conv_resume_1"
+    assert kwargs["harness"] == "agy"
+
+
+@pytest.mark.integration
+async def test_dispatch_omits_resume_session_id_on_plain_retry(db: Database) -> None:
+    """Integration: a task carrying a stored session handle from a PRIOR
+    checkpoint, but that never went through the clarification flow (a plain
+    failure retry rebuilding from base), must dispatch with no session id."""
+    task_queue, plan_id, task_id = await _setup_task_for_resume(db, "agy")
+    await task_queue.record_worker_session(task_id, "conv_stale", "agy")
+
+    mock_agent_manager = MagicMock()
+    mock_agent_manager.spawn_agent = AsyncMock(return_value="container-retry")
+    mock_git = AsyncMock()
+    mock_git.branch_commit_log = AsyncMock(return_value=[])
+
+    orch = Orchestrator(
+        task_queue=task_queue,
+        agent_manager=mock_agent_manager,
+        opus_bridge=AsyncMock(),
+        git_ops=mock_git,
+        event_bus=EventBus(),
+    )
+    orch._start_monitor = lambda *_: None  # type: ignore[assignment, method-assign]
+    orch._effective_settings = None
+
+    project = await db.fetch_one("SELECT * FROM projects WHERE id = 'p-resume'")
+    assert project is not None
+    await orch.dispatch_pending_tasks(plan_id, project)
+
+    mock_agent_manager.spawn_agent.assert_called_once()
+    kwargs = mock_agent_manager.spawn_agent.call_args.kwargs
+    assert kwargs["worker_session_id"] is None
