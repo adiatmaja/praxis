@@ -31,10 +31,13 @@ from orchestrator.models.schemas import LeafTask
 
 
 def child_slugs(parent_slug: str, count: int) -> list[str]:
-    """Return deterministic, collision-free slugs for a split's children.
+    """Return deterministic slugs for a split's children.
 
-    ``{parent-slug}-s1..sN``.  Deterministic so a re-run finds the same names,
-    and unique because the parent slug is already unique within the plan.
+    ``{parent-slug}-s1..sN``.  Deterministic so a re-run finds the same names.
+    Determinism is NOT uniqueness: splitting the same parent twice regenerates
+    the identical names, and two rows sharing a slug collapse the positional map
+    in ``get_dispatchable_tasks`` and orphan the earlier row.  The caller is
+    ``rewire_plan_for_split``, which rejects a collision before mutating.
     """
     return [f"{parent_slug}-s{index}" for index in range(1, count + 1)]
 
