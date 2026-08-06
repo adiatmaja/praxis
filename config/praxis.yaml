@@ -42,6 +42,26 @@ implement_escalation:
 # splitting without this is an unbounded token spend.
 max_leaves_per_plan: 24
 
+# Pre-dispatch difficulty scoring. PROVISIONAL hand-set weights (log-odds); the
+# Capability Calibration Loop replaces them with learned per-(model, project)
+# values. Signs are grounded in the literature; magnitudes are not claims.
+# See docs/decomposition-standard.md section 2.
+difficulty:
+  bias: 1.60
+  weights:
+    files_touched: -0.45
+    loc_ratio: -1.10
+    dep_depth: -0.35
+    has_acceptance: 1.30
+    context_ratio: -1.40
+    historical_success: 2.20
+    repo_size_bucket: -0.25
+    generic_type: -0.60
+  # p_success below reject_below: the leaf goes back to the planner.
+  # Between reject_below and flag_below: dispatch, but flagged and tightened.
+  reject_below: 0.35
+  flag_below: 0.55
+
 models:
   registry:
     - { name: opus,   provider: claude, model: claude-opus-4-8,   effort: high }

@@ -274,6 +274,29 @@ class EffectiveSettings:
         except (TypeError, ValueError):
             return 24
 
+    async def difficulty_config(self) -> dict[str, Any]:
+        """Return the difficulty scorer's weights, bias, and gate thresholds.
+
+        Falls back to the module defaults key by key, so a partial YAML block
+        (or none at all) still produces a usable scorer.
+        """
+        from orchestrator.core.difficulty import DEFAULT_BIAS, DEFAULT_WEIGHTS
+
+        yaml_data = await self._get_yaml()
+        raw = yaml_data.get("difficulty") or {}
+        if not isinstance(raw, dict):
+            raw = {}
+        weights = {**DEFAULT_WEIGHTS}
+        for name, value in (raw.get("weights") or {}).items():
+            if name in weights:
+                weights[name] = float(value)
+        return {
+            "weights": weights,
+            "bias": float(raw.get("bias", DEFAULT_BIAS)),
+            "reject_below": float(raw.get("reject_below", 0.35)),
+            "flag_below": float(raw.get("flag_below", 0.55)),
+        }
+
     async def approvals_digest_interval_h(self) -> float:
         """Return hours between ``approvals_digest`` SSE events, YAML-configurable.
 
