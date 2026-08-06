@@ -129,9 +129,12 @@ class EffectiveSettings:
 
     async def _get_yaml(self) -> dict:
         """Return the raw YAML settings dict for capability/escalation lookups."""
-        from orchestrator.core.settings_file import load_yaml_settings
+        from orchestrator.core.settings_file import (
+            config_file_path,
+            load_yaml_settings,
+        )
 
-        return load_yaml_settings("config/praxis.yaml")
+        return load_yaml_settings(config_file_path())
 
     async def registered_models(self) -> list[dict[str, Any]]:
         override = await self._get_override("models.registry")

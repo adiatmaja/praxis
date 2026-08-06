@@ -18,6 +18,12 @@ services:
       # PRAXIS_BUILD_SHA arg is always stale; blanking the env below makes
       # _resolve_commit() fall through to `git rev-parse` against this mount.
       - ./.git:/app/.git:ro
+      # Global settings, MOUNTED not baked: an operator edit takes effect on
+      # `docker compose restart orchestrator`, never an image rebuild. This
+      # retires the 2026-07-27 gotcha where a default_worker_* change silently
+      # kept serving the baked-in value. PRAXIS_CONFIG_PATH comes from the base
+      # file through the compose environment merge.
+      - ./config:/app/config:ro
     command: uvicorn orchestrator.main:app --host 0.0.0.0 --port 8080 --reload
     environment:
       - AUTH_TOKEN=${AUTH_TOKEN:-dev-token}

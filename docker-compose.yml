@@ -31,6 +31,11 @@ services:
       # during first-run setup.  If you are certain claude is already configured
       # you may add :ro here.  See docs/deployment.md "Security / Trust Model".
       - ${CLAUDE_CONFIG_PATH:-~/.claude}:/root/.claude
+      # Global settings, MOUNTED not baked: an operator edit takes effect on
+      # `docker compose restart orchestrator`, never an image rebuild. This
+      # retires the 2026-07-27 gotcha where a default_worker_* change silently
+      # kept serving the baked-in value.
+      - ./config:/app/config:ro
     # Bound log rotation prevents json-file log growth from making `docker logs`
     # seek slowly or hang on Docker Desktop for Windows (unbounded json-file logs
     # accumulate metadata Docker must scan on every `docker logs` call).
@@ -64,6 +69,9 @@ services:
       # orchestrator mounts it RW into agy-agent containers at /home/agent/.gemini.
       - GEMINI_CREDS_VOLUME=${GEMINI_CREDS_VOLUME:-praxis-gemini-creds}
       - OPENCODE_SESSIONS_VOLUME=${OPENCODE_SESSIONS_VOLUME:-praxis-opencode-sessions}
+      # Points core/settings_file.config_file_path() at the ./config mount above
+      # instead of the copy baked into the image at build time.
+      - PRAXIS_CONFIG_PATH=/app/config/praxis.yaml
     restart: unless-stopped
     extra_hosts:
       - "host.docker.internal:host-gateway"

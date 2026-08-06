@@ -306,13 +306,19 @@ keep the CLAUDE.md index in sync.
   `core/branch_sweeper.dead_branches` via `ReconcileMixin.sweep_dead_branches` on the
   reconcile loop, which swallows its own errors so a sweep failure never wedges the loop.
   Mode is sequential in v1 (one delegate in flight at a time).
-- **Dev compose does NOT mount `config/`** — `docker-compose.local.yml` bind-mounts
-  `src/`, `web/`, `.git/`, and `data/` for hot-reload but NOT `config/`, and
-  `config/praxis.yaml` is baked into the orchestrator image at build time. So editing the
-  YAML (e.g. `default_worker_harness` / `default_worker_model`) has no effect until you
-  rebuild the orchestrator image (`docker compose ... up --build -d`); a container restart
-  or a `src/` hot-reload alone will keep serving the baked-in defaults. Found live
-  2026-07-27 while enabling auto-delegate mode.
+- **`config/praxis.yaml` is MOUNTED, not baked** — both compose files bind-mount
+  `./config` read-only at `/app/config` and set `PRAXIS_CONFIG_PATH` to point at
+  it, so a YAML edit takes effect on `docker compose restart orchestrator` and
+  never needs an image rebuild. This replaced the reverse behavior, which bit us
+  live on 2026-07-27 when a `default_worker_*` change silently kept serving the
+  baked-in value. `core/settings_file.config_file_path()` is the ONLY place the
+  path is decided; a hardcoded `"config/praxis.yaml"` literal anywhere else
+  reintroduces the bug, and `tests/test_config_path.py` greps for exactly that.
+  The dev file needs only the mount: `PRAXIS_CONFIG_PATH` reaches it through the
+  compose environment merge from the base file. `PRAXIS_CONFIG_PATH` is also the
+  one `PRAXIS_*` var `load_yaml_settings` does NOT fold into the settings dict,
+  since it is a pointer to the file rather than a setting inside it.
+  Agent-image entrypoint changes still require a rebuild.
 - **Session resume replays only across an answered clarification** — `core/session_resume.
   resolve_resume_session` returns a session id to replay only when three conditions all hold:
   a `worker_session_id` is stored on the task, `worker_session_harness` matches the harness

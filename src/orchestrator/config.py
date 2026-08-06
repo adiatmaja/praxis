@@ -9,7 +9,7 @@ from typing import Any
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-from orchestrator.core.settings_file import load_yaml_settings
+from orchestrator.core.settings_file import config_file_path, load_yaml_settings
 
 
 def _default_brainstorm_workspace() -> str:
@@ -97,11 +97,21 @@ class Settings(BaseSettings):
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
 
-    def __init__(
-        self, *args: Any, yaml_path: str = "config/praxis.yaml", **kwargs: Any
-    ) -> None:
-        """Overlay YAML defaults beneath explicit kwargs; env vars still win."""
-        yaml_defaults = load_yaml_settings(yaml_path)
+    def __init__(self, *args: Any, yaml_path: str | None = None, **kwargs: Any) -> None:
+        """Overlay YAML defaults beneath explicit kwargs; env vars still win.
+
+        Args:
+            *args: Positional arguments forwarded to ``BaseSettings``.
+            yaml_path: Explicit settings-file path, mainly for tests.  When
+                None the path is resolved by ``config_file_path()`` at CALL
+                time, never frozen into this signature's default: an
+                import-time default would ignore ``PRAXIS_CONFIG_PATH`` and
+                silently keep reading the image-baked copy.
+            **kwargs: Field values that override the YAML defaults.
+        """
+        yaml_defaults = load_yaml_settings(
+            yaml_path if yaml_path is not None else config_file_path()
+        )
         # Only inject YAML values for keys not already set via environment variables.
         # pydantic-settings uses uppercase env var names (no prefix configured).
         filtered = {
