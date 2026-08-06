@@ -490,3 +490,42 @@ keep the CLAUDE.md index in sync.
   ignore it, which defeats the purpose. Both the poll digest and the loop
   publisher swallow their own failures, because an add-on that can wedge
   `poll_task` or stop dispatch for every project is worse than no digest.
+- **Local git mode is a backend, not a special case**:
+  `core/git_backend.resolve_backend` picks `LocalGitBackend` when a project's
+  `repo_url` is a filesystem path or a `file://` URL, and `GitHubBackend`
+  otherwise. Everything above the seam is shared and unchanged: the merge gate
+  still parks a PASS at `PASSED` unless `auto_merge` is set, the verify gates
+  still run, outcomes are still recorded. Only the plumbing differs. A local
+  "PR" is a `praxis-local://pr?branch=...&base=...` string stored in the
+  existing `tasks.pr_url` column, so there is no schema change; parse it with
+  `PullRequestRef.from_url`, never with string slicing. `GitHubBackend` itself
+  raises `ValueError` when a `backend="github"` ref carries `repo=None`,
+  because a `None` repo makes `gh` resolve against the orchestrator's own cwd
+  and act on the wrong repository; that is the fail-closed guard behind the
+  repo's existing `--repo` gotcha, now shared by both backends' construction.
+- **The local repo MUST be bare**: workers push to it, and git refuses a push
+  to a checked-out branch. `core/preflight._preflight_local` enforces this with
+  a `rev-parse --is-bare-repository` check and returns 422 (`NOT_A_REPO`) so
+  the failure surfaces before a container spawns rather than deep inside the
+  worker. Local mode also needs NO GitHub credential: preflight skips every
+  remote call and `AgentManager` never consults the credential provider.
+- **Local mode bind-mounts the bare repo read-write at a fixed container path**:
+  `agent_manager.LOCAL_REPO_MOUNT` (`/srv/praxis-repo.git`). `REPO_URL` inside
+  the container is rewritten to that path, and `GIT_BACKEND=local` tells both
+  entrypoints to skip credential-helper setup and `gh pr create`. `GH_TOKEN`
+  still gets a placeholder because the entrypoints hard-require it
+  (`: "${GH_TOKEN:?...}"`). An unset `GIT_BACKEND` defaults to `github`, so an
+  older orchestrator against a new image behaves exactly as before. Changing
+  either entrypoint needs an agent IMAGE REBUILD.
+- **`url_encode` must escape `%` before `/`, space, and `&`, in that order**:
+  the entrypoint builds `praxis-local://pr?branch=...&base=...` with a
+  four-`sed` pipeline, and `PullRequestRef.from_url` parses it back with a
+  `([^&]+)` capture per field. A branch name containing `&` (or a literal `%`)
+  encoded in the wrong order produces a URL the regex cannot parse correctly,
+  and the failure is silent: the worker still reports `status=completed`, the
+  orchestrator stores an unparseable (or subtly wrong) `pr_url`, and the
+  reviewable change vanishes with no error anywhere. Escaping `&` before `%`
+  double-escapes the very character it was meant to protect, decoding back to
+  the wrong branch name instead of raising. Verified live: `agent/fix&more`
+  round-tripped through the wrong order comes back as `agent/fix%26more`, not
+  `agent/fix&more`.

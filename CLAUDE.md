@@ -379,6 +379,21 @@ the relevant subsystem. Condensed index:
   default 6h); `pending_approvals`, the `poll_task`/`poll_plan` digest line,
   `praxis pending`, and the dashboard badge all read live. Nothing parked means
   no event at all.
+- **Local git mode is a backend, not a special case**: `core/git_backend.resolve_backend`
+  picks `LocalGitBackend` for a filesystem/`file://` `repo_url`, `GitHubBackend`
+  otherwise; the merge gate, verify gates, and outcome recording are unchanged
+  above the seam. A local "PR" is a `praxis-local://pr?branch=...&base=...`
+  string in the existing `tasks.pr_url` column, parsed via `PullRequestRef.from_url`.
+- **The local repo MUST be bare**: `core/preflight._preflight_local` checks
+  `rev-parse --is-bare-repository` and 422s (`NOT_A_REPO`) before any container
+  spawns; local mode needs no GitHub credential at all.
+- **Local mode bind-mounts the bare repo at `agent_manager.LOCAL_REPO_MOUNT`**
+  (`/srv/praxis-repo.git`), rewriting `REPO_URL` and setting `GIT_BACKEND=local`
+  so both entrypoints skip credential setup and `gh pr create`. Unset
+  `GIT_BACKEND` defaults to `github`. Entrypoint changes need an agent IMAGE REBUILD.
+- **`url_encode` must escape `%` before `/`, space, and `&`**: wrong order
+  double-escapes `&` and `PullRequestRef.from_url` decodes the wrong branch
+  name silently, no error anywhere, the reviewable change just vanishes.
 
 ## Documentation
 
