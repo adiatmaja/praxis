@@ -10,15 +10,18 @@ readable by sha.
 """
 
 import json
+import shutil
 import subprocess
 from pathlib import Path
 from typing import NamedTuple
 
 import pytest
 
+from bench import prepare as prepare_module
 from bench.prepare import (
     InstanceSpec,
     PreparationError,
+    _already_prepared,
     _verify_prepared,
     main,
     prepare_instance,
@@ -58,6 +61,16 @@ def upstream(tmp_path_factory) -> Upstream:
     other half: a local clone copies unreferenced objects too, so preparation
     has to prune the store, not just fix the refs.
 
+    The default branch is ``master``, NOT ``main``, and a second branch sits on
+    the gold commit.  Both details are load bearing.  A fixture whose only
+    branch is already called ``main`` and already sits at the base makes two
+    mutations invisible: a sweep that spares branches leaves nothing behind to
+    notice, and a preparation that never writes ``symbolic-ref HEAD`` still
+    finds HEAD pointing at the right place by accident.  Measured: with a
+    single ``main`` branch both of those survive the entire suite green.  Here
+    a spared branch is a real leak, since ``stable`` carries the answer, and a
+    missing ``symbolic-ref`` is a real dangling HEAD.
+
     READ ONLY, and shared across the module because every git call here costs
     real wall clock on Windows.  Preparation only ever clones from it, and a
     clone plus prune provably leaves it untouched, so nothing in this file may
@@ -65,7 +78,7 @@ def upstream(tmp_path_factory) -> Upstream:
     stays per test.
     """
     repo = tmp_path_factory.mktemp("upstream")
-    _git("init", "-b", "main", cwd=repo)
+    _git("init", "-b", "master", cwd=repo)
     _git("config", "user.email", "t@e.com", cwd=repo)
     _git("config", "user.name", "t", cwd=repo)
     (repo / "app.py").write_text("def f():\n    return 1\n", encoding="utf-8")
@@ -78,6 +91,7 @@ def upstream(tmp_path_factory) -> Upstream:
     _git("commit", "-am", "the gold fix", cwd=repo)
     gold = _git("rev-parse", "HEAD", cwd=repo)
     _git("tag", "v2.0", cwd=repo)
+    _git("branch", "stable", gold, cwd=repo)
 
     stray = repo / "stray.txt"
     stray.write_text("the gold patch, held by no ref at all\n", encoding="utf-8")
@@ -85,6 +99,44 @@ def upstream(tmp_path_factory) -> Upstream:
     stray.unlink()
 
     return Upstream(repo=repo, base=base, gold=gold, dangling=dangling)
+
+
+@pytest.fixture(scope="module")
+def packed_upstream(upstream, tmp_path_factory) -> Upstream:
+    """A COPY of the fixture repo whose objects live in a ``.keep``-marked pack.
+
+    ``git clone --local`` hardlinks everything under ``objects/`` in wholesale,
+    ``pack-*.keep`` markers included, and ``gc --prune=now`` will not repack a
+    kept pack.  An interrupted fetch or clone leaves that marker behind
+    permanently, so the upstream does not have to be unusual for a bench run to
+    hit this.  The fixture repo itself has only loose objects, so the pack has
+    to be built here for the marker to mean anything.
+
+    READ ONLY for the same reason ``upstream`` is.
+    """
+    repo = tmp_path_factory.mktemp("packed") / "upstream"
+    shutil.copytree(upstream.repo, repo)
+    _git("repack", "-a", "-d", "-q", cwd=repo)
+    packs = sorted((repo / ".git" / "objects" / "pack").glob("*.pack"))
+    assert packs, "repack produced no pack for the .keep marker to protect"
+    packs[0].with_suffix(".keep").write_text("", encoding="utf-8")
+    return upstream._replace(repo=repo)
+
+
+def _reintroduce_the_gold_object(bare: Path, upstream: Upstream) -> None:
+    """Put the gold commit back into ``bare`` as an object no ref can reach.
+
+    This is the swept-but-unpruned state exactly: a run that deleted the refs
+    and then died, or was killed, before ``gc --prune=now`` finished.  Measured
+    on the fixture, every cheap signal afterwards is identical to a clean repo
+    (one ref, HEAD on it, ``rev-list --count --all`` of 1, no remotes) while
+    ``git show <gold>:app.py`` still prints the answer.  That is what makes this
+    the state a re-run launders instead of rebuilding.
+    """
+    _git(
+        "fetch", "--no-tags", str(upstream.repo), f"{upstream.gold}:refs/tmp", cwd=bare
+    )
+    _git("update-ref", "-d", "refs/tmp", cwd=bare)
 
 
 @pytest.fixture
@@ -242,6 +294,122 @@ def test_a_repo_that_no_longer_holds_the_invariants_is_rebuilt(
 
 
 @pytest.mark.integration
+def test_verification_rejects_a_repo_holding_an_unreachable_object(prepared, upstream):
+    """The object store has to BE the reachable closure, not merely contain it.
+
+    Sweeping the refs without finishing the prune leaves a repo that answers
+    every cheap question the way a clean one does.  Asserting those first is the
+    point of this test: it shows that nothing short of counting the store can
+    tell the two apart, which is why the closure count is the check that runs on
+    every real instance.
+    """
+    _reintroduce_the_gold_object(prepared, upstream)
+
+    assert _git("for-each-ref", "--format=%(refname)", cwd=prepared).splitlines() == [
+        "refs/heads/main"
+    ]
+    assert _git("symbolic-ref", "HEAD", cwd=prepared) == "refs/heads/main"
+    assert _git("rev-parse", "main", cwd=prepared) == upstream.base
+    assert int(_git("rev-list", "--count", "--all", cwd=prepared)) == 1
+    assert _git_exit("cat-file", "-e", upstream.gold, cwd=prepared) == 0
+
+    with pytest.raises(PreparationError, match="reachable"):
+        _verify_prepared(prepared, upstream.base)
+
+
+@pytest.mark.integration
+def test_already_prepared_is_false_for_a_repo_holding_the_gold_object(
+    prepared, upstream
+):
+    """The guard is where the hole was: it verifies without any clone-time state.
+
+    A check that needs something recorded during the clone cannot run here at
+    all, so it silently degraded to nothing and a leaking repo passed.
+    """
+    assert _already_prepared(prepared, upstream.base) is True
+
+    _reintroduce_the_gold_object(prepared, upstream)
+
+    assert _already_prepared(prepared, upstream.base) is False
+
+
+@pytest.mark.integration
+def test_a_repo_holding_the_gold_object_is_rebuilt_not_returned(
+    spec, upstream, tmp_path
+):
+    """The regression test for the laundering path, end to end.
+
+    Preparation does not delete the directory when a step after the clone
+    fails, and the driver has no per-instance recovery, so the operator's
+    natural response to a failed run is to re-run the same command.  If that
+    second run returns the half-prepared repo, it logs success, exits zero, and
+    every number the whole matrix produces afterwards is measured against a repo
+    that contains its own answer.
+    """
+    root = tmp_path / "work"
+    bare = prepare_instance(spec, root)
+    _reintroduce_the_gold_object(bare, upstream)
+    sentinel = bare / "SENTINEL"
+    sentinel.write_text("should not survive\n", encoding="utf-8")
+
+    again = prepare_instance(spec, root)
+
+    assert again == bare
+    assert not sentinel.exists()
+    assert _git_exit("cat-file", "-e", upstream.gold, cwd=again) != 0
+    assert _git_exit("show", f"{upstream.gold}:app.py", cwd=again) != 0
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("failing_step", ["_sweep_refs", "_verify_prepared"])
+def test_a_failed_preparation_leaves_nothing_on_disk(
+    spec, tmp_path, monkeypatch, failing_step
+):
+    """A half-prepared repo on disk is what the next run trusts.
+
+    Whatever went wrong, the directory must be gone, so the next run rebuilds
+    from the upstream instead of inspecting whatever the failed one left.  Both
+    injection points matter: a git step failing part way through the sweep, and
+    the verifier itself rejecting the finished repo.
+    """
+
+    def boom(*args: object, **kwargs: object) -> None:
+        msg = "injected failure"
+        raise PreparationError(msg)
+
+    monkeypatch.setattr(prepare_module, failing_step, boom)
+    root = tmp_path / "work"
+
+    with pytest.raises(PreparationError, match="injected failure"):
+        prepare_instance(spec, root)
+
+    assert not (root / f"{spec.instance_id}.git").exists()
+
+
+@pytest.mark.integration
+def test_a_kept_pack_in_the_upstream_cannot_smuggle_the_answer_through(
+    packed_upstream, tmp_path
+):
+    """``gc --prune=now`` will not repack a pack the clone hardlinked a ``.keep`` for.
+
+    Measured on git 2.52.0.windows.1 with the marker left in place: refs, HEAD,
+    remotes and ``rev-list --count --all`` all read exactly like a clean repo
+    while the gold commit stays readable by sha out of the kept pack.
+    """
+    spec = InstanceSpec(
+        instance_id="test__repo-kept-pack",
+        upstream=str(packed_upstream.repo),
+        base_commit=packed_upstream.base,
+    )
+
+    bare = prepare_instance(spec, tmp_path / "work")
+
+    assert not list((bare / "objects" / "pack").glob("*.keep"))
+    assert _git_exit("cat-file", "-e", packed_upstream.gold, cwd=bare) != 0
+    assert _git("rev-parse", "main", cwd=bare) == packed_upstream.base
+
+
+@pytest.mark.integration
 def test_verification_rejects_a_repo_with_a_stray_ref(prepared, upstream):
     """The fail-closed backstop for the real repos no test will ever see."""
     _git("update-ref", "refs/tags/leak", upstream.base, cwd=prepared)
@@ -257,14 +425,15 @@ def test_verification_rejects_a_repo_whose_main_is_not_the_base(prepared, upstre
 
 @pytest.mark.integration
 def test_verification_rejects_a_repo_that_borrows_objects(prepared, upstream):
-    """A borrowed object store is the one leak the canary cannot always see.
+    """A borrowed object store is the one leak the closure count cannot see.
 
     Cloning a mirror that was built with ``--shared`` copies its
     ``objects/info/alternates`` verbatim, and ``gc --prune=now`` cannot prune a
     store the repo does not own, so the donor's whole history stays readable by
-    sha.  Measured: gold still resolved after the full sweep and prune.  When
-    every ref in that mirror already sits at or below the base commit there is
-    no later object to name as a canary either, so nothing else would catch it.
+    sha.  Measured: gold still resolved after the full sweep and prune.  Counting
+    objects does not catch it either, because the donor's objects are not in this
+    repo's store: everything reachable is local, the counts agree, and the extra
+    history sits outside both numbers.  This check has to stay its own check.
     """
     alternates = prepared / "objects" / "info" / "alternates"
     alternates.parent.mkdir(parents=True, exist_ok=True)

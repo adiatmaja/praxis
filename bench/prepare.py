@@ -15,17 +15,26 @@ would not have fixed either, and what preparation therefore does explicitly:
    a later commit hands over the answer no matter where the branches point;
 2. the ``origin`` remote is dropped, because on a real instance its URL is the
    live GitHub repo and one ``git fetch`` reaches everything;
-3. the object store is pruned, because a local clone hardlinks the whole
+3. every ``objects/pack/*.keep`` marker is removed, because a local clone
+   hardlinks the pack directory in wholesale and ``gc --prune=now`` refuses to
+   repack a kept pack, so every unreachable object in it would survive;
+4. the object store is pruned, because a local clone hardlinks the whole
    upstream store in, unreferenced objects included, and ``git show <sha>`` still
    answers from an object no ref can reach;
-4. a repo that borrows objects through ``objects/info/alternates`` is refused,
+5. a repo that borrows objects through ``objects/info/alternates`` is refused,
    because pruning cannot touch a store the repo does not own.  A local clone of
    an alternates-backed mirror copies that file verbatim, which leaves the
    donor's entire history readable by sha with no ref to give it away.
 
 Preparation then re-reads those invariants from the finished repo and raises on
 any of them, so a half-prepared instance fails the run instead of silently
-measuring nothing.
+measuring nothing.  The load-bearing one is arithmetic: the object store must
+EQUAL the reachable closure, object for object.  That needs nothing recorded
+during the clone, so it holds equally when an existing repo is re-verified on a
+later run, which is precisely where a leak would otherwise be laundered into a
+success.  It catches extra objects, which is a leak, and missing ones, which is
+a partial or truncated clone.  Anything that fails after the clone takes the
+directory with it, so the next run rebuilds instead of trusting the wreckage.
 """
 
 from __future__ import annotations
@@ -95,6 +104,28 @@ def _git_exit(*args: str, cwd: Path | str | None = None) -> int:
     return result.returncode
 
 
+def _git_stdin(payload: str, *args: str, cwd: Path | str | None = None) -> None:
+    """Run git with ``payload`` on stdin, raising on a non-zero exit.
+
+    Anything that scales with the number of refs goes through here rather than
+    onto the command line.  A real instance carries thousands of tags, and the
+    argv limit is not generous: measured on this machine, a single git call took
+    790 forty-character shas and refused 800 with ``FileNotFoundError: [WinError
+    206] The filename or extension is too long``.  Note the type.  That is not a
+    ``CalledProcessError``, so a caller guarding the call with ``except
+    subprocess.CalledProcessError`` does not catch it and the exception escapes
+    from wherever it happens to be raised.
+    """
+    subprocess.run(  # nosec B603 - fixed argv, no shell
+        ["git", *args],
+        cwd=str(cwd) if cwd is not None else None,
+        check=True,
+        capture_output=True,
+        text=True,
+        input=payload,
+    )
+
+
 def _on_rm_error(func: Callable[..., Any], path: Any, exc_info: Any) -> None:
     """Clear the read-only bit git sets, then retry the removal.
 
@@ -144,37 +175,91 @@ def _ref_targets(bare: Path) -> dict[str, str]:
     return targets
 
 
-def _leak_canary(bare: Path, cloned: dict[str, str], base_commit: str) -> str | None:
-    """Return one commit that must NOT survive the prune, if there is one.
+def _sweep_refs(bare: Path) -> None:
+    """Delete every ref except ``MAIN_REF``, in ONE update-ref transaction.
 
-    Everything the clone brought in that is not an ancestor of the base commit is
-    exactly what has to disappear.  Naming one of them costs a single
-    ``rev-list`` and turns the object-store guarantee into something the real run
-    checks on every instance, instead of something only the fixture checks in a
-    test.  Returns None when the clone brought in nothing later than the base.
+    A subprocess per ref is measurably not free: about 50 ms each on Windows,
+    which is roughly 20 seconds on a django-sized instance and over half an hour
+    of pure process spawn across a hundred-instance run.  Feeding the names on
+    stdin also keeps them off the command line, where a few thousand tags would
+    overflow the argv limit.
+
+    ``--no-deref`` deletes the ref that was named and never the ref a symbolic
+    ref happens to point at, which could otherwise quietly take
+    ``refs/heads/main`` with it.
     """
-    targets = sorted(set(cloned.values()))
-    if not targets:
-        return None
-    try:
-        found = _git("rev-list", "-1", *targets, "--not", base_commit, cwd=bare)
-    except subprocess.CalledProcessError:
-        logger.warning("could not compute a leak canary for %s", bare)
-        return None
-    return found or None
+    doomed = [name for name in _ref_targets(bare) if name != MAIN_REF]
+    if not doomed:
+        return
+    payload = "".join(f"delete {name}\0\0" for name in doomed)
+    _git_stdin(payload, "update-ref", "--no-deref", "--stdin", "-z", cwd=bare)
 
 
-def _verify_prepared(bare: Path, base_commit: str, canary: str | None = None) -> None:
+def _drop_pack_keeps(bare: Path) -> None:
+    """Remove every ``objects/pack/*.keep`` marker the clone brought in.
+
+    ``git clone`` from a local path hardlinks the whole pack directory in,
+    ``pack-*.keep`` markers included, and ``gc --prune=now`` will not repack a
+    kept pack.  Every unreachable object in it then survives, with refs, HEAD,
+    remotes and ``rev-list --count --all`` all reading exactly like a clean repo.
+    Verified on git 2.52.0.windows.1: with the marker left in place the gold
+    commit was still readable by sha after the full sweep and prune.  An
+    interrupted fetch or clone leaves that marker behind permanently, so an
+    upstream does not have to be unusual to trigger it.
+    """
+    pack_dir = bare / "objects" / "pack"
+    if not pack_dir.is_dir():
+        return
+    for marker in sorted(pack_dir.glob("*.keep")):
+        marker.unlink()
+
+
+def _object_counts(bare: Path) -> tuple[int, int]:
+    """Return ``(reachable, present)`` object counts for ``bare``.
+
+    ``reachable`` walks every ref; ``present`` is what the store actually holds,
+    loose plus packed.  ``--no-object-names`` keeps the reachable side one sha
+    per line, so a path containing a newline cannot inflate the count.
+    ``prune-packable`` is how many loose objects are also in a pack, and is
+    subtracted because those appear in both of the other two numbers, so the
+    result counts DISTINCT objects either way.
+
+    Raises:
+        PreparationError: If ``count-objects`` did not report what it must.
+    """
+    listing = _git("rev-list", "--objects", "--all", "--no-object-names", cwd=bare)
+    reachable = len([line for line in listing.splitlines() if line])
+
+    fields: dict[str, int] = {}
+    for line in _git("count-objects", "-v", cwd=bare).splitlines():
+        key, _, value = line.partition(":")
+        if value.strip().isdigit():
+            fields[key.strip()] = int(value.strip())
+    missing = sorted({"count", "in-pack"} - set(fields))
+    if missing:
+        msg = f"{bare}: git count-objects -v reported no {missing}"
+        raise PreparationError(msg)
+
+    present = fields["count"] + fields["in-pack"] - fields.get("prune-packable", 0)
+    return reachable, present
+
+
+def _verify_prepared(bare: Path, base_commit: str) -> None:
     """Re-read the invariants from ``bare`` and raise if any one is broken.
 
     This is the fail-closed backstop.  The tests only ever see a two-file
     fixture, while a full run prepares a hundred real repos, so the repo is
     asked to prove its own state rather than assumed to have reached it.
 
+    Every check reads only the finished repo.  Nothing here may depend on state
+    captured during the clone, because this same function is what decides
+    whether an ALREADY existing repo can be reused, and on that path there was
+    no clone.  A check that needs clone-time state silently degrades to no check
+    at all in exactly the case that matters.
+
     Args:
         bare: Path to the prepared bare repo.
         base_commit: The sha ``refs/heads/main`` must point at.
-        canary: A commit that must be absent from the object store, if known.
 
     Raises:
         PreparationError: On any broken invariant.
@@ -209,8 +294,16 @@ def _verify_prepared(bare: Path, base_commit: str, canary: str | None = None) ->
         msg = f"{bare} still has remotes configured: {remotes.split()}"
         raise PreparationError(msg)
 
-    if canary is not None and _git_exit("cat-file", "-e", canary, cwd=bare) == 0:
-        msg = f"{bare} still holds {canary}, which is later than the base commit"
+    # Last because it is the expensive one, and because every check above gives
+    # a sharper message for the case it covers.
+    reachable, present = _object_counts(bare)
+    if present != reachable:
+        msg = (
+            f"{bare} holds {present} objects but only {reachable} are reachable, "
+            "so its object store is not exactly its reachable closure: more than "
+            "reachable means it still answers for the gold patch by sha, fewer "
+            "means the clone is incomplete"
+        )
         raise PreparationError(msg)
 
 
@@ -231,8 +324,30 @@ def _already_prepared(bare: Path, base_commit: str) -> bool:
     return True
 
 
+def _discard_failed(bare: Path) -> None:
+    """Delete a repo whose preparation did not finish.
+
+    A half-prepared repo left on disk is the one the NEXT run inspects, and the
+    operator's natural response to a failed run is to run the same command
+    again.  Removing it makes that re-run rebuild from the upstream, which is
+    the only outcome that cannot be wrong.  A failure to remove it is logged and
+    swallowed: it must not replace whatever exception is already on its way out,
+    and the verifier will refuse the leftovers on the next pass anyway.
+    """
+    if not bare.exists():
+        return
+    try:
+        _force_rmtree(bare)
+    except OSError:
+        logger.exception("could not remove the half-prepared repo at %s", bare)
+
+
 def prepare_instance(spec: InstanceSpec, root: Path) -> Path:
     """Materialize ``spec`` as a bare repo whose ``main`` is the buggy base.
+
+    Either this returns a repo that holds every invariant, or it leaves nothing
+    at ``<root>/<instance_id>.git`` at all.  There is no third outcome, because
+    the third outcome is what the next run would trust.
 
     Args:
         spec: The instance to prepare.
@@ -255,31 +370,35 @@ def prepare_instance(spec: InstanceSpec, root: Path) -> Path:
         _force_rmtree(bare)
 
     root.mkdir(parents=True, exist_ok=True)
-    _git("clone", "--bare", spec.upstream, str(bare))
 
-    if _git_exit("cat-file", "-e", f"{spec.base_commit}^{{commit}}", cwd=bare) != 0:
-        _force_rmtree(bare)
-        msg = f"base commit {spec.base_commit} is not in {spec.upstream}"
-        raise PreparationError(msg)
+    # Nothing below may leave a directory behind on the way out.  A repo that
+    # got as far as the ref sweep but not the prune looks clean to every cheap
+    # signal while still holding the answer, and the next run would return it.
+    # The flag rather than a bare ``except`` so an interrupt cleans up too.
+    finished = False
+    try:
+        _git("clone", "--bare", spec.upstream, str(bare))
 
-    # Everything the clone pulled in, recorded before any of it is rearranged.
-    cloned = _ref_targets(bare)
+        if _git_exit("cat-file", "-e", f"{spec.base_commit}^{{commit}}", cwd=bare) != 0:
+            msg = f"base commit {spec.base_commit} is not in {spec.upstream}"
+            raise PreparationError(msg)
 
-    _git("update-ref", MAIN_REF, spec.base_commit, cwd=bare)
-    _git("symbolic-ref", "HEAD", MAIN_REF, cwd=bare)
-    for refname in _ref_targets(bare):
-        if refname != MAIN_REF:
-            _git("update-ref", "-d", refname, cwd=bare)
-    for remote in _git("remote", cwd=bare).split():
-        _git("remote", "remove", remote, cwd=bare)
+        _git("update-ref", MAIN_REF, spec.base_commit, cwd=bare)
+        _git("symbolic-ref", "HEAD", MAIN_REF, cwd=bare)
+        _sweep_refs(bare)
+        for remote in _git("remote", cwd=bare).split():
+            _git("remote", "remove", remote, cwd=bare)
+        _drop_pack_keeps(bare)
 
-    # Named while the objects are still there, checked once they should not be.
-    canary = _leak_canary(bare, cloned, spec.base_commit)
+        _git("reflog", "expire", "--expire=now", "--all", cwd=bare)
+        _git("gc", "--prune=now", "--quiet", cwd=bare)
 
-    _git("reflog", "expire", "--expire=now", "--all", cwd=bare)
-    _git("gc", "--prune=now", "--quiet", cwd=bare)
+        _verify_prepared(bare, spec.base_commit)
+        finished = True
+    finally:
+        if not finished:
+            _discard_failed(bare)
 
-    _verify_prepared(bare, spec.base_commit, canary)
     logger.info("prepared %s at %s", spec.instance_id, bare)
     return bare
 
