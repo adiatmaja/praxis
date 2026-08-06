@@ -10,164 +10,180 @@
   },
   "instances": [
     {
-      "instance_id": "django__django-10914",
-      "upstream": "https://github.com/django/django.git",
       "base_commit": "e7fd69d051eaa67cb17f172a39b57253e9cb831a",
+      "instance_id": "django__django-10914",
       "patch_files": 1,
       "patch_loc": 2,
+      "problem_statement": "Set default FILE_UPLOAD_PERMISSION to 0o644.\nDescription\n\t\nHello,\nAs far as I can see, the \u200bFile Uploads documentation page does not mention any permission issues.\nWhat I would like to see is a warning that in absence of explicitly configured FILE_UPLOAD_PERMISSIONS, the permissions for a file uploaded to FileSystemStorage might not be consistent depending on whether a MemoryUploadedFile or a TemporaryUploadedFile was used for temporary storage of the uploaded data (which, with the default FILE_UPLOAD_HANDLERS, in turn depends on the uploaded data size).\nThe tempfile.NamedTemporaryFile + os.rename sequence causes the resulting file permissions to be 0o0600 on some systems (I experience it here on CentOS 7.4.1708 and Python 3.6.5). In all probability, the implementation of Python's built-in tempfile module explicitly sets such permissions for temporary files due to security considerations.\nI found mentions of this issue \u200bon GitHub, but did not manage to find any existing bug report in Django's bug tracker.\n",
       "repo_files": 6054,
       "stratum_patch": "small",
-      "stratum_repo": "big"
+      "stratum_repo": "big",
+      "upstream": "https://github.com/django/django.git"
     },
     {
-      "instance_id": "django__django-17051",
-      "upstream": "https://github.com/django/django.git",
       "base_commit": "b7a17b0ea0a2061bae752a3a2292007d41825814",
+      "instance_id": "django__django-17051",
       "patch_files": 1,
       "patch_loc": 7,
+      "problem_statement": "Allow returning IDs in QuerySet.bulk_create() when updating conflicts.\nDescription\n\t\nCurrently, when using bulk_create with a conflict handling flag turned on (e.g. ignore_conflicts or update_conflicts), the primary keys are not set in the returned queryset, as documented in bulk_create.\nWhile I understand using ignore_conflicts can lead to PostgreSQL not returning the IDs when a row is ignored (see \u200bthis SO thread), I don't understand why we don't return the IDs in the case of update_conflicts.\nFor instance:\nMyModel.objects.bulk_create([MyModel(...)], update_conflicts=True, update_fields=[...], unique_fields=[...])\ngenerates a query without a RETURNING my_model.id part:\nINSERT INTO \"my_model\" (...)\nVALUES (...)\n\tON CONFLICT(...) DO UPDATE ...\nIf I append the RETURNING my_model.id clause, the query is indeed valid and the ID is returned (checked with PostgreSQL).\nI investigated a bit and \u200bthis in Django source is where the returning_fields gets removed.\nI believe we could discriminate the cases differently so as to keep those returning_fields in the case of update_conflicts.\nThis would be highly helpful when using bulk_create as a bulk upsert feature.\n",
       "repo_files": 6707,
       "stratum_patch": "medium",
-      "stratum_repo": "big"
+      "stratum_repo": "big",
+      "upstream": "https://github.com/django/django.git"
     },
     {
-      "instance_id": "mwaskom__seaborn-2848",
-      "upstream": "https://github.com/mwaskom/seaborn.git",
       "base_commit": "94621cef29f80282436d73e8d2c0aa76dab81273",
+      "instance_id": "mwaskom__seaborn-2848",
       "patch_files": 1,
       "patch_loc": 7,
+      "problem_statement": "pairplot fails with hue_order not containing all hue values in seaborn 0.11.1\nIn seaborn < 0.11, one could plot only a subset of the values in the hue column, by passing a hue_order list containing only the desired values. Points with hue values not in the list were simply not plotted.\n```python\niris = sns.load_dataset(\"iris\")`\n# The hue column contains three different species; here we want to plot two\nsns.pairplot(iris, hue=\"species\", hue_order=[\"setosa\", \"versicolor\"])\n```\n\nThis no longer works in 0.11.1. Passing a hue_order list that does not contain some of the values in the hue column raises a long, ugly error traceback. The first exception arises in seaborn/_core.py:\n```\nTypeError: ufunc 'isnan' not supported for the input types, and the inputs could not be safely coerced to any supported types according to the casting rule ''safe''\n```\nseaborn version: 0.11.1\nmatplotlib version: 3.3.2\nmatplotlib backends: MacOSX, Agg or jupyter notebook inline.",
       "repo_files": 260,
       "stratum_patch": "medium",
-      "stratum_repo": "mid"
+      "stratum_repo": "mid",
+      "upstream": "https://github.com/mwaskom/seaborn.git"
     },
     {
-      "instance_id": "pydata__xarray-3364",
-      "upstream": "https://github.com/pydata/xarray.git",
       "base_commit": "863e49066ca4d61c9adfe62aca3bf21b90e1af8c",
+      "instance_id": "pydata__xarray-3364",
       "patch_files": 1,
       "patch_loc": 10,
+      "problem_statement": "Ignore missing variables when concatenating datasets?\nSeveral users (@raj-kesavan, @richardotis, now myself) have wondered about how to concatenate xray Datasets with different variables.\n\nWith the current `xray.concat`, you need to awkwardly create dummy variables filled with `NaN` in datasets that don't have them (or drop mismatched variables entirely). Neither of these are great options -- `concat` should have an option (the default?) to take care of this for the user.\n\nThis would also be more consistent with `pd.concat`, which takes a more relaxed approach to matching dataframes with different variables (it does an outer join).\n\n",
       "repo_files": 234,
       "stratum_patch": "medium",
-      "stratum_repo": "mid"
+      "stratum_repo": "mid",
+      "upstream": "https://github.com/pydata/xarray.git"
     },
     {
-      "instance_id": "pydata__xarray-4094",
-      "upstream": "https://github.com/pydata/xarray.git",
       "base_commit": "a64cf2d5476e7bbda099b34c40b7be1880dbd39a",
+      "instance_id": "pydata__xarray-4094",
       "patch_files": 1,
       "patch_loc": 2,
+      "problem_statement": "to_unstacked_dataset broken for single-dim variables\n<!-- A short summary of the issue, if appropriate -->\r\n\r\n\r\n#### MCVE Code Sample\r\n\r\n```python\r\narr = xr.DataArray(\r\n     np.arange(3),\r\n     coords=[(\"x\", [0, 1, 2])],\r\n )\r\ndata = xr.Dataset({\"a\": arr, \"b\": arr})\r\nstacked = data.to_stacked_array('y', sample_dims=['x'])\r\nunstacked = stacked.to_unstacked_dataset('y')\r\n# MergeError: conflicting values for variable 'y' on objects to be combined. You can skip this check by specifying compat='override'.\r\n```\r\n\r\n#### Expected Output\r\nA working roundtrip.\r\n\r\n#### Problem Description\r\nI need to stack a bunch of variables and later unstack them again, however this doesn't work if the variables only have a single dimension.\r\n\r\n#### Versions\r\n\r\n<details><summary>Output of <tt>xr.show_versions()</tt></summary>\r\n\r\nINSTALLED VERSIONS\r\n------------------\r\ncommit: None\r\npython: 3.7.3 (default, Mar 27 2019, 22:11:17) \r\n[GCC 7.3.0]\r\npython-bits: 64\r\nOS: Linux\r\nOS-release: 4.15.0-96-generic\r\nmachine: x86_64\r\nprocessor: x86_64\r\nbyteorder: little\r\nLC_ALL: None\r\nLANG: en_GB.UTF-8\r\nLOCALE: en_GB.UTF-8\r\nlibhdf5: 1.10.4\r\nlibnetcdf: 4.6.2\r\n\r\nxarray: 0.15.1\r\npandas: 1.0.3\r\nnumpy: 1.17.3\r\nscipy: 1.3.1\r\nnetCDF4: 1.4.2\r\npydap: None\r\nh5netcdf: None\r\nh5py: 2.10.0\r\nNio: None\r\nzarr: None\r\ncftime: 1.0.4.2\r\nnc_time_axis: None\r\nPseudoNetCDF: None\r\nrasterio: None\r\ncfgrib: None\r\niris: None\r\nbottleneck: None\r\ndask: 2.10.1\r\ndistributed: 2.10.0\r\nmatplotlib: 3.1.1\r\ncartopy: None\r\nseaborn: 0.10.0\r\nnumbagg: None\r\nsetuptools: 41.0.0\r\npip: 19.0.3\r\nconda: 4.8.3\r\npytest: 5.3.5\r\nIPython: 7.9.0\r\nsphinx: None\r\n\r\n\r\n</details>\r\n\n",
       "repo_files": 258,
       "stratum_patch": "small",
-      "stratum_repo": "mid"
+      "stratum_repo": "mid",
+      "upstream": "https://github.com/pydata/xarray.git"
     },
     {
-      "instance_id": "pydata__xarray-4493",
-      "upstream": "https://github.com/pydata/xarray.git",
       "base_commit": "a5f53e203c52a7605d5db799864046471115d04f",
+      "instance_id": "pydata__xarray-4493",
       "patch_files": 1,
       "patch_loc": 10,
+      "problem_statement": "DataSet.update causes chunked dask DataArray to evalute its values eagerly \n**What happened**:\r\nUsed `DataSet.update` to update a chunked dask DataArray, but the DataArray is no longer chunked after the update.\r\n\r\n**What you expected to happen**:\r\nThe chunked DataArray should still be chunked after the update\r\n\r\n**Minimal Complete Verifiable Example**:\r\n\r\n```python\r\nfoo = xr.DataArray(np.random.randn(3, 3), dims=(\"x\", \"y\")).chunk()  # foo is chunked\r\nds = xr.Dataset({\"foo\": foo, \"bar\": (\"x\", [1, 2, 3])})  # foo is still chunked here\r\nds  # you can verify that foo is chunked\r\n```\r\n```python\r\nupdate_dict = {\"foo\": ((\"x\", \"y\"), ds.foo[1:, :]), \"bar\": (\"x\", ds.bar[1:])}\r\nupdate_dict[\"foo\"][1]  # foo is still chunked\r\n```\r\n```python\r\nds.update(update_dict)\r\nds  # now foo is no longer chunked\r\n```\r\n\r\n**Environment**:\r\n\r\n<details><summary>Output of <tt>xr.show_versions()</tt></summary>\r\n\r\n```\r\ncommit: None\r\npython: 3.8.3 (default, Jul  2 2020, 11:26:31) \r\n[Clang 10.0.0 ]\r\npython-bits: 64\r\nOS: Darwin\r\nOS-release: 19.6.0\r\nmachine: x86_64\r\nprocessor: i386\r\nbyteorder: little\r\nLC_ALL: None\r\nLANG: en_US.UTF-8\r\nLOCALE: en_US.UTF-8\r\nlibhdf5: 1.10.6\r\nlibnetcdf: None\r\n\r\nxarray: 0.16.0\r\npandas: 1.0.5\r\nnumpy: 1.18.5\r\nscipy: 1.5.0\r\nnetCDF4: None\r\npydap: None\r\nh5netcdf: None\r\nh5py: 2.10.0\r\nNio: None\r\nzarr: None\r\ncftime: None\r\nnc_time_axis: None\r\nPseudoNetCDF: None\r\nrasterio: None\r\ncfgrib: None\r\niris: None\r\nbottleneck: None\r\ndask: 2.20.0\r\ndistributed: 2.20.0\r\nmatplotlib: 3.2.2\r\ncartopy: None\r\nseaborn: None\r\nnumbagg: None\r\npint: None\r\nsetuptools: 49.2.0.post20200714\r\npip: 20.1.1\r\nconda: None\r\npytest: 5.4.3\r\nIPython: 7.16.1\r\nsphinx: None\r\n```\r\n\r\n</details>\nDataset constructor with DataArray triggers computation\nIs it intentional that creating a Dataset with a DataArray and dimension names for a single variable causes computation of that variable?  In other words, why does ```xr.Dataset(dict(a=('d0', xr.DataArray(da.random.random(10)))))``` cause the dask array to compute?\r\n\r\nA longer example:\r\n\r\n```python\r\nimport dask.array as da\r\nimport xarray as xr\r\nx = da.random.randint(1, 10, size=(100, 25))\r\nds = xr.Dataset(dict(a=xr.DataArray(x, dims=('x', 'y'))))\r\ntype(ds.a.data)\r\ndask.array.core.Array\r\n\r\n# Recreate the dataset with the same array, but also redefine the dimensions\r\nds2 = xr.Dataset(dict(a=(('x', 'y'), ds.a))\r\ntype(ds2.a.data)\r\nnumpy.ndarray\r\n```\r\n\r\n\n",
       "repo_files": 266,
       "stratum_patch": "medium",
-      "stratum_repo": "mid"
+      "stratum_repo": "mid",
+      "upstream": "https://github.com/pydata/xarray.git"
     },
     {
-      "instance_id": "pydata__xarray-5131",
-      "upstream": "https://github.com/pydata/xarray.git",
       "base_commit": "e56905889c836c736152b11a7e6117a229715975",
+      "instance_id": "pydata__xarray-5131",
       "patch_files": 1,
       "patch_loc": 2,
+      "problem_statement": "Trailing whitespace in DatasetGroupBy text representation\nWhen displaying a DatasetGroupBy in an interactive Python session, the first line of output contains a trailing whitespace. The first example in the documentation demonstrate this:\r\n\r\n```pycon\r\n>>> import xarray as xr, numpy as np\r\n>>> ds = xr.Dataset(\r\n...     {\"foo\": ((\"x\", \"y\"), np.random.rand(4, 3))},\r\n...     coords={\"x\": [10, 20, 30, 40], \"letters\": (\"x\", list(\"abba\"))},\r\n... )\r\n>>> ds.groupby(\"letters\")\r\nDatasetGroupBy, grouped over 'letters' \r\n2 groups with labels 'a', 'b'.\r\n```\r\n\r\nThere is a trailing whitespace in the first line of output which is \"DatasetGroupBy, grouped over 'letters' \". This can be seen more clearly by converting the object to a string (note the whitespace before `\\n`):\r\n\r\n```pycon\r\n>>> str(ds.groupby(\"letters\"))\r\n\"DatasetGroupBy, grouped over 'letters' \\n2 groups with labels 'a', 'b'.\"\r\n```\r\n\r\n\r\nWhile this isn't a problem in itself, it causes an issue for us because we use flake8 in continuous integration to verify that our code is correctly formatted and we also have doctests that rely on DatasetGroupBy textual representation. Flake8 reports a violation on the trailing whitespaces in our docstrings. If we remove the trailing whitespaces, our doctests fail because the expected output doesn't match the actual output. So we have conflicting constraints coming from our tools which both seem reasonable. Trailing whitespaces are forbidden by flake8 because, among other reasons, they lead to noisy git diffs. Doctest want the expected output to be exactly the same as the actual output and considers a trailing whitespace to be a significant difference. We could configure flake8 to ignore this particular violation for the files in which we have these doctests, but this may cause other trailing whitespaces to creep in our code, which we don't want. Unfortunately it's not possible to just add `# NoQA` comments to get flake8 to ignore the violation only for specific lines because that creates a difference between expected and actual output from doctest point of view. Flake8 doesn't allow to disable checks for blocks of code either.\r\n\r\nIs there a reason for having this trailing whitespace in DatasetGroupBy representation? Whould it be OK to remove it? If so please let me know and I can make a pull request.\n",
       "repo_files": 284,
       "stratum_patch": "small",
-      "stratum_repo": "mid"
+      "stratum_repo": "mid",
+      "upstream": "https://github.com/pydata/xarray.git"
     },
     {
-      "instance_id": "pylint-dev__pylint-7228",
-      "upstream": "https://github.com/pylint-dev/pylint.git",
       "base_commit": "d597f252915ddcaaa15ccdfcb35670152cb83587",
+      "instance_id": "pylint-dev__pylint-7228",
       "patch_files": 1,
       "patch_loc": 13,
+      "problem_statement": "rxg include '\\p{Han}' will throw error\n### Bug description\r\n\r\nconfig rxg in pylintrc with \\p{Han} will throw err\r\n\r\n### Configuration\r\n.pylintrc:\r\n\r\n```ini\r\nfunction-rgx=[\\p{Han}a-z_][\\p{Han}a-z0-9_]{2,30}$\r\n```\r\n\r\n### Command used\r\n\r\n```shell\r\npylint\r\n```\r\n\r\n\r\n### Pylint output\r\n\r\n```shell\r\n(venvtest) tsung-hande-MacBook-Pro:robot_is_comming tsung-han$ pylint\r\nTraceback (most recent call last):\r\n  File \"/Users/tsung-han/PycharmProjects/robot_is_comming/venvtest/bin/pylint\", line 8, in <module>\r\n    sys.exit(run_pylint())\r\n  File \"/Users/tsung-han/PycharmProjects/robot_is_comming/venvtest/lib/python3.9/site-packages/pylint/__init__.py\", line 25, in run_pylint\r\n    PylintRun(argv or sys.argv[1:])\r\n  File \"/Users/tsung-han/PycharmProjects/robot_is_comming/venvtest/lib/python3.9/site-packages/pylint/lint/run.py\", line 161, in __init__\r\n    args = _config_initialization(\r\n  File \"/Users/tsung-han/PycharmProjects/robot_is_comming/venvtest/lib/python3.9/site-packages/pylint/config/config_initialization.py\", line 57, in _config_initialization\r\n    linter._parse_configuration_file(config_args)\r\n  File \"/Users/tsung-han/PycharmProjects/robot_is_comming/venvtest/lib/python3.9/site-packages/pylint/config/arguments_manager.py\", line 244, in _parse_configuration_file\r\n    self.config, parsed_args = self._arg_parser.parse_known_args(\r\n  File \"/usr/local/Cellar/python@3.9/3.9.13_1/Frameworks/Python.framework/Versions/3.9/lib/python3.9/argparse.py\", line 1858, in parse_known_args\r\n    namespace, args = self._parse_known_args(args, namespace)\r\n  File \"/usr/local/Cellar/python@3.9/3.9.13_1/Frameworks/Python.framework/Versions/3.9/lib/python3.9/argparse.py\", line 2067, in _parse_known_args\r\n    start_index = consume_optional(start_index)\r\n  File \"/usr/local/Cellar/python@3.9/3.9.13_1/Frameworks/Python.framework/Versions/3.9/lib/python3.9/argparse.py\", line 2007, in consume_optional\r\n    take_action(action, args, option_string)\r\n  File \"/usr/local/Cellar/python@3.9/3.9.13_1/Frameworks/Python.framework/Versions/3.9/lib/python3.9/argparse.py\", line 1919, in take_action\r\n    argument_values = self._get_values(action, argument_strings)\r\n  File \"/usr/local/Cellar/python@3.9/3.9.13_1/Frameworks/Python.framework/Versions/3.9/lib/python3.9/argparse.py\", line 2450, in _get_values\r\n    value = self._get_value(action, arg_string)\r\n  File \"/usr/local/Cellar/python@3.9/3.9.13_1/Frameworks/Python.framework/Versions/3.9/lib/python3.9/argparse.py\", line 2483, in _get_value\r\n    result = type_func(arg_string)\r\n  File \"/usr/local/Cellar/python@3.9/3.9.13_1/Frameworks/Python.framework/Versions/3.9/lib/python3.9/re.py\", line 252, in compile\r\n    return _compile(pattern, flags)\r\n  File \"/usr/local/Cellar/python@3.9/3.9.13_1/Frameworks/Python.framework/Versions/3.9/lib/python3.9/re.py\", line 304, in _compile\r\n    p = sre_compile.compile(pattern, flags)\r\n  File \"/usr/local/Cellar/python@3.9/3.9.13_1/Frameworks/Python.framework/Versions/3.9/lib/python3.9/sre_compile.py\", line 788, in compile\r\n    p = sre_parse.parse(p, flags)\r\n  File \"/usr/local/Cellar/python@3.9/3.9.13_1/Frameworks/Python.framework/Versions/3.9/lib/python3.9/sre_parse.py\", line 955, in parse\r\n    p = _parse_sub(source, state, flags & SRE_FLAG_VERBOSE, 0)\r\n  File \"/usr/local/Cellar/python@3.9/3.9.13_1/Frameworks/Python.framework/Versions/3.9/lib/python3.9/sre_parse.py\", line 444, in _parse_sub\r\n    itemsappend(_parse(source, state, verbose, nested + 1,\r\n  File \"/usr/local/Cellar/python@3.9/3.9.13_1/Frameworks/Python.framework/Versions/3.9/lib/python3.9/sre_parse.py\", line 555, in _parse\r\n    code1 = _class_escape(source, this)\r\n  File \"/usr/local/Cellar/python@3.9/3.9.13_1/Frameworks/Python.framework/Versions/3.9/lib/python3.9/sre_parse.py\", line 350, in _class_escape\r\n    raise source.error('bad escape %s' % escape, len(escape))\r\nre.error: bad escape \\p at position 1\r\n```\r\n\r\n### Expected behavior\r\n\r\nnot throw error\r\n\r\n### Pylint version\r\n\r\n```shell\r\npylint 2.14.4\r\nastroid 2.11.7\r\nPython 3.9.13 (main, May 24 2022, 21:28:44) \r\n[Clang 13.0.0 (clang-1300.0.29.30)]\r\n```\r\n\r\n\r\n### OS / Environment\r\n\r\nmacOS 11.6.7\r\n\n",
       "repo_files": 3379,
       "stratum_patch": "medium",
-      "stratum_repo": "big"
+      "stratum_repo": "big",
+      "upstream": "https://github.com/pylint-dev/pylint.git"
     },
     {
-      "instance_id": "pytest-dev__pytest-11148",
-      "upstream": "https://github.com/pytest-dev/pytest.git",
       "base_commit": "2f7415cfbc4b6ca62f9013f1abd27136f46b9653",
+      "instance_id": "pytest-dev__pytest-11148",
       "patch_files": 1,
       "patch_loc": 2,
+      "problem_statement": "Module imported twice under import-mode=importlib\nIn pmxbot/pmxbot@7f189ad, I'm attempting to switch pmxbot off of pkg_resources style namespace packaging to PEP 420 namespace packages. To do so, I've needed to switch to `importlib` for the `import-mode` and re-organize the tests to avoid import errors on the tests.\r\n\r\nYet even after working around these issues, the tests are failing when the effect of `core.initialize()` doesn't seem to have had any effect.\r\n\r\nInvestigating deeper, I see that initializer is executed and performs its actions (setting a class variable `pmxbot.logging.Logger.store`), but when that happens, there are two different versions of `pmxbot.logging` present, one in `sys.modules` and another found in `tests.unit.test_commands.logging`:\r\n\r\n```\r\n=========================================================================== test session starts ===========================================================================\r\nplatform darwin -- Python 3.11.1, pytest-7.2.0, pluggy-1.0.0\r\ncachedir: .tox/python/.pytest_cache\r\nrootdir: /Users/jaraco/code/pmxbot/pmxbot, configfile: pytest.ini\r\nplugins: black-0.3.12, mypy-0.10.3, jaraco.test-5.3.0, checkdocs-2.9.0, flake8-1.1.1, enabler-2.0.0, jaraco.mongodb-11.2.1, pmxbot-1122.14.3.dev13+g7f189ad\r\ncollected 421 items / 180 deselected / 241 selected                                                                                                                       \r\nrun-last-failure: rerun previous 240 failures (skipped 14 files)\r\n\r\ntests/unit/test_commands.py E\r\n>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> traceback >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>\r\n\r\ncls = <class 'tests.unit.test_commands.TestCommands'>\r\n\r\n    @classmethod\r\n    def setup_class(cls):\r\n        path = os.path.dirname(os.path.abspath(__file__))\r\n        configfile = os.path.join(path, 'testconf.yaml')\r\n        config = pmxbot.dictlib.ConfigDict.from_yaml(configfile)\r\n        cls.bot = core.initialize(config)\r\n>       logging.Logger.store.message(\"logged\", \"testrunner\", \"some text\")\r\nE       AttributeError: type object 'Logger' has no attribute 'store'\r\n\r\ntests/unit/test_commands.py:37: AttributeError\r\n>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> entering PDB >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>\r\n\r\n>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> PDB post_mortem (IO-capturing turned off) >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>\r\n> /Users/jaraco/code/pmxbot/pmxbot/tests/unit/test_commands.py(37)setup_class()\r\n-> logging.Logger.store.message(\"logged\", \"testrunner\", \"some text\")\r\n(Pdb) logging.Logger\r\n<class 'pmxbot.logging.Logger'>\r\n(Pdb) logging\r\n<module 'pmxbot.logging' from '/Users/jaraco/code/pmxbot/pmxbot/pmxbot/logging.py'>\r\n(Pdb) import sys\r\n(Pdb) sys.modules['pmxbot.logging']\r\n<module 'pmxbot.logging' from '/Users/jaraco/code/pmxbot/pmxbot/pmxbot/logging.py'>\r\n(Pdb) sys.modules['pmxbot.logging'] is logging\r\nFalse\r\n```\r\n\r\nI haven't yet made a minimal reproducer, but I wanted to first capture this condition.\r\n\n",
       "repo_files": 576,
       "stratum_patch": "small",
-      "stratum_repo": "big"
+      "stratum_repo": "big",
+      "upstream": "https://github.com/pytest-dev/pytest.git"
     },
     {
-      "instance_id": "pytest-dev__pytest-5103",
-      "upstream": "https://github.com/pytest-dev/pytest.git",
       "base_commit": "10ca84ffc56c2dd2d9dc4bd71b7b898e083500cd",
+      "instance_id": "pytest-dev__pytest-5103",
       "patch_files": 1,
       "patch_loc": 25,
+      "problem_statement": "Unroll the iterable for all/any calls to get better reports\nSometime I need to assert some predicate on all of an iterable, and for that the builtin functions `all`/`any` are great - but the failure messages aren't useful at all!\r\nFor example - the same test written in three ways:\r\n\r\n- A generator expression\r\n```sh                                                                                                                                                                                                                         \r\n    def test_all_even():\r\n        even_stevens = list(range(1,100,2))\r\n>       assert all(is_even(number) for number in even_stevens)\r\nE       assert False\r\nE        +  where False = all(<generator object test_all_even.<locals>.<genexpr> at 0x101f82ed0>)\r\n```\r\n- A list comprehension\r\n```sh\r\n    def test_all_even():\r\n        even_stevens = list(range(1,100,2))\r\n>       assert all([is_even(number) for number in even_stevens])\r\nE       assert False\r\nE        +  where False = all([False, False, False, False, False, False, ...])\r\n```\r\n- A for loop\r\n```sh\r\n    def test_all_even():\r\n        even_stevens = list(range(1,100,2))\r\n        for number in even_stevens:\r\n>           assert is_even(number)\r\nE           assert False\r\nE            +  where False = is_even(1)\r\n\r\ntest_all_any.py:7: AssertionError\r\n```\r\nThe only one that gives a meaningful report is the for loop - but it's way more wordy, and `all` asserts don't translate to a for loop nicely (I'll have to write a `break` or a helper function - yuck)\r\nI propose the assertion re-writer \"unrolls\" the iterator to the third form, and then uses the already existing reports.\r\n\r\n- [x] Include a detailed description of the bug or suggestion\r\n- [x] `pip list` of the virtual environment you are using\r\n```\r\nPackage        Version\r\n-------------- -------\r\natomicwrites   1.3.0  \r\nattrs          19.1.0 \r\nmore-itertools 7.0.0  \r\npip            19.0.3 \r\npluggy         0.9.0  \r\npy             1.8.0  \r\npytest         4.4.0  \r\nsetuptools     40.8.0 \r\nsix            1.12.0 \r\n```\r\n- [x] pytest and operating system versions\r\n`platform darwin -- Python 3.7.3, pytest-4.4.0, py-1.8.0, pluggy-0.9.0`\r\n- [x] Minimal example if possible\r\n\n",
       "repo_files": 418,
       "stratum_patch": "medium",
-      "stratum_repo": "mid"
+      "stratum_repo": "mid",
+      "upstream": "https://github.com/pytest-dev/pytest.git"
     },
     {
-      "instance_id": "pytest-dev__pytest-5227",
-      "upstream": "https://github.com/pytest-dev/pytest.git",
       "base_commit": "2051e30b9b596e944524ccb787ed20f9f5be93e3",
+      "instance_id": "pytest-dev__pytest-5227",
       "patch_files": 1,
       "patch_loc": 2,
+      "problem_statement": "Improve default logging format\nCurrently it is:\r\n\r\n> DEFAULT_LOG_FORMAT = \"%(filename)-25s %(lineno)4d %(levelname)-8s %(message)s\"\r\n\r\nI think `name` (module name) would be very useful here, instead of just the base filename.\r\n\r\n(It might also be good to have the relative path there (maybe at the end), but it is usually still very long (but e.g. `$VIRTUAL_ENV` could be substituted therein))\r\n\r\nCurrently it would look like this:\r\n```\r\nutils.py                   114 DEBUG    (0.000) SELECT \"app_url\".\"id\", \"app_url\".\"created\", \"app_url\".\"url\" FROM \"app_url\" WHERE \"app_url\".\"id\" = 2; args=(2,)\r\nmultipart.py               604 DEBUG    Calling on_field_start with no data\r\n```\r\n\r\n\r\nUsing `DEFAULT_LOG_FORMAT = \"%(levelname)-8s %(name)s:%(filename)s:%(lineno)d %(message)s\"` instead:\r\n\r\n```\r\nDEBUG    django.db.backends:utils.py:114 (0.000) SELECT \"app_url\".\"id\", \"app_url\".\"created\", \"app_url\".\"url\" FROM \"app_url\" WHERE \"app_url\".\"id\" = 2; args=(2,)\r\nDEBUG    multipart.multipart:multipart.py:604 Calling on_field_start with no data\r\n```\n",
       "repo_files": 434,
       "stratum_patch": "small",
-      "stratum_repo": "mid"
+      "stratum_repo": "mid",
+      "upstream": "https://github.com/pytest-dev/pytest.git"
     },
     {
-      "instance_id": "pytest-dev__pytest-7168",
-      "upstream": "https://github.com/pytest-dev/pytest.git",
       "base_commit": "4787fd64a4ca0dba5528b5651bddd254102fe9f3",
+      "instance_id": "pytest-dev__pytest-7168",
       "patch_files": 1,
       "patch_loc": 2,
+      "problem_statement": "INTERNALERROR when exception in __repr__\nMinimal code to reproduce the issue: \r\n```python\r\nclass SomeClass:\r\n    def __getattribute__(self, attr):\r\n        raise\r\n    def __repr__(self):\r\n        raise\r\ndef test():\r\n    SomeClass().attr\r\n```\r\nSession traceback:\r\n```\r\n============================= test session starts ==============================\r\nplatform darwin -- Python 3.8.1, pytest-5.4.1, py-1.8.1, pluggy-0.13.1 -- /usr/local/opt/python@3.8/bin/python3.8\r\ncachedir: .pytest_cache\r\nrootdir: ******\r\nplugins: asyncio-0.10.0, mock-3.0.0, cov-2.8.1\r\ncollecting ... collected 1 item\r\n\r\ntest_pytest.py::test \r\nINTERNALERROR> Traceback (most recent call last):\r\nINTERNALERROR>   File \"/usr/local/lib/python3.8/site-packages/_pytest/main.py\", line 191, in wrap_session\r\nINTERNALERROR>     session.exitstatus = doit(config, session) or 0\r\nINTERNALERROR>   File \"/usr/local/lib/python3.8/site-packages/_pytest/main.py\", line 247, in _main\r\nINTERNALERROR>     config.hook.pytest_runtestloop(session=session)\r\nINTERNALERROR>   File \"/usr/local/lib/python3.8/site-packages/pluggy/hooks.py\", line 286, in __call__\r\nINTERNALERROR>     return self._hookexec(self, self.get_hookimpls(), kwargs)\r\nINTERNALERROR>   File \"/usr/local/lib/python3.8/site-packages/pluggy/manager.py\", line 93, in _hookexec\r\nINTERNALERROR>     return self._inner_hookexec(hook, methods, kwargs)\r\nINTERNALERROR>   File \"/usr/local/lib/python3.8/site-packages/pluggy/manager.py\", line 84, in <lambda>\r\nINTERNALERROR>     self._inner_hookexec = lambda hook, methods, kwargs: hook.multicall(\r\nINTERNALERROR>   File \"/usr/local/lib/python3.8/site-packages/pluggy/callers.py\", line 208, in _multicall\r\nINTERNALERROR>     return outcome.get_result()\r\nINTERNALERROR>   File \"/usr/local/lib/python3.8/site-packages/pluggy/callers.py\", line 80, in get_result\r\nINTERNALERROR>     raise ex[1].with_traceback(ex[2])\r\nINTERNALERROR>   File \"/usr/local/lib/python3.8/site-packages/pluggy/callers.py\", line 187, in _multicall\r\nINTERNALERROR>     res = hook_impl.function(*args)\r\nINTERNALERROR>   File \"/usr/local/lib/python3.8/site-packages/_pytest/main.py\", line 272, in pytest_runtestloop\r\nINTERNALERROR>     item.config.hook.pytest_runtest_protocol(item=item, nextitem=nextitem)\r\nINTERNALERROR>   File \"/usr/local/lib/python3.8/site-packages/pluggy/hooks.py\", line 286, in __call__\r\nINTERNALERROR>     return self._hookexec(self, self.get_hookimpls(), kwargs)\r\nINTERNALERROR>   File \"/usr/local/lib/python3.8/site-packages/pluggy/manager.py\", line 93, in _hookexec\r\nINTERNALERROR>     return self._inner_hookexec(hook, methods, kwargs)\r\nINTERNALERROR>   File \"/usr/local/lib/python3.8/site-packages/pluggy/manager.py\", line 84, in <lambda>\r\nINTERNALERROR>     self._inner_hookexec = lambda hook, methods, kwargs: hook.multicall(\r\nINTERNALERROR>   File \"/usr/local/lib/python3.8/site-packages/pluggy/callers.py\", line 208, in _multicall\r\nINTERNALERROR>     return outcome.get_result()\r\nINTERNALERROR>   File \"/usr/local/lib/python3.8/site-packages/pluggy/callers.py\", line 80, in get_result\r\nINTERNALERROR>     raise ex[1].with_traceback(ex[2])\r\nINTERNALERROR>   File \"/usr/local/lib/python3.8/site-packages/pluggy/callers.py\", line 187, in _multicall\r\nINTERNALERROR>     res = hook_impl.function(*args)\r\nINTERNALERROR>   File \"/usr/local/lib/python3.8/site-packages/_pytest/runner.py\", line 85, in pytest_runtest_protocol\r\nINTERNALERROR>     runtestprotocol(item, nextitem=nextitem)\r\nINTERNALERROR>   File \"/usr/local/lib/python3.8/site-packages/_pytest/runner.py\", line 100, in runtestprotocol\r\nINTERNALERROR>     reports.append(call_and_report(item, \"call\", log))\r\nINTERNALERROR>   File \"/usr/local/lib/python3.8/site-packages/_pytest/runner.py\", line 188, in call_and_report\r\nINTERNALERROR>     report = hook.pytest_runtest_makereport(item=item, call=call)\r\nINTERNALERROR>   File \"/usr/local/lib/python3.8/site-packages/pluggy/hooks.py\", line 286, in __call__\r\nINTERNALERROR>     return self._hookexec(self, self.get_hookimpls(), kwargs)\r\nINTERNALERROR>   File \"/usr/local/lib/python3.8/site-packages/pluggy/manager.py\", line 93, in _hookexec\r\nINTERNALERROR>     return self._inner_hookexec(hook, methods, kwargs)\r\nINTERNALERROR>   File \"/usr/local/lib/python3.8/site-packages/pluggy/manager.py\", line 84, in <lambda>\r\nINTERNALERROR>     self._inner_hookexec = lambda hook, methods, kwargs: hook.multicall(\r\nINTERNALERROR>   File \"/usr/local/lib/python3.8/site-packages/pluggy/callers.py\", line 203, in _multicall\r\nINTERNALERROR>     gen.send(outcome)\r\nINTERNALERROR>   File \"/usr/local/lib/python3.8/site-packages/_pytest/skipping.py\", line 129, in pytest_runtest_makereport\r\nINTERNALERROR>     rep = outcome.get_result()\r\nINTERNALERROR>   File \"/usr/local/lib/python3.8/site-packages/pluggy/callers.py\", line 80, in get_result\r\nINTERNALERROR>     raise ex[1].with_traceback(ex[2])\r\nINTERNALERROR>   File \"/usr/local/lib/python3.8/site-packages/pluggy/callers.py\", line 187, in _multicall\r\nINTERNALERROR>     res = hook_impl.function(*args)\r\nINTERNALERROR>   File \"/usr/local/lib/python3.8/site-packages/_pytest/runner.py\", line 260, in pytest_runtest_makereport\r\nINTERNALERROR>     return TestReport.from_item_and_call(item, call)\r\nINTERNALERROR>   File \"/usr/local/lib/python3.8/site-packages/_pytest/reports.py\", line 294, in from_item_and_call\r\nINTERNALERROR>     longrepr = item.repr_failure(excinfo)\r\nINTERNALERROR>   File \"/usr/local/lib/python3.8/site-packages/_pytest/python.py\", line 1513, in repr_failure\r\nINTERNALERROR>     return self._repr_failure_py(excinfo, style=style)\r\nINTERNALERROR>   File \"/usr/local/lib/python3.8/site-packages/_pytest/nodes.py\", line 355, in _repr_failure_py\r\nINTERNALERROR>     return excinfo.getrepr(\r\nINTERNALERROR>   File \"/usr/local/lib/python3.8/site-packages/_pytest/_code/code.py\", line 634, in getrepr\r\nINTERNALERROR>     return fmt.repr_excinfo(self)\r\nINTERNALERROR>   File \"/usr/local/lib/python3.8/site-packages/_pytest/_code/code.py\", line 879, in repr_excinfo\r\nINTERNALERROR>     reprtraceback = self.repr_traceback(excinfo_)\r\nINTERNALERROR>   File \"/usr/local/lib/python3.8/site-packages/_pytest/_code/code.py\", line 823, in repr_traceback\r\nINTERNALERROR>     reprentry = self.repr_traceback_entry(entry, einfo)\r\nINTERNALERROR>   File \"/usr/local/lib/python3.8/site-packages/_pytest/_code/code.py\", line 784, in repr_traceback_entry\r\nINTERNALERROR>     reprargs = self.repr_args(entry) if not short else None\r\nINTERNALERROR>   File \"/usr/local/lib/python3.8/site-packages/_pytest/_code/code.py\", line 693, in repr_args\r\nINTERNALERROR>     args.append((argname, saferepr(argvalue)))\r\nINTERNALERROR>   File \"/usr/local/lib/python3.8/site-packages/_pytest/_io/saferepr.py\", line 82, in saferepr\r\nINTERNALERROR>     return SafeRepr(maxsize).repr(obj)\r\nINTERNALERROR>   File \"/usr/local/lib/python3.8/site-packages/_pytest/_io/saferepr.py\", line 51, in repr\r\nINTERNALERROR>     s = _format_repr_exception(exc, x)\r\nINTERNALERROR>   File \"/usr/local/lib/python3.8/site-packages/_pytest/_io/saferepr.py\", line 23, in _format_repr_exception\r\nINTERNALERROR>     exc_info, obj.__class__.__name__, id(obj)\r\nINTERNALERROR>   File \"/usr/local/lib/python3.8/site-packages/_pytest/_io/saferepr.py\", line 47, in repr\r\nINTERNALERROR>     s = super().repr(x)\r\nINTERNALERROR>   File \"/usr/local/Cellar/python@3.8/3.8.1/Frameworks/Python.framework/Versions/3.8/lib/python3.8/reprlib.py\", line 52, in repr\r\nINTERNALERROR>     return self.repr1(x, self.maxlevel)\r\nINTERNALERROR>   File \"/usr/local/Cellar/python@3.8/3.8.1/Frameworks/Python.framework/Versions/3.8/lib/python3.8/reprlib.py\", line 62, in repr1\r\nINTERNALERROR>     return self.repr_instance(x, level)\r\nINTERNALERROR>   File \"/usr/local/lib/python3.8/site-packages/_pytest/_io/saferepr.py\", line 60, in repr_instance\r\nINTERNALERROR>     s = _format_repr_exception(exc, x)\r\nINTERNALERROR>   File \"/usr/local/lib/python3.8/site-packages/_pytest/_io/saferepr.py\", line 23, in _format_repr_exception\r\nINTERNALERROR>     exc_info, obj.__class__.__name__, id(obj)\r\nINTERNALERROR>   File \"/usr/local/lib/python3.8/site-packages/_pytest/_io/saferepr.py\", line 56, in repr_instance\r\nINTERNALERROR>     s = repr(x)\r\nINTERNALERROR>   File \"/Users/stiflou/Documents/projets/apischema/tests/test_pytest.py\", line 6, in __repr__\r\nINTERNALERROR>     raise\r\nINTERNALERROR> RuntimeError: No active exception to reraise\r\n\r\n============================ no tests ran in 0.09s ============================\r\n```\n",
       "repo_files": 484,
       "stratum_patch": "small",
-      "stratum_repo": "mid"
+      "stratum_repo": "mid",
+      "upstream": "https://github.com/pytest-dev/pytest.git"
     },
     {
-      "instance_id": "pytest-dev__pytest-8365",
-      "upstream": "https://github.com/pytest-dev/pytest.git",
       "base_commit": "4964b468c83c06971eb743fbc57cc404f760c573",
+      "instance_id": "pytest-dev__pytest-8365",
       "patch_files": 1,
       "patch_loc": 7,
+      "problem_statement": "tmpdir creation fails when the username contains illegal characters for directory names\n`tmpdir`, `tmpdir_factory` and `tmp_path_factory` rely on `getpass.getuser()` for determining the `basetemp` directory. I found that the user name returned by `getpass.getuser()` may return characters that are not allowed for directory names. This may lead to errors while creating the temporary directory.\r\n\r\nThe situation in which I reproduced this issue was while being logged in through an ssh connection into my Windows 10 x64 Enterprise version (1909) using an OpenSSH_for_Windows_7.7p1 server. In this configuration the command `python -c \"import getpass; print(getpass.getuser())\"` returns my domain username e.g. `contoso\\john_doe` instead of `john_doe` as when logged in regularly using a local session.\r\n\r\nWhen trying to create a temp directory in pytest through e.g. `tmpdir_factory.mktemp('foobar')` this fails with the following error message:\r\n```\r\nself = WindowsPath('C:/Users/john_doe/AppData/Local/Temp/pytest-of-contoso/john_doe')\r\nmode = 511, parents = False, exist_ok = True\r\n\r\n    def mkdir(self, mode=0o777, parents=False, exist_ok=False):\r\n        \"\"\"\r\n        Create a new directory at this given path.\r\n        \"\"\"\r\n        if self._closed:\r\n            self._raise_closed()\r\n        try:\r\n>           self._accessor.mkdir(self, mode)\r\nE           FileNotFoundError: [WinError 3] The system cannot find the path specified: 'C:\\\\Users\\\\john_doe\\\\AppData\\\\Local\\\\Temp\\\\pytest-of-contoso\\\\john_doe'\r\n\r\nC:\\Python38\\lib\\pathlib.py:1266: FileNotFoundError\r\n```\r\n\r\nI could also reproduce this without the complicated ssh/windows setup with pytest 6.2.2 using the following commands from a `cmd`:\r\n```bat\r\necho def test_tmpdir(tmpdir):>test_tmp.py\r\necho   pass>>test_tmp.py\r\nset LOGNAME=contoso\\john_doe\r\npy.test test_tmp.py\r\n```\r\n\r\nThanks for having a look at this!\n",
       "repo_files": 535,
       "stratum_patch": "medium",
-      "stratum_repo": "big"
+      "stratum_repo": "big",
+      "upstream": "https://github.com/pytest-dev/pytest.git"
     },
     {
-      "instance_id": "scikit-learn__scikit-learn-13497",
-      "upstream": "https://github.com/scikit-learn/scikit-learn.git",
       "base_commit": "26f690961a52946dd2f53bf0fdd4264b2ae5be90",
+      "instance_id": "scikit-learn__scikit-learn-13497",
       "patch_files": 1,
       "patch_loc": 14,
+      "problem_statement": "Comparing string to array in _estimate_mi\nIn ``_estimate_mi`` there is ``discrete_features == 'auto'`` but discrete features can be an array of indices or a boolean mask.\r\nThis will error in future versions of numpy.\r\nAlso this means we never test this function with discrete features != 'auto', it seems?\n",
       "repo_files": 1202,
       "stratum_patch": "medium",
-      "stratum_repo": "big"
+      "stratum_repo": "big",
+      "upstream": "https://github.com/scikit-learn/scikit-learn.git"
     },
     {
-      "instance_id": "sympy__sympy-13647",
-      "upstream": "https://github.com/sympy/sympy.git",
       "base_commit": "67e3c956083d0128a621f65ee86a7dacd4f9f19f",
+      "instance_id": "sympy__sympy-13647",
       "patch_files": 1,
       "patch_loc": 2,
+      "problem_statement": "Matrix.col_insert() no longer seems to work correctly.\nExample:\r\n\r\n```\r\nIn [28]: import sympy as sm\r\n\r\nIn [29]: M = sm.eye(6)\r\n\r\nIn [30]: M\r\nOut[30]: \r\n\u23a11  0  0  0  0  0\u23a4\r\n\u23a2                \u23a5\r\n\u23a20  1  0  0  0  0\u23a5\r\n\u23a2                \u23a5\r\n\u23a20  0  1  0  0  0\u23a5\r\n\u23a2                \u23a5\r\n\u23a20  0  0  1  0  0\u23a5\r\n\u23a2                \u23a5\r\n\u23a20  0  0  0  1  0\u23a5\r\n\u23a2                \u23a5\r\n\u23a30  0  0  0  0  1\u23a6\r\n\r\nIn [31]: V = 2 * sm.ones(6, 2)\r\n\r\nIn [32]: V\r\nOut[32]: \r\n\u23a12  2\u23a4\r\n\u23a2    \u23a5\r\n\u23a22  2\u23a5\r\n\u23a2    \u23a5\r\n\u23a22  2\u23a5\r\n\u23a2    \u23a5\r\n\u23a22  2\u23a5\r\n\u23a2    \u23a5\r\n\u23a22  2\u23a5\r\n\u23a2    \u23a5\r\n\u23a32  2\u23a6\r\n\r\nIn [33]: M.col_insert(3, V)\r\nOut[33]: \r\n\u23a11  0  0  2  2  1  0  0\u23a4\r\n\u23a2                      \u23a5\r\n\u23a20  1  0  2  2  0  1  0\u23a5\r\n\u23a2                      \u23a5\r\n\u23a20  0  1  2  2  0  0  1\u23a5\r\n\u23a2                      \u23a5\r\n\u23a20  0  0  2  2  0  0  0\u23a5\r\n\u23a2                      \u23a5\r\n\u23a20  0  0  2  2  0  0  0\u23a5\r\n\u23a2                      \u23a5\r\n\u23a30  0  0  2  2  0  0  0\u23a6\r\nIn [34]: sm.__version__\r\nOut[34]: '1.1.1'\r\n```\r\n\r\nThe 3 x 3 identify matrix to the right of the columns of twos is shifted from the bottom three rows to the top three rows.\r\n\r\n@siefkenj Do you think this has to do with your matrix refactor?\n",
       "repo_files": 1507,
       "stratum_patch": "small",
-      "stratum_repo": "big"
+      "stratum_repo": "big",
+      "upstream": "https://github.com/sympy/sympy.git"
     },
     {
-      "instance_id": "sympy__sympy-19487",
-      "upstream": "https://github.com/sympy/sympy.git",
       "base_commit": "25fbcce5b1a4c7e3956e6062930f4a44ce95a632",
+      "instance_id": "sympy__sympy-19487",
       "patch_files": 1,
       "patch_loc": 3,
+      "problem_statement": "Rewrite sign as abs\nIn sympy the `sign` function is defined as\r\n```\r\n    sign(z)  :=  z / Abs(z)\r\n```\r\nfor all complex non-zero `z`. There should be a way to rewrite the sign in terms of `Abs` e.g.:\r\n```\r\n>>> sign(x).rewrite(Abs)                                                                                                                   \r\n x \r\n\u2500\u2500\u2500\r\n\u2502x\u2502\r\n```\r\nI'm not sure how the possibility of `x` being zero should be handled currently we have\r\n```\r\n>>> sign(0)                                                                                                                               \r\n0\r\n>>> 0 / Abs(0)                                                                                                                            \r\nnan\r\n```\r\nMaybe `sign(0)` should be `nan` as well. Otherwise maybe rewrite as Abs would have to be careful about the possibility of the arg being zero (that would make the rewrite fail in most cases).\n",
       "repo_files": 1770,
       "stratum_patch": "small",
-      "stratum_repo": "big"
+      "stratum_repo": "big",
+      "upstream": "https://github.com/sympy/sympy.git"
     }
   ]
 }
