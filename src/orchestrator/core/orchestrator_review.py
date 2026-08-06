@@ -238,8 +238,15 @@ class ReviewMixin:
                 task_id=task_id,
                 plan_id=task.get("plan_id"),
                 project_id=project["id"],
-                model_name=project.get("agent_model") or project.get("model_name"),
-                harness=project.get("harness"),
+                # Attribution follows the model that ACTUALLY implemented this
+                # attempt. Crediting the original worker with an escalated
+                # success teaches the calibration loop a lie.
+                model_name=(
+                    task.get("implement_model")
+                    or project.get("agent_model")
+                    or project.get("model_name")
+                ),
+                harness=task.get("implement_harness") or project.get("harness"),
                 task_type=task_type_for_outcome,
                 files_touched=files_touched,
                 loc_delta=loc_delta,

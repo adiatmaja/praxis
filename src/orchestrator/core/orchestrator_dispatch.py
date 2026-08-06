@@ -175,7 +175,16 @@ class DispatchMixin:
                 )
                 continue
 
-            harness_id = project.get("harness") or default_harness_id()
+            # An escalated leaf carries its own implementer: the implement seat
+            # is spawn-baked, so escalation only takes effect here. Falling back
+            # to the project defaults keeps every non-escalated dispatch
+            # byte-identical to its pre-escalation behavior.
+            harness_id = (
+                task.get("implement_harness")
+                or project.get("harness")
+                or default_harness_id()
+            )
+            worker_model = task.get("implement_model") or project["model_name"]
             resume_session = resolve_resume_session(task, harness_id)
 
             try:
@@ -185,7 +194,7 @@ class DispatchMixin:
                     branch=branch,
                     base_branch=base_branch,
                     task_prompt=prompt,
-                    model_name=project["model_name"],
+                    model_name=worker_model,
                     harness=harness_id,
                     callback_url=self._callback_url,
                     callback_token=self._callback_token,
