@@ -5363,3 +5363,143 @@ recommendation for real work.
 A null or negative result satisfies this definition. An unpublished result does
 not.
 
+---
+
+### Phase C execution record: PARTIAL, phase IS NOT COMPLETE (2026-08-07)
+
+**Status: Tasks 13, 14, 15, 16 COMPLETE. Task 17 was NOT attempted and is
+BLOCKED.** It needs the pilot from Task 12, which is itself blocked; see "What
+blocks Task 12" in the Phase B record. Do not read the absence of a defect list
+for Task 17 as a clean bill of health.
+
+Committed on local `main`, NOT pushed. Commits in order: `ce08162` (Task 13),
+`4532bd0` (Task 15), `71cac54` (Task 16), `fd8c1c9` (Task 14), `6246760` (a
+follow-up rename).
+
+#### Defects in the plan's own code
+
+**Task 13.** Its Files list omits `orchestrator_dispatch.py`, which its own
+Step 4 requires editing and its own Step 8 `git add` already names. Step 6's
+second mutation refers to `_ENABLED_ENV`, which the module never defines. The
+plan tests the flag function thoroughly and the per-task gate at both settings,
+but never tests that bench mode disables the per-wave and whole-plan gates,
+even though Step 4 edits both; either edit could have been dropped with every
+plan test still green. Tests were added for both, and mutations reverting each
+site individually confirmed they fire.
+
+**Task 14, and this one invalidated the benchmark's central comparison.**
+Condition C was realized two contradictory ways at once. `bench/runner.py`
+registered `verify_cmd=None` for any ungated condition, while `bench_mode.py`
+existed to disable only the mechanical gate. But `project["verify_cmd"]` is read
+in four places and only three are the gate: `orchestrator_dispatch.py:412` uses
+it as the leaf's acceptance floor when the leaf declares no check of its own,
+and `:433` threads it into the worker's Bible. Neither consults bench mode. So
+registering `None` for C also changed **what the worker was told to do**, and
+B versus C would have measured "verification plus a differently briefed worker"
+while reporting it as verification alone.
+
+The bias runs in the flattering direction: C would underperform partly because
+its worker was told less, **inflating the apparent value of the verify gate**,
+which is the very thing the arm exists to measure. Nothing in an `AttemptRecord`
+distinguishes that. Fixed so every condition registers the same `verify_cmd` and
+the gate difference comes entirely from bench mode.
+
+A second Task 14 defect: `condition_env` returns environment variables, but
+`core/bench_mode.py` reads them with `os.environ` **inside the orchestrator
+process**, and the runner is a separate process speaking REST. Nothing the
+runner sets reaches the orchestrator. A gateless condition needs an orchestrator
+STARTED with both flags and a gated one needs it started without them, so a
+single invocation cannot mix them. `assert_matched_pair(["A", "B", "C"])` is
+asserted valid by the plan's own Task 11 test, and that combination is a valid
+DESIGN but an impossible INVOCATION. Both statements now stand explicitly:
+`assert_matched_pair` is unchanged and a separate `assert_uniform_bench_mode`
+refuses the mixed invocation, with a test asserting `A,B,C` passes the first and
+fails the second.
+
+**Task 15, a new defect class for this programme: a wrong KNOWN-ANSWER FIXTURE.**
+The plan quotes the Wilson 95 percent interval for 8/10 as `(0.4901, 0.9427)` at
+`abs=5e-4`. The true value is `(0.490162471537, 0.943317848546)`, confirmed by
+the closed form, by root-finding on the score statistic in 60-digit `Decimal`,
+and by a second bisection on the squared form, all agreeing to 3e-60. The upper
+bound is off by 6.18e-4, over the fixture's own tolerance, and it is no other
+method either: continuity-corrected Wilson gives `0.964573`, Agresti-Coull
+`0.954113`, Clopper-Pearson `0.974789`, Wald `1.047918`. Reproducing `0.9427`
+requires `z = 1.9416`, a 94.78 percent level. The lower bound is a truncation
+too; the true value rounds to `0.4902`.
+
+**The plan's test therefore fails on the plan's own correct module**, and its
+Step 4 says: "If the Wilson known-answer test misses, the bug is in the module,
+not the fixture." Following that instruction means editing correct statistics
+code until it reproduces a wrong number, and publishing that interval. The
+fixture had zero discriminating power: the only way to make the suite green was
+to break the implementation.
+
+The tolerance was also too loose in a way that mattered. The most likely real
+slip, writing the familiar `z = 1.96`, moves the bounds by only 5.6e-6, which
+`5e-4` misses and `1e-5` also misses. The shipped fixture uses the full
+twelve-place values at `abs=1e-9`, and a mutation setting `z = 1.96` was
+confirmed by the orchestrator to go red against it.
+
+**Task 16.** The plan's `build_report` iterates `sorted(table)`, which renders
+only populated cells. Since SWE-bench Lite populates just 4 of the 9 stratum
+cells, 5 cells would have been **silently absent** from every table rather than
+rendered as the template promises, `(0.00, 1.00)`, "no evidence, not a measured
+zero". The renderer now emits the full 9 by 4 grid. The plan also specifies
+`str.format` on a template of published prose, which raises on any literal brace
+a future editor adds; switched to `string.Template` and pinned with a test that
+renders the real committed template with a literal brace appended.
+
+#### Vacuous tests exposed by mutation
+
+- The four honesty headings were checked only with `assert heading in report`,
+  which one stray mention anywhere would satisfy. A test now asserts each
+  heading is present in the committed template FILE, which is what makes the
+  guarantee structural.
+- Task 13's per-wave and whole-plan gate edits were unpinned entirely.
+- Task 15's `resolve_rate` had no test at all.
+
+#### Design defects review found
+
+None from a review pass; Phase C's defects were all found by the orchestrator
+reading the plan against the shipped code, and by the implementers.
+
+One judgement recorded so it is not relitigated: `condition_project_overrides`
+reports `gate_enabled`, deliberately not `verify_cmd_enabled`. Under the
+unconfounded realization every arm registers a command and only bench mode
+decides whether the gate reads it, so a key implying the ungated arm carries no
+command is a standing invitation to reintroduce the confound.
+
+#### Cleared from the deferred backlog
+
+Nothing. See "Still open" for engine item 3, which was NOT cleared.
+
+#### Still open
+
+1. **Engine deferred item 3 is being carried a THIRD time, stated explicitly.**
+   The standing instruction was that it must LEAD the next phase touching review
+   or validation, and Task 13 touched `orchestrator_review.py`. It did not lead
+   this phase. Now precisely diagnosed so the next session can act in one step:
+   `validate_leaves` is called from exactly ONE place,
+   `core/execute_plan_decompose.py:435`. The `plan_spec` path
+   (`core/orchestrator.py:111`) and the improvement path
+   (`core/orchestrator_improve.py:61`) never call it, so an unvalidated
+   `"verification": "manual review"` can become a leaf's acceptance floor via
+   `orchestrator_dispatch.py:412`, while the mechanical gate runs the project
+   `verify_cmd` instead. The bench's own exposure is limited: its decomposed arms
+   go through `execute_plan`, which is the validated path.
+2. **Nothing verifies the orchestrator is in the bench mode a condition needs.**
+   The runner refuses a self-contradictory invocation, but an operator who runs
+   `--conditions A,C` against an orchestrator started WITHOUT the flags gets a
+   full set of attempts labelled A and C that actually ran gated, indistinguishable
+   in the JSONL from a correct run. The published B-versus-C delta would then be
+   near zero for a reason nobody could trace. An unconditional startup WARNING
+   and `bench/README.md` are the entire defense. **Highest-value follow-up in
+   this area: a bench-mode field on `/api/status` that the runner asserts against
+   before the first spawn.**
+3. `BenchClient.register_project` deriving `max_retries` as `3 if adaptive_split
+   else 1` is still untested at the HTTP layer; the recording stub sees the
+   runner's kwargs, not the request body.
+4. `bench/runner.py` still defaults `--conditions` to `A,B`, which is now always
+   refused. Deliberate: a loud refusal beats a default that quietly runs one arm.
+5. Task 17 needs the pilot, the full matrix, and ten hand-classified failures.
+   Human-gated and untouched.
