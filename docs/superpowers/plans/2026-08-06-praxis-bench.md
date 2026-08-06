@@ -1781,6 +1781,194 @@ git commit -m "test(local-mode): end-to-end preflight, diff, and merge on a real
 Plus the three local-mode gotchas."
 ```
 
+### Phase A execution record (2026-08-06)
+
+Executed 2026-08-06, tasks 1 to 6 complete, all committed on local `main` and NOT
+pushed. Gate at the end: ruff format and check clean, mypy clean on 80 files, 1464
+tests passing at 90.79 percent coverage.
+
+Task commits in order: `5ff0bdb`, `9879b9a`, `290fc99`, `698775e`, `07b620d`,
+`2651c12`. Commit order does not match task order: tasks 2, 3, and 4 were dispatched
+concurrently per the Parallel Execution Map, so 3 and 4 landed before 2. Three
+further commits came out of review findings: `4a882cd`, `5b5b085`, `95181c8`.
+Seven more cleared the deferred backlog (see below).
+
+**Concurrency.** Four parallel dispatches ran: tasks 2+3+4, then 2+5, then task 6
+plus the backlog, then three fix agents. Zero file overlap held and the full suite
+was run at every join point. One hazard surfaced that earlier phases had not: **the
+session scratchpad is SHARED across concurrently running agents.** A mutation
+harness written to `scratchpad/mutate.py` was overwritten by another agent mid-run,
+silently turning that mutation into a no-op and producing a false green. It was
+caught only because the agent sha-verified the file before and after. Any agent
+running mutations in parallel must use an isolated scratchpad subdirectory and prove
+the mutation actually changed the file.
+
+**Defects in this plan's own verbatim code, corrected during execution.** Fix them
+here before anyone re-runs these tasks.
+
+1. **Task 5's `url_encode` is wrong and would have shipped a silent data loss.** The
+   plan's encoder is `sed -e 's|/|%2F|g' -e 's| |%20|g'`. It encodes neither `&` nor
+   `%`. A branch named `feat/a&b` yields
+   `praxis-local://pr?branch=feat%2Fa&b&base=main`, which `PullRequestRef.from_url`'s
+   `([^&]+)` capture cannot parse, and the failure is silent: the worker still
+   reports `status=completed`, the orchestrator stores an unparseable `pr_url`, and
+   the reviewable change vanishes with no error anywhere. Shipped as
+   `-e 's|%|%25|g' -e 's|/|%2F|g' -e 's| |%20|g' -e 's|&|%26|g'`, with `%` FIRST or
+   the escapes get re-escaped.
+2. **Task 5's Step 7 verification path is wrong.** It reads
+   `/usr/local/bin/entrypoint.sh`. Both Dockerfiles do
+   `COPY entrypoint.sh /home/agent/entrypoint.sh`, so the plan's command returns
+   nothing, which reads as a failed build.
+3. **Task 5 guards only `gh pr create`.** A `gh pr view` reuse call sits above it and
+   is equally a `gh` call, so it would fail in local mode with no credential. The
+   guard must wrap the whole block.
+4. **Task 2's tests use an `orchestrator_fixture` that does not exist** anywhere in
+   the repo, and the plan never defines it. Written from the `_make_reviewing_orch`
+   pattern in `tests/test_fixes35.py`.
+5. **Task 2's Step 6 mutation check is vacuous as written.** Every local test assigns
+   `orch._resolve_backend = lambda ...`, so mutating the real `_resolve_backend`
+   cannot fail them, and its `-k local` selector is wrong besides. Only a new test
+   calling the un-stubbed resolver catches it.
+6. **Task 3's `test_a_non_bare_directory_is_422` is vacuous as written.**
+   `plain.mkdir()` with no `git init` exercises the "not a git repository" branch and
+   never reaches the bare check, so the plan's own Step 5 mutation left it green.
+   Fixed by making the fixture a real non-bare repo.
+7. **Task 1's module imports `pathlib.Path` and never uses it** (ruff F401), and its
+   two value-returning `GitHubBackend` methods fail mypy under this repo's
+   `warn_return_any = true` without a `cast`.
+8. Both Task 3 and Task 4 put their `git_backend` imports inside function bodies for
+   no reason. `git_backend` imports nothing from `orchestrator`, so there is no
+   circular-import risk; hoisted.
+9. **Task 5's `test_entrypoint_is_valid_shell` is a permanent false failure on
+   Windows.** `subprocess.run(["bash", ...])` finds the WSL launcher before Git Bash
+   and fails regardless of the script. CI has a `windows-latest` leg. Resolved with
+   `shutil.which` and an absolute path.
+10. The plan's test-harness table claims the `slow` marker is registered in
+    `pyproject.toml`. Only `unit` and `integration` are.
+
+**Vacuous tests exposed by mutation, beyond the two plan defects above.** Task 1's
+`GitHubBackend` tests survived arbitrary argument corruption: dropping `repo=` from
+`merge_pr`, rewriting `comment_on_pr` to `("/nonexistent", 999, "WRONG")`, and
+swapping `clone_pr_head`'s two arguments all left the suite green, and `checkout` had
+no test at all. Task 1's percent-encoding and its merge-base logic could each be
+deleted outright with every test still passing. Task 2's routing tests used bare
+`assert_awaited_once()` throughout, so rewriting the merge target to `main` was
+invisible. Task 5's guard tests are substring greps over a line window: inverting
+either guard, closing the guard early so every `gh` call runs unconditionally, and
+moving the `GIT_BACKEND` default below its first use ALL left the suite green, and
+`test_local_mode_reports_a_praxis_local_pr_url` could not fail at all, because the
+string it greps for also appears in a comment.
+
+**Design defects found by review, not present in the plan text.**
+
+- `LocalGitBackend.merge` was non-atomic and self-poisoning. The base push and the
+  branch delete are separate operations, so a failed delete left base already
+  advanced, propagated out of `approve_task_merge` so the task was never MERGED, and
+  every retry then hit `git commit` with nothing to commit, forever, with a BLANK
+  message because `_run_checked` interpolated only stderr while git writes "nothing
+  to commit" and "CONFLICT" to stdout.
+- `shutil.rmtree(..., ignore_errors=True)` over a git clone leaks on Windows, one
+  full clone per merge, measured. Over a 100-plus instance bench run that is 100-plus
+  silently leaked clones.
+- The fail-closed `--repo` guard keyed on `ref.backend`, so a `local` ref handed to
+  `GitHubBackend` sailed past it and reached `gh` with `--repo` omitted, which is the
+  exact wrong-repo gotcha the guard exists to prevent. `checkout` never consulted the
+  guard on any path. Now keyed on `ref.repo is None` alone.
+- Routing an unparseable `pr_url` to a silent `return`, as the plan specifies, WEDGES
+  the plan forever: the loop re-enters `review_task` every tick, REVIEWING counts as
+  active so the plan never completes, and `plan_stalled` requires `not active` so it
+  never fires either. A regression, since the pre-routing code raised. Now routed
+  through the existing fail-and-retry path.
+- The `ref.repo is None` backfill block the plan mandates is provably dead, and
+  reachable it would substitute the PROJECT's slug for the PR's, silently targeting
+  the wrong repo for a fork PR. Deleted.
+- `is_local_repo_url` misrouted UNC (`\\server\share`) and `~` paths to GitHub.
+- `to_url()` treated any `backend` string except exactly `"github"` as local, so a
+  capitalization typo silently discarded `repo` and `number`.
+- `from_url(None)` raised `AttributeError` against a docstring promising `ValueError`,
+  and `tasks.pr_url` is nullable.
+- The two entrypoint guards tested opposite sides of DIFFERENT values (`= "github"`
+  for the credential helper, `= "local"` for the PR block), so a third value got no
+  credential helper AND the full `gh` path, the worst combination. Both harnesses now
+  derive one `IS_LOCAL_BACKEND` boolean once, mirroring the file's own
+  `REUSING_BRANCH` precedent, and the guards are tested by EXECUTING the real sliced
+  regions against `gh` and `git` spies rather than by grepping near them.
+
+**Deferred backlog cleared here** (product plan Phase A items 1, 2, 3, and 6), in
+commits `effe842`, `706c0e5`, `bab45c0`, `c080703`, `b8f46ad`, `d140685`, `2737254`.
+
+- **Item 1** (compose does not forward the worker preset): confirmed exactly. Fixed
+  with the BARE pass-through form (`- DEFAULT_WORKER_HARNESS`), NOT `${VAR:-default}`
+  and NOT `- VAR=${VAR}`. Verified independently against real `docker compose config`:
+  bare resolves from the project `.env` (where `init` writes), preserves spaces in the
+  model name, and yields `null` when unset so the mounted YAML stays authoritative.
+  `- VAR=${VAR}` sets it to an EMPTY string when unset, and `Settings.__init__` drops a
+  YAML key whenever the name is in `os.environ`, so both expansion forms silently
+  suppress the YAML. `_print_next_steps` told the operator the container reads worker
+  defaults "not from .env", which the fix made false; corrected, and its decline path
+  no longer claims a preset it did not write.
+- **Item 6** (`init` writes a secret-bearing `.env` outside the repo root): confirmed,
+  with one correction to the original note. It does NOT report success, `_compose`
+  eventually fails. But the `.env` holding a live `AUTH_TOKEN` is already on disk by
+  then and no message names the directory or the secret, so the security-relevant half
+  stands. The guard now also accepts a renamed fork that still ships the `praxis`
+  console script, since locking a fork out permanently while telling it to `cd` where
+  it already is was the worse failure.
+- **Item 2** (`init()` has 0 percent coverage): confirmed. Now 91 percent.
+- **Item 3** (`load_yaml_settings` silent on a missing path): confirmed, and the
+  hot-path concern is real, `EffectiveSettings._get_yaml` has no memoization at all.
+  Warns once per distinct absolute path. Its docstring claimed to cover a dropped
+  container mount; it does not, because the Dockerfile bakes `config/` so a dropped
+  mount leaves a stale file PRESENT. That case belongs to the doctor's `config_mount`
+  probe, and the docstring now says so.
+
+**Still open, raised at the phase gate rather than fixed.**
+
+1. **The merge gate is evaluated against a different branch than the merge acts on.**
+   `auto_merge_eligible(project, plan_branch_name)` decides, but the merge targets
+   `ref.base`. In auto-delegate single-branch mode `dispatch_pending_tasks` sets
+   `branch = plan_branch_name` and `base_branch = project default branch`, so the two
+   differ and the protected-branch carve-out never sees `main`. Review demonstrated an
+   auto-merge into `main` past an "eligible" verdict. PRE-EXISTING, not introduced
+   here: the old `gh pr merge N` merged into the PR's own base too. Fixing it changes
+   auto-merge semantics repo-wide, so it needs its own decision.
+2. **`LM_STUDIO_URL` still uses the `${VAR:-default}` form** that item 1's fix
+   condemns, in both compose files, and it is a `MANAGED_KEYS` entry. Picking the
+   `gemini-agy` preset makes `merge_env` deliberately REMOVE the `.env` line and
+   compose silently re-supplies it. Benign today because agy ignores the endpoint, but
+   the invariant is broken. Not fixed because that compose default is the only source
+   of `host.docker.internal` for containerized deployments; changing it needs a real
+   decision about the field default. Six other `Settings` fields have the same shape.
+3. **An empty value suppresses the YAML.** `DEFAULT_WORKER_HARNESS=` in `.env` reaches
+   the container as set-but-empty, and `Settings.__init__` tests membership in
+   `os.environ` rather than truthiness, so the YAML key is dropped and `agent_manager`
+   substitutes `opencode`. Only reachable by hand-edit, but a hand-edit is the natural
+   way to "unset the preset and go back to the YAML" and it does the opposite.
+4. **Three other git operations in `orchestrator_review.py` still assume GitHub for a
+   local project.** `_verify_plan_branch` returns `"skipped"` without a credential, so
+   the whole-plan verify backstop silently no-ops for every local project.
+   `compare_url` emits `https://github.com//srv/bench/astropy/compare/...` into the
+   `plan_integration_ready` event. `_sync_plan_checkbox` runs `clone_with_token` and
+   `commit_and_push` against the local bare repo. The first matters most for Phase B,
+   since the bench measures exactly that gate.
+5. **The dashboard cannot render a local PR.** `web/app.js` builds the "View PR" link
+   without the `safeHref` guard it uses elsewhere, so a `praxis-local://` task shows a
+   dead link. The human merge gate in local mode is approve-blind: there is no
+   inspectable artifact behind the ref.
+6. Routing dropped the two-source `repo_slug` fallback, so three URL shapes that used
+   to work now raise: `http://`, `www.github.com`, and a `.git` suffix in the path.
+   Low likelihood, since both entrypoints emit the canonical form.
+7. `_compose` and `_wait_for_health` stay stubbed in the init tests by choice; a real
+   `docker compose` in a unit test is worse. Their internals are the uncovered 9
+   percent of `cli/init.py`.
+
+**Not verified: no local-mode task has ever run end to end through a real container.**
+Everything above is proven by unit and integration tests, by executing the real sliced
+shell against spies, and by executing the baked entrypoints inside both rebuilt
+images. The full loop (orchestrator spawns a container against a bind-mounted bare
+repo, worker pushes, review reads the diff, merge lands) has not been run. Phase B
+Task 8 is the first thing that will exercise it.
+
 **Phase A is complete.** Per the cross-plan execution order, the next work is
 the engine plan's Phase B and Phase C, before returning here for Phase B.
 
