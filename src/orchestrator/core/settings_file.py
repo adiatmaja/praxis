@@ -78,9 +78,14 @@ def _warn_missing(path: str) -> None:
 
     Silence here is indistinguishable from a healthy load: the loader returns
     ``{}`` either way, every YAML default reverts to its built-in value, and
-    the orchestrator boots and serves settings the operator never chose.  A
-    typo in ``PRAXIS_CONFIG_PATH`` and a container mount that did not land
-    both look exactly like a correct install.
+    the orchestrator boots and serves settings the operator never chose.
+    Precisely: this fires only when the configured path does not exist at
+    all, for example a typo'd ``PRAXIS_CONFIG_PATH`` or a mount landing on an
+    empty host directory.  It does NOT cover a dropped ``./config:/app/config``
+    mount: ``docker/orchestrator/Dockerfile`` also ``COPY config/ config/``,
+    so the path still exists as a stale baked-in copy rather than an absent
+    one, and that case is caught instead by
+    ``core.doctor_probes.probe_config_mount`` (via ``os.path.ismount``).
 
     Warning once rather than on every call is not politeness: this runs on
     every ``EffectiveSettings._get_yaml()``, and a log drowned in one repeated
