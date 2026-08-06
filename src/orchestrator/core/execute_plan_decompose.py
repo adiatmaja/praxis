@@ -10,11 +10,14 @@ import hashlib
 import logging
 import re
 import uuid
+from dataclasses import dataclass
 from typing import Any
 
 from orchestrator.core.capability_events import (
     DecomposeInputEvent,
+    LeafDifficultyScoredEvent,
     LeafRejectedEvent,
+    LeafRejectedPredispatchEvent,
     LeafValidatedEvent,
     PlanRejectedEvent,
 )
@@ -23,6 +26,18 @@ from orchestrator.core.capability_history import (
     summarize_outcomes,
 )
 from orchestrator.core.context_scrub import scrub_context
+from orchestrator.core.difficulty import (
+    DEFAULT_BIAS,
+    DEFAULT_WEIGHTS,
+    build_scorer,
+    extract_features,
+)
+from orchestrator.core.leaf_validator import (
+    # Imported rather than recomputed so the scorer's dep_depth feature and the
+    # validator's dep_depth rule can never disagree. Same precedent as
+    # core/difficulty.py importing _RUNNABLE_SIGNAL from this module.
+    _max_dep_depth as max_dep_depth,
+)
 from orchestrator.core.leaf_validator import (
     format_violations_feedback,
     validate_leaves,
@@ -42,7 +57,15 @@ logger = logging.getLogger(__name__)
 # Total brain-decomposition attempts. High-effort models occasionally emit
 # unparseable output; one retry self-heals a stochastic bad draw. The brain is
 # a subscription CLI call (no per-call dollar cost), so a single retry is cheap.
+# F3 validation and the difficulty gate SHARE this budget; neither gets rounds
+# of its own, or a pathological plan could re-invoke the brain without bound.
 _DECOMPOSE_ATTEMPTS = 2
+
+# Gate thresholds used when the caller's settings object cannot supply them.
+# They mirror EffectiveSettings.difficulty_config's own defaults: a settings
+# shim without the method must mean "gate on the defaults", never "no gate".
+_DEFAULT_REJECT_BELOW = 0.35
+_DEFAULT_FLAG_BELOW = 0.55
 
 # Patterns that identify a leaf as verification-only (no source edits expected).
 # Conservative: only match when the entire purpose of the task is running checks.
@@ -194,6 +217,131 @@ def branch_slug(text: str) -> str:
     return f"{base}-{uuid.uuid4().hex[:6]}"
 
 
+@dataclass(frozen=True)
+class _LeafScore:
+    """One leaf's predicted success plus the evidence behind the prediction."""
+
+    p_success: float
+    features: dict[str, float]
+    failing_features: list[str]
+
+
+def _pass_rate(runs: list[dict[str, Any]]) -> float | None:
+    """Observed pass rate across attributable outcome rows, or None if empty.
+
+    Args:
+        runs: Outcome rows from ``fetch_recent_outcomes`` (already filtered to
+            passes and worker-attributable failures).
+
+    Returns:
+        The pass rate in [0, 1], or None so the scorer uses its neutral prior.
+    """
+    if not runs:
+        return None
+    passes = sum(1 for r in runs if r.get("outcome") == "pass")
+    return passes / len(runs)
+
+
+async def _resolve_difficulty_config(effective_settings: Any) -> dict[str, Any]:
+    """Resolve the difficulty gate's weights, bias, and thresholds.
+
+    ``EffectiveSettings`` always supplies ``difficulty_config``; a caller
+    passing a narrower settings shim may not.  The gate then runs on the module
+    defaults, which are the numbers ``EffectiveSettings`` itself returns when no
+    YAML override is set.  A missing config must never silently mean no gate.
+
+    Args:
+        effective_settings: Settings object, with or without the method.
+
+    Returns:
+        A dict carrying ``weights``, ``bias``, ``reject_below``, ``flag_below``,
+        with any key the caller omitted filled from the defaults.
+    """
+    defaults: dict[str, Any] = {
+        "weights": DEFAULT_WEIGHTS,
+        "bias": DEFAULT_BIAS,
+        "reject_below": _DEFAULT_REJECT_BELOW,
+        "flag_below": _DEFAULT_FLAG_BELOW,
+    }
+    getter = getattr(effective_settings, "difficulty_config", None)
+    if getter is None:
+        return defaults
+    config = await getter()
+    if not isinstance(config, dict):
+        logger.warning(
+            "difficulty_config returned %s, not a dict; gating on module defaults.",
+            type(config).__name__,
+        )
+        return defaults
+    return {**defaults, **config}
+
+
+def _score_leaves(
+    leaves: list[LeafTask],
+    profile: Any,
+    config: dict[str, Any],
+    history_rate: float | None,
+) -> dict[str, _LeafScore]:
+    """Score every leaf and name the features dragging each one down.
+
+    A feature is "failing" when its contribution to the logit is negative, so
+    the re-ask feedback names the actual cause rather than restating the score.
+    They are ordered worst contribution first: the brain should fix the biggest
+    drag, and an alphabetical order buries it behind whatever sorts earlier.
+
+    Args:
+        leaves: The parsed leaves, after F3 has seen them.
+        profile: The worker capability profile supplying the denominators.
+        config: Resolved difficulty config (weights, bias, thresholds).
+        history_rate: Observed pass rate, or None for the neutral prior.
+
+    Returns:
+        ``{leaf id: _LeafScore}``, one entry per leaf.
+    """
+    scorer = build_scorer(config)
+    # Same merge build_scorer applies, so the contributions explaining a score
+    # are computed with the same weights that produced it.
+    weights = {**DEFAULT_WEIGHTS, **(config.get("weights") or {})}
+    depths = max_dep_depth(leaves)
+    scored: dict[str, _LeafScore] = {}
+    for leaf in leaves:
+        features = extract_features(
+            leaf,
+            profile,
+            dep_depth=depths.get(leaf.id, 0),
+            historical_success=history_rate,
+        )
+        vector = features.as_vector()
+        contributions = sorted(
+            ((name, weights.get(name, 0.0) * value) for name, value in vector.items()),
+            key=lambda item: item[1],
+        )
+        scored[leaf.id] = _LeafScore(
+            p_success=scorer.score(features),
+            features=vector,
+            failing_features=[name for name, weighted in contributions if weighted < 0],
+        )
+    return scored
+
+
+def _format_difficulty_feedback(
+    too_hard: list[str],
+    scored: dict[str, _LeafScore],
+) -> str:
+    """Render the re-ask critique for leaves the gate predicts will fail."""
+    named = "; ".join(
+        f"{slug} (p_success {scored[slug].p_success:.2f}; worst features: "
+        f"{', '.join(scored[slug].failing_features) or 'none'})"
+        for slug in too_hard
+    )
+    return (
+        "DIFFICULTY REJECTION: these leaves are predicted to fail this worker: "
+        f"{named}. Re-decompose them smaller: fewer files, a smaller LOC "
+        "estimate, a shorter plan_text, a runnable acceptance command, and a "
+        "specific leaf_type rather than 'generic'."
+    )
+
+
 async def decompose_plan(
     plan: str,
     model: str,
@@ -222,13 +370,15 @@ async def decompose_plan(
         db: Optional Database to fetch recent outcomes for history.
 
     Returns:
-        A normalized ``{"tasks": [...]}`` dict where each task has a ``slug``
-        and ``depends_on`` holds slugs (not brain ids). Verification-only leaves
+        A normalized ``{"tasks": [...]}`` dict where each task has a ``slug``,
+        a ``difficulty_score``, a ``difficulty_flagged`` boolean, and
+        ``depends_on`` holding slugs (not brain ids). Verification-only leaves
         are removed before the dict is returned.
 
     Raises:
-        PlanReviewError: If the brain output cannot be parsed, or if HARD
-            validation violations remain after the informed re-decompose round.
+        PlanReviewError: If the brain output cannot be parsed, if HARD
+            validation violations remain after the informed re-decompose round,
+            or if a leaf still scores below ``reject_below`` after it.
     """
     profile = await effective_settings.capability_profile(project_id=None, model=model)
     per_leaf_budget = int(profile.context_window * (1 - WORKER_RESERVE_FRACTION))
@@ -240,6 +390,8 @@ async def decompose_plan(
         runs = []
     history = summarize_outcomes(runs)
     prompt = build_review_prompt(plan, profile, history, per_leaf_budget)
+    difficulty_config = await _resolve_difficulty_config(effective_settings)
+    history_rate = _pass_rate(runs)
 
     if emitter is not None and plan_id is not None:
         await emitter.emit(
@@ -255,6 +407,7 @@ async def decompose_plan(
 
     last_exc: PlanReviewError | None = None
     opus_plan: dict[str, Any] | None = None
+    scored: dict[str, _LeafScore] = {}
 
     for attempt in range(1, _DECOMPOSE_ATTEMPTS + 1):
         raw = await router.run("plan_review", prompt, project_id=project_id)
@@ -281,24 +434,66 @@ async def decompose_plan(
         leaves = [LeafTask.model_validate(t) for t in opus_plan["tasks"]]
         validation_result = validate_leaves(opus_plan, profile, plan, leaves)
 
-        if validation_result.clean:
+        # The difficulty gate runs AFTER F3, on the same leaves, inside the
+        # same round budget. F3 asks "is this leaf well formed"; the gate asks
+        # "will this worker finish it". A leaf must clear both to dispatch.
+        scored = _score_leaves(leaves, profile, difficulty_config, history_rate)
+        too_hard = [
+            leaf.id
+            for leaf in leaves
+            if scored[leaf.id].p_success < difficulty_config["reject_below"]
+        ]
+
+        if validation_result.clean and not too_hard:
             break
 
         if attempt < _DECOMPOSE_ATTEMPTS:
-            feedback = format_violations_feedback(validation_result)
-            prompt = f"{prompt}\n\n{feedback}"
-            violation_detail = "; ".join(
-                f"[{v.rule}] {v.task_id}: {v.message}"
-                for v in (*validation_result.hard, *validation_result.soft)
-            )
-            logger.warning(
-                "Decomposition validation failed (attempt %d/%d); "
-                "re-invoking brain with feedback. Violations: %s",
-                attempt,
-                _DECOMPOSE_ATTEMPTS,
-                violation_detail,
-            )
+            # One informed re-ask carrying BOTH critiques. Giving the gate its
+            # own rounds would let a pathological plan loop the brain past F3's
+            # cap; feeding back only one critique burns the shared round on
+            # half the information and the other gate fails again next round.
+            feedback_parts: list[str] = []
+            if not validation_result.clean:
+                feedback_parts.append(format_violations_feedback(validation_result))
+                violation_detail = "; ".join(
+                    f"[{v.rule}] {v.task_id}: {v.message}"
+                    for v in (*validation_result.hard, *validation_result.soft)
+                )
+                logger.warning(
+                    "Decomposition validation failed (attempt %d/%d); "
+                    "re-invoking brain with feedback. Violations: %s",
+                    attempt,
+                    _DECOMPOSE_ATTEMPTS,
+                    violation_detail,
+                )
+            if too_hard:
+                feedback_parts.append(_format_difficulty_feedback(too_hard, scored))
+                logger.warning(
+                    "Difficulty gate rejected %d leaf/leaves (attempt %d/%d): %s",
+                    len(too_hard),
+                    attempt,
+                    _DECOMPOSE_ATTEMPTS,
+                    ", ".join(too_hard),
+                )
+            prompt = "\n\n".join([prompt, *feedback_parts])
             continue
+
+        if too_hard:
+            if emitter is not None and plan_id is not None:
+                for slug in too_hard:
+                    await emitter.emit(
+                        LeafRejectedPredispatchEvent(
+                            plan_id=plan_id,
+                            leaf_slug=slug,
+                            p_success=scored[slug].p_success,
+                            failing_features=scored[slug].failing_features,
+                        )
+                    )
+            msg = (
+                "plan_rejected: difficulty gate rejected "
+                f"{', '.join(too_hard)} after {attempt} rounds"
+            )
+            raise PlanReviewError(msg)
 
         if validation_result.hard:
             hard_msgs = "; ".join(
@@ -356,6 +551,28 @@ async def decompose_plan(
                         leaf_slug=leaf.id,
                     )
                 )
+
+    # Every surviving leaf carries its score onward: a leaf between the two
+    # thresholds still dispatches, but flagged, and downstream triage reads the
+    # flag off the task rather than re-deriving it.
+    flag_below = difficulty_config["flag_below"]
+    for task in opus_plan["tasks"]:
+        leaf_score = scored.get(task["slug"])
+        if leaf_score is None:
+            continue
+        flagged = leaf_score.p_success < flag_below
+        task["difficulty_score"] = leaf_score.p_success
+        task["difficulty_flagged"] = flagged
+        if emitter is not None and plan_id is not None:
+            await emitter.emit(
+                LeafDifficultyScoredEvent(
+                    plan_id=plan_id,
+                    leaf_slug=task["slug"],
+                    p_success=leaf_score.p_success,
+                    features=leaf_score.features,
+                    flagged=flagged,
+                )
+            )
 
     authored_count = count_plan_tasks(plan)
     leaf_count = len(opus_plan["tasks"])
