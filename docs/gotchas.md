@@ -652,3 +652,14 @@ keep the CLAUDE.md index in sync.
   behavior. Closing the GitHub half needs the PR's real base, either a
   `base_branch(ref)` method on `GitBackend` backed by `gh pr view --json
   baseRefName`, or a base column on `tasks` populated at dispatch.
+- **Difficulty scoring runs AFTER F3 and shares its round budget**
+  `execute_plan_decompose` scores every leaf that survives validation; a leaf
+  under `difficulty.reject_below` sends the whole decomposition back to the
+  brain with its failing feature names, using the SAME `_DECOMPOSE_ATTEMPTS`
+  budget as the F3 informed re-ask. A second failure raises `PlanReviewError`
+  and no invalid graph is ever dispatched. The v1 weights in
+  `config/praxis.yaml` are hand-set and explicitly provisional: their SIGNS are
+  literature-grounded, their magnitudes are not, and the Capability Calibration
+  Loop replaces them behind the `DifficultyScorer` protocol. A leaf with no
+  `estimated_loc` is scored as if it used the whole LOC budget, on purpose: an
+  unstated size is the leaf the planner did not think about, not a free pass.

@@ -85,9 +85,10 @@ order is fixed and tested (`tests/test_worker_bible_priority.py`).
    budget the leaf is invalid and F3 or the difficulty gate must reject it.
 2. Edit locations: file paths, symbol names, and the target regions themselves.
 3. Acceptance: the verify command subset and its expected outcome.
-4. Interface contracts of direct neighbors: signatures only, never bodies.
-5. Working agreement and environment manifest.
-6. Repo memory and narrative context. First to be cut.
+4. Review feedback from a previous failed attempt (if any).
+5. Interface contracts of direct neighbors: signatures only, never bodies.
+6. Working agreement and environment manifest.
+7. Repo memory and narrative context. First to be cut.
 
 Rationale: edit-location and runnable-test signals dominate the success
 contribution; narrative contributes least (ORACLE-SWE, arXiv 2604.07789; Agent
@@ -128,3 +129,33 @@ in code and covered by tests.
 | Retry budget for split children | 2 attempts, not a fresh 3 | `core/leaf_split.py` |
 | Leaves per plan | `max_leaves_per_plan`, default 24 | `core/leaf_triage.py` |
 | Escalation attempts | the length of `implement_escalation` | `core/escalation.py` |
+
+## 7. Pre-dispatch difficulty scoring
+
+Every leaf that passes F3 is scored before any container is spawned. Features
+are cheap and pre-execution: declared files touched, LOC estimate against the
+profile limit, dependency depth, whether the acceptance check is runnable,
+context-pack tokens against the worker's per-leaf budget, historical pass rate
+for this model, repo size bucket, and whether the leaf type is `generic`.
+
+Scoring is a transparent hand-weighted logistic in `src/orchestrator/core/difficulty.py`,
+with weights in `config/praxis.yaml` under `difficulty:`. The weights are
+PROVISIONAL. Their signs are grounded (more files and more LOC lower success,
+per arXiv 2505.23419; a runnable acceptance check raises it, per arXiv
+2511.09030); their magnitudes are not claims. The Capability Calibration Loop
+replaces them with learned per-(model, project) Beta-posterior estimates
+(CADMAS-CTX, arXiv 2604.17950), swapping in behind the `DifficultyScorer`
+protocol without touching any call site.
+
+Gates:
+
+| `p_success` | Behavior |
+|-------------|----------|
+| below `reject_below` (0.35) | The leaf goes back to the planner with its failing features named. Shares F3's two informed rounds; a second failure rejects the whole plan. |
+| `reject_below` to `flag_below` (0.35 to 0.55) | Dispatch proceeds, but the leaf is flagged: the acceptance check becomes mandatory in the context pack and the flag is visible on SSE and the dashboard. |
+| at or above `flag_below` | Normal dispatch. |
+
+The prediction, the feature vector, and any pre-dispatch rejection are all
+recorded as capability events (`leaf_difficulty_scored`,
+`leaf_rejected_predispatch`), joined later against the leaf's `task_outcomes`
+row. That join is the calibration loop's training set.

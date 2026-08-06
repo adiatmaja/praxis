@@ -49,3 +49,18 @@ def test_standard_doc_lists_every_leaf_type():
 def test_standard_doc_states_the_numeric_anchors_are_correlational():
     text = DOC.read_text(encoding="utf-8").lower()
     assert "correlational" in text
+
+
+@pytest.mark.unit
+def test_standard_doc_documents_the_difficulty_thresholds():
+    text = DOC.read_text(encoding="utf-8")
+    assert "reject_below" in text
+    assert "flag_below" in text
+    assert "0.35" in text
+    assert "0.55" in text
+
+
+@pytest.mark.unit
+def test_standard_doc_names_the_scorer_weights_as_provisional():
+    text = DOC.read_text(encoding="utf-8")
+    assert "PROVISIONAL" in text or "provisional" in text
