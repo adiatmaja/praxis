@@ -283,7 +283,24 @@ class ReviewMixin:
                 )
                 return
 
-            base_branch = plan.get("plan_branch_name") if plan else None
+            # Judge the branch the merge ACTUALLY writes to, whenever we know it.
+            # `backend.merge(ref)` targets `ref.base`, so gating on
+            # `plans.plan_branch_name` asked the protected-branch carve-out about
+            # a different branch entirely: in auto-delegate single-branch mode
+            # dispatch reuses one caller-named work branch while basing it on the
+            # project default, so the two diverge and an auto-merge straight into
+            # `main` passed a gate whose whole purpose is to forbid exactly that.
+            #
+            # PARTIAL FIX, and the limit is structural. `PullRequestRef.from_url`
+            # recovers a base only for a `praxis-local://` ref; a GitHub PR URL
+            # does not encode one, so it yields `base=""`. Gating a GitHub PR on
+            # that empty string would treat every base as protected and silently
+            # disable auto-merge repo-wide, so GitHub keeps the old plan-branch
+            # behavior and its half of the bug. Closing that half needs the PR's
+            # real base, which means new surface: a `base_branch(ref)` method on
+            # `GitBackend` backed by `gh pr view --json baseRefName`, or a base
+            # column on `tasks` populated at dispatch.
+            base_branch = ref.base or (plan.get("plan_branch_name") if plan else None)
             if auto_merge_eligible(project, base_branch):
                 await _record("pass", None)
                 await backend.merge(ref)

@@ -376,3 +376,66 @@ async def test_reject_raises_on_an_unparseable_pr_url(
     task = await orch._tq.get_task(task_id)
     assert task is not None
     assert task["status"] == TaskStatus.PASSED
+
+
+@pytest.mark.unit
+async def test_auto_merge_is_judged_against_the_branch_the_merge_actually_targets(
+    orchestrator_fixture: tuple[Orchestrator, str, dict[str, Any]],
+    tmp_path: Any,
+) -> None:
+    """The protected-branch carve-out must see ``ref.base``, not the plan branch.
+
+    ``auto_merge_eligible`` was called with ``plans.plan_branch_name`` while
+    ``backend.merge`` acts on ``ref.base``.  Those are two different branches in
+    auto-delegate single-branch mode, where dispatch reuses one caller-named
+    work branch and bases it on the project default.  Here the plan branch is
+    ``plan/2026-06-01-auth`` (unprotected) and the ref base is ``main``
+    (protected), so judging the wrong one auto-merges straight into ``main``
+    past a carve-out that exists precisely to forbid it.
+
+    Local only, deliberately: a GitHub PR URL encodes no base, so
+    ``from_url`` yields ``base=""`` there and the gate still falls back to the
+    plan branch.  See the comment at the call site.
+    """
+    orch, task_id, project = orchestrator_fixture
+    local = dict(project)
+    local["repo_url"] = str(tmp_path / "repo.git")
+    local["auto_merge"] = 1
+    local["default_branch"] = "main"
+    await orch._tq.set_task_pr_url(task_id, _LOCAL_PR_URL)
+    await orch._tq.update_task_status(task_id, TaskStatus.REVIEWING)
+
+    backend = _local_backend()
+    orch._resolve_backend = lambda _url: backend
+
+    await orch.review_task(task_id, local)
+
+    backend.merge.assert_not_awaited()
+    task = await orch._tq.get_task(task_id)
+    assert task is not None
+    assert task["status"] == TaskStatus.PASSED
+
+
+@pytest.mark.unit
+async def test_auto_merge_still_reaches_merge_for_an_unprotected_base(
+    orchestrator_fixture: tuple[Orchestrator, str, dict[str, Any]],
+    tmp_path: Any,
+) -> None:
+    """The fix must not disable auto-merge, only aim it at the right branch."""
+    orch, task_id, project = orchestrator_fixture
+    local = dict(project)
+    local["repo_url"] = str(tmp_path / "repo.git")
+    local["auto_merge"] = 1
+    local["default_branch"] = "main"
+    await orch._tq.set_task_pr_url(task_id, _FEATURE_PR_URL)
+    await orch._tq.update_task_status(task_id, TaskStatus.REVIEWING)
+
+    backend = _local_backend()
+    orch._resolve_backend = lambda _url: backend
+
+    await orch.review_task(task_id, local)
+
+    backend.merge.assert_awaited_once_with(_FEATURE_REF)
+    task = await orch._tq.get_task(task_id)
+    assert task is not None
+    assert task["status"] == TaskStatus.MERGED
