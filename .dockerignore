@@ -12,3 +12,6 @@ htmlcov
 data/*.db
 docker/aider-agent
 node_modules
+bench/
+bench/.work/
+docs/bench/
