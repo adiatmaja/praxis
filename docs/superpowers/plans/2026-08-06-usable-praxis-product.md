@@ -3229,6 +3229,106 @@ Real measured number, per-phase timings, and every deviation from the
 documented path. Plus the doctor, init, and approvals-digest gotchas."
 ```
 
+### Phase A execution record (2026-08-06)
+
+Executed 2026-08-06, tasks 1 to 8 complete; task 9's timed walkthrough is NOT
+done and is the phase's one open deliverable (see below). Gate at the end: ruff
+format and check clean, mypy clean on 88 files, 1332 tests passing at 90.55
+percent coverage.
+
+Task commits in order: `2fca5e9`, `2a43698`, `b482740`, `7244044`, `3cc3de9`,
+`5d0c1a0`, `496a7ac`, `831508d`. Six further commits came out of review
+findings: `fb624d3`, `89893e5`, `1e2cb49`, `918e466`, `217bff5`, plus `fa62e3f`,
+which cleared the first item deferred out of the engine plan's Phase A.
+
+Tasks 3 and 4 were dispatched CONCURRENTLY (zero file overlap; task 4's declared
+dependency on 1, 2, and 3 is conceptual, not a code import). That worked, but it
+produced a defect neither agent could see: task 4's display label contained the
+literal `config/praxis.yaml`, which task 2's grep guard forbids in any module
+under `src/`. Both agents' scoped test runs were green and only the
+orchestrator's full-suite run at the join point caught it (`89893e5`). Parallel
+dispatch here requires a full-suite run at every join.
+
+**Defects in this plan's own verbatim code, corrected during execution.** Fix
+them here before anyone re-runs these tasks.
+
+1. Task 1's test used `@pytest.mark.parametrize("name,tag", ...)`. This repo's
+   ruff enforces PT006, which requires a tuple, so Step 5 could not have gone
+   green as written. Shipped as `("name", "tag")`.
+2. Task 1 Step 5 says "PASS (13 parametrized tests)". The Step 1 code defines 11.
+3. Task 2's `test_a_missing_file_yields_empty_settings_not_a_crash` asserts
+   `== {}` but cannot pass: `load_yaml_settings` folds every `PRAXIS_*` env var
+   into its result and the test sets `PRAXIS_CONFIG_PATH` itself. Fixed in the
+   code, by excluding exactly that variable from the overlay, since it is a
+   pointer to the file rather than a setting inside it.
+4. Task 2's test calls `EffectiveSettings.max_leaves_per_plan()`, which does not
+   exist. Substituted `escalation_policy(None)`.
+5. Task 3's `api/presets.py` snippet used `require_token` and
+   `from orchestrator.main import effective_settings`. The real pattern is
+   `verify_token` at router level plus `request.app.state.effective_settings`;
+   the plan's import would have been circular.
+6. Task 4's registry shipped three bad imports: `asyncio` and `dataclasses.field`
+   unused, and `Callable` from `typing` where ruff UP035 wants `collections.abc`.
+7. Task 6's MCP snippet used `PRAXIS_API` and `PRAXIS_TOKEN`. The client reads
+   `PRAXIS_BASE_URL` and `PRAXIS_AUTH_TOKEN`, so an operator pasting the snippet
+   got a silent failure. This was the single worst defect in the plan text.
+8. Task 8's test calls `PraxisClientError("connection refused")` with one
+   argument; the real signature takes two, `(code, message)`.
+9. Task 8's proposed `_error` replacement dropped the `message` key and changed
+   `error` from a machine-readable code to a stringified exception, which would
+   have broken existing callers. Kept the original shape and added `summary`.
+
+**Vacuous tests the plan specified, exposed only by mutation.** Task 6's
+`test_local_mode_writes_no_github_token` passed with its own mutation applied,
+because `build_env_file({"AUTH_TOKEN": "t"})` omits the key entirely while
+`init()` always passes it. Task 4's `test_the_expected_checks_are_registered`
+pinned only the set, not the registry order its own docstring promises. The two
+`image_is_stale` tests never touched the equality boundary, so `<` and `<=` were
+interchangeable.
+
+**Design defects found by review, not present in the plan text.** Doctor's
+per-check fix hints were unreachable: `CheckResult.__post_init__` stamped a
+generic pointer at construction, so all eleven of task 5's probes would have
+shipped the same docs link with every test green. `run_checks`'s `**context`
+would have handed every probe every fact, turning each check red for the wrong
+reason. `GET /api/doctor` could 500, because fact gathering ran outside the
+per-probe exception shield. `agent_image_freshness` returned a GREEN identical
+to a verified pass when it had compared nothing, which it always had in a
+container because no compose file mounted the entrypoint sources. `parse_env`
+kept an inline comment that both python-dotenv and Docker Compose strip, so
+reusing an existing `AUTH_TOKEN` wrote a corrupted value back and every
+configured MCP client would 401 against a green doctor row.
+
+**Open, and the reason Phase A is not closed:**
+
+Task 9's timed fresh-machine walkthrough was not run. It needs a human with a
+clock, a screen recording, a genuinely cold machine, and a real dispatch through
+to a reviewed PR. It also cannot be run as written today, because Step 1 clones
+`https://github.com/adiatmaja/praxis.git` and none of this work is pushed, so a
+fresh clone would measure a Praxis without any of it. Either push first or clone
+the local repo. `docs/walkthrough-15min.md` is deliberately NOT written, because
+a fabricated number is worse than none.
+
+**Deferred, in priority order:**
+
+1. `DEFAULT_WORKER_HARNESS` and `DEFAULT_WORKER_MODEL` are written to `.env` by
+   `praxis init` but forwarded into the orchestrator container by NEITHER compose
+   file, so the container resolves them from the mounted YAML and the operator's
+   preset choice is inert for the deployment `init` just started. `LM_STUDIO_URL`
+   IS forwarded, so the two halves of one preset disagree. This is the largest
+   remaining silent failure in the phase's own surface.
+2. `init()` itself has 0 percent test coverage; only its pure helpers are tested.
+3. `load_yaml_settings` is silent when the configured path does not exist, so a
+   typo reverts every default with no log line. It runs on every `_get_yaml()`,
+   so the log level and frequency need thought.
+4. `.env.example` does not document `PRAXIS_CONFIG_PATH`.
+5. `core/capabilities.py` has its own module-relative resolver for
+   `config/model_capabilities.json`, invisible to the grep guard.
+6. `praxis init` assumes its CWD is the repo root; run elsewhere it writes a
+   secret-bearing `.env` into that directory.
+7. The dashboard model dropdown can list the same model twice, once as a preset
+   option and once under "Other (from LM Studio)".
+
 **Phase A is complete.** Per the cross-plan execution order, the next work is
 the benchmark plan's Phase A, then the engine plan's Phases B and C, then the
 benchmark's Phases B and C, before returning here for Phase B.

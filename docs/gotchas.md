@@ -446,3 +446,47 @@ keep the CLAUDE.md index in sync.
   the top of a failing run's log is startup banner. Note that MCP tool
   DESCRIPTIONS also truncate, at 2 KB each, but Praxis was measured on
   2026-08-06 and its largest is 942 B, so there is nothing to fix there.
+- **`praxis doctor` is the front door to every problem**: `core/doctor.py`
+  registers eleven read-only checks, each with a fix hint;
+  `core/doctor_probes.py` holds the pure decision logic (facts in, verdict out)
+  so every check is testable with no Docker, network, or filesystem. Two checks
+  exist specifically to convert this project's oldest silent failures into red
+  lights: `agent_image_freshness` (an image older than its `entrypoint.sh` runs
+  stale logic while the source looks current) and `callback_url` (a port
+  mismatch 404s every agent callback, so tasks only ever finish via reconcile
+  and get marked failed even on success). A raising probe becomes a RED result
+  rather than an exception, and any RED makes the CLI exit non-zero; AMBER (for
+  example "local mode, no GitHub credential") does not. Add a check to `CHECKS`
+  and its probe together, or `run_checks` returns a RED "no probe registered".
+  Three things that are easy to get wrong and are now pinned by tests: probes
+  are pre-bound ZERO-ARGUMENT callables (a shared `**context` handed every probe
+  every fact and turned each check red for the wrong reason), a hintless RED
+  resolves its SPECIFIC hint from the registry in `CheckResult.__post_init__`
+  (the generic docs pointer is a last resort, not the default), and fact
+  gathering in `api/doctor.py` is guarded per UNIT via `_safe`, never per
+  exception type, because the endpoint whose job is diagnosing a broken machine
+  must answer 200 however broken that machine is. `agent_image_freshness`
+  reports AMBER, not GREEN, when it had no entrypoint source to compare against:
+  a green that checked nothing is the exact failure this check exists to remove,
+  which is why both compose files mount `./docker` read-only.
+- **`praxis init` is re-runnable and never eats your `.env`**: `cli/init.py`
+  merges only the keys in `MANAGED_KEYS` into an existing `.env`, preserving
+  every other key, its position, and every comment. It ends by running doctor and
+  exits with doctor's code, so "init succeeded" and "the installation works" are
+  the same claim. Its `.env` parser mirrors `python-dotenv`'s single-line grammar
+  deliberately, and a differential test grades it against the real parser: an
+  earlier version kept an inline comment that both python-dotenv and Docker
+  Compose strip, so reusing an existing `AUTH_TOKEN` wrote a corrupted value back
+  and every configured MCP client would 401 against a green doctor row. An empty
+  managed value means "clear this key" and `None` means "no opinion", which is
+  what lets switching worker preset fully replace the preset-derived keys instead
+  of leaving a stale endpoint behind.
+- **The approvals digest is rate-limited but the surfaces are not**:
+  `core/approvals.should_publish_digest` gates only the `approvals_digest` SSE
+  event (default every 6h, `approvals_digest_interval_h`). The MCP
+  `pending_approvals` tool, the digest line on `poll_task`/`poll_plan`, `praxis
+  pending`, and the dashboard badge all read live. Nothing parked means no event
+  at all: a badge that appears when there is nothing to do trains people to
+  ignore it, which defeats the purpose. Both the poll digest and the loop
+  publisher swallow their own failures, because an add-on that can wedge
+  `poll_task` or stop dispatch for every project is worse than no digest.

@@ -115,8 +115,20 @@ praxis/
 ## Commands
 
 ```bash
-# Setup
+# Setup (one command, idempotent, ends by verifying)
+uv run praxis init
+
+# Diagnose (read-only, exits non-zero on any red)
+uv run praxis doctor
+
+# See what is parked at the merge gate
+uv run praxis pending
+
+# Setup, manual equivalent of `praxis init`
 uv venv && uv sync --extra dev && cp .env.example .env
+
+# Build every image AgentManager can spawn (agent images are behind a profile)
+docker compose --profile agents build
 
 # Run — containerized (RECOMMENDED: survives terminal exit, restart: unless-stopped)
 docker compose -f docker-compose.yml -f docker-compose.local.yml up --build -d  # dev, hot-reload
@@ -352,6 +364,21 @@ the relevant subsystem. Condensed index:
   insertion order is what the client renders, so every state-returning tool puts
   a one-line summary first; a clipped log always says so, tailing the last
   `LOG_TAIL_CHARS`, never the head.
+- **`praxis doctor` is the front door to every problem**: eleven read-only checks
+  in `core/doctor.py`, pure decision logic in `core/doctor_probes.py`, live fact
+  gathering in `api/doctor.py`. Probes are pre-bound ZERO-ARGUMENT callables; a
+  hintless RED resolves its specific hint from the registry; gathering is guarded
+  per unit so the endpoint always answers 200; `agent_image_freshness` is AMBER,
+  never GREEN, when it had nothing to compare.
+- **`praxis init` is re-runnable and never eats your `.env`**: it merges only
+  `MANAGED_KEYS`, preserving every other key, position, and comment, and its
+  `.env` parser is graded against real `python-dotenv` by a differential test.
+  Empty means clear, `None` means no opinion.
+- **The approvals digest is rate-limited but the surfaces are not**: only the
+  `approvals_digest` SSE event is throttled (`approvals_digest_interval_h`,
+  default 6h); `pending_approvals`, the `poll_task`/`poll_plan` digest line,
+  `praxis pending`, and the dashboard badge all read live. Nothing parked means
+  no event at all.
 
 ## Documentation
 
