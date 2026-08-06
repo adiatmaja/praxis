@@ -6147,6 +6147,184 @@ git commit -m "docs: document difficulty scoring and retire the S1 stub note"
 
 ---
 
+### Phase C execution record (2026-08-07)
+
+Executed 2026-08-06 into 2026-08-07, tasks 19 to 23 plus three deferred backlog
+items, all committed on local `main` and NOT pushed. Gate at the end: ruff format
+and check clean, mypy clean on 84 files, 1626 tests passing at 91.46 percent
+coverage.
+
+Task commits in order: `2c61f56` (19), `866029a` (20), `c1c0faa` (21), `2f40247`
+(22), `738e18e` (23). Backlog commits: `73f538e` (engine item 2), `3a11933`
+(product item 5), `e0ab699` (engine item 4). One review commit: `46c693e`.
+
+**Concurrency.** Tasks 19+20 ran in parallel, then backlog items 2+5 in parallel,
+then engine item 4 alone. Tasks 21, 22, and 23 each ran alone. The full suite ran
+at every join.
+
+**Phase C's plan text was the weakest of the three phases.** Task 21 alone carried
+eight defects. The single most consequential finding is not a plan defect at all
+but an interaction between two tasks, recorded first.
+
+**THE FEATURE WOULD HAVE SHIPPED INERT BEHIND A GREEN SUITE.** Task 21 computes the
+difficulty score, stamps it on the in-memory `opus_plan` task dicts, and emits it as
+a capability event. Nothing wrote it to the database. `TaskQueue.activate_plan`
+inserted only `(id, plan_id, title, description, branch_name)`, so `tasks.difficulty_score`
+stayed NULL forever, and `orchestrator_review._run_leaf_triage` read it back as
+`None`, which `core/leaf_triage` renders as the literal `"not scored"`. Task 21's
+own Step 4 was supposed to fix this and was skipped, because `task_queue.py` was
+outside that task's declared file list. Task 22's plan-specified tests then set the
+column BY HAND (`UPDATE tasks SET difficulty_score = 0.44`), so they passed while
+the production path never populated it. Task 22's file list was widened to include
+`task_queue.py` and an end-to-end test through `activate_plan` was required. Proven
+by mutation: with persistence reverted, the plan's own tests reported `2 passed`
+while the added end-to-end tests reported `2 failed`. `activate_plan` now persists
+`difficulty_score` and `leaf_type`, and a non-numeric score is dropped at the write
+boundary rather than reaching `float()` in the per-tick dispatch loop.
+
+**Defects in this plan's own verbatim code, corrected during execution.**
+
+1. **Task 21's fixtures never reach the gate they test.** F3 runs BEFORE difficulty
+   scoring and rejects `estimated_loc > max_loc_delta` (300) and
+   `len(files) > max_files_touched` (5), at `core/leaf_validator.py:264` and `:281`.
+   The plan's "hopeless" fixture declares 900 LOC, so F3 rejects it and
+   `decompose_plan` raises an F3 error that never mentions difficulty. Both hopeless
+   tests, including the one asserting `match="difficulty"`, would have failed for the
+   wrong reason. Replaced with F3-legal fixtures verified empirically: healthy
+   0.9674, flagged 0.5094 (5 files, 300 LOC, generic), reject 0.0501 (same plus a
+   long `plan_text` giving `context_ratio` about 2.14).
+2. **Task 21's "borderline" fixture is not borderline.** 3 files and 220 LOC scores
+   **0.8620**, far above `flag_below` 0.55. Third time this plan series has shipped
+   boundary constants that do not hold.
+3. **`loc_ratio` can never be the failing feature on an F3-legal leaf**, because F3
+   caps LOC at the profile limit so the ratio maxes at 1.0. The plan asserts
+   `"loc_ratio" in second` for the re-ask prompt; the real driver is `context_ratio`.
+4. **Every fixture leaf is silently dropped before scoring.**
+   `drop_verification_only_leaves` scans title, description, and plan_text; the plan's
+   acceptance line matches `_VERIFY_ONLY_RE` while nothing in "Add a widget" matches
+   `_REAL_WORK_RE`, so `opus_plan["tasks"]` comes back EMPTY and `plan["tasks"][0]`
+   raises `IndexError`.
+5. **Task 21 would have broken 31 tests in a file it never names.** It dereferences
+   `effective_settings.difficulty_config` unguarded, but
+   `tests/test_execute_plan_decompose.py::_FakeEffective` has no such method.
+   Resolved with a `_resolve_difficulty_config` fallback to the module defaults, so a
+   missing config can never mean a missing gate.
+6. **Task 21's gate ordering discards F3's feedback.** Its difficulty branch
+   `continue`s before the violation-formatting block, so a leaf failing both gates on
+   round one is re-asked with only the difficulty critique and the F3 violations are
+   never communicated, guaranteeing a wasted round. Both critiques now share the one
+   re-ask.
+7. **Task 21 emits `features={}`**, contradicting `LeafDifficultyScoredEvent`'s own
+   docstring calling the vector the calibration loop's training data. The real vector
+   is emitted, ordered by contribution so the brain is told the biggest drag first.
+8. **Task 21's Step 6 mutation cannot verify what it claims:** `too_hard = []` leaves
+   flagging intact, so the flagged test stays green and only the reject path is
+   proven. The score itself was mutated instead.
+9. **Task 21's `_score_leaves` explains a score with different weights than produced
+   it**, reading `config["weights"]` raw while `build_scorer` merges the config over
+   `DEFAULT_WEIGHTS`; a partial operator weights dict would name the wrong culprits.
+10. **Task 22's threshold test could never pass.** `orchestrator_fixture` supplies a
+    bare `AsyncMock`, so an unconfigured `await difficulty_config()` yields a
+    `MagicMock`, and `float(MagicMock)` is **1.0**, flagging every scored leaf. The
+    plan's `test_an_unflagged_leaf_reports_flagged_false` (score 0.82) would have
+    failed.
+11. **Task 22's acceptance block is a tautology.** It assigns
+    `acceptance = plan_task.get("verification") or project.get("verify_cmd")` then,
+    when that is falsy, assigns `project.get("verify_cmd")` again, the value it just
+    proved falsy. `build_bible` already does that fallback internally, so it is dead
+    three times over, and its test could never pass because the fixture project has no
+    `verify_cmd`. Replaced with real behavior: a mandatory acceptance line injected
+    only when the leaf IS flagged and no check exists anywhere.
+12. **Task 20 did not account for an existing hardcoded count.**
+    `test_capability_event_types_contains_all_seven` pins the registry size; adding two
+    events makes it nine and turns the suite red. The plan never mentions it.
+13. **Task 19's `test_score_is_bounded_to_the_unit_interval` is vacuous against the
+    overflow clamp.** Its extreme vector yields a logit of about -326, short of
+    `math.exp`'s overflow threshold near -709, so the test passes with the clamp
+    removed. A magnitude-1000 vector (logit about -3299) genuinely raises
+    `OverflowError: math range error`; verified independently.
+14. **Task 19's module redefines `_RUNNABLE_SIGNAL`** while its own comment claims
+    "one definition of runnable across the engine". Copying a regex creates a second
+    definition that can drift. It is now imported from `core/leaf_validator`, so drift
+    is structurally impossible rather than merely commented against.
+15. **Task 23's doc tests were bare word-greps** (`assert "0.35" in text`), which pass
+    on any incidental occurrence. Replaced in `46c693e` with assertions that read the
+    shipped values from `config/praxis.yaml`, plus a new test pinning that the three
+    declarations of the thresholds agree (the decompose gate constants, the
+    `EffectiveSettings` fallbacks, and the YAML). Mutation-checked by drifting the YAML.
+16. The "Test-harness facts" table still claims `slow` is a registered marker. Only
+    `unit` and `integration` are. Flagged in Phase A and Phase B, still uncorrected.
+
+**Vacuous tests exposed by mutation.** Task 21's plan test
+`test_a_hopeless_leaf_twice_rejects_the_whole_plan` asserts only `pytest.raises`, so it
+passes even when the difficulty gate is given its OWN round budget instead of sharing
+F3's; an unshared but bounded budget still raises. Verified independently: widening
+`_DECOMPOSE_ATTEMPTS` to 5 left that test green while the added
+`len(router.prompts) == _DECOMPOSE_ATTEMPTS` assertion went red. Without it a
+pathological plan could re-ask the brain far past F3's cap with nothing failing loudly.
+
+**Deferred backlog: three of four cleared.**
+
+- **Engine item 2 CLEARED** (`73f538e`). Decision: make the six inert floor ranks
+  load-bearing rather than delete them, because `docs/decomposition-standard.md`
+  still asserts that ordering and deleting the constants would let doc and code drift
+  with nothing to catch it. `build_bible` now sorts every section by priority before
+  fitting. Verified independently to be a NO-OP on the default path: construction
+  order is already strictly ascending, so this is purely defensive.
+- **Product item 5 CLEARED** (`3a11933`). `model_capabilities.json` now resolves
+  through `core/settings_file.capabilities_file_path()`, so both config files share one
+  resolver seam and the grep guard covers both. Note the old code split `"config"` and
+  `"model_capabilities.json"` across two `Path()` operands, so the concatenated literal
+  never appeared in the file and a full-path grep would have missed it regardless: the
+  guard was blind by construction, not merely unextended.
+- **Engine item 4 CLEARED** (`e0ab699`). `DispatchRequest`, `POST /api/dispatch`, and
+  MCP `dispatch_task` now accept `files`, `verification`, and `neighbor_contracts`, so
+  decomposition-standard ranks 2 and 4 are reachable on the primary surface. The three
+  fields ride the existing `opus_plan` JSON path that `_build_worker_bible` already
+  reads, so no second mechanism and no migration. All optional; omitting them is
+  byte-identical to the previous behavior, pinned by its own test.
+- **Engine item 3 NOT CLEARED.** `verify_cmd` is still unreachable from dispatch, and a
+  leaf-supplied `verification` still shadows the project `verify_cmd` that the
+  mechanical gate actually runs; the `plan_spec` and improvement paths still never call
+  `validate_leaves`, so an unvalidated `"verification": "manual review"` can still
+  become the acceptance floor. This item has now been deferred TWICE, out of Phase B
+  and again out of Phase C. It should lead the next phase that opens the review or
+  validation path.
+
+**Still open, raised at the phase gate rather than fixed.**
+
+1. **Engine item 3**, above, twice deferred.
+2. **The threshold constants are declared in three places.** `_DEFAULT_REJECT_BELOW` /
+   `_DEFAULT_FLAG_BELOW` in the decompose gate, literals in
+   `EffectiveSettings.difficulty_config`, and `config/praxis.yaml`. They belong beside
+   `DEFAULT_WEIGHTS` in `core/difficulty.py`. `46c693e` pins that they agree, which
+   converts a silent divergence into a loud one but does not remove the duplication.
+3. **`files`, `verification`, and `neighbor_contracts` are not scrubbed** the way
+   `context` and `local_context` are on the dispatch path. This matches the
+   decomposition path, where a brain-authored `LeafTask` is not scrubbed either, but a
+   caller could embed a secret in a `verification` command string or a
+   `neighbor_contracts` snippet.
+4. **A missing `model_capabilities.json` degrades silently** to an empty catalog with
+   an INFO log. Pre-existing and deliberately tested
+   (`test_missing_file_yields_empty_catalog`), mirroring `load_yaml_settings`'s
+   fail-open for a missing `praxis.yaml`, but it means a path typo weakens every
+   capability decision without a warning.
+5. **`docs/decomposition-standard.md` section 4 omitted `review_feedback`** while the
+   code has carried `_P_FEEDBACK` since before this phase. Fixed in Task 23; noted
+   because it shows the doc and the priority ladder had already drifted once.
+6. Everything still open from Phase B remains open: no `Database` transaction API, a
+   superseded parent's container is never stopped, `agent_model` is a naming trap in the
+   attribution chain, and `orchestrator_fixture` is defined twice with different shapes.
+
+**Nothing in Phase C has been run live.** Every result here is from unit and
+integration tests. No difficulty score has ever gated a real dispatch, and no real
+container has been spawned for a flagged leaf.
+
+**Phase C is complete, and with it the whole decomposition-standard plan.** Per the
+cross-plan execution order, the next work is the benchmark plan's Phase B.
+
+---
+
 ## Parallel Execution Map
 
 - **Wave 1:** Task 1, Task 2 (both `Depends on: None`)
