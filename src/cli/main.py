@@ -10,9 +10,12 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
+from cli.doctor import doctor as _doctor
+
 
 app = typer.Typer(name="orchestrator-cli", help="AI Agent Orchestrator CLI")
 console = Console()
+app.command("doctor")(_doctor)
 
 
 def _api_url() -> str:

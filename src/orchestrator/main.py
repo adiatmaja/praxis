@@ -187,6 +187,7 @@ app = FastAPI(title="AI Agent Orchestrator", version="0.1.0", lifespan=lifespan)
 from orchestrator.api.context import router as context_router  # noqa: E402
 from orchestrator.api.dispatch import router as dispatch_router  # noqa: E402
 from orchestrator.api.docs import router as docs_router  # noqa: E402
+from orchestrator.api.doctor import router as doctor_router  # noqa: E402
 from orchestrator.api.events import router as events_router  # noqa: E402
 from orchestrator.api.execute_plan import router as execute_plan_router  # noqa: E402
 from orchestrator.api.git_state import router as git_state_router  # noqa: E402
@@ -218,6 +219,7 @@ app.include_router(lifecycle_router, prefix="/api")
 app.include_router(dispatch_router, prefix="/api")
 app.include_router(execute_plan_router, prefix="/api")
 app.include_router(git_state_router, prefix="/api")
+app.include_router(doctor_router, prefix="/api")
 
 
 @app.get("/health")
