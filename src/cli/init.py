@@ -78,7 +78,7 @@ _DEFAULT_PORT = 12323
 
 #: Files that must all be present for a directory to be the Praxis repo root.
 #: Three of them, not one, because ``init`` is CWD-relative everywhere (``.env``,
-#: ``docker compose``, ``config/praxis.yaml``) and any single generic marker
+#: ``docker compose``, the settings YAML) and any single generic marker
 #: would accept a sibling checkout, which is the near-miss directory an
 #: operator actually runs this from.
 _ROOT_MARKERS: tuple[str, ...] = (
@@ -154,7 +154,7 @@ def repo_root_problem(directory: Path) -> str | None:
 def _require_repo_root() -> Path:
     """Return the CWD, refusing to continue anywhere but the Praxis repo root.
 
-    ``init`` resolves ``.env``, ``docker compose`` and ``config/praxis.yaml``
+    ``init`` resolves ``.env``, ``docker compose`` and the settings YAML
     relative to the CWD, so run from anywhere else it writes a ``.env``
     holding a live ``AUTH_TOKEN`` into an unrelated directory and configures
     nothing.  Refusing loudly is the fix rather than auto-locating the root:
