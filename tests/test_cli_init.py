@@ -7,8 +7,10 @@ still prints "Praxis is running", and the damage surfaces weeks later as a
 reverted timezone or a worker model truncated at its first space.
 """
 
+import inspect
 import io
 import json
+import re
 import tomllib
 from pathlib import Path
 
@@ -33,6 +35,35 @@ from cli.init import (
 
 
 REPO = Path(__file__).resolve().parents[1]
+
+
+@pytest.fixture(autouse=True)
+def _never_touch_the_real_env(monkeypatch):
+    """A session-level net: forgetting `fake_root` must not reach the real .env.
+
+    `init()` is CWD-relative throughout, and the repository's own root
+    satisfies its own guard, so a test that forgot to chdir into `fake_root`
+    would sail past `_require_repo_root` and could go on to answer "yes" to
+    `Update .env?`, rewriting the operator's live file.  Every current test
+    is correctly scoped (verified), but the hazard is structural, so this
+    fixture stands guard for whatever test is added next.
+
+    Cheap and inert: it never reads or writes `.env` itself, only compares
+    `Path.cwd()` against the checkout root immediately before `init()` would
+    otherwise run.
+    """
+    real_init = init_mod.init
+
+    def _guarded_init():
+        cwd = Path.cwd().resolve()
+        assert cwd != REPO.resolve(), (
+            "a test is about to call init() from the real repo root; "
+            "did it forget the `fake_root` fixture?"
+        )
+        return real_init()
+
+    monkeypatch.setattr(init_mod, "init", _guarded_init)
+
 
 # Shaped like this repo's real .env: unmanaged keys, a comment, a blank line.
 REAL_SHAPED_ENV = (
@@ -557,7 +588,13 @@ def test_holding_enter_chooses_a_preset_init_can_actually_satisfy(monkeypatch):
     help: the whole premise of the default path is that nobody reads.
     """
     _hold_enter(monkeypatch)
-    chosen = init_mod._choose_preset(init_mod._fetch_presets_or_defaults())
+    presets = init_mod._fetch_presets_or_defaults()
+    # An unresolvable config falls back to `_FALLBACK_PRESET`, a single entry
+    # whose `requires` is `[]` by construction: without this, the assertion
+    # below holds no matter what the real menu or `_default_preset_index`
+    # actually did, which is exactly the vacuous pass this test is for.
+    assert len(presets) > 1, "config/praxis.yaml did not resolve to a real menu"
+    chosen = init_mod._choose_preset(presets)
     assert chosen["requires"] == []
 
 
@@ -684,9 +721,81 @@ def test_another_projects_checkout_is_not_the_root(fake_root):
 
 
 @pytest.mark.unit
+def test_a_renamed_fork_that_keeps_the_console_script_is_the_root(fake_root):
+    """A downstream fork renaming the project must not be locked out.
+
+    Praxis is positioned as open source and provider-agnostic, so a renamed
+    fork is a real user. The entry point (`cli.main:app`) is the same code
+    regardless of what `[project] name` calls itself; the console script is
+    the marker that actually makes this checkout runnable as `praxis init`.
+    """
+    (fake_root / "pyproject.toml").write_text(
+        '[project]\nname = "acme-praxis-fork"\n\n'
+        '[project.scripts]\npraxis = "cli.main:app"\n',
+        encoding="utf-8",
+    )
+    assert init_mod.repo_root_problem(fake_root) is None
+
+
+@pytest.mark.unit
+def test_a_differently_cased_name_is_still_the_root(fake_root):
+    """PEP 503 says `Praxis` and `praxis` name the same project."""
+    (fake_root / "pyproject.toml").write_text(
+        '[project]\nname = "Praxis"\n', encoding="utf-8"
+    )
+    assert init_mod.repo_root_problem(fake_root) is None
+
+
+@pytest.mark.unit
+def test_three_markers_present_but_genuinely_not_praxis_is_still_refused(fake_root):
+    """Neither marker being satisfiable is what actually earns the refusal.
+
+    A directory that has all three generic marker FILES but whose
+    `pyproject.toml` neither names the project `praxis` (even normalized) nor
+    declares a `praxis` console script must still be refused.
+    """
+    (fake_root / "pyproject.toml").write_text(
+        '[project]\nname = "not-praxis-at-all"\n\n'
+        '[project.scripts]\nsomething-else = "x:y"\n',
+        encoding="utf-8",
+    )
+    assert init_mod.repo_root_problem(fake_root) is not None
+
+
+@pytest.mark.unit
 def test_a_malformed_pyproject_is_not_the_root(fake_root):
     """Unreadable is not a pass. Failing open here defeats the whole guard."""
     (fake_root / "pyproject.toml").write_text("[project\nname =", encoding="utf-8")
+    assert init_mod.repo_root_problem(fake_root) is not None
+
+
+@pytest.mark.unit
+def test_a_pyproject_where_project_is_a_string_is_not_the_root(fake_root):
+    """`[project]` parsing to a string, not a table, must not raise.
+
+    `data.get("project", {}).get("name", "")` assumes `project` parsed to a
+    table; when it did not, `.get` does not exist on a `str`, and the
+    operator gets a raw traceback from the first command they ever run.
+    """
+    (fake_root / "pyproject.toml").write_text('project = "oops"\n', encoding="utf-8")
+    assert init_mod.repo_root_problem(fake_root) is not None
+
+
+@pytest.mark.unit
+def test_a_pyproject_where_project_is_an_array_is_not_the_root(fake_root):
+    """Same failure mode as the string case, with a list instead."""
+    (fake_root / "pyproject.toml").write_text(
+        'project = ["a", "b"]\n', encoding="utf-8"
+    )
+    assert init_mod.repo_root_problem(fake_root) is not None
+
+
+@pytest.mark.unit
+def test_a_pyproject_where_name_is_not_a_string_is_not_the_root(fake_root):
+    """A non-string `name` must read as "no name", not crash or match."""
+    (fake_root / "pyproject.toml").write_text(
+        "[project]\nname = 42\n", encoding="utf-8"
+    )
     assert init_mod.repo_root_problem(fake_root) is not None
 
 
@@ -709,6 +818,35 @@ def test_init_refuses_to_run_outside_the_repo_root(tmp_path, monkeypatch):
 
     assert exit_info.value.exit_code == 1
     assert not (tmp_path / ".env").exists()
+
+
+@pytest.mark.unit
+def test_the_guard_runs_before_any_prompt_is_issued(tmp_path, monkeypatch):
+    """The guard's whole point is a secret written before a prompt can stall it.
+
+    Moving `_require_repo_root()` to after all four prompts still leaves the
+    write refused (the test above catches that half), but an operator who
+    has already answered a prompt by the time the refusal fires has been
+    asked something pointless in a directory `init` was never going to use.
+    """
+    monkeypatch.chdir(tmp_path)
+    calls: list[str] = []
+
+    class _RecordingPrompt:
+        @staticmethod
+        def ask(prompt="", **kwargs):
+            calls.append(str(prompt))
+            return kwargs.get("default")
+
+    for name in ("Confirm", "IntPrompt", "Prompt"):
+        monkeypatch.setattr(init_mod, name, _RecordingPrompt)
+    _stub_the_world(monkeypatch)
+
+    with pytest.raises(typer.Exit) as exit_info:
+        init_mod.init()
+
+    assert exit_info.value.exit_code == 1
+    assert calls == []
 
 
 @pytest.mark.unit
@@ -989,6 +1127,55 @@ def test_declining_the_update_makes_the_rest_of_the_run_follow_the_file(
 
 
 @pytest.mark.unit
+def test_init_actually_calls_print_next_steps(fake_root, monkeypatch):
+    """Deleting the call from `init()` left the whole suite at 88 passed.
+
+    The existing next-steps coverage invokes `_print_next_steps` directly, so
+    nothing pinned that the entry point calls it at all.
+    """
+    calls = []
+    monkeypatch.setattr(
+        init_mod,
+        "_print_next_steps",
+        lambda *args, **kwargs: calls.append((args, kwargs)),
+    )
+
+    _run_init(monkeypatch)
+
+    assert len(calls) == 1
+
+
+@pytest.mark.unit
+def test_declining_the_update_reports_the_worker_config_actually_on_disk(
+    fake_root, monkeypatch
+):
+    """The decline path must not claim a preset that was never written.
+
+    Answer "no" to `Update .env?` after picking `gemini-agy`: the file still
+    says `DEFAULT_WORKER_HARNESS=opencode` / `DEFAULT_WORKER_MODEL=qwen3-32b`,
+    so the printed note has to describe THAT, not the preset the operator was
+    about to pick before declining.
+    """
+    (fake_root / ".env").write_text(
+        "AUTH_TOKEN=keepme\n"
+        "PORT=9999\n"
+        "DEFAULT_WORKER_HARNESS=opencode\n"
+        "DEFAULT_WORKER_MODEL=qwen3-32b\n",
+        encoding="utf-8",
+    )
+    buffer = io.StringIO()
+    monkeypatch.setattr(
+        init_mod, "console", Console(file=buffer, width=200, no_color=True)
+    )
+
+    _run_init(monkeypatch, {"Update": False, "Preset": 2})
+
+    printed = buffer.getvalue()
+    assert "qwen3-32b" in printed
+    assert "Gemini 3.6 Flash" not in printed
+
+
+@pytest.mark.unit
 def test_init_builds_the_agent_images_before_starting_the_orchestrator(
     fake_root, monkeypatch
 ):
@@ -1025,3 +1212,30 @@ def test_an_orchestrator_that_never_becomes_healthy_fails_without_a_verdict(
 
     assert calls["exit_code"] == 1
     assert calls["doctor"] == []
+
+
+@pytest.mark.unit
+def test_cli_doctor_exposes_every_name_run_doctor_imports():
+    """`_run_doctor` is un-stubbed by nothing in this suite; its import has to hold.
+
+    `_compose` and `_wait_for_health` stay stubbed on purpose (running a real
+    `docker compose` in a unit test would be worse), which is exactly what
+    makes `_run_doctor`'s `from cli.doctor import ...` line the one piece of
+    real wiring nothing else here exercises.  Renaming a private helper it
+    imports (`_payload_for`, `_unreachable_payload`) is an `ImportError` on
+    the LAST line of `init()`, after the install otherwise succeeded, and
+    that measured 95 passed here beforehand.
+
+    Names are extracted from `_run_doctor`'s own source rather than
+    hardcoded, so this cannot itself drift from what it actually imports.
+    """
+    source = inspect.getsource(init_mod._run_doctor)
+    match = re.search(r"from cli\.doctor import (.+)", source)
+    assert match, "expected _run_doctor to import names from cli.doctor"
+    names = [n.strip() for n in match.group(1).split(",")]
+    assert names, "expected at least one imported name"
+
+    import cli.doctor as doctor_mod
+
+    missing = [name for name in names if not hasattr(doctor_mod, name)]
+    assert missing == [], f"cli.doctor no longer exposes: {missing}"

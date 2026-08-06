@@ -89,8 +89,15 @@ _ROOT_MARKERS: tuple[str, ...] = (
 
 #: The ``[project] name`` those markers have to belong to.  The three files
 #: above are shapes any Python service can have; the name is what makes them
-#: THIS repository.
+#: THIS repository.  Already PEP 503 normal form, so comparing against it
+#: after normalizing a candidate name is a same-shape comparison.
 _PROJECT_NAME = "praxis"
+
+#: The console script a fork must keep to be accepted under a different
+#: ``[project] name``.  See :func:`_has_praxis_console_script`.
+_CONSOLE_SCRIPT = "praxis"
+
+_NAME_SEPARATORS = re.compile(r"[-_.]+")
 
 _FALLBACK_PRESET: dict[str, Any] = {
     "name": "local-lmstudio",
@@ -107,25 +114,82 @@ def generate_token() -> str:
     return secrets.token_urlsafe(32)
 
 
+def _read_pyproject(path: Path) -> dict[str, Any]:
+    """Parse a ``pyproject.toml``, or return {} for anything unreadable.
+
+    Shared by :func:`_pyproject_name` and :func:`_has_praxis_console_script`
+    so a candidate directory is read and parsed once rather than twice.
+
+    Args:
+        path: Path to the file to read.
+
+    Returns:
+        The parsed TOML document, or {} when the file cannot be read or
+        parsed.
+    """
+    try:
+        return tomllib.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError):
+        return {}
+
+
+def _project_table(path: Path) -> dict[str, Any]:
+    """Return a ``pyproject.toml``'s ``[project]`` table, or {} if it is not one.
+
+    ``[project]`` parsing to anything other than a table (a bare string, an
+    array) is exactly as "not a project table" as the file being unreadable:
+    calling ``.get`` on it would raise, and a guard that raises on malformed
+    input instead of refusing is not a guard.
+    """
+    project = _read_pyproject(path).get("project")
+    return project if isinstance(project, dict) else {}
+
+
 def _pyproject_name(path: Path) -> str:
     """Return a ``pyproject.toml``'s ``[project] name``, or "" if unreadable.
 
-    Unreadable deliberately yields "", never the expected name: a guard that
-    fails open on malformed input is not a guard.
+    Unreadable AND structurally odd both yield "", never the expected name,
+    and never a raised exception: ``[project]`` not being a table, or `name`
+    not being a string, are exactly as "not the project name" as a missing
+    file, and a guard that fails open on any of them is not a guard.
 
     Args:
         path: Path to the file to read.
 
     Returns:
         The declared project name, or "" when the file cannot be read or
-        parsed or declares no name.
+        parsed, ``[project]`` is not a table, or it declares no string name.
     """
-    try:
-        data = tomllib.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError):
-        return ""
-    name = data.get("project", {}).get("name", "")
+    name = _project_table(path).get("name", "")
     return name if isinstance(name, str) else ""
+
+
+def _has_praxis_console_script(path: Path) -> bool:
+    """Whether ``path``'s ``[project.scripts]`` declares a ``praxis`` command.
+
+    A downstream fork that renames ``[project] name`` is still a Praxis
+    checkout if it kept this: the entry point (``cli.main:app``) is the same
+    code regardless of what the project calls itself.  Fails closed like
+    :func:`_pyproject_name`, on the same parsed TOML.
+
+    Args:
+        path: Path to the file to read.
+
+    Returns:
+        True when the file parses and its ``[project.scripts]`` table
+        declares a ``praxis`` command.
+    """
+    scripts = _project_table(path).get("scripts")
+    return isinstance(scripts, dict) and _CONSOLE_SCRIPT in scripts
+
+
+def _normalize_project_name(name: str) -> str:
+    """PEP 503 normalize a project name: lowercase, runs of ``-_.`` collapsed.
+
+    ``Praxis`` and ``praxis`` name the same project under PEP 503; a bare
+    ``!=`` string comparison refuses the second for nothing but casing.
+    """
+    return _NAME_SEPARATORS.sub("-", name).lower()
 
 
 def repo_root_problem(directory: Path) -> str | None:
@@ -144,11 +208,18 @@ def repo_root_problem(directory: Path) -> str | None:
     for marker in _ROOT_MARKERS:
         if not (directory / marker).is_file():
             return f"no {marker} here"
-    name = _pyproject_name(directory / "pyproject.toml")
-    if name != _PROJECT_NAME:
-        found = repr(name) if name else "a pyproject.toml that declares no name"
-        return f"pyproject.toml here is {found}, not {_PROJECT_NAME!r}"
-    return None
+    pyproject = directory / "pyproject.toml"
+    name = _pyproject_name(pyproject)
+    if _normalize_project_name(name) == _PROJECT_NAME:
+        return None
+    if _has_praxis_console_script(pyproject):
+        return None
+    found = repr(name) if name else "a pyproject.toml that declares no name"
+    return (
+        f"pyproject.toml here is {found}, not {_PROJECT_NAME!r} (even "
+        "normalized), and [project.scripts] does not declare a `praxis` "
+        "command either"
+    )
 
 
 def _require_repo_root() -> Path:
@@ -178,14 +249,16 @@ def _require_repo_root() -> Path:
     console.print(f"  Looked in: {cwd}", highlight=False)
     console.print(
         f"  Expected:  {', '.join(_ROOT_MARKERS)}, with pyproject.toml naming "
-        f"the project {_PROJECT_NAME!r}",
+        f"the project {_PROJECT_NAME!r} (or declaring a `praxis` console "
+        "script, for a renamed fork)",
         highlight=False,
     )
     console.print(f"  Found:     {problem}", highlight=False)
     console.print(
-        "\nNothing was written. `cd` into your praxis checkout and re-run; "
-        "init writes a .env holding a live AUTH_TOKEN and will not leave one "
-        "in an unrelated directory.",
+        "\nNothing was written. `praxis init` only runs from the Praxis "
+        "repository root, or a fork whose pyproject.toml still declares a "
+        "`praxis` console script; it writes a .env holding a live "
+        "AUTH_TOKEN and will not leave one in an unrelated directory.",
         highlight=False,
     )
     raise typer.Exit(code=1)
@@ -653,8 +726,27 @@ def cli_env_exports(api_url: str, token: str) -> dict[str, str]:
     return {"ORCHESTRATOR_URL": api_url, "ORCHESTRATOR_TOKEN": token}
 
 
-def _print_next_steps(api_url: str, token: str, preset: Mapping[str, Any]) -> None:
-    """Print the MCP snippet, the CLI env vars, and the worker-defaults caveat."""
+def _print_next_steps(
+    api_url: str,
+    token: str,
+    preset: Mapping[str, Any],
+    *,
+    preset_written: bool = True,
+) -> None:
+    """Print the MCP snippet, the CLI env vars, and the worker-defaults caveat.
+
+    Args:
+        api_url: Base URL the running orchestrator answers on.
+        token: Value of ``AUTH_TOKEN`` for this installation.
+        preset: The worker preset to describe in the caveat.  When
+            ``preset_written`` is False this must already reflect what is
+            actually on disk (see ``init``'s decline branch), not the preset
+            the operator picked and then declined to write.
+        preset_written: Whether ``preset`` is what `.env` was just written
+            with.  False on the decline path, where nothing was written and
+            the caveat has to describe the file's existing contents instead
+            of claiming a preset it did not put there.
+    """
     from orchestrator.core.settings_file import config_file_path
 
     console.print("\n[green]Praxis is running.[/green]")
@@ -677,12 +769,22 @@ def _print_next_steps(api_url: str, token: str, preset: Mapping[str, Any]) -> No
     # so the preset written above is what the container resolves. The mounted
     # settings YAML is still the fallback and still applies to a key `.env`
     # does not set, which is why the doctor's own reading is the one to trust.
-    console.print(
-        f"\n[yellow]Note:[/yellow] preset {preset['name']!r} was written to .env and "
-        f"is forwarded into the container, where it overrides the worker defaults in "
-        f"{config_file_path()}. Check the worker row in the table below for what the "
-        "orchestrator actually resolved."
-    )
+    if preset_written:
+        console.print(
+            f"\n[yellow]Note:[/yellow] preset {preset['name']!r} was written to .env "
+            f"and is forwarded into the container, where it overrides the worker "
+            f"defaults in {config_file_path()}. Check the worker row in the table "
+            "below for what the orchestrator actually resolved."
+        )
+    else:
+        console.print(
+            f"\n[yellow]Note:[/yellow] .env was left unchanged, so the worker config "
+            f"it already has (DEFAULT_WORKER_HARNESS={preset['harness']!r}, "
+            f"DEFAULT_WORKER_MODEL={preset['model']!r}) is what is forwarded into the "
+            f"container, not the preset just picked above. It still overrides the "
+            f"worker defaults in {config_file_path()}. Check the worker row in the "
+            "table below for what the orchestrator actually resolved."
+        )
 
 
 def init() -> None:
@@ -714,11 +816,21 @@ def init() -> None:
 
     values = _managed_values(token=token, gh_token=gh_token, port=port, preset=preset)
     env_text = merge_env(existing, values) if existing else build_env_file(values)
+    preset_written = True
     if existing and not Confirm.ask(f"Update {env_path}?", default=True):
         # Compose reads .env, not these variables, so the rest of the run has
         # to follow the file rather than the answers it just discarded.
         token = current.get("AUTH_TOKEN", token)
         port = current.get("PORT", port)
+        # The chosen preset was never written either: what actually landed
+        # in the container is whatever the file already had, so the
+        # next-steps caveat has to describe THAT, not the declined choice.
+        preset = {
+            **preset,
+            "harness": current.get("DEFAULT_WORKER_HARNESS", ""),
+            "model": current.get("DEFAULT_WORKER_MODEL", ""),
+        }
+        preset_written = False
         console.print("[yellow]Left .env unchanged; using its current values.[/yellow]")
     else:
         env_path.write_text(env_text, encoding="utf-8")
@@ -740,7 +852,7 @@ def init() -> None:
         )
         raise typer.Exit(code=1)
 
-    _print_next_steps(api_url, token, preset)
+    _print_next_steps(api_url, token, preset, preset_written=preset_written)
 
     console.print("\nVerifying the installation:\n")
     raise typer.Exit(code=_run_doctor(api_url, token))
