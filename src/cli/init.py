@@ -18,6 +18,7 @@ import re
 import secrets
 import subprocess  # nosec B404 - docker compose is the interface
 import time
+import tomllib
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -75,6 +76,22 @@ _ESCAPED: dict[str, str] = {
 
 _DEFAULT_PORT = 12323
 
+#: Files that must all be present for a directory to be the Praxis repo root.
+#: Three of them, not one, because ``init`` is CWD-relative everywhere (``.env``,
+#: ``docker compose``, ``config/praxis.yaml``) and any single generic marker
+#: would accept a sibling checkout, which is the near-miss directory an
+#: operator actually runs this from.
+_ROOT_MARKERS: tuple[str, ...] = (
+    "pyproject.toml",
+    ".env.example",
+    "docker-compose.yml",
+)
+
+#: The ``[project] name`` those markers have to belong to.  The three files
+#: above are shapes any Python service can have; the name is what makes them
+#: THIS repository.
+_PROJECT_NAME = "praxis"
+
 _FALLBACK_PRESET: dict[str, Any] = {
     "name": "local-lmstudio",
     "label": "Local GPU via LM Studio",
@@ -88,6 +105,90 @@ _FALLBACK_PRESET: dict[str, Any] = {
 def generate_token() -> str:
     """Return a fresh URL-safe auth token."""
     return secrets.token_urlsafe(32)
+
+
+def _pyproject_name(path: Path) -> str:
+    """Return a ``pyproject.toml``'s ``[project] name``, or "" if unreadable.
+
+    Unreadable deliberately yields "", never the expected name: a guard that
+    fails open on malformed input is not a guard.
+
+    Args:
+        path: Path to the file to read.
+
+    Returns:
+        The declared project name, or "" when the file cannot be read or
+        parsed or declares no name.
+    """
+    try:
+        data = tomllib.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError):
+        return ""
+    name = data.get("project", {}).get("name", "")
+    return name if isinstance(name, str) else ""
+
+
+def repo_root_problem(directory: Path) -> str | None:
+    """Say why ``directory`` is not the Praxis repo root, or None if it is.
+
+    A reason rather than a bool, because the whole value of this check is the
+    error message: "wrong directory" leaves the operator guessing which one is
+    right.
+
+    Args:
+        directory: Candidate root, normally the process CWD.
+
+    Returns:
+        A short human-readable reason, or None when ``directory`` IS the root.
+    """
+    for marker in _ROOT_MARKERS:
+        if not (directory / marker).is_file():
+            return f"no {marker} here"
+    name = _pyproject_name(directory / "pyproject.toml")
+    if name != _PROJECT_NAME:
+        found = repr(name) if name else "a pyproject.toml that declares no name"
+        return f"pyproject.toml here is {found}, not {_PROJECT_NAME!r}"
+    return None
+
+
+def _require_repo_root() -> Path:
+    """Return the CWD, refusing to continue anywhere but the Praxis repo root.
+
+    ``init`` resolves ``.env``, ``docker compose`` and ``config/praxis.yaml``
+    relative to the CWD, so run from anywhere else it writes a ``.env``
+    holding a live ``AUTH_TOKEN`` into an unrelated directory and configures
+    nothing.  Refusing loudly is the fix rather than auto-locating the root:
+    silently relocating an operator's write is its own surprise, and a secret
+    is the wrong thing to be surprised by.
+
+    Returns:
+        The current working directory, once it is known to be the root.
+
+    Raises:
+        typer.Exit: With code 1, before anything has been written.
+    """
+    cwd = Path.cwd()
+    problem = repo_root_problem(cwd)
+    if problem is None:
+        return cwd
+    console.print(
+        "[red]`praxis init` must run from the Praxis repository root.[/red]",
+        highlight=False,
+    )
+    console.print(f"  Looked in: {cwd}", highlight=False)
+    console.print(
+        f"  Expected:  {', '.join(_ROOT_MARKERS)}, with pyproject.toml naming "
+        f"the project {_PROJECT_NAME!r}",
+        highlight=False,
+    )
+    console.print(f"  Found:     {problem}", highlight=False)
+    console.print(
+        "\nNothing was written. `cd` into your praxis checkout and re-run; "
+        "init writes a .env holding a live AUTH_TOKEN and will not leave one "
+        "in an unrelated directory.",
+        highlight=False,
+    )
+    raise typer.Exit(code=1)
 
 
 def _render_value(value: str) -> str:
@@ -589,11 +690,16 @@ def init() -> None:
 
     Raises:
         typer.Exit: Always. The exit code is the doctor's verdict, so a
-            scripted install can gate on whether the result actually works.
+            scripted install can gate on whether the result actually works,
+            or 1 when this is not the Praxis repo root.
     """
     console.print("[bold]praxis init[/bold]\n")
 
-    env_path = Path(".env")
+    # First, before any prompt and long before any write: everything below is
+    # CWD-relative, so the wrong CWD means a secret in the wrong directory.
+    root = _require_repo_root()
+
+    env_path = root / ".env"
     existing = env_path.read_text(encoding="utf-8") if env_path.is_file() else ""
     current = parse_env(existing)
 

@@ -494,6 +494,46 @@ def _hold_enter(monkeypatch):
         monkeypatch.setattr(init_mod, name, _Default)
 
 
+def _stub_the_world(monkeypatch):
+    """Replace everything `init` does outside the working directory.
+
+    Without this an `init()` under test shells out to a real `docker compose
+    build`, so the stubs are what make the entry point testable at all rather
+    than a convenience.
+
+    Returns:
+        The recorded `docker compose` argument lists, in call order.
+    """
+    compose_calls: list[list[str]] = []
+
+    def _fake_compose(args, _what):
+        compose_calls.append(args)
+
+    monkeypatch.setattr(init_mod, "_compose", _fake_compose)
+    monkeypatch.setattr(init_mod, "_wait_for_health", lambda _url, _timeout_s=180: True)
+    monkeypatch.setattr(init_mod, "_run_doctor", lambda _url, _token: 0)
+    return compose_calls
+
+
+@pytest.fixture
+def fake_root(tmp_path, monkeypatch):
+    """A directory that satisfies init's repo-root guard, chdir'd into.
+
+    Real marker files rather than a monkeypatched guard: stubbing the guard
+    out is how a test stays green after the guard stops working, and this
+    fixture exists precisely so the guard runs for real in every `init()` test
+    below.  `monkeypatch.chdir` is also what keeps those tests off the
+    repository's own `.env`, which they must never touch.
+    """
+    (tmp_path / "pyproject.toml").write_text(
+        '[project]\nname = "praxis"\n', encoding="utf-8"
+    )
+    (tmp_path / ".env.example").write_text("AUTH_TOKEN=\n", encoding="utf-8")
+    (tmp_path / "docker-compose.yml").write_text("services: {}\n", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    return tmp_path
+
+
 @pytest.mark.unit
 def test_holding_enter_chooses_a_preset_init_can_actually_satisfy(monkeypatch):
     """Run against the real config/praxis.yaml, because that is what ships.
@@ -581,6 +621,104 @@ def test_switching_preset_replaces_every_preset_derived_key(monkeypatch):
     assert "api.z.ai" not in merged
     assert "DEFAULT_WORKER_HARNESS=agy" in merged
     assert _dotenv(merged)["DEFAULT_WORKER_MODEL"] == "Gemini 3.6 Flash (High)"
+
+
+@pytest.mark.unit
+def test_the_real_repo_root_satisfies_the_guard():
+    """The guard's markers must describe THIS repo, not an idea of one.
+
+    Asserted against the real checkout so a marker that drifts (a renamed
+    `.env.example`, a moved compose file) fails here rather than by locking
+    every operator out of the one command that sets Praxis up.
+    """
+    assert init_mod.repo_root_problem(REPO) is None
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("missing", "expected"),
+    [
+        pytest.param("pyproject.toml", "pyproject.toml", id="no-pyproject"),
+        pytest.param(".env.example", ".env.example", id="no-env-example"),
+        pytest.param("docker-compose.yml", "docker-compose.yml", id="no-compose"),
+    ],
+)
+def test_a_directory_missing_any_marker_is_not_the_root(fake_root, missing, expected):
+    """Every marker is load-bearing; any single one alone is not enough.
+
+    `pyproject.toml` on its own would accept any Python project, and a lone
+    `.env.example` would accept a sibling checkout, which is exactly the kind
+    of near-miss directory an operator actually runs this from.
+    """
+    (fake_root / missing).unlink()
+    problem = init_mod.repo_root_problem(fake_root)
+    assert problem is not None
+    assert expected in problem
+
+
+@pytest.mark.unit
+def test_another_projects_checkout_is_not_the_root(fake_root):
+    """The markers are generic; the project NAME is what makes them specific.
+
+    A sibling repo of this shape would otherwise pass, and init would write a
+    live AUTH_TOKEN into it and then configure nothing.
+    """
+    (fake_root / "pyproject.toml").write_text(
+        '[project]\nname = "not-praxis"\n', encoding="utf-8"
+    )
+    problem = init_mod.repo_root_problem(fake_root)
+    assert problem is not None
+    assert "not-praxis" in problem
+
+
+@pytest.mark.unit
+def test_a_malformed_pyproject_is_not_the_root(fake_root):
+    """Unreadable is not a pass. Failing open here defeats the whole guard."""
+    (fake_root / "pyproject.toml").write_text("[project\nname =", encoding="utf-8")
+    assert init_mod.repo_root_problem(fake_root) is not None
+
+
+@pytest.mark.unit
+def test_init_refuses_to_run_outside_the_repo_root(tmp_path, monkeypatch):
+    """The reported defect: a live AUTH_TOKEN written wherever you happened to be.
+
+    `init` is CWD-relative throughout (`.env`, `docker compose`,
+    `config/praxis.yaml`), so run elsewhere it writes a secret into an
+    unrelated directory before anything can fail.  The refusal has to come
+    before the first write, which is why this asserts on the absent file and
+    not only on the exit code.
+    """
+    monkeypatch.chdir(tmp_path)
+    _hold_enter(monkeypatch)
+    _stub_the_world(monkeypatch)
+
+    with pytest.raises(typer.Exit) as exit_info:
+        init_mod.init()
+
+    assert exit_info.value.exit_code == 1
+    assert not (tmp_path / ".env").exists()
+
+
+@pytest.mark.unit
+def test_the_refusal_names_what_it_looked_for_and_where_it_looked(
+    tmp_path, monkeypatch
+):
+    """A bare "wrong directory" leaves the operator guessing which one is right."""
+    buffer = io.StringIO()
+    monkeypatch.setattr(
+        init_mod, "console", Console(file=buffer, width=200, no_color=True)
+    )
+    monkeypatch.chdir(tmp_path)
+    _hold_enter(monkeypatch)
+    _stub_the_world(monkeypatch)
+
+    with pytest.raises(typer.Exit):
+        init_mod.init()
+
+    printed = buffer.getvalue()
+    assert str(tmp_path) in printed
+    for marker in init_mod._ROOT_MARKERS:
+        assert marker in printed
 
 
 @pytest.mark.unit
