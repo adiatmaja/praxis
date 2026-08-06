@@ -29,6 +29,21 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# Mirrors ``EffectiveSettings.difficulty_config`` and is used only when no
+# settings object is wired (bare-orchestrator paths in tests and scripts).
+DEFAULT_FLAG_BELOW = 0.55
+
+# What a flagged leaf gets when neither it nor its project declares a check.
+# Finer granularity has to be paired with MORE verification, not less (MAKER,
+# arXiv 2511.09030), so the leaf the gate is warning about is exactly the one
+# that must not ship with an empty acceptance slot.
+MANDATORY_ACCEPTANCE = (
+    "This leaf was flagged high risk before dispatch and declares no acceptance "
+    "check. Before you finish, run this repository's test suite (or the "
+    "narrowest command that exercises the files you changed), and report the "
+    "exact command and its result. Do not claim a check you did not run."
+)
+
 
 def _normalize_edit_locations(files: Any) -> str | None:
     """Return the leaf's edit locations as newline-joined paths, or None.
@@ -132,11 +147,26 @@ class DispatchMixin:
                 return
 
         single_branch = False
+        flag_below = DEFAULT_FLAG_BELOW
         if self._effective_settings is not None:
             single_branch = await self._effective_settings.auto_delegate_enabled()
+            # Read the threshold from the same config the decomposition gate
+            # used. Hardcoding it here would hand an operator who raised
+            # flag_below a dashboard flag that contradicts the gate that
+            # produced the score. Resolved once: it is plan-constant.
+            config = await self._effective_settings.difficulty_config()
+            flag_below = float(config["flag_below"])
 
         for task in dispatchable:
             prompt = self._task_prompt(task, project)
+
+            # A leaf scored between reject_below and flag_below still
+            # dispatches, but with the flag visible and its acceptance check
+            # mandatory. An UNSCORED leaf (NULL score: every task row created
+            # before this phase, and every caller that does not score) is not
+            # flagged; unscored must never read as unsafe.
+            score = task.get("difficulty_score")
+            flagged = score is not None and float(score) < flag_below
 
             # Derive the task slug from its branch name (agent/{slug}).
             branch_name: str = task["branch_name"]
@@ -161,7 +191,12 @@ class DispatchMixin:
             # goal/progress survive compaction and cross-run re-dispatch.
             try:
                 bible = await self._build_worker_bible(
-                    task, plan_task, project, base_branch, branch
+                    task,
+                    plan_task,
+                    project,
+                    base_branch,
+                    branch,
+                    difficulty_flagged=flagged,
                 )
             except ContextBudgetExceeded:
                 logger.warning(
@@ -233,6 +268,8 @@ class DispatchMixin:
                     "task_id": task["id"],
                     "run_id": run_id,
                     "container_id": container_id,
+                    "difficulty_score": score,
+                    "difficulty_flagged": flagged,
                 }
             )
 
@@ -319,12 +356,24 @@ class DispatchMixin:
         project: dict[str, Any],
         base_branch: str,
         branch: str,
+        *,
+        difficulty_flagged: bool = False,
     ) -> str:
         """Assemble the Static Bible for a task: goal + handover + context.
 
         Reconstructs the progress handover deterministically from the task
         branch's commit log plus a per-task checklist, then folds it into a
         scrubbed, budget-trimmed Bible.
+
+        Args:
+            task: The task row being dispatched.
+            plan_task: The matching plan-graph entry, or ``{}``.
+            project: The owning project row.
+            base_branch: Branch the task branch was cut from.
+            branch: Branch the worker pushes to.
+            difficulty_flagged: True when the pre-dispatch score fell between
+                ``reject_below`` and ``flag_below``. Makes the acceptance slot
+                mandatory instead of optional.
 
         Raises:
             ContextBudgetExceeded: If the floor context exceeds the model window.
@@ -352,6 +401,15 @@ class DispatchMixin:
 
         edit_locations = _normalize_edit_locations(plan_task.get("files"))
 
+        # Rank 3 of the standard: the leaf's own acceptance check, falling back
+        # to the project-wide verify command when the leaf declares none. For a
+        # FLAGGED leaf the slot is mandatory, so when the project declares no
+        # verify command either, demand a check rather than ship a pack with an
+        # empty acceptance slot.
+        acceptance = plan_task.get("verification") or project.get("verify_cmd")
+        if difficulty_flagged and not acceptance:
+            acceptance = MANDATORY_ACCEPTANCE
+
         return build_bible(
             BibleSources(
                 goal=goal,
@@ -360,9 +418,7 @@ class DispatchMixin:
                 plan_slice=plan_task.get("plan_text"),
                 # Rank 2 of the standard: where to edit, before any narrative.
                 edit_locations=edit_locations,
-                # Rank 3: the leaf's own acceptance check, falling back to the
-                # project-wide verify command when the leaf declares none.
-                acceptance=plan_task.get("verification") or project.get("verify_cmd"),
+                acceptance=acceptance,
                 # Rank 4: signatures of direct neighbors, optional.
                 neighbor_contracts=plan_task.get("neighbor_contracts"),
                 caller_context=plan_task.get("context_text"),

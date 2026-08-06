@@ -17,6 +17,31 @@ from orchestrator.models.schemas import LeafTask, PlanStatus, TaskStatus
 logger = logging.getLogger(__name__)
 
 
+def _as_score(value: Any) -> float | None:
+    """Return a difficulty score as a float, or None for anything unusable.
+
+    ``tasks.difficulty_score`` is REAL, but SQLite type affinity is advisory:
+    non-numeric text is stored verbatim rather than rejected. Dispatch then
+    calls ``float()`` on it every loop tick, and the resulting ``ValueError``
+    is one log line per interval forever instead of a visible failure. The
+    graph is raw brain JSON on several activation paths, so the coercion
+    belongs here, at the write boundary.
+
+    Args:
+        value: The raw ``difficulty_score`` from a plan-graph task dict.
+
+    Returns:
+        The score as a float, or None when absent or not a number.
+    """
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        logger.warning("Discarding unusable difficulty_score %r", value)
+        return None
+
+
 class TaskQueue:
     """Manage plan, task, and agent-run lifecycle with SQLite persistence."""
 
@@ -84,14 +109,22 @@ class TaskQueue:
             task_id = str(uuid.uuid4())
             await self._db.execute(
                 """INSERT INTO tasks
-                   (id, plan_id, title, description, branch_name)
-                   VALUES (?, ?, ?, ?, ?)""",
+                   (id, plan_id, title, description, branch_name,
+                    difficulty_score, leaf_type)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
                 (
                     task_id,
                     plan_id,
                     task_data["title"],
                     task_data["description"],
                     f"agent/{task_data['slug']}",
+                    # The decomposer stamps these on the graph; without this
+                    # write they never reach a task row, so dispatch flagging
+                    # and triage evidence both read "not scored" forever. Both
+                    # are nullable: a graph from any other caller (or from
+                    # before this column existed) still inserts cleanly.
+                    _as_score(task_data.get("difficulty_score")),
+                    task_data.get("leaf_type"),
                 ),
             )
         logger.info("Activated plan %s with %d tasks", plan_id, len(opus_plan["tasks"]))
