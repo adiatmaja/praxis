@@ -980,6 +980,27 @@
        "task_completed", "task_failed", "task_retry", "opus_queued", "log", "agent_log"].forEach(type => {
         eventSource.addEventListener(type, event => appendLog("[" + type + "] " + event.data));
       });
+      eventSource.addEventListener("task_split", event => {
+        let data;
+        try {
+          data = JSON.parse(event.data);
+        } catch (error) {
+          return;
+        }
+        if (!data) return;
+        const leafCount = Array.isArray(data.child_slugs) ? data.child_slugs.length : "?";
+        appendLog("Split task " + data.task_id + " into " + leafCount + " leaves: " + (data.reason || ""));
+      });
+      eventSource.addEventListener("task_escalated", event => {
+        let data;
+        try {
+          data = JSON.parse(event.data);
+        } catch (error) {
+          return;
+        }
+        if (!data) return;
+        appendLog("Escalated task " + data.task_id + " to " + data.to_harness + "/" + data.to_model + ": " + (data.reason || ""));
+      });
     }
 
     // Task-specific SSE for the full-logs view — uses curated rendering

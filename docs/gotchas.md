@@ -606,3 +606,49 @@ keep the CLAUDE.md index in sync.
   dropped the baked copy is still PRESENT, just stale, and an absence check
   cannot see it. That case is the doctor's `config_mount` probe, which detects it
   via `os.path.ismount`. The two are complementary, not redundant.
+- **Triage fires once per leaf, on the SECOND worker-attributable failure**:
+  failure 1 keeps the cheap `retry_task` path; from failure 2 on,
+  `ReviewMixin._run_leaf_triage` asks `leaf_failure_triage` for a
+  `TriageDecision`. The bound is durable, not in-memory: `tasks.triage_decision`
+  is stamped before the decision is acted on, and its presence blocks any later
+  triage. `tasks.parent_task_id` is the one-split-generation guard, so a split
+  child can never split again (the code also zeroes its remaining leaf budget so
+  the brain is not even asked). A router exception or two unparseable answers
+  both fall back to `human`: triage is an optimization over the existing retry
+  path and must never be able to wedge a task. Provider errors never reach
+  triage at all; they take the respawn-cap path and burn no retry.
+- **Split children APPEND to both the graph and the task table, and the parent
+  is never deleted**: `TaskQueue.get_dispatchable_tasks` maps
+  `opus_plan["tasks"]` to `get_tasks_for_plan` rows BY LIST INDEX, so inserting
+  a child anywhere but the end, or removing the superseded parent, silently
+  re-associates every task after it with the wrong row. `core/leaf_split.py` is
+  written around this invariant and `tests/test_leaf_split.py` mutation-checks
+  it. A split parent goes to `SUPERSEDED`, which both `all_tasks_done` and the
+  dependency predicate in `get_dispatchable_tasks` count as satisfied; without
+  that a split plan can never complete and its children never dispatch. Children
+  start at `attempt = 2`, so they inherit the remaining retry budget rather than
+  resetting it.
+- **Escalation is a dispatch-time substitution, never a router fallback**: the
+  implement seat is spawn-baked, so `LLMRouter` cannot fall back for it.
+  `core/escalation.next_escalation` walks the ordered `implement_escalation`
+  list in `config/praxis.yaml` using `tasks.escalation_index`, and
+  `DispatchMixin` reads `tasks.implement_harness`/`implement_model` at spawn.
+  `record_outcome` reads the SAME two columns: crediting the original worker
+  with an escalated success teaches the calibration loop a lie. `config/praxis.yaml`
+  is mounted, not baked (see the gotcha above), so an escalation-ladder edit
+  takes effect on `docker compose restart orchestrator`, never an orchestrator
+  image rebuild.
+- **The merge gate judges `ref.base` when it is knowable, `plans.plan_branch_name`
+  only as a fallback**: `backend.merge(ref)` writes to `ref.base`, but
+  `auto_merge_eligible` used to be called with the plan branch instead. In
+  auto-delegate single-branch mode those two differ, since dispatch reuses one
+  caller-named work branch while basing it on the project default, so the
+  protected-branch carve-out never saw `main` and a reviewed pass auto-merged
+  straight into it (fixed in `106f6a7`, `base_branch = ref.base or
+  plan.get("plan_branch_name")`). The fix is PARTIAL: a GitHub PR URL encodes no
+  base, so `PullRequestRef.from_url` yields `base=""` there, and gating on that
+  would treat every base as protected and disable auto-merge for every GitHub
+  project. So only local refs are fixed; GitHub keeps the old plan-branch
+  behavior. Closing the GitHub half needs the PR's real base, either a
+  `base_branch(ref)` method on `GitBackend` backed by `gh pr view --json
+  baseRefName`, or a base column on `tasks` populated at dispatch.
