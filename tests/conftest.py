@@ -111,6 +111,135 @@ async def seed_user(db: Database) -> str:
     return "test-user"
 
 
+@pytest.fixture
+def event_bus() -> EventBus:
+    """A bare EventBus for orchestrator-level tests."""
+    return EventBus()
+
+
+@pytest.fixture
+def captured_events(event_bus: EventBus) -> list[dict[str, Any]]:
+    """A live view of every event published during a test.
+
+    ``EventBus`` is queue-based with no callback API, so this drains the queue
+    on read.  The returned object is a list subclass: index it, iterate it, or
+    take its length at assertion time and it first pulls whatever has been
+    published so far.
+    """
+
+    queue = event_bus.subscribe()
+    drained: list[dict[str, Any]] = []
+
+    class _Captured(list):  # type: ignore[type-arg]
+        def _pump(self) -> None:
+            while not queue.empty():
+                drained.append(queue.get_nowait())
+            self[:] = drained
+
+        def __iter__(self) -> Any:
+            self._pump()
+            return super().__iter__()
+
+        def __len__(self) -> int:
+            self._pump()
+            return super().__len__()
+
+        def __getitem__(self, index: Any) -> Any:
+            self._pump()
+            return super().__getitem__(index)
+
+    return _Captured()
+
+
+@pytest.fixture
+async def orchestrator_fixture(
+    db: Database, event_bus: EventBus
+) -> tuple[Any, str, dict[str, Any]]:
+    """An Orchestrator with one task parked in REVIEWING and a failing review.
+
+    Returns ``(orchestrator, task_id, project_dict)``.  The project is a GitHub
+    one whose ``gh`` calls are all mocked, and the PR-head clone is wired to
+    raise so every test stays on the diff-only review path.
+    """
+    from unittest.mock import AsyncMock
+
+    from orchestrator.models.schemas import TaskStatus
+
+    task_queue = TaskQueue(db)
+    await db.execute(
+        "INSERT INTO users (id, name, token_hash) VALUES (?, ?, ?)",
+        ("u1", "T", "h"),
+    )
+    await db.execute(
+        """INSERT INTO projects
+           (id, user_id, name, repo_url, default_branch, model_name,
+            harness, max_retries)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+        (
+            "proj1",
+            "u1",
+            "p",
+            "https://github.com/o/r",
+            "main",
+            "qwen3.6-27b",
+            "opencode",
+            3,
+        ),
+    )
+    plan_id = await task_queue.create_plan("proj1", "test")
+    await task_queue.activate_plan(
+        plan_id,
+        {
+            "tasks": [
+                {
+                    "id": "a",
+                    "slug": "a",
+                    "title": "A",
+                    "description": "Add the widget",
+                    "depends_on": [],
+                    "plan_text": (
+                        "## Goal\nAdd it.\n## Files\nsrc/a.py\n"
+                        "## Steps\n1. go\n## Acceptance\n`pytest`"
+                    ),
+                    "leaf_type": "function_add",
+                }
+            ]
+        },
+        "plan/x",
+    )
+    rows = await task_queue.get_tasks_for_plan(plan_id)
+    task_id = str(rows[0]["id"])
+    await task_queue.set_task_pr_url(task_id, "https://github.com/o/r/pull/1")
+    await task_queue.update_task_status(task_id, TaskStatus.REVIEWING)
+
+    git = AsyncMock()
+    git.extract_pr_number.return_value = 1
+    git.repo_slug.return_value = "o/r"
+    git.get_pr_diff.return_value = "diff --git a/src/a.py b/src/a.py\n+x\n"
+    git.clone_pr_head.side_effect = RuntimeError("no clone in tests")
+
+    opus = AsyncMock()
+    opus.is_available.return_value = True
+    opus.review_diff.return_value = {"verdict": "fail", "feedback": "nope"}
+
+    settings = AsyncMock()
+    settings.implement_escalation.return_value = []
+    settings.max_leaves_per_plan.return_value = 24
+
+    orch = Orchestrator(
+        task_queue=task_queue,
+        agent_manager=AsyncMock(),
+        opus_bridge=opus,
+        git_ops=git,
+        event_bus=event_bus,
+        effective_settings=settings,
+        llm_router=AsyncMock(),
+    )
+    project = await task_queue.get_project("proj1")
+    assert project is not None
+    return orch, task_id, dict(project)
+
+
 @pytest_asyncio.fixture
 async def db_with_docs(db: Database, client: AsyncClient) -> Database:
     """Insert two doc_index rows (one spec, one plan) and attach a DocIndexer."""

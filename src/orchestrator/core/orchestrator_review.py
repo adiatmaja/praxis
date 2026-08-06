@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from orchestrator.core.capability_events import TaskEscalatedEvent, TaskSplitEvent
 from orchestrator.core.clarification_states import (
     ANSWERED_BY_BRAIN,
     ASKED,
@@ -26,6 +27,7 @@ from orchestrator.core.diff_guard import (
     detect_secrets,
 )
 from orchestrator.core.diff_stats import diff_stats
+from orchestrator.core.escalation import next_escalation
 from orchestrator.core.failure_taxonomy import FailureClass
 from orchestrator.core.git_backend import GitBackend, PullRequestRef
 from orchestrator.core.git_ops import (
@@ -34,11 +36,13 @@ from orchestrator.core.git_ops import (
     commit_and_push,
     flip_checklist_item,
 )
+from orchestrator.core.leaf_split import child_slugs
+from orchestrator.core.leaf_triage import TriageEvidence, triage_leaf
 from orchestrator.core.log_context import task_logger
 from orchestrator.core.merge_policy import auto_merge_eligible
 from orchestrator.core.outcome_recorder import record_outcome
 from orchestrator.core.verify_gate import run_verify
-from orchestrator.models.schemas import TaskStatus
+from orchestrator.models.schemas import TaskStatus, TriageDecision
 
 
 if TYPE_CHECKING:
@@ -76,6 +80,8 @@ class ReviewMixin:
         _opus: Any
         _doc_indexer: Any
         _context_sync: Any
+        _effective_settings: Any
+        _llm_router: Any
 
         def _resolve_backend(self, repo_url: str) -> GitBackend:
             pass
@@ -336,7 +342,226 @@ class ReviewMixin:
         )
         await _record("fail", fail_class)
         await backend.comment(ref, feedback)
+
+        # Adaptive triage: the FIRST worker-attributable failure keeps the cheap
+        # retry-with-feedback path (ADaPT: decompose only when the executor
+        # actually fails).  From the SECOND on, ask the brain whether the leaf
+        # should be retried, split, escalated, or handed to a human.  Bounded to
+        # one triage call per leaf lifetime by ``tasks.triage_decision``.
+        #
+        # The task is deliberately left REVIEWING across the brain call rather
+        # than failed first: ``_fail_and_maybe_retry`` is the only owner of the
+        # fail-then-maybe-retry transition, and pre-failing here would widen the
+        # existing crash window between that FAILED write and the retry requeue
+        # from two DB writes to a whole network round trip, turning a crash
+        # during triage into a silently terminal task that still had retries
+        # left.  Every triage branch writes its own terminal or requeued state,
+        # and a REVIEWING task simply gets re-reviewed on the next tick.
+        attempt = int(task["attempt"])
+        already_triaged = bool(task.get("triage_decision"))
+        if attempt >= 2 and not already_triaged and self._llm_router is not None:
+            handled = await self._run_leaf_triage(
+                task, project, plan, feedback, files_touched, loc_delta, diff
+            )
+            if handled:
+                return
+
         await self._fail_and_maybe_retry(task_id, task, project, feedback)
+
+    async def _triage_leaf(
+        self, evidence: TriageEvidence, project_id: str | None
+    ) -> TriageDecision:
+        """Seam for the triage brain call, so tests can substitute it."""
+        return await triage_leaf(evidence, self._llm_router, project_id)
+
+    async def _run_leaf_triage(
+        self,
+        task: dict[str, Any],
+        project: dict[str, Any],
+        plan: dict[str, Any] | None,
+        feedback: str,
+        files_touched: int,
+        loc_delta: int,
+        diff: str,
+    ) -> bool:
+        """Triage a twice-failed leaf and act on the decision.
+
+        Args:
+            task: The task row being reviewed.
+            project: Its project row.
+            plan: The plan row, or None when the task has no plan graph.
+            feedback: The reviewer's verdict text.
+            files_touched: Files changed by the failed attempt.
+            loc_delta: Net lines changed by the failed attempt.
+            diff: The failed attempt's diff.
+
+        Returns:
+            True when the decision was handled here, so the caller must NOT
+            fall through to the plain retry path; False to keep the old
+            behavior (no plan graph or no settings to work against, or a split
+            the graph refused).
+        """
+        settings = self._effective_settings
+        if plan is None or settings is None:
+            return False
+
+        task_id = task["id"]
+        branch_name: str = task["branch_name"]
+        task_slug = (
+            branch_name[len("agent/") :]
+            if branch_name.startswith("agent/")
+            else branch_name
+        )
+
+        plan_task: dict[str, Any] = {}
+        graph_task_count = 0
+        with contextlib.suppress(json.JSONDecodeError, TypeError):
+            parsed = json.loads(plan.get("opus_plan") or "{}")
+            graph_tasks = parsed.get("tasks", [])
+            graph_task_count = len(graph_tasks)
+            for candidate in graph_tasks:
+                if candidate.get("slug") == task_slug:
+                    plan_task = candidate
+                    break
+
+        profile = await settings.capability_profile(
+            project_id=None, model=project.get("model_name")
+        )
+        ladder = await settings.implement_escalation()
+        ceiling = await settings.max_leaves_per_plan()
+        escalation_index = int(task.get("escalation_index") or 0)
+        pair = next_escalation(ladder, escalation_index)
+        # A split child may never split again (one generation), and escalation
+        # needs an untried rung.
+        is_split_child = task.get("parent_task_id") is not None
+
+        evidence = TriageEvidence(
+            task_slug=task_slug,
+            leaf_type=str(
+                task.get("leaf_type") or plan_task.get("leaf_type") or "generic"
+            ),
+            plan_text=str(plan_task.get("plan_text") or task["description"]),
+            profile=profile,
+            attempts=[
+                {
+                    "attempt": int(task["attempt"]),
+                    "files_touched": files_touched,
+                    "loc_delta": loc_delta,
+                    "diff": diff,
+                    "verify_exit_code": 1,
+                    "verify_tail": feedback[-_VERIFY_OUTPUT_MAX:],
+                    "review_reason": feedback,
+                }
+            ],
+            difficulty_score=task.get("difficulty_score"),
+            remaining_leaf_budget=(
+                0 if is_split_child else max(int(ceiling) - graph_task_count, 0)
+            ),
+            escalation_available=pair is not None,
+        )
+
+        decision = await self._triage_leaf(evidence, project["id"])
+        # Stamped BEFORE acting, so a decision that cannot be applied still
+        # burns the one triage call this leaf gets.
+        await self._tq.record_triage_decision(task_id, decision.decision)
+
+        if decision.decision == "split" and not is_split_child and decision.children:
+            children = decision.children
+            slugs = child_slugs(task_slug, len(children))
+            try:
+                child_ids = await self._tq.insert_split_children(
+                    plan["id"], task_id, task_slug, children
+                )
+            except (KeyError, ValueError):
+                # insert_split_children fails closed on a graph it cannot
+                # rewire (parent slug absent, slugs already taken) and writes
+                # nothing when it does.  Triage is an optimization over the
+                # retry path, so degrade to that path rather than let this
+                # abort the whole orchestration tick for every plan.
+                logger.exception(
+                    "could not apply the triage split for task %s; "
+                    "falling back to the plain retry path",
+                    task_id,
+                )
+                return False
+            await self._tq.supersede_task(task_id, "split", decision.reason)
+            self._bus.publish(
+                {
+                    "type": "task_split",
+                    "task_id": task_id,
+                    "child_task_ids": child_ids,
+                    "child_slugs": slugs,
+                    "reason": decision.reason,
+                }
+            )
+            emitter = getattr(self, "_emitter", None)
+            if emitter is not None:
+                await emitter.emit(
+                    TaskSplitEvent(
+                        plan_id=plan["id"],
+                        parent_slug=task_slug,
+                        child_slugs=slugs,
+                        failure_evidence_ref=task_id,
+                    )
+                )
+            return True
+
+        if decision.decision == "escalate" and pair is not None:
+            # next_escalation() reads its index as "rungs already burned", so
+            # the rung just taken has to be counted or the ladder never moves.
+            await self._tq.set_task_implementer(
+                task_id, pair.harness, pair.model, escalation_index + 1
+            )
+            await self._tq.retry_task(task_id)
+            self._bus.publish(
+                {
+                    "type": "task_escalated",
+                    "task_id": task_id,
+                    "from_model": project.get("model_name"),
+                    "to_model": pair.model,
+                    "to_harness": pair.harness,
+                    "reason": decision.reason,
+                }
+            )
+            emitter = getattr(self, "_emitter", None)
+            if emitter is not None:
+                await emitter.emit(
+                    TaskEscalatedEvent(
+                        plan_id=plan["id"],
+                        leaf_slug=task_slug,
+                        policy=f"{pair.harness}/{pair.model}",
+                    )
+                )
+            return True
+
+        if decision.decision == "retry":
+            if decision.refined_prompt:
+                await self._tq.append_progress_note(
+                    task_id,
+                    f"TRIAGE CORRECTION (act on this now):\n{decision.refined_prompt}",
+                )
+            await self._tq.retry_task(task_id)
+            self._bus.publish(
+                {
+                    "type": "task_retry",
+                    "task_id": task_id,
+                    "attempt": int(task["attempt"]) + 1,
+                    "triage": "retry",
+                }
+            )
+            return True
+
+        # "human", or a split/escalate the caller cannot honour: park terminal.
+        await self._tq.fail_task(task_id, f"Triage: {decision.reason}\n\n{feedback}")
+        self._bus.publish(
+            {
+                "type": "task_failed",
+                "task_id": task_id,
+                "feedback": decision.reason,
+                "triage": decision.decision,
+            }
+        )
+        return True
 
     async def handle_clarification(self, task_id: str, project: dict[str, Any]) -> None:
         """Answer a blocked worker's question, or park it for a human."""
