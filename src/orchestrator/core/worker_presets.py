@@ -32,7 +32,10 @@ def parse_presets(raw: list[Any]) -> list[WorkerPreset]:
     """Parse the ``worker_presets`` YAML block, skipping malformed entries.
 
     A typo in operator YAML must degrade to "that preset is missing", never
-    stop the orchestrator from booting.
+    stop the orchestrator from booting.  That applies to ``requires`` too: a
+    scalar there is skipped rather than raising or being partly salvaged, since
+    a preset kept with a requirement list that understates what it needs is a
+    worse lie than a missing preset.
     """
     presets: list[WorkerPreset] = []
     for entry in raw or []:
@@ -45,6 +48,17 @@ def parse_presets(raw: list[Any]) -> list[WorkerPreset]:
                 entry.get("name"),
             )
             continue
+        requires = entry.get("requires")
+        # `requires: 5` raises on iteration and `requires: api_key` iterates
+        # into one requirement per CHARACTER, so check the shape, not just
+        # truthiness.  Absent or null is fine and means "no requirements".
+        if requires is not None and not isinstance(requires, (list, tuple)):
+            logger.warning(
+                "skipping worker preset %r: requires must be a list, got %r",
+                entry.get("name"),
+                requires,
+            )
+            continue
         presets.append(
             WorkerPreset(
                 name=str(entry["name"]),
@@ -52,7 +66,7 @@ def parse_presets(raw: list[Any]) -> list[WorkerPreset]:
                 harness=str(entry["harness"]),
                 model=str(entry["model"]),
                 endpoint=str(entry.get("endpoint") or ""),
-                requires=tuple(str(r) for r in (entry.get("requires") or [])),
+                requires=tuple(str(r) for r in (requires or [])),
             )
         )
     return presets

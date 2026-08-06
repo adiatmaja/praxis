@@ -89,6 +89,36 @@ def test_an_entry_missing_harness_or_model_is_skipped():
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize("bad_requires", [5, True, 3.5, "api_key", {"api_key": True}])
+def test_a_non_list_requires_value_is_skipped_not_fatal(bad_requires):
+    """``requires: 5`` or ``requires: api_key`` are plausible operator typos.
+
+    A non-iterable scalar used to raise ``TypeError``, which would crash
+    ``praxis init`` and 500 the presets endpoint over one character of YAML.
+    A bare string is worse than a crash: it is iterable, so it silently became
+    one requirement per character.  Either way the operator's intent is
+    unclear, so the entry is skipped like every other malformed shape rather
+    than kept with a requirement list that understates what it needs.
+    """
+    presets = parse_presets(
+        [
+            *RAW,
+            {
+                "name": "bad-requires",
+                "harness": "opencode",
+                "model": "some-model",
+                "requires": bad_requires,
+            },
+        ]
+    )
+    assert [p.name for p in presets] == [
+        "local-lmstudio",
+        "hosted-openweight",
+        "gemini-agy",
+    ]
+
+
+@pytest.mark.unit
 def test_parse_preserves_declaration_order():
     assert [p.name for p in parse_presets(RAW)] == [
         "local-lmstudio",

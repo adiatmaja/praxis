@@ -458,12 +458,26 @@
       }
       // Selecting a preset option sets the harness field too: presets are
       // convenience wiring over harness+model+endpoint together.
-      const opt = select.selectedOptions && select.selectedOptions[0];
+      syncHarnessToSelectedModel();
+    }
+
+    // Point #project-harness at whatever the currently selected model option
+    // declares. Called on change AND at the end of both loadHarnesses() and
+    // loadLmModels(), because the browser auto-selects the first option once
+    // the model dropdown is populated and no change event fires for that.
+    //
+    // Order-independence: the two loaders are both scheduled with
+    // setTimeout(..., 0) and both await the network, so either can finish
+    // first, and assigning .value to a select with no options silently does
+    // nothing. Each call is a no-op unless BOTH selects are populated, so
+    // whichever loader finishes last is the one that lands the sync.
+    function syncHarnessToSelectedModel() {
+      const modelSel = document.getElementById("pf-model-select");
+      const harnessSel = document.getElementById("project-harness");
+      if (!modelSel || !harnessSel || !harnessSel.options.length) return;
+      const opt = modelSel.selectedOptions && modelSel.selectedOptions[0];
       const harness = opt && opt.dataset.harness;
-      if (harness) {
-        const harnessSel = document.getElementById("project-harness");
-        if (harnessSel) harnessSel.value = harness;
-      }
+      if (harness) harnessSel.value = harness;
     }
 
     async function loadLmModels() {
@@ -494,6 +508,10 @@
         select.innerHTML = presetGroups + lmGroup + '<option value="__custom__">Custom…</option>';
         select.style.display = "";
         if (custom) { custom.style.display = "none"; custom.value = select.value; }
+        // The browser just auto-selected the first option without firing
+        // change; sync the harness to it or Create submits a harness that
+        // matches the selected model only by coincidence.
+        syncHarnessToSelectedModel();
       } else {
         // Neither presets nor LM Studio are reachable, fall back to a free-text field
         select.style.display = "none";
@@ -1994,6 +2012,9 @@
         opt.textContent = h.recommended ? h.display_name + " (recommended)" : h.display_name;
         sel.appendChild(opt);
       }
+      // If loadLmModels() already finished, its sync was a no-op against an
+      // empty select; redo it now that the options exist.
+      syncHarnessToSelectedModel();
     }
 
     function renderHarnessAbout() {

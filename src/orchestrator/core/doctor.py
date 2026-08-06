@@ -26,6 +26,10 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
+#: Last-resort hint for a RED result whose ``check_id`` is not registered.
+#: A registered check always resolves its own specific hint instead.
+GENERIC_HINT = "see docs/reference.md troubleshooting for this check"
+
 
 class CheckStatus(StrEnum):
     """Traffic-light outcome of one check."""
@@ -37,7 +41,14 @@ class CheckStatus(StrEnum):
 
 @dataclass(frozen=True)
 class CheckResult:
-    """One check's verdict."""
+    """One check's verdict.
+
+    A RED result built without a ``hint`` resolves its check's SPECIFIC
+    registry hint here, at construction.  That is the only place the "every
+    RED carries a fix hint" clause is enforced, so no caller has to remember
+    to pass ``hint=`` and no caller can accidentally defeat it by passing the
+    generic pointer instead.
+    """
 
     check_id: str
     status: CheckStatus
@@ -47,10 +58,13 @@ class CheckResult:
 
     def __post_init__(self) -> None:
         if self.status is CheckStatus.RED and not self.hint:
+            # ``_BY_ID`` is defined further down the module; this body runs at
+            # call time, never at class-definition time, so the name resolves.
+            registered = _BY_ID.get(self.check_id)
             object.__setattr__(
                 self,
                 "hint",
-                "see docs/reference.md troubleshooting for this check",
+                registered.hint if registered else GENERIC_HINT,
             )
 
 
@@ -143,18 +157,22 @@ def image_is_stale(image_built_at: float | None, entrypoint_mtime: float) -> boo
 
     An unknown build time counts as stale: freshness cannot be proven, and a
     silently stale agent image is the failure mode this check exists to catch.
+    An exact tie counts as stale for the same reason, since a build and an edit
+    landing in one filesystem timestamp tick cannot be ordered.
     """
     if image_built_at is None:
         return True
-    return image_built_at < entrypoint_mtime
+    return image_built_at <= entrypoint_mtime
 
 
-async def _invoke(
-    probe: Callable[..., Any], check_id: str, **kwargs: Any
-) -> CheckResult:
-    """Run one probe, converting any exception into a RED result."""
+async def _invoke(probe: Callable[[], Any], check_id: str) -> CheckResult:
+    """Run one probe, converting any exception into a RED result.
+
+    No hint is passed at any construction site below: ``CheckResult`` resolves
+    the check's specific registry hint itself.
+    """
     try:
-        outcome = probe(**kwargs)
+        outcome = probe()
         if inspect.isawaitable(outcome):
             outcome = await outcome
     except Exception as exc:  # noqa: BLE001 - a broken probe is a red light
@@ -163,7 +181,6 @@ async def _invoke(
             check_id=check_id,
             status=CheckStatus.RED,
             detail=f"{type(exc).__name__}: {exc}",
-            hint=_BY_ID[check_id].hint,
             label=_BY_ID[check_id].label,
         )
     if not isinstance(outcome, CheckResult):
@@ -171,31 +188,33 @@ async def _invoke(
             check_id=check_id,
             status=CheckStatus.RED,
             detail=f"probe returned {type(outcome).__name__}, expected CheckResult",
-            hint=_BY_ID[check_id].hint,
             label=_BY_ID[check_id].label,
         )
-    hint = outcome.hint or (
-        _BY_ID[check_id].hint if outcome.status is CheckStatus.RED else ""
-    )
     return CheckResult(
         check_id=outcome.check_id,
         status=outcome.status,
         detail=outcome.detail,
-        hint=hint,
+        hint=outcome.hint,
         label=outcome.label or _BY_ID[check_id].label,
     )
 
 
-async def run_checks(
-    probes: dict[str, Callable[..., Any]], **context: Any
-) -> list[CheckResult]:
+async def run_checks(probes: dict[str, Callable[[], Any]]) -> list[CheckResult]:
     """Run every registered check, in registry order.
 
     Args:
-        probes: ``check_id`` to callable.  A missing probe yields a RED
-            "not implemented" result rather than being skipped, so a check can
-            never silently disappear.
-        **context: Passed through to every probe.
+        probes: ``check_id`` to a pre-bound ZERO-ARGUMENT callable.  A missing
+            probe yields a RED "not implemented" result rather than being
+            skipped, so a check can never silently disappear.
+
+            Probes take no arguments on purpose.  A shared ``**context`` would
+            hand every fact to every probe, so a probe declaring only the two
+            facts it needs would raise ``TypeError: unexpected keyword
+            argument``, be caught here, and be reported RED for a reason that
+            has nothing to do with the machine being diagnosed, with the whole
+            test suite still green.  The fact-gathering layer binds each
+            probe's own facts into a closure instead.  Do not reintroduce a
+            shared context.
 
     Returns:
         One result per registered check, in ``CHECKS`` order.
@@ -209,12 +228,11 @@ async def run_checks(
                     check_id=check.check_id,
                     status=CheckStatus.RED,
                     detail="no probe registered for this check",
-                    hint=check.hint,
                     label=check.label,
                 )
             )
             continue
-        results.append(await _invoke(probe, check.check_id, **context))
+        results.append(await _invoke(probe, check.check_id))
     return results
 
 

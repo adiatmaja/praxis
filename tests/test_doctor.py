@@ -15,8 +15,12 @@ from orchestrator.core.doctor import (
 
 
 @pytest.mark.unit
-def test_the_expected_checks_are_registered():
-    assert set(CHECK_IDS) == {
+def test_the_expected_checks_are_registered_in_order():
+    """Registry order is what the doctor table renders, so pin the sequence.
+
+    A set comparison here passed with the first two entries swapped.
+    """
+    assert CHECK_IDS == (
         "docker_daemon",
         "orchestrator_health",
         "build_stamp",
@@ -28,7 +32,7 @@ def test_the_expected_checks_are_registered():
         "worker_endpoint",
         "callback_url",
         "config_mount",
-    }
+    )
 
 
 @pytest.mark.unit
@@ -48,9 +52,51 @@ def test_a_green_check_needs_no_hint():
 
 
 @pytest.mark.unit
+async def test_a_hintless_red_gets_that_checks_own_registry_hint():
+    """A probe returning RED with no hint must get ITS hint, not a generic one.
+
+    This is the contract clause 3 ("every RED result carries a fix hint") test
+    that has teeth: asserting only truthiness passes even when every check
+    ships the same docs pointer, which is what a probe layer written without
+    per-probe ``hint=`` arguments would produce.
+    """
+    probes = _all_passing()
+    probes["docker_daemon"] = lambda **_: CheckResult(
+        check_id="docker_daemon",
+        status=CheckStatus.RED,
+        detail="cannot connect to the daemon",
+    )
+
+    results = await run_checks(probes=probes)
+
+    docker = next(r for r in results if r.check_id == "docker_daemon")
+    assert "Docker Desktop" in docker.hint
+    assert "docs/reference.md" not in docker.hint
+
+
+@pytest.mark.unit
+def test_a_red_for_an_unregistered_check_falls_back_to_the_generic_hint():
+    """The generic pointer is the last resort, not the default."""
+    from orchestrator.core.doctor import GENERIC_HINT
+
+    result = CheckResult(
+        check_id="not_a_registered_check", status=CheckStatus.RED, detail="nope"
+    )
+    assert result.hint == GENERIC_HINT
+
+
+@pytest.mark.unit
 async def test_run_checks_returns_one_result_per_registered_check():
     results = await run_checks(probes=_all_failing())
+    assert len(results) == len(CHECK_IDS)
     assert {r.check_id for r in results} == set(CHECK_IDS)
+
+
+@pytest.mark.unit
+async def test_run_checks_returns_results_in_registry_order():
+    """``run_checks`` promises registry order and the doctor table renders it."""
+    results = await run_checks(probes=_all_passing())
+    assert [r.check_id for r in results] == list(CHECK_IDS)
 
 
 @pytest.mark.unit
@@ -109,6 +155,19 @@ async def test_stale_agent_image_is_detected_from_the_entrypoint_mtime():
 
     assert image_is_stale(image_built_at=100.0, entrypoint_mtime=200.0) is True
     assert image_is_stale(image_built_at=300.0, entrypoint_mtime=200.0) is False
+
+
+@pytest.mark.unit
+async def test_an_image_built_at_exactly_the_entrypoint_mtime_is_stale():
+    """A tie cannot prove freshness either, so it counts as stale.
+
+    Same reasoning as the unknown-build-time case below, and the boundary is
+    reachable in practice: a build and an edit inside the same filesystem
+    timestamp tick are indistinguishable.
+    """
+    from orchestrator.core.doctor import image_is_stale
+
+    assert image_is_stale(image_built_at=200.0, entrypoint_mtime=200.0) is True
 
 
 @pytest.mark.unit

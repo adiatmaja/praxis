@@ -12,7 +12,7 @@ async def test_presets_endpoint_returns_the_shipped_presets(client, auth_headers
     response = await client.get("/api/settings/presets", headers=auth_headers)
     assert response.status_code == 200
     names = {p["name"] for p in response.json()["presets"]}
-    assert {"local-lmstudio", "hosted-openweight", "gemini-agy"} <= names
+    assert names == {"local-lmstudio", "hosted-openweight", "gemini-agy"}
 
 
 @pytest.mark.integration
