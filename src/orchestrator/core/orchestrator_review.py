@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from orchestrator.core.bench_mode import verify_gate_disabled
 from orchestrator.core.capability_events import TaskEscalatedEvent, TaskSplitEvent
 from orchestrator.core.clarification_states import (
     ANSWERED_BY_BRAIN,
@@ -232,7 +233,10 @@ class ReviewMixin:
                 )
                 checkout = None
 
-            verify_cmd = project.get("verify_cmd")
+            # Bench condition C runs decomposition WITHOUT the verify gate, to
+            # isolate whether the measured effect is decomposition or
+            # verification. Double-gated; see core/bench_mode.py.
+            verify_cmd = None if verify_gate_disabled() else project.get("verify_cmd")
             review: dict[str, Any] | None = None
             if verify_cmd and checkout is not None:
                 passed, gate_output = await run_verify(checkout, verify_cmd)
@@ -1070,8 +1074,12 @@ class ReviewMixin:
             # additive change that breaks a pre-existing test in another leaf)
             # only surfaces against the fully merged plan branch.  All I/O here
             # degrades to a warning + a verify_status, never wedges the loop.
+            # Bench condition C disables the mechanical gate at every level;
+            # see core/bench_mode.py.
             verify_status = await self._verify_plan_branch(
-                repo_url, plan_branch, project.get("verify_cmd")
+                repo_url,
+                plan_branch,
+                None if verify_gate_disabled() else project.get("verify_cmd"),
             )
 
             pr_url: str | None = None

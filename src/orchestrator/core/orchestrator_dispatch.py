@@ -14,6 +14,7 @@ from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any, cast
 
 from orchestrator.core.agent_manager import detect_context_limit
+from orchestrator.core.bench_mode import verify_gate_disabled
 from orchestrator.core.harnesses import default_harness_id
 from orchestrator.core.progress_handover import ChecklistItem, render_handover
 from orchestrator.core.session_resume import resolve_resume_session
@@ -296,7 +297,9 @@ class DispatchMixin:
         regression stays parked. The whole-plan gate in ``on_plan_completed`` is
         the final backstop.
         """
-        verify_cmd = project.get("verify_cmd")
+        # Bench condition C disables the mechanical gate at every level; see
+        # core/bench_mode.py.
+        verify_cmd = None if verify_gate_disabled() else project.get("verify_cmd")
         if not verify_cmd:
             return True
 

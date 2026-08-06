@@ -663,3 +663,12 @@ keep the CLAUDE.md index in sync.
   Loop replaces them behind the `DifficultyScorer` protocol. A leaf with no
   `estimated_loc` is scored as if it used the whole LOC budget, on purpose: an
   unstated size is the leaf the planner did not think about, not a free pass.
+- **The verify-gate kill switch is double-gated and literal**
+  `core/bench_mode.verify_gate_disabled()` returns True only when BOTH
+  `PRAXIS_BENCH` and `PRAXIS_BENCH_DISABLE_VERIFY` equal the literal string
+  `"1"`. Either alone is refused, and a truthiness check is deliberately NOT
+  used: a loose check is how a kill switch ends up live. It exists solely for
+  benchmark condition C (decomposition without verification), disables the
+  per-task gate, the per-wave gate, and the whole-plan gate together, and logs a
+  warning every time it fires so a gateless run is never mistaken for a normal
+  one in the logs.

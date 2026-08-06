@@ -427,6 +427,7 @@ the relevant subsystem. Condensed index:
 - **Escalation is a dispatch-time substitution, not a router fallback**: `core/escalation.next_escalation` walks `config/praxis.yaml`'s `implement_escalation` ladder via `tasks.escalation_index`; `config/praxis.yaml` is mounted, not baked, so a ladder edit only needs a restart.
 - **The merge gate judges `ref.base` when knowable, falling back to `plans.plan_branch_name`** (`106f6a7`): `auto_merge_eligible` used the plan branch while `backend.merge` acts on `ref.base`, so auto-delegate single-branch mode auto-merged straight into `main`. Fixed for local refs; GitHub PR URLs encode no base so that half is still open.
 - **Difficulty scoring runs after F3 and shares its round budget**: leaves under `reject_below` (0.35) loop back with their failing features named; two failures reject the plan entirely.
+- **The verify-gate kill switch is double-gated and literal**: `core/bench_mode.verify_gate_disabled()` needs BOTH `PRAXIS_BENCH` and `PRAXIS_BENCH_DISABLE_VERIFY` equal to the literal string "1"; either alone is refused and it disables the per-task, per-wave, and whole-plan gates together.
 
 ## Documentation
 
