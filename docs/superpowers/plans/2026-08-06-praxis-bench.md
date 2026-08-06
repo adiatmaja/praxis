@@ -2339,112 +2339,173 @@ published sample seed. Excluded from the image and the coverage gate."
 
 ---
 
-### Phase B execution record: PARTIAL, phase IS NOT COMPLETE (2026-08-07)
+### Phase B execution record (2026-08-07)
 
-**Status: Task 7 done, the Phase B prerequisite done, Tasks 8 to 12 NOT STARTED.**
-This record exists so the phase is resumable; it is not a closeout. Do not read the
-absence of a defect list for Tasks 8 to 12 as a clean bill of health, they were never
-attempted.
+**Status: Tasks 7 to 11 COMPLETE. Task 12 is human-gated AND BLOCKED; see
+"What blocks Task 12" below. It was not attempted and must not be simulated.**
 
-Committed on local `main`, NOT pushed. Gate at the point of stopping: ruff format and
-check clean across `src/`, `tests/`, and now `bench/`; mypy clean; 1656 tests passing.
+Committed on local `main`, NOT pushed. Gate at close: `ruff format --check` and
+`ruff check` clean across `src/`, `tests/`, `bench/`; `mypy src/ bench/` clean;
+**1766 tests passing**, 91 percent coverage.
 
-Commits: `ff9f593` (Task 7), `6a701f1` (the prerequisite), `169f115` (CI lint widening).
+Commits in order: `ff9f593` (Task 7), `6a701f1` (the prerequisite), `169f115`
+(CI lint widening) from the prior session, then `3365395` (Task 8), `ce1bab8`
+(Task 10), `2162910` (Task 9), `b97bdd2` (the strata finding), `ae9df26`
+(Task 11), `8e442be` (sample writer LF fix), `c94e98e` (Task 11 test gaps),
+`5898973` and `e48b8c8` (Task 8 hardening).
 
-**The prerequisite is done, and it was worse than the handoff described.**
+#### Defects in the plan's own code, every one proven by execution
 
-The handoff said `_verify_plan_branch` returns `"skipped"` without a GitHub credential
-and local mode has none, so the whole-plan verify backstop silently no-ops for every
-local project. Confirmed exactly: a local bare-repo PATH reached the GitHub token guard
-and skipped, with the warning `no token resolved for ...\r.git`.
+**Task 8 (six proven before dispatch, all fixed).** `git checkout --orphan main`
+dies because `clone --no-checkout` already made `main`. The module re-rooted
+history while its own tests and its idempotency guard both required
+`rev-parse main == base_commit`, so the guard could never be true and
+preparation re-cloned every call. `.praxis-bench-base` contaminated the tree.
+A default local bare clone HARDLINKS the object store, so the gold commit stayed
+readable by sha; measured under mutation, `test_no_later_commit_is_reachable`
+(`rev-list --count --all == 1`) PASSED while `git cat-file -e <gold>` returned 0.
+Tags leak the answer and the plan's fixture had none. `shutil.rmtree` raises
+`WinError 5` over packed git files, and Python here is 3.11 so the handler kwarg
+is `onerror`.
 
-Two things beyond the original report:
+Resolution: `refs/heads/main` is the TRUE base sha with real ancestry, every
+other ref is swept, remotes are dropped, and the object store is pruned. An
+independent check was added that the plan never used: the prepared tree sha at
+`main` EQUALS upstream's tree sha at `base_commit`.
 
-1. **`skipped` is indistinguishable from `passed` to BOTH callers.**
-   `DispatchMixin._wave_verify_gate` parks only on `failed`/`error`, so `skipped` and
-   `passed` both return True; the only difference is that a pass is memoized and a skip
-   is not, so a skip is silently re-evaluated every tick. `ReviewMixin.on_plan_completed`
-   opens the integration PR and publishes `plan_integration_ready` identically for both.
-   Nothing in the product branches on the difference. That is WHY this hid: the only
-   reader that could ever have noticed was a human looking at an SSE payload.
-   `_PlanVerifyResult` now carries a `reason`, so a skip states its cause, but the
-   callers still do not distinguish the two statuses. **Unresolved, raised here.**
-2. **Neither GitHub credential-less skip had ANY test before this commit.** Mutation
-   proved it: deleting the empty-token guard left 62 of 62 tests green in
-   `test_orchestrator.py` and `test_dogfood_plan2_fixes.py`, because every existing
-   GitHub verify test injects a truthy `PatCredentialProvider("test-token-xyz")` and
-   every wave-gate test mocks `_verify_plan_branch` out entirely. Both skips are covered
-   now.
+**Task 9.** The plan requires `repo_files` but never says where it comes from,
+and it is not in the SWE-bench metadata. Resolved with
+`gh api repos/{repo}/git/trees/{base_commit}?recursive=1`, per instance.
+Reproducibility depended on a `sorted()` call the plan never tested: without it
+the draw follows pool arrival order, so re-fetching in a different order yields
+a different sample from the same seed. `Path.write_text` with no explicit
+`newline` wrote the COMMITTED sample as CRLF; `main()` had no test at all.
 
-Design: the local path routes through the existing `self._resolve_backend(repo_url)`
-seam and branches on `backend.name == "local"` BEFORE any credential logic.
-`GitBackend.checkout` is PR-shaped and `GitHubBackend.checkout` needs a PR number, so a
-uniform call was impossible without adding a protocol method in a file the task did not
-own; `LocalGitBackend.checkout` reads only `ref.branch`, so the local half fits the real
-seam. A local checkout that cannot be produced is `error`, never `skipped`, because both
-callers fail closed on `error` and neither reacts to `skipped`. The verdict tail is one
-shared `_verify_outcome`, so one path cannot drift into always reporting a pass.
+**Task 10.** `path.open("a", encoding="utf-8")` writes CRLF JSONL on Windows into
+a published artifact, and the plan's own `test_every_row_is_a_single_line_of_json`
+uses `splitlines()`, which normalizes it away. Confirmed by contrast under
+mutation: the raw-bytes test goes red while the plan's test stays green.
 
-Verified independently by the orchestrator: forcing `_verify_outcome` to always report
-`passed` turns four tests red, including one through EACH caller
-(`test_the_wave_gate_parks_a_local_plan_on_a_real_regression` and
-`test_on_plan_completed_publishes_a_real_local_verdict`), md5 differ and restore checked.
-The tests drive a REAL bare repo whose `main` holds `return 1` and whose plan branch
-holds `return 2`, so a gate that never runs, runs in the wrong tree, or always passes
-produces a different verdict in each case.
+**Task 11 (four proven before dispatch, plus one found during).**
+`write_predictions` derived each patch's base from `bare / "praxis-bench-base"`.
+A bare repo has no working tree, so that file can never exist; the base fell back
+to `"main"` and `git diff main...main` is 0 bytes. **Every prediction would have
+carried an empty patch and every condition would have reported 0 percent.**
+`_issue_prompt` read `instance['problem_statement']`, absent from the sample, so
+every attempt would `KeyError` into a 100 percent error matrix.
+`verify_cmd` resolved to `None` for every condition, which combined with the
+known `skipped`-equals-`passed` hole would have made **condition B silently
+become condition C**. `superseded` was missing from the terminal status set. And
+the plan's `merged_repo` fixture calls its own `_git` helper without the
+keyword-only `cwd`, so its Step 8 ("Expected: PASS (6 tests)") was never run.
 
-**Task 7 defects in the plan's own verbatim code.**
+#### Vacuous tests exposed by mutation
 
-1. The Step 1 test imports `REPO_SIZE_STRATA` and never uses it (ruff `F401`). The real
-   problem behind the lint noise is that the analogous repo-size "every stratum name is
-   declared" test was silently dropped; only the patch-size one existed. Added.
-2. `parametrize` used bare-string IDs, which this repo's ruff rejects (`PT006`, wants a
-   tuple). Third plan in this programme to ship that exact form.
-3. A comprehension variable named `l`, which ruff rejects as ambiguous (`E741`).
+- Task 8's `test_no_later_commit_is_reachable` is blind to the dominant leak
+  vector; it is kept deliberately and
+  `test_the_gold_commit_object_is_gone_from_the_object_store` is what catches it.
+- Task 11's two `extract_patch` tests both PASS under the exact mutation that
+  empties every prediction, because they pass `base` explicitly and never
+  exercise the derivation. Re-run by the orchestrator against the committed file.
+- Both of `bench/runner.py`'s timeout clauses could be replaced with
+  `error = None` with **all 30 tests still passing**, despite the module's own
+  docstring promising that nothing is dropped.
+- Four decompose-branch metrics (`leaf_count`, `leaf_retries`, `clarifications`,
+  `human_gate_touches`) were computed and published but asserted nowhere.
+- `select_report`'s tiebreak test proved order-independence but not correctness;
+  a polarity reversal survived it.
+- The Task 11 implementer self-reported one of its own: a client stub that fell
+  back to `"merged"` once its scripted states drained made a poll test pass under
+  the mutation it existed to catch.
 
-`bench/config.py`'s own logic needed no change: the strata are `if/elif/else` chains, so
-they partition by construction. Proven anyway with two independent boundary-shift
-mutations (a gap at `loc == 4` and at `repo_files == 99`); both caught. The
-`repo_files == 99` one was re-run by the orchestrator, md5 verified.
+#### Design defects review found
 
-**One gap closed outside the plan** (`169f115`): CI ran `ruff` and `mypy` over `src/`
-and `tests/` only, so the entire `bench/` package was unlinted and untyped. It sits
-outside the wheel root and is omitted from coverage by design, but it grows through both
-remaining benchmark phases, which is exactly the code that should not rot unchecked.
-`bench/` passes all three checks today, so widening the globs only pins that.
+The adversarial review of Task 8 found, and the orchestrator independently
+confirmed, that **a failed preparation was laundered into "already prepared" by
+the very next run**. `_already_prepared` ran the verifier WITHOUT a canary, so a
+swept-but-unpruned repo passed every remaining check: measured, a repo holding
+the gold commit as an unreachable object showed `refs/heads/main` alone,
+`rev-list --count --all` of 1, `_verify_prepared` passing, `_already_prepared`
+returning True, and `prepare_instance` handing back the leaking repo. Nothing
+deleted `bare` on failure, and `main()` has no per-instance recovery, so one
+failure aborts the sample and the operator's natural re-run poisons the instance.
 
-**Decisions taken in Task 7, recorded so Phase C does not relitigate them.**
+Fixed by replacing the canary with a stronger canary-free invariant: **the object
+store must EQUAL the reachable closure exactly**. It needs no clone-time state so
+it works inside the idempotency guard, and it catches missing objects (a partial
+clone) as well as extra ones. Validated on a real instance, `pydata__xarray-3364`:
+reachable/present 20947/20947, prepared in 11.5 s, 234 tracked files matching the
+sample, later commits unreadable. Poisoned, the same repo reads 20947/20953, is
+rejected in 0.30 s, and is rebuilt in 11.1 s.
 
-- `bench/` is NOT packaged. It already sits outside `[tool.setuptools.packages.find]
-  where = ["src"]`, so no wheel change was needed; only `[tool.coverage.run] omit`.
-- No `slow` marker was added. The plan's own tests mark everything `unit`. `pyproject.toml`
-  still registers ONLY `unit` and `integration`, whatever the plans' tables claim.
-- The orchestrator Dockerfile needed no edit: it uses an explicit `COPY` allowlist, not
-  `COPY . .`, so `bench/` was already excluded from the image.
+The review also found: a `pack-*.keep` file hardlinked from the upstream defeats
+`gc --prune=now` entirely while every other signal reads clean; `_leak_canary`
+built one 40-char sha per ref into a single argv and died at about 790 targets
+with `FileNotFoundError: [WinError 206]`, which its `except subprocess.CalledProcessError`
+could not catch (the same trap `CLAUDE.md` already documents for brain prompts);
+the fixture's single already-named-`main` branch hid both the branch half of the
+sweep and the `symbolic-ref HEAD` line; and the per-ref delete loop costs 50 ms
+per ref, about 35 minutes of pure process spawn across a 100-instance run.
 
-**Still open, and Task 8 must be read with these in mind.**
+#### Cleared from the deferred backlog
 
-1. **`skipped` versus `passed` is still invisible to both callers** (above). The
-   benchmark's thesis is that the verify gate is load-bearing, and condition C is the
-   gate-disabled arm. Before trusting any condition-B number, confirm the gate actually
-   ran rather than skipped.
-2. `on_plan_completed` still runs the GitHub integration-PR path for local projects:
-   `open_integration_pr` shells out to `gh` against a filesystem path, fails, is caught,
-   and `compare_url` emits a nonsense `https://github.com/C:\...\r.git/compare/...` into
-   the `plan_integration_ready` event. Degrades rather than breaks, but a bench dashboard
-   will display that URL.
-3. `_wave_verify_gate` never memoizes a `skipped`, so a GitHub project with a
-   `verify_cmd` and no credential re-enters the gate every tick. Harmless today because
-   it returns before any I/O.
-4. `CONDITIONS` and `WORKERS` in `bench/config.py` are not yet referenced by anything.
-   Phase C's analysis groups by condition name; a mismatch there would silently
-   mis-group the matrix. Nothing checks the two agree yet.
+Nothing. No item on the standing backlog was assigned to this phase.
 
-**Not started: Tasks 8, 9, 10, 11, 12.** Task 8 is the only `praxis-impl-max` task in
-the programme: if the gold patch stays reachable, every number the full matrix produces
-is invalid and nobody finds out until the whole run is spent. Its mutation check is the
-single most important verification across all three plans. Task 12 is human-gated and
-must not be simulated.
+#### Still open
+
+1. **What `verify_cmd` actually runs is undecided, and it blocks a meaningful
+   condition B.** The mechanism is built and its absence is now fatal rather than
+   silent, but no command has been chosen. The 16 pilot instances span django,
+   xarray, pytest, sympy, seaborn, pylint, and scikit-learn, each with a
+   different test runner and setup cost, so a single run-wide command is unlikely
+   to be right. A meaningful SWE-bench verification needs the official
+   per-instance Docker environment, which `verify_cmd` cannot shell out to today.
+2. **`skipped` versus `passed` is still invisible to both verify-gate callers.**
+   The runner's refusal stops the bench from tripping it, but does not fix it.
+3. **SWE-bench Lite populates only 4 of the 9 stratum cells.** Verified over all
+   300 instances: every gold patch touches exactly 1 file, patch size is 1 to 76
+   lines with a median of 6, and the smallest repo is `psf/requests` at 121 files.
+   The `large` patch bucket and the `tiny` repo bucket are structurally empty, so
+   the pilot draws 16 rather than 30 and a full run would draw 64 rather than 144.
+   The boundaries cite arXiv 2505.23419, which describes full SWE-bench.
+   Recorded in `bench/README.md` and `bench/config.py` (`b97bdd2`).
+4. `main()` in `bench/prepare.py` has no per-instance recovery, so one bad
+   instance still aborts the rest of the sample. The re-run is now safe, but the
+   run is not resilient.
+5. `_discard_failed` swallows `OSError`, so a Windows file lock can defeat the
+   cleanup. The "leaves nothing on disk" guarantee is best-effort; the real
+   protection is the closure invariant rejecting leftovers on the next pass.
+6. Partial/promisor clones and non-ASCII ref names are reasoned about but
+   untested. Both should fail loudly rather than silently.
+7. A worker container with internet access can clone the upstream itself.
+   Preparation cannot prevent that; it is a runner and sandbox concern.
+
+#### What blocks Task 12
+
+**The REST API rejects local repository paths, so bench Phase A's entire local
+git backend is unreachable and the pilot cannot run.** Verified:
+`ProjectCreate.validate_repo_url` (`schemas.py:208`) and
+`DispatchRequest.validate_repo_url` (`schemas.py:545`) reject every form
+`core/git_backend.is_local_repo_url` accepts (`file://`, POSIX absolute, Windows
+drive, UNC). `register_project` and `dispatch` both 422 on a prepared bare repo
+path.
+
+A related inconsistency surfaced alongside it: the three sibling request schemas
+have three different policies. `ExecutePlanRequest` has NO `repo_url` validator
+at all and accepts `ext::sh -c whoami`, `git://evil/repo.git`, and an embedded
+`--upload-pack=`; `DispatchRequest` accepts the `--upload-pack=` form because its
+check is prefix-only. This is defense in depth rather than a live RCE: git 2.52
+refuses `ext::` itself (`fatal: transport 'ext' not allowed`, its default policy
+is `never`), and the option-injection form is passed as a single argv element so
+curl rejects it as a malformed URL. Worth closing, not urgent.
+
+Recommended shape, NOT implemented because it changes the product's security
+posture and that is the user's call: keep rejecting `ext::`, `git://`, and the
+option-injection fragments in all three schemas, share one validator
+implementation, and admit local filesystem paths only behind an explicit
+opt-in setting (default off), gated at the endpoint or preflight layer where
+runtime settings are reachable. `core/preflight._preflight_local` already
+verifies the target is a bare repo and is the natural choke point.
 
 ---
 
