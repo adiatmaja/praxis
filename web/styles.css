@@ -208,6 +208,26 @@
     .btn-compact { height: 28px; padding: 0 9px; font-size: 11px; }
     .theme-btn { width: 32px; padding: 0; font-size: 15px; }
 
+    /* Merge-gate approvals digest: parked work nobody sees is the documented
+       abandonment trigger for this product category, so this badge is
+       persistent (not just an event toast) and correct on page load. */
+    .approvals-badge {
+      height: 32px;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      border: 1px solid color-mix(in srgb, var(--badge-reviewing-text) 35%, transparent);
+      border-radius: 6px;
+      background: var(--badge-reviewing-bg);
+      color: var(--badge-reviewing-text);
+      padding: 0 12px;
+      cursor: pointer;
+      font-size: 12px;
+      font-weight: 600;
+      white-space: nowrap;
+    }
+    .approvals-badge:hover { opacity: .85; }
+
     .master-detail { min-height: 0; flex: 1; display: flex; overflow: hidden; }
     .master-panel {
       width: 48%;

@@ -25,6 +25,10 @@
     let effectiveLmStudioUrl = null;  // global effective LM Studio URL (from /api/status)
     let selectedLifecycle = null;
     let lifecycleSegment = "spec";
+    // Work parked at the human merge gate, across all projects. Refreshed once
+    // on load and again whenever the rate-limited approvals_digest SSE event
+    // fires; the header badge must be correct before the first event arrives.
+    let pendingApprovals = { count: 0, oldest_hours: 0, tasks: [] };
 
     initTheme();
 
@@ -244,6 +248,10 @@
     async function switchView(name) {
       currentView = name;
       showingForm = false;
+      // showPendingApprovals() overrides the primary action button's click
+      // handler; any real navigation restores the default dispatcher.
+      const primaryActionEl = document.getElementById("primary-action");
+      if (primaryActionEl) primaryActionEl.onclick = primaryAction;
       document.querySelectorAll(".nav-item").forEach(el => el.classList.toggle("active", el.dataset.view === name));
       const viewContainer = document.getElementById("view-container");
       if (viewContainer) viewContainer.innerHTML = '<div class="view-loader"><div class="spinner"></div><span>Loading…</span></div>';
@@ -1552,6 +1560,21 @@
         }
         if (data?.task_id) clearClarification(data.task_id);
       });
+
+      // Rate-limited (every few hours) summary of work parked at the merge
+      // gate. The badge itself is kept correct between events by the initial
+      // pollPendingApprovals() call on page load.
+      source.addEventListener("approvals_digest", event => {
+        let data;
+        try {
+          data = JSON.parse(event.data);
+        } catch (error) {
+          return;
+        }
+        if (!data) return;
+        pendingApprovals = data;
+        renderApprovalsBadge();
+      });
     }
 
     function renderClarification(taskId, question, brainNote) {
@@ -1643,6 +1666,71 @@
       } catch (err) {
         alert("Reject failed: " + err.message);
       }
+    }
+
+    // Fetch the merge-gate approvals summary and refresh the header badge.
+    // Called once on load (so the badge is correct before any SSE event) and
+    // again on each approvals_digest event (rate-limited to every few hours).
+    async function pollPendingApprovals() {
+      if (!token) return;
+      try {
+        pendingApprovals = await api("GET", "/api/approvals/pending");
+      } catch (error) {
+        // The badge is an add-on; a failed lookup just leaves it stale.
+        return;
+      }
+      renderApprovalsBadge();
+    }
+
+    function renderApprovalsBadge() {
+      const actions = document.querySelector(".topbar-actions");
+      if (!actions) return;
+      let el = document.getElementById("approvals-badge");
+      if (!pendingApprovals.count) {
+        if (el) el.remove();
+        return;
+      }
+      if (!el) {
+        el = document.createElement("button");
+        el.id = "approvals-badge";
+        el.className = "approvals-badge";
+        el.type = "button";
+        el.onclick = showPendingApprovals;
+        actions.insertBefore(el, actions.firstChild);
+      }
+      const noun = pendingApprovals.count === 1 ? "PR" : "PRs";
+      const oldest = Math.floor(pendingApprovals.oldest_hours || 0);
+      el.textContent = pendingApprovals.count + " " + noun + " awaiting approval";
+      el.title = "Oldest parked " + oldest + "h ago — click to view";
+    }
+
+    // Show the parked tasks flat, across every plan (the tasks view is
+    // normally scoped to one plan via its dropdown, which cannot express a
+    // cross-plan "everything awaiting approval" filter).
+    async function showPendingApprovals() {
+      currentView = "tasks";
+      document.querySelectorAll(".nav-item").forEach(el => el.classList.toggle("active", el.dataset.view === "tasks"));
+      setTopbar("Pending Approvals", "Refresh");
+      const action = document.getElementById("primary-action");
+      if (action) action.onclick = () => pollPendingApprovals().then(showPendingApprovals);
+      currentTasks = pendingApprovals.tasks.map(t => ({
+        id: t.task_id, title: t.title, branch_name: t.branch, status: "passed", pr_url: t.pr_url
+      }));
+      const container = document.getElementById("view-container");
+      container.innerHTML =
+        '<div class="master-panel">' +
+          '<div class="master-header"><div class="master-title">' + pendingApprovals.count + ' awaiting approval</div>' +
+          '<button class="btn btn-compact" type="button" onclick="pollPendingApprovals().then(showPendingApprovals)">Refresh</button></div>' +
+          '<div class="master-list" id="tasks-master-list"></div>' +
+        '</div><div class="detail-panel" id="task-detail-panel"><div class="detail-empty">Select a task</div></div>';
+      const list = document.getElementById("tasks-master-list");
+      list.innerHTML = currentTasks.map(task =>
+        '<button class="master-row' + (selectedTaskId === task.id ? ' selected' : '') +
+        '" type="button" onclick="selectTask(\'' + esc(task.id) + '\')">' +
+          '<div class="row-main"><div class="row-name">' + esc(task.title || task.id) + '</div>' +
+          '<div class="row-meta">' + esc(task.branch_name) + '</div></div>' + badge(task.status) +
+        '</button>'
+      ).join("") || '<div class="empty-list">Nothing awaiting approval</div>';
     }
 
     async function pollStatus() {
@@ -2661,3 +2749,6 @@
     });
     pollStatus();
     window.setInterval(pollStatus, 5000);
+    // Poll once so the badge is correct before the first (rate-limited,
+    // every-few-hours) approvals_digest SSE event ever arrives.
+    pollPendingApprovals();

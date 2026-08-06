@@ -105,6 +105,11 @@ calls: nothing streams to you, so you must poll.
 - `get_project` — read a repo's configured worker model + harness (or null if unknown).
 - `list_projects` — list repos Praxis knows, each with its configured model + harness.
 - `get_mode` — return auto-delegate mode state ({enabled, worker:{harness,model}}).
+- `pending_approvals` — list every task parked at the human merge gate, across all
+  projects ({count, oldest_hours, tasks}). Praxis never merges without a human even
+  after review passes clean, so this is the queue an operator must actually clear.
+  `poll_task` and `poll_plan` also carry a one-line `approvals` digest of this same
+  queue, so you usually see it there first.
 
 
 ## 3. What context to pass

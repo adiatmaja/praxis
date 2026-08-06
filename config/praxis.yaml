@@ -2,6 +2,11 @@
 loop_interval: 30      # seconds between orchestration loop passes
 callback_grace: 5      # seconds to wait before reconciling a missing callback
 
+# How often the approvals digest event may fire, in hours. Parked work is
+# surfaced on poll_task, poll_plan, `praxis pending`, and the dashboard badge
+# continuously; this only rate-limits the SSE event.
+approvals_digest_interval_h: 6
+
 capability:
   default:
     parameter_count_b: 30

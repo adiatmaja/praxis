@@ -116,6 +116,39 @@ async def execute_plan_impl(
     return result
 
 
+async def _approvals_digest_line(client: Any) -> str:
+    """Return the approvals digest line, or "" on any failure.
+
+    The digest is an add-on to poll_task/poll_plan; a broken lookup here must
+    never break the poll itself, so every failure mode (network, malformed
+    response) is swallowed and reported as "nothing to show" rather than
+    propagated.
+    """
+    from orchestrator.core.approvals import digest_line
+
+    try:
+        pending = await client.get("/api/approvals/pending")
+    except PraxisClientError:
+        return ""
+    except Exception:  # noqa: BLE001 - the digest must never break the poll
+        return ""
+    if not isinstance(pending, dict):
+        return ""
+    try:
+        return digest_line(pending)
+    except Exception:  # noqa: BLE001 - the digest must never break the poll
+        return ""
+
+
+async def pending_approvals_impl(client: Any) -> dict[str, Any]:
+    """Return the summary of every task parked at the human merge gate."""
+    try:
+        result = await client.get("/api/approvals/pending")
+    except PraxisClientError as exc:
+        return _error(exc)
+    return result if isinstance(result, dict) else {}
+
+
 async def poll_task_impl(client: Any, task_id: str) -> dict[str, Any]:
     """Return the current status, PR URL, and review of a dispatched task.
 
@@ -128,6 +161,12 @@ async def poll_task_impl(client: Any, task_id: str) -> dict[str, Any]:
     REST endpoint ``GET /api/tasks/{id}`` reports the underlying DB status
     ``passed`` for the same state, so a caller polling REST directly must match
     on ``passed`` (not ``awaiting_merge``). Prefer the MCP tools for consistency.
+
+    The response also carries an ``approvals`` line summarizing ANY work
+    parked at the merge gate across the whole project (not just this task) so
+    a caller polling one task still learns about a growing review queue.  A
+    failure fetching that digest never breaks this poll; ``approvals`` is
+    simply "" in that case.
     """
     try:
         data = await client.get(f"/api/tasks/{task_id}")
@@ -136,6 +175,7 @@ async def poll_task_impl(client: Any, task_id: str) -> dict[str, Any]:
     task = data.get("task", {})
     raw_status = task.get("status")
     awaiting = raw_status == "passed"
+    approvals = await _approvals_digest_line(client)
     if raw_status == "needs_clarification":
         return {
             "task_id": task_id,
@@ -144,6 +184,7 @@ async def poll_task_impl(client: Any, task_id: str) -> dict[str, Any]:
             "pr_url": task.get("pr_url"),
             "branch": task.get("branch_name"),
             "dashboard_url": _dashboard_url(client),
+            "approvals": approvals,
         }
     return {
         "task_id": task_id,
@@ -153,6 +194,7 @@ async def poll_task_impl(client: Any, task_id: str) -> dict[str, Any]:
         "branch": task.get("branch_name"),
         "verdict": "pass" if awaiting else None,
         "dashboard_url": _dashboard_url(client),
+        "approvals": approvals,
     }
 
 
@@ -369,6 +411,10 @@ async def poll_plan_impl(client: Any, plan_id: str) -> dict[str, Any]:
       merged successfully (partial plan completion).  Contains ``failed_count``,
       ``merged_count``, and a ``hint`` suggesting the operator check for an
       integration PR on the dashboard.
+
+    - ``approvals``: a one-line digest of ANY work parked at the merge gate
+      across the whole project (not just this plan). A failure fetching that
+      digest never breaks this poll; ``approvals`` is simply "" in that case.
     """
     try:
         plan_data = await client.get(f"/api/plans/{plan_id}")
@@ -382,6 +428,7 @@ async def poll_plan_impl(client: Any, plan_id: str) -> dict[str, Any]:
     opus_plan_json: str | None = plan_data.get("opus_plan")
     merge_gate = derive_plan_blocked_state(opus_plan_json, tasks)
     term = derive_terminal_incomplete_state(plan_data.get("status"), tasks)
+    approvals = await _approvals_digest_line(client)
     return {
         "plan_id": plan_id,
         "status": plan_data.get("status"),
@@ -399,6 +446,7 @@ async def poll_plan_impl(client: Any, plan_id: str) -> dict[str, Any]:
         "merge_gate": merge_gate,
         "terminal_incomplete": term,
         "dashboard_url": _dashboard_url(client),
+        "approvals": approvals,
     }
 
 
@@ -610,6 +658,17 @@ async def poll_plan(plan_id: str) -> dict[str, Any]:
     ``completed`` or all tasks are in a terminal state.
     """
     return await poll_plan_impl(PraxisClient.from_env(), plan_id=plan_id)
+
+
+@mcp.tool()
+async def pending_approvals() -> dict[str, Any]:
+    """List every task parked at the human merge gate, across all projects.
+
+    Praxis never merges without a human even after review passes clean, so
+    this is the queue an operator must actually clear. Returns
+    {count, oldest_hours, tasks: [{task_id, title, branch, pr_url, age_hours}]}.
+    """
+    return await pending_approvals_impl(PraxisClient.from_env())
 
 
 @mcp.tool()

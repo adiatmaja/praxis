@@ -255,6 +255,16 @@ class EffectiveSettings:
         yaml_data = await self._get_yaml()
         return str(yaml_data.get("escalation", {}).get("policy", "block"))
 
+    async def approvals_digest_interval_h(self) -> float:
+        """Return hours between ``approvals_digest`` SSE events, YAML-configurable.
+
+        Defaults to 6 hours. Parked work stays visible on ``poll_task``,
+        ``poll_plan``, ``praxis pending``, and the dashboard badge
+        continuously; this only rate-limits the SSE event itself.
+        """
+        yaml_data = await self._get_yaml()
+        return float(yaml_data.get("approvals_digest_interval_h", 6.0))
+
     async def set_override(self, key: str, value: str | None) -> None:
         """Upsert an override (value=None deletes the override row)."""
         if value is None:

@@ -184,6 +184,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 app = FastAPI(title="AI Agent Orchestrator", version="0.1.0", lifespan=lifespan)
 
+from orchestrator.api.approvals import router as approvals_router  # noqa: E402
 from orchestrator.api.context import router as context_router  # noqa: E402
 from orchestrator.api.dispatch import router as dispatch_router  # noqa: E402
 from orchestrator.api.docs import router as docs_router  # noqa: E402
@@ -204,6 +205,7 @@ from orchestrator.api.tasks import router as tasks_router  # noqa: E402
 
 
 app.include_router(context_router)
+app.include_router(approvals_router, prefix="/api")
 app.include_router(docs_router)
 app.include_router(specs_router)
 app.include_router(projects_router, prefix="/api")

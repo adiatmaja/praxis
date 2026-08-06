@@ -78,6 +78,9 @@ class Orchestrator(DispatchMixin, ReviewMixin, ReconcileMixin, ImprovementMixin)
         # accumulated-branch verify run ONCE per wave boundary instead of every
         # loop pass. In-memory only (a restart re-runs it once, which is safe).
         self._wave_verify_state: dict[str, tuple[int, bool]] = {}
+        # Last time an approvals_digest SSE event was published (rate-limits
+        # the event; the underlying summary is always fresh on every poll).
+        self._last_approvals_digest_at: datetime | None = None
 
     async def plan_and_activate(self, plan_id: str, project: dict[str, Any]) -> None:
         """Ask Opus to plan a pending spec and activate the resulting task graph."""
@@ -285,6 +288,7 @@ class Orchestrator(DispatchMixin, ReviewMixin, ReconcileMixin, ImprovementMixin)
         """Run one orchestration pass over all pending and active plans."""
 
         await self.reconcile_runs()
+        await self._publish_approvals_digest()
         for plan in await self._tq.get_runnable_plans():
             project = await self._tq.get_project(plan["project_id"])
             if project is None:
@@ -295,6 +299,37 @@ class Orchestrator(DispatchMixin, ReviewMixin, ReconcileMixin, ImprovementMixin)
                 )
                 continue
             await self.process_plan_once(plan["id"], project)
+
+    async def _publish_approvals_digest(self) -> None:
+        """Publish a rate-limited digest of work parked at the merge gate.
+
+        Fire-and-forget: a digest failure must never wedge the loop, so every
+        step (query, summarize, settings lookup, publish) runs inside one
+        try/except that only logs.
+        """
+        from orchestrator.core.approvals import should_publish_digest, summarize_pending
+        from orchestrator.core.status_vocab import GATED_STATUSES
+
+        try:
+            placeholders = ", ".join("?" for _ in GATED_STATUSES)
+            rows = await self._tq._db.fetch_all(
+                f"SELECT * FROM tasks WHERE status IN ({placeholders})",
+                tuple(GATED_STATUSES),
+            )
+            summary = summarize_pending(rows)
+            interval_h = 6.0
+            if self._effective_settings is not None:
+                interval_h = (
+                    await self._effective_settings.approvals_digest_interval_h()
+                )
+            if not should_publish_digest(
+                summary["count"], self._last_approvals_digest_at, interval_h
+            ):
+                return
+            self._last_approvals_digest_at = datetime.now(UTC)
+            self._bus.publish({"type": "approvals_digest", **summary})
+        except Exception:  # noqa: BLE001 - a digest must never wedge the loop
+            logger.exception("approvals digest failed")
 
     async def run_loop(
         self,

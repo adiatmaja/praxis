@@ -269,6 +269,27 @@ def mode(action: str = typer.Argument(..., help="on | off | status")) -> None:
     console.print(f"auto-delegate: {enabled_str} (worker: {harness} / {model})")
 
 
+@app.command()
+def pending() -> None:
+    """List tasks parked at the human merge gate."""
+    with _client() as client:
+        data = _check_dict(client.get("/api/approvals/pending"))
+    if not data["count"]:
+        console.print("[green]Nothing awaiting approval.[/green]")
+        return
+    table = Table(title=f"{data['count']} awaiting approval")
+    for column in ("Age", "Task", "Branch", "PR"):
+        table.add_column(column)
+    for task in data["tasks"]:
+        table.add_row(
+            f"{int(task['age_hours'])}h",
+            task["title"] or task["task_id"],
+            task["branch"] or "",
+            task["pr_url"] or "",
+        )
+    console.print(table)
+
+
 config_app = typer.Typer(
     name="config", help="Configure the model registry and role chains"
 )
