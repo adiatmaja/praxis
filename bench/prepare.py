@@ -220,9 +220,15 @@ def _object_counts(bare: Path) -> tuple[int, int]:
     ``reachable`` walks every ref; ``present`` is what the store actually holds,
     loose plus packed.  ``--no-object-names`` keeps the reachable side one sha
     per line, so a path containing a newline cannot inflate the count.
-    ``prune-packable`` is how many loose objects are also in a pack, and is
-    subtracted because those appear in both of the other two numbers, so the
-    result counts DISTINCT objects either way.
+
+    ``prune-packable``, the count of loose objects that are ALSO inside a pack
+    and therefore counted twice here, is deliberately NOT subtracted.  ``gc
+    --prune=now`` runs ``prune-packed``, so a repo that reached the end of
+    preparation has none, and it measured zero on the fixture and on a real
+    20947-object instance.  Subtracting it could only ever lower ``present``,
+    and lowering ``present`` is exactly how a leaked object stops being counted.
+    A double count fails loudly and gets looked at; a quiet correction that
+    happens to cancel out a leak does not.
 
     Raises:
         PreparationError: If ``count-objects`` did not report what it must.
@@ -240,7 +246,7 @@ def _object_counts(bare: Path) -> tuple[int, int]:
         msg = f"{bare}: git count-objects -v reported no {missing}"
         raise PreparationError(msg)
 
-    present = fields["count"] + fields["in-pack"] - fields.get("prune-packable", 0)
+    present = fields["count"] + fields["in-pack"]
     return reachable, present
 
 
