@@ -69,9 +69,15 @@ SEEDS: tuple[int, ...] = (1, 2)
 # Fixed sample seed, published so the draw is reproducible.
 SAMPLE_SEED = 20260806
 
-# Per-stratum sample sizes.
-PILOT_PER_STRATUM = 4  # 30-task Lite pilot, conditions A and B, one worker
-FULL_PER_STRATUM = 16  # about 144 tasks across the 9 strata cells
+# Per-stratum sample sizes. These are the pre-registered knob; the resulting
+# TOTAL is a consequence of how many cells the corpus actually populates, and is
+# not itself a target. Measured 2026-08-07: SWE-bench Lite populates only 4 of
+# the 9 cells (every Lite gold patch touches exactly 1 file, and no Lite repo
+# has under 100 tracked files), so the pilot draws 16 and a full run would draw
+# 64, not the 30 and 144 an unfiltered 9-cell corpus would give. See
+# bench/README.md, "Stratification".
+PILOT_PER_STRATUM = 4
+FULL_PER_STRATUM = 16
 
 
 def stratum_for(files: int, loc: int, repo_files: int) -> tuple[str, str]:

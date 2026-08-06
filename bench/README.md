@@ -38,6 +38,18 @@ crossed with repo size (under 100 / 100 to 500 / 500+ tracked files). Fixed
 sample per cell, published seed (`bench/config.SAMPLE_SEED`), and the drawn
 instance list committed under `bench/samples/`.
 
+**Measured against SWE-bench Lite, only 4 of those 9 cells are populated.**
+Verified over all 300 Lite instances on 2026-08-07: every gold patch touches
+exactly 1 file (so the `large` bucket, which needs 3+ files or over 100 lines,
+is empty), patch size runs 1 to 76 changed lines with a median of 6, and the
+smallest repo is `psf/requests` at 121 tracked files (so the `tiny` bucket,
+under 100, is empty). The boundaries above come from arXiv 2505.23419, which
+describes full SWE-bench; Lite is filtered to single-file patches and does not
+span them. The pilot therefore draws 16 instances across `small`/`medium`
+crossed with `mid`/`big`, not 30 across 9 cells. Re-cutting the boundaries for
+Lite's real distribution, or moving to a corpus that spans the published ones,
+is an open design decision recorded in the plan's execution record.
+
 ## Grading
 
 The OFFICIAL SWE-bench evaluation harness, run against the patch extracted from
@@ -47,10 +59,10 @@ the final branch (`git diff base...result`). Praxis never grades itself.
 
 ```bash
 # One-time: prepare instances as local bare repos at the buggy base commit
-uv run python -m bench.prepare --sample bench/samples/lite-pilot-30.json
+uv run python -m bench.prepare --sample bench/samples/lite-pilot-16.json
 
-# Pilot: 30 Lite tasks, conditions A and B, one worker
-uv run python -m bench.runner --sample bench/samples/lite-pilot-30.json \
+# Pilot: 16 Lite tasks, conditions A and B, one worker
+uv run python -m bench.runner --sample bench/samples/lite-pilot-16.json \
     --conditions A,B --worker local-openweight
 
 # Grade and report
