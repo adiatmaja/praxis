@@ -64,6 +64,31 @@ class LeafRejectedEvent(_CapabilityEvent):
     limit: int | str | None = None
 
 
+class LeafDifficultyScoredEvent(_CapabilityEvent):
+    """Recorded for every leaf that passes F3 and gets a difficulty score.
+
+    This is the calibration loop's training data: the feature vector and the
+    prediction, joined later against the leaf's actual ``task_outcomes`` row.
+    """
+
+    event_type: Literal["leaf_difficulty_scored"] = "leaf_difficulty_scored"
+    plan_id: str
+    leaf_slug: str
+    p_success: float
+    features: dict[str, float] = Field(default_factory=dict)
+    flagged: bool = False
+
+
+class LeafRejectedPredispatchEvent(_CapabilityEvent):
+    """Recorded when a leaf is rejected on its score before any container runs."""
+
+    event_type: Literal["leaf_rejected_predispatch"] = "leaf_rejected_predispatch"
+    plan_id: str
+    leaf_slug: str
+    p_success: float
+    failing_features: list[str] = Field(default_factory=list)
+
+
 class PlanRejectedEvent(_CapabilityEvent):
     """Recorded when the entire plan is rejected after review rounds."""
 
@@ -112,6 +137,8 @@ CapabilityEventModel = (
     DecomposeInputEvent
     | LeafValidatedEvent
     | LeafRejectedEvent
+    | LeafDifficultyScoredEvent
+    | LeafRejectedPredispatchEvent
     | PlanRejectedEvent
     | TaskSplitEvent
     | TaskEscalatedEvent
@@ -123,6 +150,8 @@ CAPABILITY_EVENT_TYPES: frozenset[str] = frozenset(
         "decompose_input",
         "leaf_validated",
         "leaf_rejected",
+        "leaf_difficulty_scored",
+        "leaf_rejected_predispatch",
         "plan_rejected",
         "task_split",
         "task_escalated",

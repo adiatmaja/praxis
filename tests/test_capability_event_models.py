@@ -15,7 +15,9 @@ from orchestrator.core.capability_events import (
     CAPABILITY_EVENT_TYPES,
     CapabilityEventModel,
     DecomposeInputEvent,
+    LeafDifficultyScoredEvent,
     LeafRejectedEvent,
+    LeafRejectedPredispatchEvent,
     LeafValidatedEvent,
     OutcomeRecordedEvent,
     PlanRejectedEvent,
@@ -40,11 +42,13 @@ def test_schema_version_is_one():
 
 
 @pytest.mark.unit
-def test_capability_event_types_contains_all_seven():
-    assert len(CAPABILITY_EVENT_TYPES) == 7
+def test_capability_event_types_contains_all_nine():
+    assert len(CAPABILITY_EVENT_TYPES) == 9
     assert "decompose_input" in CAPABILITY_EVENT_TYPES
     assert "leaf_validated" in CAPABILITY_EVENT_TYPES
     assert "leaf_rejected" in CAPABILITY_EVENT_TYPES
+    assert "leaf_difficulty_scored" in CAPABILITY_EVENT_TYPES
+    assert "leaf_rejected_predispatch" in CAPABILITY_EVENT_TYPES
     assert "plan_rejected" in CAPABILITY_EVENT_TYPES
     assert "task_split" in CAPABILITY_EVENT_TYPES
     assert "task_escalated" in CAPABILITY_EVENT_TYPES
@@ -282,13 +286,25 @@ def test_capability_event_model_accepts_each_variant():
         ),
         LeafValidatedEvent(plan_id="p1", leaf_slug="t1"),
         LeafRejectedEvent(plan_id="p1", leaf_slug="t1", rule_id="r1"),
+        LeafDifficultyScoredEvent(
+            plan_id="p1",
+            leaf_slug="t1",
+            p_success=0.5,
+            features={"f1": 1.0},
+        ),
+        LeafRejectedPredispatchEvent(
+            plan_id="p1",
+            leaf_slug="t1",
+            p_success=0.2,
+            failing_features=["f1"],
+        ),
         PlanRejectedEvent(plan_id="p1", violations=["v"], rounds=1),
         TaskSplitEvent(plan_id="p1", parent_slug="t1", child_slugs=["t2"]),
         TaskEscalatedEvent(plan_id="p1", leaf_slug="t1", policy="p"),
         OutcomeRecordedEvent(plan_id="p1", task_id="t1", outcome_id="o1"),
     ]
     typed: list[CapabilityEventModel] = events
-    assert len(typed) == 7
+    assert len(typed) == 9
 
 
 @pytest.mark.unit
@@ -296,3 +312,74 @@ def test_capability_event_model_preserves_event_type():
     evt = LeafValidatedEvent(plan_id="p1", leaf_slug="t1")
     typed: CapabilityEventModel = evt
     assert typed.event_type == "leaf_validated"
+
+
+# ---------------------------------------------------------------------------
+# LeafDifficultyScoredEvent
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_leaf_difficulty_scored_event_round_trips():
+    from orchestrator.core.capability_events import LeafDifficultyScoredEvent
+
+    event = LeafDifficultyScoredEvent(
+        plan_id="p1",
+        leaf_slug="add-widget",
+        p_success=0.42,
+        features={"files_touched": 2.0, "loc_ratio": 0.5},
+    )
+    payload = event.model_dump()
+    assert payload["event_type"] == "leaf_difficulty_scored"
+    assert payload["schema_version"] == 1
+    assert LeafDifficultyScoredEvent.model_validate(payload) == event
+
+
+# ---------------------------------------------------------------------------
+# LeafRejectedPredispatchEvent
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_leaf_rejected_predispatch_event_round_trips():
+    from orchestrator.core.capability_events import LeafRejectedPredispatchEvent
+
+    event = LeafRejectedPredispatchEvent(
+        plan_id="p1",
+        leaf_slug="add-widget",
+        p_success=0.19,
+        failing_features=["loc_ratio", "files_touched"],
+    )
+    payload = event.model_dump()
+    assert payload["event_type"] == "leaf_rejected_predispatch"
+    assert LeafRejectedPredispatchEvent.model_validate(payload) == event
+
+
+# ---------------------------------------------------------------------------
+# Registry consistency
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_both_new_types_are_in_the_registry():
+    from orchestrator.core.capability_events import CAPABILITY_EVENT_TYPES
+
+    assert "leaf_difficulty_scored" in CAPABILITY_EVENT_TYPES
+    assert "leaf_rejected_predispatch" in CAPABILITY_EVENT_TYPES
+
+
+@pytest.mark.unit
+def test_the_registry_matches_the_union_members():
+    """The frozenset and the union must never drift apart."""
+    import typing
+
+    from orchestrator.core.capability_events import (
+        CAPABILITY_EVENT_TYPES,
+        CapabilityEventModel,
+    )
+
+    members = typing.get_args(CapabilityEventModel)
+    declared = {
+        typing.get_args(m.model_fields["event_type"].annotation)[0] for m in members
+    }
+    assert declared == set(CAPABILITY_EVENT_TYPES)
