@@ -56,17 +56,49 @@ logger = logging.getLogger(__name__)
 # a huge test log does not bloat the in-memory event or the dashboard payload.
 _VERIFY_OUTPUT_MAX = 4000
 
+# Every ``skipped`` names its reason.  A skip that could not say why is what
+# let the local-mode hole hide: neither caller distinguishes ``skipped`` from
+# ``passed`` by control flow, so an unexplained skip reads as a green gate.
+_SKIP_NO_VERIFY_CMD = "no verify_cmd configured"
+_SKIP_NO_CREDENTIAL_PROVIDER = "no GitHub credential provider"
+_SKIP_NO_TOKEN = "no GitHub token for repo"
+
 
 @dataclass(frozen=True)
 class _PlanVerifyResult:
     """Outcome of the whole-plan verify gate.
 
-    ``status`` is one of ``"skipped"`` (no verify_cmd or no credential),
-    ``"passed"``, ``"failed"``, or ``"error"`` (clone/verify raised).
+    ``status`` is one of ``"skipped"`` (genuinely nothing to run), ``"passed"``,
+    ``"failed"``, or ``"error"`` (clone/checkout/verify raised).
+
+    ``skipped`` must never mean "we could not work out how to run it": that
+    case is an ``error``, which both callers fail closed on.  ``reason`` is set
+    on every skip so the distinction stays auditable in a log or a debugger.
     """
 
     status: str
     output: str = ""
+    reason: str = ""
+
+
+def _verify_outcome(passed: bool, output: str) -> _PlanVerifyResult:
+    """Turn a ``run_verify`` result into a gate verdict.
+
+    Shared by both backend paths deliberately: the only thing that legitimately
+    differs between local and GitHub is how the plan branch reaches a working
+    directory.  Once it is there, the verdict is computed in exactly one place,
+    so one path cannot drift into always reporting a pass.
+
+    Args:
+        passed: The exit-status verdict from ``run_verify``.
+        output: The command's combined output.
+
+    Returns:
+        A ``passed`` or ``failed`` result carrying truncated output.
+    """
+    return _PlanVerifyResult(
+        "passed" if passed else "failed", output[:_VERIFY_OUTPUT_MAX]
+    )
 
 
 class ReviewMixin:
@@ -900,28 +932,60 @@ class ReviewMixin:
     ) -> _PlanVerifyResult:
         """Run the project's verify command against the accumulated plan branch.
 
-        Clones the plan-branch head into a temp dir (token resolved via the
-        git-ops credential provider, exactly like ``_sync_plan_checkbox``) and
-        runs ``run_verify``.  Returns a ``_PlanVerifyResult`` whose ``status``
-        is ``skipped`` when there is nothing to run or no credential, ``passed``
-        / ``failed`` for the gate outcome, and ``error`` if any I/O raised.  All
-        exceptions are caught so this never wedges the completion path.
+        Gets the plan-branch head into a temp dir and runs ``run_verify``.  How
+        it gets there is the backend's business: a local bare repo is cloned
+        straight off the filesystem through ``LocalGitBackend.checkout``, a
+        GitHub repo is cloned with a token resolved via the git-ops credential
+        provider, exactly like ``_sync_plan_checkbox``.
+
+        Routing through the backend seam is what makes this gate real in local
+        mode.  It used to resolve a token first and return ``skipped`` when
+        there was none, and a local bare repo has no credential BY DESIGN
+        (``preflight._preflight_local`` requires none; ``agent_manager``
+        bind-mounts the repo).  So both callers -- the per-wave cross-leaf gate
+        and the whole-plan backstop -- were dead for every local project, and
+        neither can tell ``skipped`` from ``passed`` by control flow, so nothing
+        said so.
+
+        Returns a ``_PlanVerifyResult`` whose ``status`` is ``skipped`` only
+        when there is genuinely nothing to run, ``passed`` / ``failed`` for the
+        gate outcome, and ``error`` if any I/O raised.  All exceptions are
+        caught so this never wedges the completion path.
+
+        Args:
+            repo_url: The project's repository URL or local bare-repo path.
+            plan_branch: The accumulated plan branch to verify.
+            verify_cmd: The project's configured verification command.
+
+        Returns:
+            The gate verdict.
         """
         if not verify_cmd:
-            return _PlanVerifyResult("skipped")
+            return _PlanVerifyResult("skipped", reason=_SKIP_NO_VERIFY_CMD)
+
+        backend = self._resolve_backend(repo_url)
+        if backend.name == "local":
+            return await self._verify_local_plan_branch(
+                backend, repo_url, plan_branch, verify_cmd
+            )
 
         provider = getattr(self._git, "_provider", None)
         if provider is None:
             logger.warning("plan verify gate: credential provider unavailable, skipped")
-            return _PlanVerifyResult("skipped")
+            return _PlanVerifyResult("skipped", reason=_SKIP_NO_CREDENTIAL_PROVIDER)
 
         try:
             token = await provider.token_for_repo(repo_url)
             if not token:
+                # A GitHub repo with no credential cannot be fetched at all, so
+                # there is nothing to run against.  This is the documented
+                # credential-less carve-out that also skips remote preflight;
+                # it is NOT reachable for a local project any more, which is
+                # the whole point of the branch above.
                 logger.warning(
                     "plan verify gate: no token resolved for %s, skipped", repo_url
                 )
-                return _PlanVerifyResult("skipped")
+                return _PlanVerifyResult("skipped", reason=_SKIP_NO_TOKEN)
 
             with tempfile.TemporaryDirectory() as checkout_dir:
                 clone_with_token(repo_url, checkout_dir, token)
@@ -936,8 +1000,53 @@ class ReviewMixin:
             )
             return _PlanVerifyResult("error")
 
-        status = "passed" if passed else "failed"
-        return _PlanVerifyResult(status, output[:_VERIFY_OUTPUT_MAX])
+        return _verify_outcome(passed, output)
+
+    async def _verify_local_plan_branch(
+        self,
+        backend: GitBackend,
+        repo_url: str,
+        plan_branch: str,
+        verify_cmd: str,
+    ) -> _PlanVerifyResult:
+        """Run the verify command against a plan branch in a local bare repo.
+
+        A bare repo on disk needs no token: the backend's ``checkout`` is a
+        plain ``git clone <path> <dest>`` followed by ``git checkout
+        <branch>``, and it raises when the branch is missing.
+
+        A checkout that cannot be produced is an ``error``, never a ``skipped``.
+        Both callers fail closed on ``error`` (park the wave / publish
+        ``plan_verify_failed``) and neither reacts to a ``skipped`` at all, so
+        returning ``skipped`` here would silently green the gate again.
+
+        Args:
+            backend: The already-resolved local backend.
+            repo_url: The bare repo's path, for logging only.
+            plan_branch: The accumulated plan branch to verify.
+            verify_cmd: The project's configured verification command.
+
+        Returns:
+            The gate verdict: ``passed``, ``failed``, or ``error``.
+        """
+        # ``LocalGitBackend.checkout`` reads only ``branch``.  ``base`` is set
+        # to the same branch rather than left empty so that a future checkout
+        # that did consult it would still resolve the branch under test.
+        ref = PullRequestRef(backend="local", branch=plan_branch, base=plan_branch)
+        try:
+            with tempfile.TemporaryDirectory() as checkout_dir:
+                await backend.checkout(ref, checkout_dir)
+                passed, output = await run_verify(checkout_dir, verify_cmd)
+        except Exception as exc:  # noqa: BLE001 - degrade, never wedge the loop
+            logger.warning(
+                "plan verify gate errored for %s (%s): %s",
+                repo_url,
+                plan_branch,
+                exc,
+            )
+            return _PlanVerifyResult("error")
+
+        return _verify_outcome(passed, output)
 
     async def on_plan_completed(self, plan_id: str) -> None:
         """Open a best-effort integration PR and signal readiness, then draft a context sync."""
