@@ -7,15 +7,24 @@ still prints "Praxis is running", and the damage surfaces weeks later as a
 reverted timezone or a worker model truncated at its first space.
 """
 
+import io
 import json
 import tomllib
 from pathlib import Path
 
 import pytest
+import typer
+from dotenv import dotenv_values
+from rich.console import Console
 
+from cli import init as init_mod
 from cli.init import (
+    _FALLBACK_PRESET,
+    MANAGED_KEYS,
+    _managed_values,
     _render_value,
     build_env_file,
+    cli_env_exports,
     generate_token,
     mcp_snippet,
     merge_env,
@@ -156,14 +165,25 @@ def test_merge_env_appends_a_managed_key_that_is_absent():
 
 
 @pytest.mark.unit
-def test_merge_env_leaves_an_existing_value_alone_when_the_new_one_is_empty():
-    """Empty means "no opinion", never "delete".
+def test_merge_env_leaves_an_existing_value_alone_when_there_is_no_opinion():
+    """None means "the operator declined to say", never "delete".
 
     The GitHub prompt defaults to 'skip', so an operator re-running init and
     holding Enter would otherwise silently delete a working GITHUB_TOKEN.
     """
-    merged = merge_env("GITHUB_TOKEN=ghp_real\n", {"GITHUB_TOKEN": ""})
+    merged = merge_env("GITHUB_TOKEN=ghp_real\n", {"GITHUB_TOKEN": None})
     assert "GITHUB_TOKEN=ghp_real" in merged
+
+
+@pytest.mark.unit
+def test_merge_env_removes_a_key_whose_new_value_is_authored_empty():
+    """An empty string is a value the PRESET wrote, and it has to be able to win.
+
+    Sharing "no opinion" with "empty" leaves no way to clear a preset-derived
+    key at all, which is what strands a stale endpoint behind a switch.
+    """
+    merged = merge_env("LM_STUDIO_URL=https://api.z.ai/v1\n", {"LM_STUDIO_URL": ""})
+    assert "LM_STUDIO_URL" not in merged
 
 
 @pytest.mark.unit
@@ -179,6 +199,12 @@ def test_merge_env_refuses_a_key_it_does_not_manage():
 
 @pytest.mark.unit
 def test_parse_env_round_trips_what_build_env_file_wrote():
+    """Secondary to the python-dotenv round trip below, which is the guarantee.
+
+    On its own this proves only that `_render_value` and `parse_env` agree
+    with each other, which is worth nothing if they agree on something no real
+    consumer does.  It is kept because it is free, not because it is the test.
+    """
     values = {
         "AUTH_TOKEN": "t",
         "PORT": "12323",
@@ -193,6 +219,176 @@ def test_parse_env_ignores_comments_and_blank_lines():
     assert parsed["AUTH_TOKEN"] == "old-token"
     assert parsed["GEMINI_CREDS_VOLUME"] == "praxis-gemini-creds"
     assert "#" not in "".join(parsed)
+
+
+# --------------------------------------------------------------------------
+# Graded against python-dotenv, not against this module's own parser.
+#
+# python-dotenv is what pydantic-settings reads `.env` with, and `docker
+# compose` agrees with it on every shape below.  A round trip validated
+# through `parse_env` proves internal consistency and nothing else: the two
+# halves can agree perfectly on a string neither real consumer would ever
+# produce.
+# --------------------------------------------------------------------------
+
+
+def _dotenv(text: str) -> dict[str, str]:
+    """Parse ``text`` with the real python-dotenv, dropping valueless keys.
+
+    A bare ``FOO`` line binds to None there and is absent from `parse_env`'s
+    ``dict[str, str]`` entirely; that difference is a return type, not a
+    parse, so it is normalized away rather than asserted on.
+    """
+    return {
+        key: value
+        for key, value in dotenv_values(stream=io.StringIO(text)).items()
+        if value is not None
+    }
+
+
+#: One entry per value class the operator can realistically type.  Empty is
+#: covered separately: `build_env_file` omits it, so it has no round trip.
+ROUND_TRIP_VALUES = [
+    pytest.param("Gemini 3.6 Flash (High)", id="space"),
+    pytest.param("tok#nothashcomment", id="hash"),
+    pytest.param("s3cret   # looks like a comment", id="hash-after-space"),
+    pytest.param('say "hi"', id="double-quote"),
+    pytest.param("it's fine", id="single-quote"),
+    pytest.param("back\\slash", id="backslash"),
+    pytest.param("C:\\Users\\new\\tmp", id="windows-path"),
+    pytest.param("line\\nbreak", id="literal-backslash-n"),
+    pytest.param("   ", id="whitespace-only"),
+]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("value", ROUND_TRIP_VALUES)
+def test_build_env_file_round_trips_through_python_dotenv(value):
+    """What `init` writes must read back identically for its real consumers.
+
+    `C:\\Users\\new\\tmp` is the case that shows why: written into double
+    quotes without doubling the backslashes, python-dotenv decodes `\\n` and
+    `\\t` as escapes and hands the container a path containing a newline and
+    a tab, with nothing anywhere reporting a problem.
+    """
+    text = build_env_file({"DEFAULT_WORKER_MODEL": value})
+    assert _dotenv(text) == {"DEFAULT_WORKER_MODEL": value}
+
+
+@pytest.mark.unit
+def test_an_empty_value_produces_no_binding_at_all_for_python_dotenv():
+    """`GITHUB_TOKEN=` would look configured to a reader and be useless."""
+    text = build_env_file({"AUTH_TOKEN": "t", "GITHUB_TOKEN": ""})
+    assert _dotenv(text) == {"AUTH_TOKEN": "t"}
+
+
+@pytest.mark.unit
+def test_a_backslash_forces_the_quoted_escaped_form():
+    """Quoting is what makes the escaping reachable at all.
+
+    A value whose only special character is a backslash is otherwise rendered
+    raw, and then `_render_value`'s doubling never runs.  Pinned as a
+    rendering contract because the semantic damage only appears once some
+    other character (a space, a `#`) drags the value into quotes.
+    """
+    assert _render_value("C:\\Users\\new\\tmp") == '"C:\\\\Users\\\\new\\\\tmp"'
+
+
+@pytest.mark.unit
+def test_parse_env_strips_an_inline_comment_the_way_every_real_parser_does():
+    """The reported corruption, in one line.
+
+    Kept in the value, this token is written straight back by `merge_env`, so
+    the effective AUTH_TOKEN changes and every configured MCP client 401s.
+    Nothing surfaces it: init runs the doctor with the same corrupted string
+    and the container reads the same corrupted string, so the row is green.
+    """
+    parsed = parse_env("AUTH_TOKEN=s3cret   # the one my MCP clients use\n")
+    assert parsed["AUTH_TOKEN"] == "s3cret"
+
+
+@pytest.mark.unit
+def test_parse_env_keeps_a_hash_that_is_not_a_comment():
+    """Over-stripping is the same bug facing the other way.
+
+    python-dotenv starts a comment only at a `#` preceded by whitespace, so a
+    token containing a `#` survives; truncating there would corrupt a
+    perfectly valid credential just as silently.
+    """
+    assert parse_env("AUTH_TOKEN=s3c#ret\n")["AUTH_TOKEN"] == "s3c#ret"
+    assert parse_env('AUTH_TOKEN="s3c#ret"  # mine\n')["AUTH_TOKEN"] == "s3c#ret"
+
+
+@pytest.mark.unit
+def test_parse_env_drops_the_export_prefix_from_the_key():
+    """`export AUTH_TOKEN=tok` binds AUTH_TOKEN for dotenv and for compose."""
+    assert parse_env("export AUTH_TOKEN=tok\n") == {"AUTH_TOKEN": "tok"}
+
+
+#: Line shapes an operator's real `.env` can contain, including the ones
+#: python-dotenv rejects outright.  Divergence on any of them is a value the
+#: running product reads differently than `init` does.
+DOTENV_LINES = [
+    "AUTH_TOKEN=s3cret   # the one my MCP clients use",
+    "AUTH_TOKEN=s3cret#nothashcomment",
+    'AUTH_TOKEN="s3c#ret"  # trailing comment',
+    "AUTH_TOKEN='s3c#ret'",
+    'AUTH_TOKEN="v"# glued comment',
+    "export AUTH_TOKEN=tok",
+    "export AUTH_TOKEN='tok tok'",
+    "  export PORT=12323",
+    'K="a\\"b"',
+    "K='a\\'b'",
+    'K="C:\\\\Users\\\\new\\\\tmp"',
+    'K="line\\nbreak"',
+    'K="  "',
+    "K=",
+    'K=""',
+    "K=   ",
+    "K=v # c",
+    "K=v\t# c",
+    "K=#hash",
+    "K=v  ",
+    "K = spaced out",
+    "# just a comment",
+    "",
+    'K="unterminated',
+    'K="v" junk',
+]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("line", DOTENV_LINES)
+def test_parse_env_agrees_with_python_dotenv(line):
+    """Differential, not illustrative: the oracle is the real parser."""
+    text = line + "\n"
+    assert parse_env(text) == _dotenv(text)
+
+
+@pytest.mark.unit
+def test_merge_env_replaces_an_exported_key_in_place_keeping_the_prefix():
+    """`export AUTH_TOKEN=` is valid for dotenv and compose alike.
+
+    Parsed as the key `export AUTH_TOKEN`, it matches nothing, so a second
+    `AUTH_TOKEN=` line is appended.  Last-wins saves the behavior, but the
+    file permanently lies to whoever reads it.
+    """
+    merged = merge_env("export AUTH_TOKEN=tok\nPORT=7777\n", {"AUTH_TOKEN": "NEW"})
+    assert merged.splitlines() == ["export AUTH_TOKEN=NEW", "PORT=7777"]
+
+
+@pytest.mark.unit
+def test_merge_env_keeps_an_inline_comment_on_a_line_it_replaces():
+    """The header `build_env_file` writes promises every comment survives.
+
+    An inline comment on a managed key is a comment; silently deleting it
+    while claiming otherwise is how an operator learns not to trust the file.
+    """
+    merged = merge_env(
+        "AUTH_TOKEN=old   # the one my MCP clients use\n", {"AUTH_TOKEN": "new"}
+    )
+    assert merged.splitlines() == ["AUTH_TOKEN=new   # the one my MCP clients use"]
+    assert _dotenv(merged) == {"AUTH_TOKEN": "new"}
 
 
 @pytest.mark.unit
@@ -242,3 +438,166 @@ def test_the_mcp_snippet_env_is_what_the_mcp_server_actually_reads(monkeypatch):
     client = PraxisClient.from_env()
     assert client.base_url == "http://127.0.0.1:9999"
     assert client.token == "tok"
+
+
+@pytest.mark.unit
+def test_the_printed_cli_exports_are_what_the_cli_actually_reads(monkeypatch):
+    """Fed to `cli.main`'s own readers, not compared to a literal.
+
+    The MCP half of this block got a consumer-driven test and the CLI half
+    got two hardcoded strings.  It is the same defect either way: one side
+    renames, the printed instructions silently become wrong, and the operator
+    concludes the install is broken because `praxis doctor` reports a running
+    orchestrator unreachable.
+    """
+    from cli import main as cli_main
+
+    exports = cli_env_exports("http://127.0.0.1:9999", "tok")
+    for key in ("ORCHESTRATOR_URL", "ORCHESTRATOR_TOKEN"):
+        monkeypatch.delenv(key, raising=False)
+    for key, value in exports.items():
+        monkeypatch.setenv(key, value)
+
+    assert cli_main._api_url() == "http://127.0.0.1:9999"
+    assert cli_main._auth_token() == "tok"
+
+
+@pytest.mark.unit
+def test_the_next_steps_block_prints_the_exports_it_documents(monkeypatch):
+    """The instructions and the tested mapping must be one source, not two."""
+    buffer = io.StringIO()
+    monkeypatch.setattr(
+        init_mod, "console", Console(file=buffer, width=200, no_color=True)
+    )
+
+    init_mod._print_next_steps("http://127.0.0.1:9999", "tok", _FALLBACK_PRESET)
+
+    printed = buffer.getvalue()
+    for name, value in cli_env_exports("http://127.0.0.1:9999", "tok").items():
+        assert f"{name}={value}" in printed
+
+
+# --------------------------------------------------------------------------
+# The prompt paths: what holding Enter produces, and what `init` writes.
+# --------------------------------------------------------------------------
+
+
+def _hold_enter(monkeypatch):
+    """Answer every prompt the way holding Enter does: take the default."""
+
+    class _Default:
+        @staticmethod
+        def ask(*_args, **kwargs):
+            return kwargs.get("default")
+
+    for name in ("Confirm", "IntPrompt", "Prompt"):
+        monkeypatch.setattr(init_mod, name, _Default)
+
+
+@pytest.mark.unit
+def test_holding_enter_chooses_a_preset_init_can_actually_satisfy(monkeypatch):
+    """Run against the real config/praxis.yaml, because that is what ships.
+
+    The shipped default was `hosted-openweight`, whose `requires: [api_key]`
+    init never collects and Settings has no field for.  LM_STUDIO_URL IS
+    forwarded into the container, so holding Enter repointed every `local`
+    router call-site at an endpoint that rejects it.  A yellow note does not
+    help: the whole premise of the default path is that nobody reads.
+    """
+    _hold_enter(monkeypatch)
+    chosen = init_mod._choose_preset(init_mod._fetch_presets_or_defaults())
+    assert chosen["requires"] == []
+
+
+@pytest.mark.unit
+def test_holding_enter_refuses_a_preset_whose_requirement_init_cannot_collect(
+    monkeypatch,
+):
+    """When nothing on the menu is satisfiable, the default path must stop.
+
+    Falling through would hand back a configuration that cannot work, which
+    is the failure this whole fix is about.
+    """
+    _hold_enter(monkeypatch)
+    unsatisfiable = [
+        {
+            "name": "hosted-openweight",
+            "label": "Hosted open-weight model",
+            "harness": "opencode",
+            "model": "glm-4.7",
+            "endpoint": "https://api.z.ai/v1",
+            "requires": ["api_key"],
+        }
+    ]
+    with pytest.raises(typer.Exit) as exit_info:
+        init_mod._choose_preset(unsatisfiable)
+    assert exit_info.value.exit_code == 1
+
+
+@pytest.mark.unit
+def test_the_managed_key_set_is_exactly_the_one_init_writes():
+    """Shrinking MANAGED_KEYS broke `init` at runtime with 20/20 green.
+
+    `test_merge_env_refuses_a_key_it_does_not_manage` pins only the WIDENING
+    direction.  Narrowing is the one that breaks the product: `init` still
+    builds all six values, `merge_env` rejects the set, and it raises after
+    every prompt has already been answered.  Derived from the builder rather
+    than restated, so the two cannot drift.
+    """
+    built = _managed_values(
+        token="t", gh_token=None, port="12323", preset=_FALLBACK_PRESET
+    )
+    assert set(built) == set(MANAGED_KEYS)
+
+
+@pytest.mark.unit
+def test_switching_preset_replaces_every_preset_derived_key(monkeypatch):
+    """A half-applied switch is a config the operator believes they replaced.
+
+    `gemini-agy` has `endpoint: ""`, so a shared "empty means keep" rule
+    leaves `LM_STUDIO_URL=https://api.z.ai/v1` sitting next to `agy` forever,
+    with no answer to any prompt that can clear it.
+    """
+    existing = (
+        "AUTH_TOKEN=tok\n"
+        "LM_STUDIO_URL=https://api.z.ai/v1\n"
+        "DEFAULT_WORKER_HARNESS=opencode\n"
+        "DEFAULT_WORKER_MODEL=glm-4.7\n"
+    )
+    gemini = {
+        "name": "gemini-agy",
+        "label": "Gemini via the agy harness",
+        "harness": "agy",
+        "model": "Gemini 3.6 Flash (High)",
+        "endpoint": "",
+        "requires": ["interactive_login"],
+    }
+    merged = merge_env(
+        existing,
+        _managed_values(token="tok", gh_token=None, port="12323", preset=gemini),
+    )
+
+    assert "LM_STUDIO_URL" not in merged
+    assert "api.z.ai" not in merged
+    assert "DEFAULT_WORKER_HARNESS=agy" in merged
+    assert _dotenv(merged)["DEFAULT_WORKER_MODEL"] == "Gemini 3.6 Flash (High)"
+
+
+@pytest.mark.unit
+def test_a_blank_github_answer_still_keeps_the_existing_credential(monkeypatch):
+    """The other half of the same distinction, wired end to end.
+
+    The prompt tells the operator that blank keeps the current token, so this
+    goes through `_resolve_github_token` rather than asserting on merge_env
+    directly: separating "" from None must not quietly break the promise the
+    prompt makes.
+    """
+    _hold_enter(monkeypatch)
+    answer = init_mod._resolve_github_token({"GITHUB_TOKEN": "ghp_real"})
+    merged = merge_env(
+        "GITHUB_TOKEN=ghp_real\n",
+        _managed_values(
+            token="t", gh_token=answer, port="12323", preset=_FALLBACK_PRESET
+        ),
+    )
+    assert _dotenv(merged)["GITHUB_TOKEN"] == "ghp_real"

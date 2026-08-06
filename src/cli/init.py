@@ -18,6 +18,8 @@ import re
 import secrets
 import subprocess  # nosec B404 - docker compose is the interface
 import time
+from collections.abc import Mapping
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -44,7 +46,32 @@ MANAGED_KEYS: tuple[str, ...] = (
 # written raw; the quoted form is the only one `_render_value` escapes.
 _NEEDS_QUOTING = re.compile(r"[\s#\"'\\]")
 
-_UNESCAPE = re.compile(r"\\(.)")
+# Every pattern below mirrors `python-dotenv`'s own parser (dotenv/parser.py)
+# rather than approximating it.  python-dotenv is what pydantic-settings reads
+# `.env` with, and `docker compose` agrees with it on all of these shapes, so
+# a divergence here is a value the running product reads differently than
+# `init` does -- which is unobservable, because both sides are consistent with
+# themselves.
+_EXPORT_PREFIX = re.compile(r"^export[^\S\r\n]+")
+_KEY = re.compile(r"[^=\#\s]+")
+_SINGLE_QUOTED = re.compile(r"^'((?:\\'|[^'])*)'")
+_DOUBLE_QUOTED = re.compile(r'^"((?:\\"|[^"])*)"')
+_INLINE_COMMENT = re.compile(r"\s+#")
+_TRAILING_COMMENT = re.compile(r"^[^\S\r\n]*(?:#.*)?$")
+_SINGLE_ESCAPE = re.compile(r"\\([\\'])")
+_DOUBLE_ESCAPE = re.compile(r"\\([\\'\"abfnrtv])")
+_ESCAPED: dict[str, str] = {
+    "\\": "\\",
+    "'": "'",
+    '"': '"',
+    "a": "\a",
+    "b": "\b",
+    "f": "\f",
+    "n": "\n",
+    "r": "\r",
+    "t": "\t",
+    "v": "\v",
+}
 
 _DEFAULT_PORT = 12323
 
@@ -76,13 +103,92 @@ def _render_value(value: str) -> str:
     return f'"{escaped}"'
 
 
-def parse_env(text: str) -> dict[str, str]:
-    """Parse ``.env`` text into a plain mapping, undoing :func:`_render_value`.
+@dataclass(frozen=True)
+class _EnvLine:
+    """One ``KEY=VALUE`` line, split the way ``python-dotenv`` splits it.
 
-    Comments, blank lines and anything without an ``=`` are skipped.  This is
-    read-only and lossy on purpose: it exists so ``init`` can default its
-    prompts to what the operator already has, never to rewrite the file from
-    the parsed result.
+    Attributes:
+        prefix: The ``export `` prefix the line carried, or "".
+        key: The bare key, without that prefix.
+        value: The value with quotes removed and escapes resolved.
+        comment: Any trailing comment, including the whitespace in front of
+            it, or "".  Carried so a merge can put it back.
+    """
+
+    prefix: str
+    key: str
+    value: str
+    comment: str
+
+
+def _parse_line(line: str) -> _EnvLine | None:
+    """Split one ``.env`` line, or return None when it holds no binding.
+
+    None covers blank lines, whole-line comments, and lines ``python-dotenv``
+    rejects outright (an unterminated quote, junk after a closing quote).
+    Rejecting those rather than guessing is the point: a line the real parser
+    drops must not be one ``init`` silently rewrites into something the real
+    parser would then accept.
+
+    Args:
+        line: One physical line, without its terminator.
+
+    Returns:
+        The split line, or None when there is nothing on it to bind.
+    """
+    stripped = line.strip()
+    if not stripped or stripped.startswith("#"):
+        return None
+    export = _EXPORT_PREFIX.match(stripped)
+    key_match = _KEY.match(stripped, export.end() if export else 0)
+    if key_match is None:
+        return None
+    rest = stripped[key_match.end() :].lstrip(" \t")
+    if not rest.startswith("="):
+        return None
+    raw = rest[1:].lstrip(" \t")
+
+    if raw[:1] in ("'", '"'):
+        single = raw[0] == "'"
+        quoted = (_SINGLE_QUOTED if single else _DOUBLE_QUOTED).match(raw)
+        if quoted is None or not _TRAILING_COMMENT.match(raw[quoted.end() :]):
+            return None
+        escapes = _SINGLE_ESCAPE if single else _DOUBLE_ESCAPE
+        value = escapes.sub(lambda m: _ESCAPED[m.group(1)], quoted.group(1))
+        comment = raw[quoted.end() :]
+    else:
+        hash_at = _INLINE_COMMENT.search(raw)
+        cut = hash_at.start() if hash_at else len(raw)
+        value, comment = raw[:cut].rstrip(), raw[cut:]
+
+    if comment and not comment[:1].isspace():
+        # A comment glued to a closing quote (`K="v"# c`) has to regain its
+        # separator: re-rendered onto an unquoted value it would otherwise
+        # become part of that value.
+        comment = f" {comment}"
+    return _EnvLine(
+        prefix=export.group(0) if export else "",
+        key=key_match.group(0),
+        value=value,
+        comment=comment,
+    )
+
+
+def parse_env(text: str) -> dict[str, str]:
+    """Parse ``.env`` text the way its real consumers parse it.
+
+    ``python-dotenv`` (what pydantic-settings reads ``.env`` with) and
+    ``docker compose`` agree on all of this, so this agrees with them: an
+    ``export `` prefix is not part of the key, an unquoted value ends at the
+    first ``#`` preceded by whitespace, a ``#`` inside quotes is not a
+    comment, and escape sequences resolve inside quotes only.  Reading a value
+    differently than the running product reads it is how a reused
+    ``AUTH_TOKEN`` acquires an inline comment: nothing surfaces it, because
+    ``init``, the doctor and the container then all agree on the same
+    corrupted string.
+
+    Two divergences remain on purpose: a value spanning multiple physical
+    lines is not reassembled, and ``$VAR`` interpolation is not performed.
 
     Args:
         text: Raw contents of a ``.env`` file.
@@ -92,24 +198,21 @@ def parse_env(text: str) -> dict[str, str]:
     """
     parsed: dict[str, str] = {}
     for line in text.splitlines():
-        stripped = line.strip()
-        if not stripped or stripped.startswith("#") or "=" not in stripped:
-            continue
-        key, _, raw = stripped.partition("=")
-        value = raw.strip()
-        if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
-            inner = value[1:-1]
-            value = _UNESCAPE.sub(r"\1", inner) if value[0] == '"' else inner
-        parsed[key.strip()] = value
+        entry = _parse_line(line)
+        if entry is not None:
+            parsed[entry.key] = entry.value
     return parsed
 
 
-def build_env_file(values: dict[str, str]) -> str:
+def build_env_file(values: Mapping[str, str | None]) -> str:
     """Render a fresh ``.env`` from the managed values only.
 
     Empty values are omitted rather than written blank, which is what lets
     local mode (no GitHub credential at all) produce a file with no
     ``GITHUB_TOKEN`` line instead of one that looks configured but is not.
+    There is no file to preserve here, so "the operator said nothing"
+    (``None``) and "the preset says empty" (``""``) are the same instruction:
+    write no line.  In :func:`merge_env` they are not.
 
     Args:
         values: Managed key to value.  Falsy values are skipped.
@@ -127,20 +230,29 @@ def build_env_file(values: dict[str, str]) -> str:
     return "\n".join(lines) + "\n"
 
 
-def merge_env(existing: str, values: dict[str, str]) -> str:
+def merge_env(existing: str, values: Mapping[str, str | None]) -> str:
     """Merge managed values into an existing ``.env`` text.
 
     Unrelated keys, comments and blank lines are preserved verbatim and keep
     their position; a managed key already present is replaced IN PLACE (never
     appended, or re-runs accumulate duplicates whose last entry silently
-    wins); a managed key absent is appended.  An empty value means "no
-    opinion" and leaves any existing line alone, so an operator holding Enter
-    through the prompts cannot delete a working credential.
+    wins), keeping the ``export `` prefix and the trailing comment that line
+    carried; a managed key absent is appended.
+
+    ``None`` and ``""`` are different answers, and folding them together is
+    how a preset switch half-applies.  ``None`` means the OPERATOR declined to
+    say, so an existing line survives untouched: the GitHub prompt promises
+    that Enter keeps the current credential, and that has to be true.  ``""``
+    means the PRESET authored an empty value, so the line is removed:
+    ``gemini-agy`` has no endpoint, and leaving the previous preset's
+    ``LM_STUDIO_URL`` sitting next to ``agy`` is a mixed configuration the
+    operator believes they replaced, with no way to clear it.
 
     Args:
         existing: Current ``.env`` contents.  May be empty.
-        values: Managed key to value.  Every key must be in
-            :data:`MANAGED_KEYS`.
+        values: Managed key to value, where ``None`` means "leave any
+            existing line alone" and ``""`` means "remove it".  Every key must
+            be in :data:`MANAGED_KEYS`.
 
     Returns:
         The merged text, newline-terminated.
@@ -158,16 +270,20 @@ def merge_env(existing: str, values: dict[str, str]) -> str:
     seen: set[str] = set()
     out: list[str] = []
     for line in existing.splitlines():
-        stripped = line.strip()
-        if not stripped or stripped.startswith("#") or "=" not in stripped:
+        entry = _parse_line(line)
+        if entry is None or entry.key not in values:
             out.append(line)
             continue
-        key = stripped.split("=", 1)[0].strip()
-        if key in values:
-            seen.add(key)
-            out.append(f"{key}={_render_value(values[key])}" if values[key] else line)
-        else:
+        seen.add(entry.key)
+        replacement = values[entry.key]
+        if replacement is None:
             out.append(line)
+        elif replacement:
+            rendered = _render_value(replacement)
+            out.append(f"{entry.prefix}{entry.key}={rendered}{entry.comment}")
+        # An authored "" drops the line: `build_env_file` writes no line for
+        # it either, and a blank `KEY=` is the "configured but useless" shape
+        # both of them exist to avoid.
     out.extend(
         f"{key}={_render_value(value)}"
         for key, value in values.items()
@@ -272,8 +388,19 @@ def _resolve_auth_token(current: dict[str, str]) -> str:
     return Prompt.ask("Auth token", default=generate_token())
 
 
-def _resolve_github_token(current: dict[str, str]) -> str:
-    """Prompt for a GitHub credential, returning "" for "leave it alone"."""
+def _resolve_github_token(current: dict[str, str]) -> str | None:
+    """Prompt for a GitHub credential, returning None for "leave it alone".
+
+    None rather than "" because :func:`merge_env` reads them differently: ""
+    is an authored value that clears the key, and clearing is the opposite of
+    what this prompt promises a blank answer does.
+
+    Args:
+        current: The ``.env`` as it stands, used to phrase the prompt.
+
+    Returns:
+        The credential to write, or None to leave any existing line alone.
+    """
     existing = current.get("GITHUB_TOKEN", "")
     if existing:
         # 'skip' is NOT offered here: an empty answer preserves the existing
@@ -290,21 +417,142 @@ def _resolve_github_token(current: dict[str, str]) -> str:
         )
         answer = Prompt.ask("GitHub token (or 'skip' for local mode)", default="skip")
     answer = answer.strip()
-    return "" if answer.lower() in ("", "skip") else answer
+    return None if answer.lower() in ("", "skip") else answer
+
+
+def _default_preset_index(presets: list[dict[str, Any]]) -> int:
+    """Return the 1-based menu default: the first preset ``init`` can satisfy.
+
+    Holding Enter through every prompt is the documented re-run, so the
+    default must never be a preset that cannot work.  ``requires: [api_key]``
+    is exactly that: ``init`` collects no key, :class:`Settings` has no field
+    for one, and ``LM_STUDIO_URL`` IS forwarded into the container, so the
+    default answer silently repointed every ``local`` router call-site at an
+    endpoint that rejects it.
+
+    Args:
+        presets: The menu, in display order.
+
+    Returns:
+        The 1-based index to offer as the default.  Falls back to 1 when
+        nothing on the menu is satisfiable; :func:`_confirm_unmet_requirements`
+        is what stops that case.
+    """
+    for index, preset in enumerate(presets, start=1):
+        if not preset["requires"]:
+            return index
+    return 1
+
+
+def _confirm_unmet_requirements(preset: dict[str, Any]) -> None:
+    """Make an unsatisfiable preset an explicit choice, never a default one.
+
+    ``init`` can collect none of these: there is no ``Settings`` field for an
+    API key and no way to drive an interactive login from here.  The
+    confirmation defaults to no, so the operator who is not reading cannot
+    answer it by holding Enter.
+
+    Args:
+        preset: The chosen preset.
+
+    Raises:
+        typer.Exit: With code 1 when the operator declines, before anything
+            has been written or started.
+    """
+    requires = list(preset["requires"])
+    if not requires:
+        return
+    console.print(
+        f"\n[yellow]{preset['label']} needs {', '.join(requires)}, which "
+        "`praxis init` cannot collect.[/yellow] You would have to configure "
+        "it yourself afterwards, or the worker fails its first task."
+    )
+    proceed: bool = Confirm.ask("Choose it anyway?", default=False)
+    if not proceed:
+        console.print(
+            "[red]No worker preset chosen.[/red] Re-run `praxis init` and pick "
+            "one that needs no credential."
+        )
+        raise typer.Exit(code=1)
 
 
 def _choose_preset(presets: list[dict[str, Any]]) -> dict[str, Any]:
-    """Print the preset menu and return the operator's choice."""
+    """Print the preset menu and return the operator's choice.
+
+    Args:
+        presets: The menu, in display order.
+
+    Returns:
+        The chosen preset.
+
+    Raises:
+        typer.Exit: With code 1 when the choice needs a credential ``init``
+            cannot collect and the operator declines it.
+    """
     console.print("\nWorker presets:")
     for index, preset in enumerate(presets, start=1):
         requires = ", ".join(preset["requires"])
         extra = f"  (requires: {requires})" if requires else ""
         console.print(f"  {index}. {preset['label']}{extra}")
-    choice = IntPrompt.ask("Preset", default=1) - 1
-    return presets[max(0, min(choice, len(presets) - 1))]
+    default = _default_preset_index(presets)
+    choice = IntPrompt.ask("Preset", default=default) - 1
+    chosen = presets[max(0, min(choice, len(presets) - 1))]
+    _confirm_unmet_requirements(chosen)
+    return chosen
 
 
-def _print_next_steps(api_url: str, token: str, preset: dict[str, Any]) -> None:
+def _managed_values(
+    token: str, gh_token: str | None, port: str, preset: Mapping[str, Any]
+) -> dict[str, str | None]:
+    """Return every key ``init`` writes and what each one gets.
+
+    Split out of :func:`init` so the managed key set is testable.  Deleting a
+    key from :data:`MANAGED_KEYS` used to leave the whole suite green while
+    making ``init`` raise ``ValueError`` out of :func:`merge_env`, after every
+    prompt had already been answered.
+
+    Args:
+        token: Auth token to write.
+        gh_token: GitHub credential, or None to leave any existing one alone.
+        port: Dashboard port, as a string.
+        preset: The chosen worker preset.  Its values are authored, so an
+            empty endpoint clears ``LM_STUDIO_URL`` rather than keeping it.
+
+    Returns:
+        Managed key to value, in the order ``init`` writes them.
+    """
+    return {
+        "AUTH_TOKEN": token,
+        "GITHUB_TOKEN": gh_token,
+        "PORT": port,
+        "LM_STUDIO_URL": preset["endpoint"],
+        "DEFAULT_WORKER_HARNESS": preset["harness"],
+        "DEFAULT_WORKER_MODEL": preset["model"],
+    }
+
+
+def cli_env_exports(api_url: str, token: str) -> dict[str, str]:
+    """Return the environment `praxis doctor` and `praxis pending` need.
+
+    These are the names ``cli.main`` actually reads, and the reason to print
+    them at all is that its default URL is port 8080, not the compose-mapped
+    one: without them the very next `praxis doctor` reports the orchestrator
+    unreachable even though it is running, which reads as a broken install.
+    A printed name that no longer matches what the CLI reads is the same
+    silent failure the MCP snippet had, so both shells are rendered from this
+    one mapping.
+
+    Args:
+        api_url: Base URL the running orchestrator answers on.
+        token: Value of ``AUTH_TOKEN`` for this installation.
+
+    Returns:
+        Environment variable name to value.
+    """
+    return {"ORCHESTRATOR_URL": api_url, "ORCHESTRATOR_TOKEN": token}
+
+
+def _print_next_steps(api_url: str, token: str, preset: Mapping[str, Any]) -> None:
     """Print the MCP snippet, the CLI env vars, and the worker-defaults caveat."""
     from orchestrator.core.settings_file import config_file_path
 
@@ -314,17 +562,15 @@ def _print_next_steps(api_url: str, token: str, preset: dict[str, Any]) -> None:
     console.print("\nAdd it to your MCP client with this configuration:\n")
     console.print(mcp_snippet(api_url, token))
 
-    # The CLI reads a DIFFERENT pair of env vars than the MCP server, and its
-    # default URL is port 8080, not the compose-mapped one. Without these two
-    # exports the very next `praxis doctor` reports the orchestrator
-    # unreachable even though it is running, which reads as a broken install.
+    # The CLI reads a DIFFERENT pair of env vars than the MCP server. Both
+    # forms below come from `cli_env_exports` so they cannot drift from each
+    # other, or from what `cli.main` reads.
+    exports = cli_env_exports(api_url, token)
     console.print("\nExport these so `praxis doctor` and `praxis pending` reach it:\n")
-    console.print(f"  export ORCHESTRATOR_URL={api_url}")
-    console.print("  export ORCHESTRATOR_TOKEN=<the AUTH_TOKEN above>")
-    console.print(
-        f'  (PowerShell: $env:ORCHESTRATOR_URL="{api_url}"; '
-        '$env:ORCHESTRATOR_TOKEN="...")'
-    )
+    for name, value in exports.items():
+        console.print(f"  export {name}={value}", highlight=False)
+    powershell = "; ".join(f'$env:{n}="{v}"' for n, v in exports.items())
+    console.print(f"  (PowerShell: {powershell})", highlight=False)
 
     # DEFAULT_WORKER_* are read from .env only by a bare `uvicorn` run: the
     # compose files do not forward them into the container, which reads its
@@ -360,14 +606,7 @@ def init() -> None:
     gh_token = _resolve_github_token(current)
     preset = _choose_preset(_fetch_presets_or_defaults())
 
-    values = {
-        "AUTH_TOKEN": token,
-        "GITHUB_TOKEN": gh_token,
-        "PORT": port,
-        "LM_STUDIO_URL": preset["endpoint"],
-        "DEFAULT_WORKER_HARNESS": preset["harness"],
-        "DEFAULT_WORKER_MODEL": preset["model"],
-    }
+    values = _managed_values(token=token, gh_token=gh_token, port=port, preset=preset)
     env_text = merge_env(existing, values) if existing else build_env_file(values)
     if existing and not Confirm.ask(f"Update {env_path}?", default=True):
         # Compose reads .env, not these variables, so the rest of the run has
