@@ -11,7 +11,7 @@ import contextlib
 import json
 import logging
 import tempfile
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -80,29 +80,48 @@ class ReviewMixin:
         def _resolve_backend(self, repo_url: str) -> GitBackend:
             pass
 
-    def _pull_request_ref(self, pr_url: str, repo_url: str) -> PullRequestRef:
-        """Parse a stored ``pr_url``, guaranteeing a GitHub ref names its repo.
+    # A ref's repo is never backfilled from the PROJECT's repo_url.  The two are
+    # independent: a fork PR lives in a different repository than the project,
+    # so substituting the project slug would aim ``gh --repo`` at the wrong
+    # repository and succeed doing it.  A repo-less ref is refused outright by
+    # ``GitHubBackend._repo``, which is the single load-bearing guard.
+
+    async def _fail_and_maybe_retry(
+        self,
+        task_id: str,
+        task: dict[str, Any],
+        project: dict[str, Any],
+        feedback: str,
+    ) -> None:
+        """Fail a task, then requeue it or publish the terminal failure.
+
+        Shared by the review-verdict path and the unparseable-ref path so both
+        leave the task in a state the orchestration loop can move on from.
 
         Args:
-            pr_url: The task's stored ``pr_url``.
-            repo_url: The project's repository URL, used to fill a missing repo.
-
-        Returns:
-            The parsed reference.
-
-        Raises:
-            ValueError: If ``pr_url`` is not a recognized pull-request reference.
+            task_id: ID of the task being failed.
+            task: The task row, read for its current ``attempt``.
+            project: Project dict, read for ``max_retries``.
+            feedback: Message stored as ``review_feedback`` and published.
         """
-        ref = PullRequestRef.from_url(pr_url)
-        if ref.backend == "github" and ref.repo is None:
-            # Target the PR's own repo explicitly; otherwise gh resolves the PR
-            # against the orchestrator's own cwd and acts on the wrong repository.
-            # Unreachable via ``from_url`` today (its GitHub regex always
-            # captures owner/name), so this is defense in depth for a future URL
-            # shape.  The load-bearing guard is ``GitHubBackend._repo``, which
-            # fails closed on a repo-less ref and is tested there.
-            ref = replace(ref, repo=self._git.repo_slug(repo_url))
-        return ref
+        await self._tq.fail_task(task_id, feedback)
+        if int(task["attempt"]) < int(project["max_retries"]):
+            await self._tq.retry_task(task_id)
+            self._bus.publish(
+                {
+                    "type": "task_retry",
+                    "task_id": task_id,
+                    "attempt": int(task["attempt"]) + 1,
+                }
+            )
+        else:
+            self._bus.publish(
+                {
+                    "type": "task_failed",
+                    "task_id": task_id,
+                    "feedback": feedback,
+                }
+            )
 
     async def review_task(self, task_id: str, project: dict[str, Any]) -> None:
         """Review a task PR with Opus and merge or retry accordingly."""
@@ -126,13 +145,19 @@ class ReviewMixin:
 
         backend = self._resolve_backend(project["repo_url"])
         try:
-            ref = self._pull_request_ref(task["pr_url"], project["repo_url"])
+            ref = PullRequestRef.from_url(task["pr_url"])
         except ValueError:
-            logger.warning(
-                "Task %s has an unparseable pr_url %r; skipping review",
-                task_id,
-                task["pr_url"],
+            # Fail the task rather than return.  review_task is re-entered for
+            # every REVIEWING task on every loop tick and REVIEWING counts as
+            # active, so a bare return wedged the plan short of COMPLETED
+            # forever while suppressing plan_stalled (which requires
+            # ``not active``).  The only symptom was one log line per tick.
+            unparseable = (
+                "Review could not start: the task's pr_url "
+                f"{task['pr_url']!r} is not a recognized pull-request reference."
             )
+            log.warning("%s Failing the task so the plan can progress.", unparseable)
+            await self._fail_and_maybe_retry(task_id, task, project, unparseable)
             return
 
         # Resolve plan_text for this task from the plan's opus_plan task list.
@@ -294,24 +319,7 @@ class ReviewMixin:
         )
         await _record("fail", fail_class)
         await backend.comment(ref, feedback)
-        await self._tq.fail_task(task_id, feedback)
-        if int(task["attempt"]) < int(project["max_retries"]):
-            await self._tq.retry_task(task_id)
-            self._bus.publish(
-                {
-                    "type": "task_retry",
-                    "task_id": task_id,
-                    "attempt": int(task["attempt"]) + 1,
-                }
-            )
-        else:
-            self._bus.publish(
-                {
-                    "type": "task_failed",
-                    "task_id": task_id,
-                    "feedback": feedback,
-                }
-            )
+        await self._fail_and_maybe_retry(task_id, task, project, feedback)
 
     async def handle_clarification(self, task_id: str, project: dict[str, Any]) -> None:
         """Answer a blocked worker's question, or park it for a human."""
@@ -456,7 +464,7 @@ class ReviewMixin:
 
         backend = self._resolve_backend(project["repo_url"])
         try:
-            ref = self._pull_request_ref(task["pr_url"], project["repo_url"])
+            ref = PullRequestRef.from_url(task["pr_url"])
         except ValueError as exc:
             msg = f"Task {task_id} has an unparseable pr_url {task['pr_url']!r}"
             raise ValueError(msg) from exc
@@ -501,7 +509,7 @@ class ReviewMixin:
         message = feedback or "Merge rejected by user."
         backend = self._resolve_backend(project["repo_url"])
         try:
-            ref = self._pull_request_ref(task["pr_url"], project["repo_url"])
+            ref = PullRequestRef.from_url(task["pr_url"])
         except ValueError as exc:
             msg = f"Task {task_id} has an unparseable pr_url {task['pr_url']!r}"
             raise ValueError(msg) from exc

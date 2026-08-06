@@ -128,6 +128,21 @@ def test_to_url_rejects_an_unknown_backend():
 
 
 @pytest.mark.unit
+def test_to_url_rejects_a_github_ref_with_no_repo():
+    """Otherwise it renders ``https://github.com/None/pull/42`` into ``pr_url``."""
+    ref = PullRequestRef(backend="github", branch="x", base="main", number=42)
+    with pytest.raises(ValueError, match="repo"):
+        ref.to_url()
+
+
+@pytest.mark.unit
+def test_to_url_still_renders_a_local_ref_that_has_no_repo():
+    """A local ref never carries a repo; the github guard must not catch it."""
+    ref = PullRequestRef(backend="local", branch="agent/x", base="main")
+    assert ref.to_url().startswith("praxis-local://pr?")
+
+
+@pytest.mark.unit
 def test_from_url_rejects_a_null_pr_url():
     """``tasks.pr_url`` is nullable and the contract promises ValueError."""
     with pytest.raises(ValueError, match="pull-request reference"):
@@ -187,14 +202,51 @@ async def test_github_backend_checkout_clones_the_pr_head_into_dest():
     git.clone_pr_head.assert_awaited_once_with(GITHUB_PR_URL, "/work/dest")
 
 
-@pytest.mark.unit
-async def test_github_backend_refuses_a_ref_with_no_repo():
-    """No repo means ``gh`` would target the orchestrator's own cwd."""
-    git = _git_ops_mock()
-    backend = GitHubBackend(git)
-    ref = PullRequestRef(backend="github", branch="x", base="main", number=42)
+# Two ways a repo-less ref reaches GitHubBackend.  The second is the one the
+# ``backend == "github"`` guard used to wave through: the backend is chosen from
+# the project's ``repo_url`` while the ref is parsed from the task's ``pr_url``,
+# so editing a project's repo_url while tasks exist puts a local ref in front of
+# the GitHub backend.  Both must fail closed.
+_REPO_LESS_REFS = {
+    "a_github_ref_with_no_repo": PullRequestRef(
+        backend="github", branch="x", base="main", number=42
+    ),
+    "a_local_ref_handed_to_the_github_backend": PullRequestRef(
+        backend="local", branch="agent/a", base="main"
+    ),
+}
 
-    with pytest.raises(ValueError, match="repo"):
+
+async def _invoke(backend: GitHubBackend, method: str, ref: PullRequestRef) -> None:
+    """Call one of the four protocol methods on ``backend``."""
+    if method == "get_diff":
+        await backend.get_diff(ref)
+    elif method == "checkout":
+        await backend.checkout(ref, "/work/dest")
+    elif method == "comment":
+        await backend.comment(ref, "feedback")
+    else:
         await backend.merge(ref)
 
+
+@pytest.mark.unit
+@pytest.mark.parametrize("method", ["get_diff", "checkout", "comment", "merge"])
+@pytest.mark.parametrize("ref_name", sorted(_REPO_LESS_REFS))
+async def test_github_backend_refuses_any_ref_without_a_repo(
+    method: str, ref_name: str
+):
+    """No repo means ``gh`` would target the orchestrator's own cwd.
+
+    The guard keys on ``repo is None`` alone, never on ``ref.backend``: the
+    backend and the ref come from two independent sources and can disagree.
+    """
+    git = _git_ops_mock()
+    backend = GitHubBackend(git)
+
+    with pytest.raises(ValueError, match="repo"):
+        await _invoke(backend, method, _REPO_LESS_REFS[ref_name])
+
+    git.get_pr_diff.assert_not_awaited()
+    git.clone_pr_head.assert_not_awaited()
+    git.comment_on_pr.assert_not_awaited()
     git.merge_pr.assert_not_awaited()

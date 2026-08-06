@@ -137,9 +137,16 @@ class PullRequestRef:
         Raises:
             ValueError: If ``backend`` is neither ``github`` nor ``local``.
                 Falling through to the local form would discard ``repo`` and
-                ``number`` and write a local ref for a real GitHub PR.
+                ``number`` and write a local ref for a real GitHub PR.  Also if
+                a GitHub ref carries no repo, which would otherwise render
+                ``https://github.com/None/pull/42`` into ``tasks.pr_url``.  A
+                local ref never carries a repo, so this is checked only on the
+                GitHub branch.
         """
         if self.backend == "github":
+            if self.repo is None:
+                message = f"GitHub pull-request ref carries no repo: {self!r}"
+                raise ValueError(message)
             return f"https://github.com/{self.repo}/pull/{self.number}"
         if self.backend == "local":
             return (
@@ -234,17 +241,26 @@ class GitHubBackend:
             The repository slug.
 
         Raises:
-            ValueError: If a GitHub ref carries no repo.  ``gh`` would then
-                omit ``--repo`` and resolve against the orchestrator's own
-                working directory, acting on the wrong repository.
+            ValueError: If the ref carries no repo.  ``gh`` would then omit
+                ``--repo`` and resolve against the orchestrator's own working
+                directory, acting on the wrong repository.
+
+                The check keys on ``repo is None`` alone, deliberately NOT on
+                ``ref.backend``: the backend is resolved from the project's
+                ``repo_url`` while the ref is parsed from the task's
+                ``pr_url``, two independent sources that can disagree (editing
+                a project's repo_url while tasks exist is enough).  A ref
+                tagged ``local`` reaching this class is exactly that
+                disagreement, and it carries no repo, so gating on the tag let
+                the wrong-repo call through.
         """
-        if ref.backend == "github" and ref.repo is None:
+        if ref.repo is None:
             message = (
-                "GitHub pull-request ref carries no repo; refusing to run gh "
+                "pull-request ref carries no repo; refusing to run gh "
                 f"against the orchestrator's own working directory: {ref!r}"
             )
             raise ValueError(message)
-        return cast(str, ref.repo)
+        return ref.repo
 
     async def get_diff(self, ref: PullRequestRef) -> str:
         """Return ``gh pr diff`` output for the PR."""
@@ -253,7 +269,13 @@ class GitHubBackend:
         )
 
     async def checkout(self, ref: PullRequestRef, dest: str) -> str:
-        """Clone the PR head into ``dest``."""
+        """Clone the PR head into ``dest``.
+
+        The URL carries the repo, so there is no ``--repo`` argument to omit,
+        but the same guard still applies: a local ref would otherwise render a
+        ``praxis-local://`` URL and hand it to ``gh pr checkout``.
+        """
+        self._repo(ref)
         return cast(str, await self._git.clone_pr_head(ref.to_url(), dest))
 
     async def comment(self, ref: PullRequestRef, body: str) -> None:

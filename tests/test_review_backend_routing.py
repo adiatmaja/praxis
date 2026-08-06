@@ -3,16 +3,23 @@
 The load-bearing property is that the merge gate lives ABOVE the backend seam.
 A local-mode project must reach exactly the same PASSED / MERGED decisions as a
 GitHub one; only the four PR calls (diff, checkout, comment, merge) differ.
+
+Every backend assertion here pins the EXACT ref, never merely that a call
+happened.  Which ref reaches ``merge`` is the whole decision: a ref whose
+``base`` is silently rewritten merges the work into a different branch, and
+``gh``/``git`` both report success doing it.  A bare ``assert_awaited_once()``
+cannot see that, so it must not be used in this file.
 """
 
 from __future__ import annotations
 
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import ANY, AsyncMock, MagicMock
 
 import pytest
 
 from orchestrator.core.event_bus import EventBus
+from orchestrator.core.git_backend import PullRequestRef
 from orchestrator.core.orchestrator import Orchestrator
 from orchestrator.core.task_queue import TaskQueue
 from orchestrator.database import Database
@@ -20,6 +27,12 @@ from orchestrator.models.schemas import TaskStatus
 
 
 _LOCAL_PR_URL = "praxis-local://pr?branch=agent%2Fa&base=main"
+_LOCAL_REF = PullRequestRef(backend="local", branch="agent/a", base="main")
+
+_FEATURE_PR_URL = "praxis-local://pr?branch=agent%2Fa&base=feature"
+_FEATURE_REF = PullRequestRef(backend="local", branch="agent/a", base="feature")
+
+_GITHUB_PR_URL = "https://github.com/u/a/pull/1"
 _LOCAL_DIFF = "diff --git a/x b/x\n+y\n"
 
 
@@ -71,7 +84,7 @@ async def orchestrator_fixture(
     """A REVIEWING task on a GitHub project, with every gh call mocked."""
     task_queue, _plan_id, task_id = await _setup(db)
     await task_queue.update_task_status(task_id, TaskStatus.REVIEWING)
-    await task_queue.set_task_pr_url(task_id, "https://github.com/u/a/pull/1")
+    await task_queue.set_task_pr_url(task_id, _GITHUB_PR_URL)
 
     opus = AsyncMock()
     opus.is_available.return_value = True
@@ -129,11 +142,23 @@ async def test_the_orchestrator_resolves_a_repo_url_to_the_right_backend(
 async def test_a_github_project_still_uses_gh(
     orchestrator_fixture: tuple[Orchestrator, str, dict[str, Any]],
 ) -> None:
+    """Pins the full delegated gh call, ``--repo`` included.
+
+    ``repo="u/a"`` is the difference between commenting on the project's PR
+    and commenting on whatever PR ``gh`` finds in the orchestrator's own cwd.
+    """
     orch, task_id, project = orchestrator_fixture
     orch._opus.review_diff.return_value = {"verdict": "fail", "feedback": "nope"}
+
     await orch.review_task(task_id, project)
-    orch._git.get_pr_diff.assert_awaited()
-    orch._git.comment_on_pr.assert_awaited()
+
+    orch._git.clone_pr_head.assert_awaited_once_with(_GITHUB_PR_URL, ANY)
+    orch._git.get_pr_diff.assert_awaited_once_with(".", 1, repo="u/a")
+    orch._git.comment_on_pr.assert_awaited_once_with(".", 1, "nope", repo="u/a")
+    task = await orch._tq.get_task(task_id)
+    assert task is not None
+    assert task["status"] == TaskStatus.PENDING
+    assert task["review_feedback"] == "nope"
 
 
 @pytest.mark.unit
@@ -153,8 +178,9 @@ async def test_a_local_project_never_touches_gh(
     orch._opus.review_diff.return_value = {"verdict": "fail", "feedback": "nope"}
     await orch.review_task(task_id, local)
 
-    backend.get_diff.assert_awaited_once()
-    backend.comment.assert_awaited_once()
+    backend.checkout.assert_awaited_once_with(_LOCAL_REF, ANY)
+    backend.get_diff.assert_awaited_once_with(_LOCAL_REF)
+    backend.comment.assert_awaited_once_with(_LOCAL_REF, "nope")
     orch._git.get_pr_diff.assert_not_awaited()
     orch._git.comment_on_pr.assert_not_awaited()
 
@@ -168,9 +194,7 @@ async def test_a_local_project_merges_through_the_backend(
     local = dict(project)
     local["repo_url"] = str(tmp_path / "repo.git")
     local["auto_merge"] = True
-    await orch._tq.set_task_pr_url(
-        task_id, "praxis-local://pr?branch=agent%2Fa&base=feature"
-    )
+    await orch._tq.set_task_pr_url(task_id, _FEATURE_PR_URL)
     await orch._tq.update_task_status(task_id, TaskStatus.REVIEWING)
 
     backend = _local_backend()
@@ -179,7 +203,11 @@ async def test_a_local_project_merges_through_the_backend(
     orch._opus.review_diff.return_value = {"verdict": "pass", "feedback": "ok"}
     await orch.review_task(task_id, local)
 
-    backend.merge.assert_awaited_once()
+    # base="feature", NOT the project default: the merge must land on the ref's
+    # own base.  Rewriting it here would silently merge every task into main.
+    backend.merge.assert_awaited_once_with(_FEATURE_REF)
+    backend.checkout.assert_awaited_once_with(_FEATURE_REF, ANY)
+    backend.get_diff.assert_awaited_once_with(_FEATURE_REF)
     orch._git.merge_pr.assert_not_awaited()
     task = await orch._tq.get_task(task_id)
     assert task is not None
@@ -227,7 +255,7 @@ async def test_approve_merges_a_local_task_through_the_backend(
 
     await orch.approve_task_merge(task_id, local)
 
-    backend.merge.assert_awaited_once()
+    backend.merge.assert_awaited_once_with(_LOCAL_REF)
     orch._git.merge_pr.assert_not_awaited()
     task = await orch._tq.get_task(task_id)
     assert task is not None
@@ -250,15 +278,28 @@ async def test_reject_comments_on_a_local_task_through_the_backend(
 
     await orch.reject_task_merge(task_id, local, "please redo")
 
-    backend.comment.assert_awaited_once()
+    backend.comment.assert_awaited_once_with(_LOCAL_REF, "please redo")
+    backend.merge.assert_not_awaited()
     orch._git.comment_on_pr.assert_not_awaited()
+    # A rejection must actually unpark the task, not just post a comment.
+    task = await orch._tq.get_task(task_id)
+    assert task is not None
+    assert task["status"] == TaskStatus.PENDING
+    assert task["review_feedback"] == "please redo"
 
 
 @pytest.mark.unit
-async def test_review_skips_a_task_with_an_unparseable_pr_url(
+async def test_review_fails_a_task_with_an_unparseable_pr_url(
     orchestrator_fixture: tuple[Orchestrator, str, dict[str, Any]],
 ) -> None:
-    """The loop must log and move on, never raise: one bad row is not fatal."""
+    """A bad ref must be terminal-or-retryable, never a silent no-op.
+
+    ``review_task`` used to log and return with the status untouched.  The loop
+    re-enters review for every REVIEWING task on every tick and counts
+    REVIEWING as active, so the task was retried forever, the plan never
+    reached COMPLETED, and ``plan_stalled`` never fired because it requires
+    ``not active``.  The only symptom was one log line per loop interval.
+    """
     orch, task_id, project = orchestrator_fixture
     await orch._tq.set_task_pr_url(task_id, "not-a-pull-request")
 
@@ -266,9 +307,39 @@ async def test_review_skips_a_task_with_an_unparseable_pr_url(
 
     orch._opus.review_diff.assert_not_awaited()
     orch._git.get_pr_diff.assert_not_awaited()
+    # No ref exists, so there is nothing to comment on.
+    orch._git.comment_on_pr.assert_not_awaited()
+
     task = await orch._tq.get_task(task_id)
     assert task is not None
-    assert task["status"] == TaskStatus.REVIEWING
+    # attempt 1 < max_retries 3, so the shared fail path requeues it.
+    assert task["status"] == TaskStatus.PENDING
+    assert "not-a-pull-request" in task["review_feedback"]
+
+
+@pytest.mark.unit
+async def test_review_gives_up_on_an_unparseable_pr_url_once_retries_run_out(
+    orchestrator_fixture: tuple[Orchestrator, str, dict[str, Any]],
+) -> None:
+    """With no attempts left the task goes FAILED, so the plan can finish."""
+    orch, task_id, project = orchestrator_fixture
+    exhausted = dict(project)
+    exhausted["max_retries"] = 0
+    await orch._tq.set_task_pr_url(task_id, "not-a-pull-request")
+
+    queue = orch._bus.subscribe()
+
+    await orch.review_task(task_id, exhausted)
+
+    events: list[dict[str, Any]] = []
+    while not queue.empty():
+        events.append(queue.get_nowait())
+    task = await orch._tq.get_task(task_id)
+    assert task is not None
+    assert task["status"] == TaskStatus.FAILED
+    assert [e["type"] for e in events if e["type"].startswith("task_")] == [
+        "task_failed"
+    ]
 
 
 @pytest.mark.unit
