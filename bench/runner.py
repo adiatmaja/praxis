@@ -6,16 +6,25 @@ decompose (conditions B, C, D), polls to a terminal state, and writes one
 ``AttemptRecord``.  Grading happens separately, in ``bench/grade.py``, with the
 official harness.
 
-Two of its rules exist because breaking them is INVISIBLE in the published
+Three of its rules exist because breaking them is INVISIBLE in the published
 numbers rather than loud:
 
-- a verify-gated condition (B, D) with no resolved ``verify_cmd`` is refused
-  before anything is dispatched.  Passing ``None`` makes the plan-branch verify
-  gate return ``"skipped"``, and ``"skipped"`` is not distinguishable from
-  ``"passed"`` by either of its callers, so condition B would silently run as
-  condition C while its record still claimed a gate.  The ablation B versus C
-  would then compare an arm to itself and report a null result nobody could
-  trace;
+- EVERY condition, gated or not, registers the same resolved ``verify_cmd``, and
+  a condition that resolves none is refused before anything is dispatched.  The
+  refusal is there because ``None`` makes the plan-branch verify gate return
+  ``"skipped"``, and ``"skipped"`` is not distinguishable from ``"passed"`` by
+  either of its callers, so a gated condition would silently run ungated while
+  its record still claimed a gate.  Registering the command on the UNGATED arms
+  too is there for the mirror-image reason: ``project["verify_cmd"]`` is not
+  only the gate, it is also the leaf's acceptance floor and the worker's Bible
+  slot (``orchestrator_dispatch``), neither of which reads bench mode.
+  Withholding it would change what the worker is TOLD, and B versus C would then
+  compare verification plus a different prompt while reporting verification
+  alone.  The gate difference comes from the orchestrator's bench mode instead;
+- one invocation may not mix gated and ungated conditions.  ``core/bench_mode``
+  reads its two flags from the ORCHESTRATOR process environment, and the runner
+  is a separate process talking REST, so a single invocation cannot hold both
+  polarities.  The mixed set is refused before the first container spawns;
 - the poll's terminal set is imported from the frozen status vocabulary rather
   than retyped.  ``superseded`` is terminal here (a split parent ends there), so
   a retyped ``("merged", "failed", "passed")`` tuple would leave a finished
@@ -72,12 +81,25 @@ TERMINAL_PLAN_STATUSES: frozenset[str] = frozenset(
 )
 
 
+# The two flags core/bench_mode.py reads from the ORCHESTRATOR's environment,
+# both of which must equal the literal "1". The runner cannot set them: it is a
+# different process. They are named once here so the condition translation and
+# the refusal message that tells an operator what to do cannot drift apart.
+_BENCH_MODE_FLAG = "PRAXIS_BENCH"
+_DISABLE_VERIFY_FLAG = "PRAXIS_BENCH_DISABLE_VERIFY"
+_FLAG_ON = "1"
+
+
 class ConfoundedDesignError(Exception):
     """Raised when a requested condition set cannot support its comparisons."""
 
 
 class MissingVerifyCommandError(Exception):
-    """Raised when a verify-gated condition has no verify command to run."""
+    """Raised when a condition resolves no verify command to register."""
+
+
+class MixedBenchModeError(Exception):
+    """Raised when one invocation mixes gated and ungated conditions."""
 
 
 class MissingProblemStatementError(Exception):
@@ -111,6 +133,93 @@ def assert_matched_pair(condition_keys: list[str]) -> None:
             "without both"
         )
         raise ConfoundedDesignError(message)
+
+
+def assert_uniform_bench_mode(condition_keys: list[str]) -> None:
+    """Refuse ONE INVOCATION that cannot execute every condition it lists.
+
+    This is a different question from ``assert_matched_pair``, which asks
+    whether the requested arms can be COMPARED.  ``A,B,C`` is a valid design and
+    an impossible invocation, and both statements are true at once.
+
+    ``core/bench_mode`` reads its two flags with ``os.environ`` inside the
+    ORCHESTRATOR process.  The runner is a separate process talking REST, so
+    setting anything in its own environment reaches nothing.  A gateless arm
+    therefore needs an orchestrator that was STARTED with both flags, and a
+    gated arm needs one started without them.  One process cannot be both.
+
+    NOTHING VERIFIES THE ORCHESTRATOR IS IN THE MODE THE CONDITION NEEDS.  There
+    is no bench-mode endpoint, so an invocation aimed at an orchestrator in the
+    wrong mode produces correctly labelled rows describing the other arm, and no
+    number in the report shows it.  This check catches only the case the runner
+    can see: a single invocation that is self-contradictory.
+
+    Args:
+        condition_keys: The condition keys requested for this run.  Unknown keys
+            are ignored here; ``assert_matched_pair`` refuses them.
+
+    Raises:
+        MixedBenchModeError: If the requested set disagrees on ``verify_gate``.
+    """
+    by_key = {c.key: c for c in CONDITIONS}
+    requested = [by_key[k] for k in dict.fromkeys(condition_keys) if k in by_key]
+    gated = sorted(c.key for c in requested if c.verify_gate)
+    ungated = sorted(c.key for c in requested if not c.verify_gate)
+    if not gated or not ungated:
+        return
+    message = (
+        f"conditions {gated} run WITH the mechanical verify gate and conditions "
+        f"{ungated} run WITHOUT it, so this invocation cannot execute both. The "
+        f"orchestrator reads {_BENCH_MODE_FLAG} and {_DISABLE_VERIFY_FLAG} from "
+        "its OWN process environment, not from this runner, so the two groups "
+        "are two invocations with an orchestrator RESTART between them: start "
+        f"it with {_BENCH_MODE_FLAG}={_FLAG_ON} and "
+        f"{_DISABLE_VERIFY_FLAG}={_FLAG_ON} for {ungated}, and with both UNSET "
+        f"for {gated}. Run --conditions {','.join(gated)} then --conditions "
+        f"{','.join(ungated)} (or the reverse), passing the same --run-id so "
+        "both halves append to one file. WARNING: nothing here can check which "
+        "mode the orchestrator is actually in. There is no endpoint for it. If "
+        "the restart is skipped, the rows carry the right label and the wrong "
+        "arm, silently."
+    )
+    raise MixedBenchModeError(message)
+
+
+def condition_env(condition: Condition) -> dict[str, str]:
+    """Environment overrides the ORCHESTRATOR needs for this condition.
+
+    Only a gateless condition sets anything, and it sets BOTH flags: the
+    orchestrator refuses either alone (see ``core/bench_mode``).  Half-setting
+    them yields ``verify_gate_disabled() is False``, which is a silently GATED
+    condition C.
+
+    These belong to the orchestrator process, not this one.  The runner returns
+    them as the instruction an operator must apply by hand before starting the
+    orchestrator; it cannot apply them itself and cannot confirm they were.
+    """
+    if condition.verify_gate:
+        return {}
+    return {_BENCH_MODE_FLAG: _FLAG_ON, _DISABLE_VERIFY_FLAG: _FLAG_ON}
+
+
+def condition_project_overrides(condition: Condition) -> dict[str, Any]:
+    """Per-project switches for this condition, as plain data for the record.
+
+    ``verify_cmd_enabled`` reports whether the mechanical GATE runs, NOT whether
+    the project row carries a ``verify_cmd``.  Every condition registers the
+    same command (see ``resolve_verify_cmd``); only the orchestrator's bench
+    mode decides whether the gate reads it.
+
+    ``adaptive_split`` reaches the run as ``max_retries``: ``BenchClient.
+    register_project`` sets ``3 if adaptive_split else 1``, and a leaf capped at
+    one attempt never reaches the second worker-attributable failure that
+    triggers triage.  This function only reports that fact as data.
+    """
+    return {
+        "decompose": condition.decompose,
+        "verify_cmd_enabled": condition.verify_gate,
+        "adaptive_split": condition.adaptive_split,
+    }
 
 
 @dataclass(frozen=True)
@@ -151,19 +260,25 @@ def plan_attempts(
 
 def resolve_verify_cmd(
     instance: dict[str, Any], condition: Condition, default: str | None
-) -> str | None:
-    """Return the verify command this cell must run under, or refuse.
+) -> str:
+    """Return the verify command this cell registers, or refuse.
 
     Precedence is per-instance over run-wide: a repo with its own fast check
     should use it, and the ``--verify-cmd`` default covers the rest.
 
-    An ungated condition (A, C) always resolves to ``None``, even when a
-    command is available: A and C are the matched no-gate pair, and quietly
-    gating either of them is the same confound in the other direction.
+    EVERY condition resolves the same command, including the ungated pair A and
+    C.  ``project["verify_cmd"]`` is read at four places and only three of them
+    are the mechanical gate; ``orchestrator_dispatch`` also reads it as the
+    leaf's acceptance floor and threads it into the worker's Bible, and neither
+    of those consults bench mode.  Registering ``None`` for an ungated arm would
+    therefore change WHAT THE WORKER IS TOLD, so B versus C would differ in the
+    gate AND in the task attempted.  That confound is invisible in the results.
+    The gate difference comes entirely from the orchestrator's bench mode
+    instead (see ``condition_env``).
 
-    A gated condition (B, D) that resolves nothing is REFUSED rather than run
-    with ``None``.  ``None`` produces a project with no ``verify_cmd``, which
-    makes the plan-branch verify gate return ``"skipped"``, which neither
+    A condition that resolves nothing is REFUSED rather than run with ``None``.
+    ``None`` produces a project with no ``verify_cmd``, which makes the
+    plan-branch verify gate return ``"skipped"``, which neither
     ``DispatchMixin._wave_verify_gate`` (parks only on failed/error) nor
     ``ReviewMixin.on_plan_completed`` (opens the integration PR either way)
     can tell apart from ``"passed"``.  Condition B would then be condition C
@@ -175,22 +290,22 @@ def resolve_verify_cmd(
         default: The run-wide ``--verify-cmd``, if one was given.
 
     Returns:
-        The command for a gated condition, or ``None`` for an ungated one.
+        The command to register on the project, for any condition.
 
     Raises:
-        MissingVerifyCommandError: If a gated condition resolves nothing.
+        MissingVerifyCommandError: If the cell resolves nothing.
     """
-    if not condition.verify_gate:
-        return None
     candidate = instance.get("verify_cmd") or default
     if candidate is None or not str(candidate).strip():
         message = (
-            f"condition {condition.key} ({condition.label}) is verify-gated but "
-            f"instance {instance.get('instance_id')!r} resolves no verify_cmd. "
+            f"condition {condition.key} ({condition.label}) resolves no "
+            f"verify_cmd for instance {instance.get('instance_id')!r}. "
             "Set a 'verify_cmd' on the sample entry or pass --verify-cmd. "
-            "Running without one would make the plan-branch gate return "
-            "'skipped', which the orchestrator treats as a pass, so this arm "
-            "would silently become the ungated arm."
+            "Every condition needs one: a gated arm without it would have the "
+            "plan-branch gate return 'skipped', which the orchestrator treats "
+            "as a pass, and an ungated arm without it would hand its worker a "
+            "different acceptance floor and Bible than the gated arm it is "
+            "compared against."
         )
         raise MissingVerifyCommandError(message)
     return str(candidate)
@@ -226,19 +341,25 @@ def _issue_prompt(instance: dict[str, Any]) -> str:
 def assert_runnable(attempts: list[Attempt], verify_cmd_default: str | None) -> None:
     """Check the WHOLE matrix before the first container is spawned.
 
-    Both failures this catches are per-instance data problems that would
+    The two per-instance failures this catches are data problems that would
     otherwise be swallowed by ``run_attempt``'s broad handler and recorded as
     error rows, one per cell, for the entire matrix.  Finding out after the run
     costs the whole run.
+
+    The mixed-mode refusal is checked here too, and for the same reason: an
+    invocation that cannot execute its own condition set must say so before it
+    starts spawning containers for the half it can execute.
 
     Args:
         attempts: The planned matrix.
         verify_cmd_default: The run-wide ``--verify-cmd``, if one was given.
 
     Raises:
-        MissingVerifyCommandError: If a gated cell resolves no verify command.
+        MixedBenchModeError: If the matrix mixes gated and ungated conditions.
+        MissingVerifyCommandError: If a cell resolves no verify command.
         MissingProblemStatementError: If an instance carries no issue text.
     """
+    assert_uniform_bench_mode([a.condition.key for a in attempts])
     for attempt in attempts:
         resolve_verify_cmd(attempt.instance, attempt.condition, verify_cmd_default)
         _issue_prompt(attempt.instance)
@@ -371,7 +492,7 @@ async def run_attempt(
         The recorded attempt.
 
     Raises:
-        MissingVerifyCommandError: If a gated condition resolves no command.
+        MissingVerifyCommandError: If the condition resolves no command.
         MissingProblemStatementError: If the instance carries no issue text.
     """
     instance = attempt.instance
@@ -394,7 +515,11 @@ async def run_attempt(
             name=f"bench-{instance['instance_id']}-{attempt.condition.key}-{uuid.uuid4().hex[:6]}",
             repo_url=str(bare),
             worker=attempt.worker,
-            # Condition C and the matched baseline A run WITHOUT a verify gate.
+            # EVERY condition registers this, including the ungated pair A and
+            # C: the project's verify_cmd is also the leaf acceptance floor and
+            # the worker's Bible slot, so withholding it would change the task
+            # rather than only the gate. The gate is disabled in the
+            # orchestrator's bench mode instead. See resolve_verify_cmd.
             verify_cmd=verify_cmd,
             adaptive_split=attempt.condition.adaptive_split,
         )
@@ -459,6 +584,31 @@ async def run_attempt(
     return record
 
 
+def _warn_required_orchestrator_mode(attempts: list[Attempt], api: str) -> None:
+    """Say out loud which mode the orchestrator has to already be in.
+
+    Unconditional, and a warning even on the happy path, because this is the
+    one thing in the run that no code checks.  ``assert_uniform_bench_mode``
+    guarantees every attempt agrees, so the first one speaks for all of them.
+    """
+    if not attempts:
+        return
+    required = condition_env(attempts[0].condition)
+    setting = (
+        " and ".join(f"{k}={v}" for k, v in sorted(required.items()))
+        if required
+        else f"NEITHER {_BENCH_MODE_FLAG} NOR {_DISABLE_VERIFY_FLAG}"
+    )
+    logger.warning(
+        "BENCH: conditions %s need the orchestrator at %s to have been STARTED "
+        "with %s. This is NOT checked: there is no bench-mode endpoint, so a "
+        "wrong mode here produces rows with the right label and the wrong arm.",
+        sorted({a.condition.key for a in attempts}),
+        api,
+        setting,
+    )
+
+
 async def _main_async(args: argparse.Namespace) -> int:
     sample = json.loads(Path(args.sample).read_text(encoding="utf-8"))
     attempts = plan_attempts(
@@ -467,8 +617,10 @@ async def _main_async(args: argparse.Namespace) -> int:
         [k.strip() for k in args.worker.split(",") if k.strip()],
         [int(s) for s in args.seeds.split(",")] if args.seeds else list(SEEDS),
     )
-    # Refuse the whole matrix up front rather than one error row per cell.
+    # Refuse the whole matrix up front rather than one error row per cell. This
+    # also refuses a set that mixes gated and ungated conditions.
     assert_runnable(attempts, args.verify_cmd)
+    _warn_required_orchestrator_mode(attempts, args.api)
 
     run_id = args.run_id or f"run-{uuid.uuid4().hex[:8]}"
     out_path = Path(args.out or f"bench/.work/runs/{run_id}/attempts.jsonl")
@@ -503,7 +655,19 @@ def main(argv: list[str] | None = None) -> int:
     """CLI entry point."""
     parser = argparse.ArgumentParser(description="Run the Praxis bench matrix")
     parser.add_argument("--sample", required=True)
-    parser.add_argument("--conditions", default="A,B")
+    parser.add_argument(
+        "--conditions",
+        default="A,B",
+        help=(
+            "conditions for THIS invocation. They must all agree on the verify "
+            "gate, because the orchestrator reads the bench flags from its own "
+            "environment: A and C are gateless, B and D are gated. The default "
+            "'A,B' spans both and is refused on purpose, so that running the "
+            "pilot forces a choice of half rather than quietly gating A. Run "
+            "each half separately with the same --run-id, restarting the "
+            "orchestrator between them."
+        ),
+    )
     parser.add_argument("--worker", default="local-openweight")
     parser.add_argument("--seeds", default="1")
     parser.add_argument("--run-id", default=None)
@@ -513,9 +677,11 @@ def main(argv: list[str] | None = None) -> int:
         "--verify-cmd",
         default=os.environ.get("PRAXIS_BENCH_VERIFY_CMD") or None,
         help=(
-            "run-wide verify command for the gated conditions (B, D). A sample "
-            "entry's own 'verify_cmd' wins over this. A gated condition with "
-            "neither is refused before the run starts."
+            "run-wide verify command, required by EVERY condition. A sample "
+            "entry's own 'verify_cmd' wins over this. A condition with neither "
+            "is refused before the run starts. The ungated conditions (A, C) "
+            "register it too and disable only the mechanical gate, so their "
+            "workers are handed the same acceptance floor as the gated ones."
         ),
     )
     parser.add_argument(

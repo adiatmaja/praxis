@@ -3,11 +3,14 @@
 Three things here are load-bearing and fail SILENTLY if they break, which is
 why each gets its own test rather than being left to review:
 
-1. a verify-gated condition that resolves no ``verify_cmd`` must be refused
-   BEFORE anything is dispatched.  ``None`` makes the plan-branch verify gate
-   return ``skipped``, and ``skipped`` is indistinguishable from ``passed`` to
-   both of its callers, so condition B would quietly run as condition C while
-   the record still claims it was gated;
+1. a condition that resolves no ``verify_cmd`` must be refused BEFORE anything
+   is dispatched, and EVERY condition resolves one.  ``None`` makes the
+   plan-branch verify gate return ``skipped``, and ``skipped`` is
+   indistinguishable from ``passed`` to both of its callers, so condition B
+   would quietly run as condition C while the record still claims it was gated.
+   The ungated arms register the command too, because it also feeds the leaf's
+   acceptance floor and the worker's Bible; the gate itself is disabled in the
+   orchestrator (tests/bench/test_runner_conditions.py);
 2. the poll's terminal set must match this repo's frozen status vocabulary.  A
    task that ends ``superseded`` (a split parent) would otherwise never satisfy
    the poll and burn the whole one-hour ceiling before being recorded as a
@@ -218,12 +221,19 @@ def test_an_empty_verify_cmd_is_refused_the_same_as_a_missing_one():
 
 @pytest.mark.unit
 @pytest.mark.parametrize("condition_key", ["A", "C"])
-def test_an_ungated_condition_resolves_to_none_and_never_refuses(condition_key):
-    """A and C are the matched no-gate pair; a verify_cmd would confound them."""
+def test_an_ungated_condition_resolves_the_command_too(condition_key):
+    """A and C are the matched no-gate pair, and they still register it.
+
+    The project's ``verify_cmd`` is not only the gate: it is also the leaf's
+    acceptance floor and the worker's Bible slot, and neither of those reads
+    bench mode. Withholding it here would make B versus C differ in the task
+    the worker attempts as well as in the gate. The gate is disabled in the
+    orchestrator instead; see tests/bench/test_runner_conditions.py.
+    """
     resolved = resolve_verify_cmd(
         _instance(verify_cmd="pytest"), BY_CONDITION[condition_key], default="pytest"
     )
-    assert resolved is None
+    assert resolved == "pytest"
 
 
 @pytest.mark.unit
@@ -238,13 +248,18 @@ def test_the_matrix_preflight_refuses_an_instance_with_no_problem_statement():
     broken = _instance()
     del broken["problem_statement"]
     attempts = plan_attempts([broken], ["A"], ["local-openweight"], seeds=[1])
+    # A default is supplied so the verify_cmd resolution, which now refuses for
+    # EVERY condition, does not mask the problem-statement refusal under test.
     with pytest.raises(MissingProblemStatementError, match="x__y-1"):
-        assert_runnable(attempts, verify_cmd_default=None)
+        assert_runnable(attempts, verify_cmd_default="pytest")
 
 
 @pytest.mark.unit
 def test_the_matrix_preflight_passes_a_well_formed_matrix():
-    attempts = plan_attempts([_instance()], ["A", "B"], ["local-openweight"], seeds=[1])
+    # A and C, not A and B: one invocation cannot mix gated and ungated
+    # conditions, because the orchestrator reads the bench flags from its own
+    # environment. See test_runner_conditions.py.
+    attempts = plan_attempts([_instance()], ["A", "C"], ["local-openweight"], seeds=[1])
     assert_runnable(attempts, verify_cmd_default="pytest")  # must not raise
 
 
@@ -288,7 +303,8 @@ async def test_a_gated_attempt_passes_the_resolved_verify_cmd_to_the_project(tmp
 
 
 @pytest.mark.unit
-async def test_an_ungated_attempt_registers_without_a_verify_cmd(tmp_path):
+async def test_an_ungated_attempt_registers_the_verify_cmd_as_well(tmp_path):
+    """The ungated arms carry the command; only the orchestrator's gate moves."""
     attempt = plan_attempts(
         [_instance(verify_cmd="pytest")], ["A"], ["local-openweight"], seeds=[1]
     )[0]
@@ -302,7 +318,7 @@ async def test_an_ungated_attempt_registers_without_a_verify_cmd(tmp_path):
         verify_cmd_default="pytest",
     )
     registered = next(kw for name, kw in client.calls if name == "register_project")
-    assert registered["verify_cmd"] is None
+    assert registered["verify_cmd"] == "pytest"
 
 
 # --------------------------------------------------------------------------
@@ -348,7 +364,7 @@ async def test_a_superseded_task_ends_the_poll_instead_of_timing_out(
         run_id="run-1",
         repo_root=tmp_path,
         out_path=tmp_path / "attempts.jsonl",
-        verify_cmd_default=None,
+        verify_cmd_default="pytest",
     )
     assert record.error is None
     assert record.whole_task_retries == 1
@@ -365,7 +381,7 @@ async def test_a_gated_terminal_is_recorded_as_a_human_gate_touch(tmp_path):
         run_id="run-1",
         repo_root=tmp_path,
         out_path=tmp_path / "attempts.jsonl",
-        verify_cmd_default=None,
+        verify_cmd_default="pytest",
     )
     assert record.human_gate_touches == 1
 
@@ -384,7 +400,7 @@ async def test_every_attempt_is_recorded_even_when_the_client_raises(tmp_path):
         run_id="run-1",
         repo_root=tmp_path,
         out_path=tmp_path / "attempts.jsonl",
-        verify_cmd_default=None,
+        verify_cmd_default="pytest",
     )
     assert record.error is not None
     assert "orchestrator is down" in record.error
@@ -403,8 +419,9 @@ async def test_the_decompose_branch_records_all_four_leaf_metrics(tmp_path):
 
     one task at attempt 2 (one retry), one at attempt 1 (no retry); one
     carrying a ``clarification_question``, one without; one ``merged``
-    (not gated), one ``passed`` (gated). Condition C decomposes without a
-    verify gate, so no ``verify_cmd`` is needed to reach this branch.
+    (not gated), one ``passed`` (gated). Condition C decomposes with the
+    mechanical gate disabled in the ORCHESTRATOR, so it still resolves and
+    registers a ``verify_cmd`` exactly like every other condition.
     """
     # C requires its matched no-gate pair A in the same plan_attempts call.
     attempts = plan_attempts([_instance()], ["A", "C"], ["local-openweight"], seeds=[1])
@@ -417,7 +434,7 @@ async def test_the_decompose_branch_records_all_four_leaf_metrics(tmp_path):
         run_id="run-1",
         repo_root=tmp_path,
         out_path=out_path,
-        verify_cmd_default=None,
+        verify_cmd_default="pytest",
     )
     assert record.leaf_count == 2
     assert record.leaf_retries == 1
@@ -459,7 +476,7 @@ async def test_a_dispatch_attempt_that_never_reaches_terminal_status_times_out(
         run_id="run-1",
         repo_root=tmp_path,
         out_path=out_path,
-        verify_cmd_default=None,
+        verify_cmd_default="pytest",
     )
     assert record.error == "attempt timed out"
     written = json.loads(out_path.read_text(encoding="utf-8").strip())
@@ -496,7 +513,7 @@ async def test_a_decompose_attempt_that_never_reaches_terminal_status_times_out(
         run_id="run-1",
         repo_root=tmp_path,
         out_path=out_path,
-        verify_cmd_default=None,
+        verify_cmd_default="pytest",
     )
     assert record.error == "attempt timed out"
     written = json.loads(out_path.read_text(encoding="utf-8").strip())
