@@ -102,7 +102,7 @@ def _registered(client: RecordingClient) -> dict[str, Any]:
 def test_condition_b_runs_with_the_verify_gate_and_no_bench_flags():
     env = condition_env(_condition("B"))
     assert "PRAXIS_BENCH_DISABLE_VERIFY" not in env
-    assert condition_project_overrides(_condition("B"))["verify_cmd_enabled"] is True
+    assert condition_project_overrides(_condition("B"))["gate_enabled"] is True
 
 
 @pytest.mark.unit
@@ -115,8 +115,8 @@ def test_condition_c_sets_both_bench_flags():
 @pytest.mark.unit
 def test_condition_a_also_runs_without_a_verify_gate():
     """A is C's matched baseline; both must be gateless."""
-    assert condition_project_overrides(_condition("A"))["verify_cmd_enabled"] is False
-    assert condition_project_overrides(_condition("C"))["verify_cmd_enabled"] is False
+    assert condition_project_overrides(_condition("A"))["gate_enabled"] is False
+    assert condition_project_overrides(_condition("C"))["gate_enabled"] is False
 
 
 @pytest.mark.unit
@@ -129,7 +129,7 @@ def test_only_condition_d_enables_adaptive_split():
 @pytest.mark.unit
 def test_condition_d_keeps_the_verify_gate():
     """Finer granularity must be paired with MORE verification, not less."""
-    assert condition_project_overrides(_condition("D"))["verify_cmd_enabled"] is True
+    assert condition_project_overrides(_condition("D"))["gate_enabled"] is True
 
 
 @pytest.mark.unit

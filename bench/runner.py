@@ -205,10 +205,14 @@ def condition_env(condition: Condition) -> dict[str, str]:
 def condition_project_overrides(condition: Condition) -> dict[str, Any]:
     """Per-project switches for this condition, as plain data for the record.
 
-    ``verify_cmd_enabled`` reports whether the mechanical GATE runs, NOT whether
-    the project row carries a ``verify_cmd``.  Every condition registers the
-    same command (see ``resolve_verify_cmd``); only the orchestrator's bench
-    mode decides whether the gate reads it.
+    ``gate_enabled`` reports whether the mechanical GATE runs.  It is
+    deliberately NOT called ``verify_cmd_enabled``: every condition registers
+    the same ``verify_cmd`` (see ``resolve_verify_cmd``), and only the
+    orchestrator's bench mode decides whether the gate reads it.  A key implying
+    that an ungated arm carries no command is an invitation to go back to
+    registering ``verify_cmd=None`` for it, which would also strip the leaf's
+    acceptance floor and the worker's Bible slot, and so reintroduce the exact
+    confound this arm exists to avoid.
 
     ``adaptive_split`` reaches the run as ``max_retries``: ``BenchClient.
     register_project`` sets ``3 if adaptive_split else 1``, and a leaf capped at
@@ -217,7 +221,7 @@ def condition_project_overrides(condition: Condition) -> dict[str, Any]:
     """
     return {
         "decompose": condition.decompose,
-        "verify_cmd_enabled": condition.verify_gate,
+        "gate_enabled": condition.verify_gate,
         "adaptive_split": condition.adaptive_split,
     }
 
