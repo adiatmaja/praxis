@@ -4593,6 +4593,208 @@ git commit -m "docs: index the triage, split, and escalation gotchas"
 
 **Phase B is complete.** Continue directly to Phase C.
 
+### Phase B execution record (2026-08-06)
+
+Executed 2026-08-06, tasks 8 to 18, all committed on local `main` and NOT pushed.
+Gate at the end: ruff format and check clean, mypy clean on 83 files, 1569 tests
+passing at 91.27 percent coverage.
+
+Task commits in order: `ed0b9b8` (8), `292f341` (9), `e582356` (10), `8d507f8` (12),
+`d8dcc58` (11), `73537ce` (13), `183f797` (14), `6e9b08b` (15), `9484a04` (16),
+`8411dc7` (17), `1ee2766` (18). Commit order does not match task order because 9, 10,
+11, and 12 were dispatched concurrently. Four further commits came out of review:
+`ffd57e3`, `f5f3888`, `94eaa47`, and `106f6a7` (the merge-gate decision, below).
+
+**Concurrency.** Tasks 9+10, then 11+12, then 13+14, then 14+15 ran in parallel with
+zero file overlap, and the full suite ran at every join. Tasks 16, 17, and 18 ran
+alone: 16 edits `tests/conftest.py`, which every test loads, and 17 shares
+`orchestrator_review.py` with 16.
+
+**Defects in this plan's own verbatim code, corrected during execution.** Fix them
+here before anyone re-runs these tasks.
+
+1. **Task 16's Step 5 replacement REVERTS bench Phase A.** It specifies
+   `await self._git.comment_on_pr(".", pr_number, feedback, repo=repo)`. The live line
+   is `await backend.comment(ref, feedback)`, from `698775e`, which is what makes local
+   git mode work. Applied verbatim it breaks the mode the whole benchmark runs on, and
+   the plan's literal text does not even compile there: `pr_number` and `repo` are no
+   longer in scope, so it dies on `NameError`. Proven by mutation: the semantically
+   faithful revert turns `test_a_local_project_never_touches_gh` red.
+2. **Task 16 also inlines logic that now lives in a shared helper.** The live code ends
+   `review_task` with `_fail_and_maybe_retry`, shared with the unparseable-`pr_url` path
+   that `5b5b085` added to stop a wedged plan. The plan's inlined retry block would let
+   the two diverge. Kept the helper.
+3. **Task 8: `Database` has no `connect()` method.** All four of the plan's new tests
+   call `await db.connect()`; `hasattr(db, "connect")` is `False`. Every test would have
+   errored with `AttributeError`.
+4. **Task 8: the `escalation_index` test violates a foreign key.** `PRAGMA
+   foreign_keys=ON` and `plans` references `projects`, so the plan's bare INSERT raises
+   `IntegrityError`. Needs `users` then `projects` first.
+5. **Task 8: `test_migration_7_is_idempotent` was vacuous.** Migrations skip when
+   `version <= current`, so a second `initialize()` never re-runs migration 7 and the
+   Step 5 mutation was invisible to it. Fixed by rewinding `PRAGMA user_version` to 6.
+6. **Task 10's assertion is wrong.** It asserts `unmapped == {"derive_tasks"}`; the set
+   is already empty because `derive_tasks` IS mapped. Must be `set()`.
+7. **Task 12's commit message asserts a stale fact**, that `config/praxis.yaml` is baked
+   into the image and needs a rebuild. It has been MOUNTED since 2026-07-27
+   (`docker-compose.yml:38` plus `PRAXIS_CONFIG_PATH`). **Task 18's gotcha text repeats
+   the same false claim.** Both corrected; writing either would have contradicted the
+   repo's own documentation.
+8. **Task 12's escalation ladder is incoherent.** Its rung 2 is
+   `agy`/`Gemini 3.6 Flash (High)`, which `config/praxis.yaml:37-38` already sets as the
+   DEFAULT worker, so escalation would re-dispatch to the model that just failed. Rung 1
+   (`qwen3.6-27b`) is also unreachable in this environment, since LM Studio sits behind
+   a VPN that is off. Shipped as `opencode`/`glm-4.7` then `opencode`/`qwen3.6-27b`, both
+   drawn from the existing `worker_presets` so no model name is invented.
+9. **Task 12's module docstring trips the config-path grep guard.** It names
+   `config/praxis.yaml` literally, which `tests/test_config_path.py` forbids in any
+   module under `src/`. This went green on the task's own scoped tests and only the
+   full-suite join-point run caught it (`f5f3888`). Same trap, same cause, as product
+   Phase A.
+10. **Task 15 is substantially wrong about its own premise.** `SUPERSEDED` is ALREADY in
+    `status_vocab.TERMINAL_STATUSES`, so `is_terminal_status("superseded")` already
+    returns `True` and the plan's "expected FAIL" never happens. Step 4's instruction to
+    "add superseded to the terminal set" would hardcode a duplicate set inside the MCP
+    server and destroy the single-source-of-truth. `web/app.js` already has
+    `superseded: 5`. Five of the plan's seven tests passed immediately; only the
+    reconcile skip and the `styles.css` badge were real work.
+11. **Task 15's `test_mcp_terminal_incomplete_ignores_a_superseded_parent` can never
+    pass.** It asserts `derive_terminal_incomplete_state(...) is None`, but that function
+    always returns a dict. Same defect class as product Phase A's `assert == {}`.
+12. **Task 15's dashboard test is vacuous**: `assert "superseded" in content` over a
+    2754-line file passes on any incidental mention, including a comment. Scoped to the
+    `statusOrder` literal.
+13. **Task 15 tells you to add a `styles.css` rule but provides no test for it**, so the
+    change would have shipped unverified.
+14. **Task 13's `_downgrade` does not type-check.** The `fallback` ternary infers `str`
+    against a `Literal` field; `mypy` fails, and CI runs it.
+15. **Task 13's Step 5 predicts the wrong failure mode** (`IndexError: pop from empty
+    list`). The IndexError is raised inside the fake router, so the module's own
+    `except Exception` catches it and returns `human`; the visible failure is the call
+    count. The check still works, the stated symptom does not occur.
+16. **Task 16's Step 5 code fails `ruff check`** (SIM102 on the nested `if`), and CI runs
+    `ruff check src/ tests/`.
+17. **Task 16's `_run_leaf_triage` dereferences `effective_settings` unguarded**, but
+    `Orchestrator.__init__` accepts `effective_settings=None` and the `client` fixture
+    constructs one that way.
+18. **Task 16's test stubs go red for the wrong reason.** `orch._triage_leaf =
+    AsyncMock()` returns a bare mock that reaches `record_triage_decision` and raises
+    `sqlite3.ProgrammingError: type 'AsyncMock' is not supported`, so the tests would
+    fail under almost any mutation regardless of the bound under test. Replaced with a
+    stub returning a real `TriageDecision`.
+19. **Task 18's event lines name a `<slug>` field neither payload carries.** `task_split`
+    carries `child_slugs`, `task_escalated` carries no parent slug at all; both carry
+    `task_id`.
+20. The "Test-harness facts" table still claims `slow` is a registered marker. Only
+    `unit` and `integration` are. Flagged in Phase A, still uncorrected.
+
+**Vacuous tests exposed by mutation, beyond the plan defects above.** Task 14's mutation
+of the dependency predicate proved the plan's own
+`test_a_child_of_a_superseded_parent_is_dispatchable_after_its_deps_merge` CANNOT
+exercise it: after a successful split no node depends on the superseded slug, because
+children inherit the parent's dependencies and the parent's dependents are rewired to the
+children. Reverting the predicate left that test green. A test that supersedes a
+dependency directly, plus a control proving the widened predicate is not vacuously true,
+were added.
+
+**Design defects found by review, not present in the plan text.**
+
+- `child_slugs` is deterministic but NOT unique: splitting the same parent twice
+  regenerates identical slugs, and two rows sharing a slug collapse the positional map in
+  `get_dispatchable_tasks` and orphan the earlier row. `rewire_plan_for_split` now rejects
+  a collision before its first mutation. The docstring had asserted the very uniqueness
+  the guard disproves; corrected in `94eaa47`.
+- The plan's `rebuilt.extend(...)` dedup consumes a generator that reads the list being
+  extended. Correct only by accident of CPython's incremental `extend`; replaced with a
+  named helper.
+- **`insert_split_children` cannot be atomic.** `Database.execute` auto-commits every
+  statement and `Database` exposes no transaction API. The plan writes the graph FIRST,
+  so a failure between the two leaves the graph naming slugs with no rows and
+  `get_dispatchable_tasks` then raises `ValueError: dangling dependency` on EVERY tick, a
+  hard wedge. Reversed to rows-first, which fails soft: surplus rows are never mapped,
+  the plan merely fails to complete. Confirmed empirically with a simulated mid-write
+  crash (graph-first wedged on ticks 1, 2, 3; rows-first kept turning).
+- **A split that cannot be applied could abort the whole orchestration tick.**
+  `insert_split_children` fails closed with `ValueError`/`KeyError` and `run_once` has no
+  per-task exception guard, so one unapplicable split would take down every plan in that
+  pass. Now caught and degraded to the plain retry path.
+- Task 13 hardened two fail-closed paths the plan left open: `build_triage_prompt` is now
+  inside the guard (a malformed evidence pack would otherwise raise straight into the
+  review loop, the exact wedge the module promises cannot happen), and the base prompt is
+  rendered once rather than re-rendered inside an exception handler.
+- Task 15's reconcile skip preserves `run.get("logs")`; the plan's snippet passes
+  `logs=""`, erasing whatever the monitor had already streamed.
+
+**The merge-gate decision, and it is only half done.** The user approved passing
+`ref.base` to `auto_merge_eligible`. That is not implementable as specified: a GitHub PR
+URL encodes no base, so `PullRequestRef.from_url` yields `base=""`, and
+`is_protected_branch("")` returns `True`, which would have silently disabled auto-merge
+for every GitHub project (four existing tests caught it). Shipped as
+`base_branch = ref.base or plan.get("plan_branch_name")` in `106f6a7`: local refs are
+fixed, GitHub keeps the old behavior and its half of the bug. The bug was first
+reproduced, not assumed: with `auto_merge=True` and `default_branch="main"`, merge was
+awaited once with `base='main'`. Closing the GitHub half needs the PR's real base, either
+a `base_branch(ref)` method on `GitBackend` backed by `gh pr view --json baseRefName`, or
+a base column on `tasks` populated at dispatch. Not done here, raised at the gate.
+
+**Deferred backlog: NEITHER assigned item was cleared.** Engine item 3 (`verify_cmd`
+unreachable from dispatch, and a leaf-supplied `verification` shadowing the project
+`verify_cmd` that the mechanical gate actually runs) and engine item 4 (`DispatchRequest`
+and MCP `dispatch_task` cannot populate `files`, `verification`, or `neighbor_contracts`)
+were both assigned to this phase and neither was reached. The eleven tasks plus the
+merge-gate decision consumed the phase, and both items touch surfaces Phase B does not
+otherwise open: the dispatch request contract and the `plan_spec`/improvement validation
+paths. They carry forward to Phase C, where item 4 matters more than its size suggests
+because MCP is the primary surface by design.
+
+**Still open, raised at the phase gate rather than fixed.**
+
+1. **`Database` has no transaction API.** `insert_split_children` is mitigated by write
+   ordering, not made correct. A `transaction()` async context manager on `Database` is
+   the real fix; it widens scope into a shared file, so it was not done here.
+2. **A superseded parent's container is closed out in the ledger but never stopped.**
+   `reconcile_runs` marks the run `stopped`; nothing calls `stop_agent`, so an abandoned
+   split parent's container keeps running and keeps spending worker tokens until it exits
+   on its own. The plan's snippet has the same gap. Fixing it touches the agent-manager
+   seam.
+3. **`project.get("agent_model")` is a naming trap in the attribution chain.**
+   `agent_model` is the REVIEW/brain model, not a worker model, yet it sits between
+   `implement_model` and `model_name` in `record_outcome`'s fallback. Pre-existing; Task
+   17 only prepended `implement_model`.
+4. **`orchestrator_fixture` now exists in BOTH `tests/conftest.py` and
+   `tests/test_review_backend_routing.py`**, with different shapes. Module-level wins, so
+   both work today, but deleting the module-local one would silently switch 13 tests to a
+   different fixture rather than erroring.
+5. Task 8's two column-presence tests pin the final schema, not migration 7 specifically;
+   moving those columns into an earlier migration would leave both green. Verified not a
+   live bug today, and the version assertion plus the idempotency test pin it as a suite.
+6. Triage reads `capability_profile(project_id=None, ...)`, so per-project capability
+   overrides do not apply at triage. Matches `execute_plan_decompose.py`, so both sides
+   agree; worth revisiting deliberately if per-project profiles ship.
+
+**New traps recorded for later phases.**
+
+- **A REVIEW agent mutated the tree and left it mutated.** `praxis-review-first` has
+  Bash; asked what mutation would leave a test passing, it APPLIED one to `database.py`
+  and never restored it, while two implementer agents were running tests against the same
+  checkout. Caught only by the orchestrator running `git status` on a file no running
+  agent owned. Every review dispatch now carries an explicit restore-and-prove
+  instruction.
+- **A mutation check on a test that leaves a `Database` unclosed HANGS after emitting the
+  correct verdict.** When `initialize()` raises, the test never reaches `db.close()` and
+  aiosqlite's connection thread keeps the process alive past the report. Under `-q` you
+  see nothing at all and it reads as an inconclusive timeout. Run such checks with `-s`,
+  stream to a file, poll for the verdict, then kill.
+- **Never restore a mutation with `git checkout --` on a file holding uncommitted work.**
+  It silently discards the uncommitted edit. Caught here only because the restored md5
+  did not match the pre-mutation md5, which is the reason for printing it. Snapshot bytes
+  instead.
+- A subagent report is not evidence. Task 15 reported a real bug in `web/app.js` line
+  1112, a malformed closing button tag; direct inspection showed the file is correct.
+
+---
+
+
 ---
 
 ## Phase C: pre-dispatch difficulty scoring
