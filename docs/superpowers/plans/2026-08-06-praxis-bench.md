@@ -2339,6 +2339,115 @@ published sample seed. Excluded from the image and the coverage gate."
 
 ---
 
+### Phase B execution record: PARTIAL, phase IS NOT COMPLETE (2026-08-07)
+
+**Status: Task 7 done, the Phase B prerequisite done, Tasks 8 to 12 NOT STARTED.**
+This record exists so the phase is resumable; it is not a closeout. Do not read the
+absence of a defect list for Tasks 8 to 12 as a clean bill of health, they were never
+attempted.
+
+Committed on local `main`, NOT pushed. Gate at the point of stopping: ruff format and
+check clean across `src/`, `tests/`, and now `bench/`; mypy clean; 1656 tests passing.
+
+Commits: `ff9f593` (Task 7), `6a701f1` (the prerequisite), `169f115` (CI lint widening).
+
+**The prerequisite is done, and it was worse than the handoff described.**
+
+The handoff said `_verify_plan_branch` returns `"skipped"` without a GitHub credential
+and local mode has none, so the whole-plan verify backstop silently no-ops for every
+local project. Confirmed exactly: a local bare-repo PATH reached the GitHub token guard
+and skipped, with the warning `no token resolved for ...\r.git`.
+
+Two things beyond the original report:
+
+1. **`skipped` is indistinguishable from `passed` to BOTH callers.**
+   `DispatchMixin._wave_verify_gate` parks only on `failed`/`error`, so `skipped` and
+   `passed` both return True; the only difference is that a pass is memoized and a skip
+   is not, so a skip is silently re-evaluated every tick. `ReviewMixin.on_plan_completed`
+   opens the integration PR and publishes `plan_integration_ready` identically for both.
+   Nothing in the product branches on the difference. That is WHY this hid: the only
+   reader that could ever have noticed was a human looking at an SSE payload.
+   `_PlanVerifyResult` now carries a `reason`, so a skip states its cause, but the
+   callers still do not distinguish the two statuses. **Unresolved, raised here.**
+2. **Neither GitHub credential-less skip had ANY test before this commit.** Mutation
+   proved it: deleting the empty-token guard left 62 of 62 tests green in
+   `test_orchestrator.py` and `test_dogfood_plan2_fixes.py`, because every existing
+   GitHub verify test injects a truthy `PatCredentialProvider("test-token-xyz")` and
+   every wave-gate test mocks `_verify_plan_branch` out entirely. Both skips are covered
+   now.
+
+Design: the local path routes through the existing `self._resolve_backend(repo_url)`
+seam and branches on `backend.name == "local"` BEFORE any credential logic.
+`GitBackend.checkout` is PR-shaped and `GitHubBackend.checkout` needs a PR number, so a
+uniform call was impossible without adding a protocol method in a file the task did not
+own; `LocalGitBackend.checkout` reads only `ref.branch`, so the local half fits the real
+seam. A local checkout that cannot be produced is `error`, never `skipped`, because both
+callers fail closed on `error` and neither reacts to `skipped`. The verdict tail is one
+shared `_verify_outcome`, so one path cannot drift into always reporting a pass.
+
+Verified independently by the orchestrator: forcing `_verify_outcome` to always report
+`passed` turns four tests red, including one through EACH caller
+(`test_the_wave_gate_parks_a_local_plan_on_a_real_regression` and
+`test_on_plan_completed_publishes_a_real_local_verdict`), md5 differ and restore checked.
+The tests drive a REAL bare repo whose `main` holds `return 1` and whose plan branch
+holds `return 2`, so a gate that never runs, runs in the wrong tree, or always passes
+produces a different verdict in each case.
+
+**Task 7 defects in the plan's own verbatim code.**
+
+1. The Step 1 test imports `REPO_SIZE_STRATA` and never uses it (ruff `F401`). The real
+   problem behind the lint noise is that the analogous repo-size "every stratum name is
+   declared" test was silently dropped; only the patch-size one existed. Added.
+2. `parametrize` used bare-string IDs, which this repo's ruff rejects (`PT006`, wants a
+   tuple). Third plan in this programme to ship that exact form.
+3. A comprehension variable named `l`, which ruff rejects as ambiguous (`E741`).
+
+`bench/config.py`'s own logic needed no change: the strata are `if/elif/else` chains, so
+they partition by construction. Proven anyway with two independent boundary-shift
+mutations (a gap at `loc == 4` and at `repo_files == 99`); both caught. The
+`repo_files == 99` one was re-run by the orchestrator, md5 verified.
+
+**One gap closed outside the plan** (`169f115`): CI ran `ruff` and `mypy` over `src/`
+and `tests/` only, so the entire `bench/` package was unlinted and untyped. It sits
+outside the wheel root and is omitted from coverage by design, but it grows through both
+remaining benchmark phases, which is exactly the code that should not rot unchecked.
+`bench/` passes all three checks today, so widening the globs only pins that.
+
+**Decisions taken in Task 7, recorded so Phase C does not relitigate them.**
+
+- `bench/` is NOT packaged. It already sits outside `[tool.setuptools.packages.find]
+  where = ["src"]`, so no wheel change was needed; only `[tool.coverage.run] omit`.
+- No `slow` marker was added. The plan's own tests mark everything `unit`. `pyproject.toml`
+  still registers ONLY `unit` and `integration`, whatever the plans' tables claim.
+- The orchestrator Dockerfile needed no edit: it uses an explicit `COPY` allowlist, not
+  `COPY . .`, so `bench/` was already excluded from the image.
+
+**Still open, and Task 8 must be read with these in mind.**
+
+1. **`skipped` versus `passed` is still invisible to both callers** (above). The
+   benchmark's thesis is that the verify gate is load-bearing, and condition C is the
+   gate-disabled arm. Before trusting any condition-B number, confirm the gate actually
+   ran rather than skipped.
+2. `on_plan_completed` still runs the GitHub integration-PR path for local projects:
+   `open_integration_pr` shells out to `gh` against a filesystem path, fails, is caught,
+   and `compare_url` emits a nonsense `https://github.com/C:\...\r.git/compare/...` into
+   the `plan_integration_ready` event. Degrades rather than breaks, but a bench dashboard
+   will display that URL.
+3. `_wave_verify_gate` never memoizes a `skipped`, so a GitHub project with a
+   `verify_cmd` and no credential re-enters the gate every tick. Harmless today because
+   it returns before any I/O.
+4. `CONDITIONS` and `WORKERS` in `bench/config.py` are not yet referenced by anything.
+   Phase C's analysis groups by condition name; a mismatch there would silently
+   mis-group the matrix. Nothing checks the two agree yet.
+
+**Not started: Tasks 8, 9, 10, 11, 12.** Task 8 is the only `praxis-impl-max` task in
+the programme: if the gold patch stays reachable, every number the full matrix produces
+is invalid and nobody finds out until the whole run is spent. Its mutation check is the
+single most important verification across all three plans. Task 12 is human-gated and
+must not be simulated.
+
+---
+
 ### Task 8: Prepare SWE-bench instances as local bare repos
 
 **Files:**
