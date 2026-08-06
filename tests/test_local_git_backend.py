@@ -1,6 +1,7 @@
 """LocalGitBackend against a real bare repo. No mocks: git is the contract."""
 
 import subprocess
+import tempfile
 
 import pytest
 
@@ -15,6 +16,15 @@ def _git(*args: str, cwd) -> str:
         capture_output=True,
         text=True,
     ).stdout.strip()
+
+
+def _clone_for_writing(bare, dest, tmp_path):
+    """Clone the bare repo into ``dest`` and configure it to make commits."""
+    _git("clone", str(bare), str(dest), cwd=tmp_path)
+    _git("config", "user.email", "t@example.com", cwd=dest)
+    _git("config", "user.name", "t", cwd=dest)
+    _git("config", "commit.gpgsign", "false", cwd=dest)
+    return dest
 
 
 @pytest.fixture
@@ -53,6 +63,27 @@ async def test_get_diff_returns_the_branch_changes(bare_repo, ref):
 
 
 @pytest.mark.integration
+async def test_get_diff_ignores_base_commits_made_after_the_branch_point(
+    bare_repo, ref, tmp_path
+):
+    """The diff is against the merge base, not the moving tip of base.
+
+    A two-dot ``base..branch`` diff would report the base-only file as a
+    deletion, which the reviewer brain reads as the worker destroying it.
+    """
+    work = _clone_for_writing(bare_repo, tmp_path / "advance", tmp_path)
+    (work / "base_only.txt").write_text("base only\n", encoding="utf-8")
+    _git("add", "base_only.txt", cwd=work)
+    _git("commit", "-m", "base moves on", cwd=work)
+    _git("push", "origin", "main", cwd=work)
+
+    diff = await LocalGitBackend(str(bare_repo)).get_diff(ref)
+
+    assert "+two" in diff
+    assert "base_only.txt" not in diff
+
+
+@pytest.mark.integration
 async def test_checkout_produces_a_working_tree_at_the_branch(bare_repo, ref, tmp_path):
     dest = tmp_path / "checkout"
     await LocalGitBackend(str(bare_repo)).checkout(ref, str(dest))
@@ -77,6 +108,63 @@ async def test_merge_produces_exactly_one_new_commit_on_base(bare_repo, ref):
     await LocalGitBackend(str(bare_repo)).merge(ref)
     after = int(_git("rev-list", "--count", "main", cwd=bare_repo))
     assert after == before + 1
+
+
+@pytest.mark.integration
+async def test_merge_surfaces_gits_stdout_when_the_branch_conflicts(
+    bare_repo, tmp_path
+):
+    """git writes CONFLICT to stdout, so a stderr-only error message is blank."""
+    work = _clone_for_writing(bare_repo, tmp_path / "conflict", tmp_path)
+    _git("checkout", "-b", "agent/y", cwd=work)
+    (work / "a.txt").write_text("their side\n", encoding="utf-8")
+    _git("commit", "-am", "their edit", cwd=work)
+    _git("push", "origin", "agent/y", cwd=work)
+    _git("checkout", "main", cwd=work)
+    (work / "a.txt").write_text("our side\n", encoding="utf-8")
+    _git("commit", "-am", "our edit", cwd=work)
+    _git("push", "origin", "main", cwd=work)
+
+    conflicting = PullRequestRef(backend="local", branch="agent/y", base="main")
+
+    with pytest.raises(RuntimeError, match="CONFLICT"):
+        await LocalGitBackend(str(bare_repo)).merge(conflicting)
+
+
+@pytest.mark.integration
+async def test_merge_survives_a_failed_branch_delete(bare_repo, ref, monkeypatch):
+    """The base push is the operation that matters; the delete is cleanup.
+
+    Raising here left the task un-merged and every retry hit the no-op
+    ``merge --squash`` then a failing ``commit``, forever.
+    """
+    backend = LocalGitBackend(str(bare_repo))
+    real_run = backend._run
+
+    async def failing_delete(cmd: list[str], cwd: str | None = None):
+        if "--delete" in cmd:
+            return (1, "", "remote: refusing to delete the current branch")
+        return await real_run(cmd, cwd=cwd)
+
+    monkeypatch.setattr(backend, "_run", failing_delete)
+    before = int(_git("rev-list", "--count", "main", cwd=bare_repo))
+
+    await backend.merge(ref)
+
+    assert int(_git("rev-list", "--count", "main", cwd=bare_repo)) == before + 1
+    assert "agent/x" in _git("branch", "--list", cwd=bare_repo)
+
+
+@pytest.mark.integration
+async def test_merge_leaves_no_temp_clone_behind(bare_repo, ref, monkeypatch, tmp_path):
+    """git marks .git/objects/pack read-only, which defeats a plain rmtree."""
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    monkeypatch.setattr(tempfile, "tempdir", str(scratch))
+
+    await LocalGitBackend(str(bare_repo)).merge(ref)
+
+    assert list(scratch.glob("praxis-local-merge-*")) == []
 
 
 @pytest.mark.integration

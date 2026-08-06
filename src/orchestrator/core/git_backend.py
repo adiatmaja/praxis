@@ -7,8 +7,10 @@ plumbing that GitHub calls a pull request:
 - ``github``: a real PR object, created and merged with the ``gh`` CLI.
 - ``local``: the project's ``repo_url`` is a filesystem path to a BARE repo.
   There is no PR object, so a "PR" is just the (branch, base) pair recorded on
-  the task; the diff is ``git diff base...branch`` from a fresh clone and the
-  merge is a real ``git merge --squash`` executed in a clone and pushed.
+  the task; the diff is taken from the bare repo directly (``git -C <bare>
+  diff <merge-base>..branch``, equivalent to the three-dot
+  ``base...branch``) and the merge is a real ``git merge --squash`` executed
+  in a throwaway clone and pushed.
 
 Local mode exists because the benchmark needs to run 100+ instances without
 rate-limiting a GitHub account, and because "evaluate Praxis without giving it
@@ -24,7 +26,9 @@ import logging
 import os
 import re
 import shutil
+import stat
 import tempfile
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, Protocol, cast
 from urllib.parse import quote, unquote
@@ -41,11 +45,36 @@ _WINDOWS_PATH_RE = re.compile(r"^[A-Za-z]:[\\/]")
 _GITHUB_PR_RE = re.compile(r"^https://github\.com/([^/]+/[^/]+)/pull/(\d+)/?$")
 
 
+def _clear_readonly_and_retry(
+    func: Callable[..., Any], path: str, _exc_info: Any
+) -> None:
+    """``shutil.rmtree`` error handler for a git clone's read-only files.
+
+    git marks ``.git/objects/pack/*`` read-only, which makes the removal fail
+    on Windows.  ``ignore_errors=True`` swallows that and leaks the whole
+    clone, one per merge.  Clear the write bit and retry; if it still fails,
+    log and let the rest of the tree be removed.
+
+    Args:
+        func: The ``os`` callable that failed (``os.unlink``, ``os.rmdir``).
+        path: The path it failed on.
+        _exc_info: The exception that was raised, unused.
+    """
+    try:
+        os.chmod(path, os.stat(path).st_mode | stat.S_IWRITE)
+        func(path)
+    except OSError:
+        logger.warning("could not remove %s while cleaning up a temp clone", path)
+
+
 def is_local_repo_url(repo_url: str) -> bool:
     """True when ``repo_url`` names a local bare repo rather than a remote host.
 
-    Recognized: a ``file://`` URL, a POSIX absolute path, and a Windows drive
-    path.  Everything else (https, ssh, scp-style) is remote.
+    Recognized: a ``file://`` URL, a POSIX absolute path, a Windows drive
+    path, a UNC share and a ``~``-relative path.  Everything else (https, ssh,
+    scp-style) is remote.  A relative path is deliberately NOT recognized:
+    ``repos/x.git`` is ambiguous with a remote shorthand, and misrouting a real
+    remote into local mode is the worse failure.
 
     Args:
         repo_url: The project's configured repository URL or path.
@@ -57,6 +86,10 @@ def is_local_repo_url(repo_url: str) -> bool:
     if not value:
         return False
     if value.startswith("file://"):
+        return True
+    if value.startswith("\\\\"):
+        return True
+    if value.startswith("~"):
         return True
     if _WINDOWS_PATH_RE.match(value):
         return True
@@ -70,7 +103,9 @@ def local_repo_path(repo_url: str) -> str:
         repo_url: A ``file://`` URL or a bare filesystem path.
 
     Returns:
-        The path with any ``file://`` scheme and percent-encoding removed.
+        The path with any ``file://`` scheme and percent-encoding removed and
+        any leading ``~`` expanded.  git is invoked without a shell, so an
+        unexpanded ``~`` would be taken literally.
     """
     value = repo_url.strip()
     if value.startswith("file://"):
@@ -78,6 +113,8 @@ def local_repo_path(repo_url: str) -> str:
         # file:///c:/x on Windows leaves a leading slash before the drive.
         if _WINDOWS_PATH_RE.match(value.lstrip("/")):
             value = value.lstrip("/")
+    if value.startswith("~"):
+        value = os.path.expanduser(value)
     return value
 
 
@@ -96,14 +133,22 @@ class PullRequestRef:
 
         Returns:
             A GitHub PR URL, or a ``praxis-local://`` ref for local mode.
+
+        Raises:
+            ValueError: If ``backend`` is neither ``github`` nor ``local``.
+                Falling through to the local form would discard ``repo`` and
+                ``number`` and write a local ref for a real GitHub PR.
         """
         if self.backend == "github":
             return f"https://github.com/{self.repo}/pull/{self.number}"
-        return (
-            "praxis-local://pr"
-            f"?branch={quote(self.branch, safe='')}"
-            f"&base={quote(self.base, safe='')}"
-        )
+        if self.backend == "local":
+            return (
+                "praxis-local://pr"
+                f"?branch={quote(self.branch, safe='')}"
+                f"&base={quote(self.base, safe='')}"
+            )
+        message = f"unknown pull-request backend: {self.backend!r}"
+        raise ValueError(message)
 
     @classmethod
     def from_url(cls, url: str) -> PullRequestRef:
@@ -116,8 +161,13 @@ class PullRequestRef:
             The parsed reference.
 
         Raises:
-            ValueError: If the URL is neither a GitHub PR URL nor a local ref.
+            ValueError: If the URL is missing, not a string, or neither a
+                GitHub PR URL nor a local ref.  ``tasks.pr_url`` is nullable,
+                so callers guard with ``except ValueError``.
         """
+        if not url or not isinstance(url, str):
+            message = f"unrecognized pull-request reference: {url!r}"
+            raise ValueError(message)
         match = _LOCAL_PR_RE.match(url.strip())
         if match:
             return cls(
@@ -174,8 +224,27 @@ class GitHubBackend:
         """
         self._git = git_ops
 
-    def _repo(self, ref: PullRequestRef) -> str | None:
-        return ref.repo
+    def _repo(self, ref: PullRequestRef) -> str:
+        """Return the ``owner/name`` slug every ``gh pr`` call must target.
+
+        Args:
+            ref: The pull-request reference being acted on.
+
+        Returns:
+            The repository slug.
+
+        Raises:
+            ValueError: If a GitHub ref carries no repo.  ``gh`` would then
+                omit ``--repo`` and resolve against the orchestrator's own
+                working directory, acting on the wrong repository.
+        """
+        if ref.backend == "github" and ref.repo is None:
+            message = (
+                "GitHub pull-request ref carries no repo; refusing to run gh "
+                f"against the orchestrator's own working directory: {ref!r}"
+            )
+            raise ValueError(message)
+        return cast(str, ref.repo)
 
     async def get_diff(self, ref: PullRequestRef) -> str:
         """Return ``gh pr diff`` output for the PR."""
@@ -229,7 +298,15 @@ class LocalGitBackend:
     async def _run_checked(self, cmd: list[str], cwd: str | None = None) -> str:
         code, out, err = await self._run(cmd, cwd=cwd)
         if code != 0:
-            message = f"git command failed (exit {code}): {' '.join(cmd)}\n{err}"
+            # git reports "CONFLICT (content): ..." and "nothing to commit" on
+            # STDOUT, so a stderr-only message explains nothing at all.
+            parts = []
+            if out.strip():
+                parts.append(f"stdout:\n{out.strip()}")
+            if err.strip():
+                parts.append(f"stderr:\n{err.strip()}")
+            detail = "\n".join(parts) if parts else "(no output)"
+            message = f"git command failed (exit {code}): {' '.join(cmd)}\n{detail}"
             raise RuntimeError(message)
         return out.strip()
 
@@ -289,11 +366,22 @@ class LocalGitBackend:
                 cwd=workdir,
             )
             await self._run_checked(["git", "push", "origin", ref.base], cwd=workdir)
-            await self._run_checked(
+            # The base push is the merge.  Deleting the source branch is
+            # cleanup: raising here would leave the task un-MERGED, and every
+            # retry then hits a no-op squash followed by a failing commit.
+            code, _out, err = await self._run(
                 ["git", "push", "origin", "--delete", ref.branch], cwd=workdir
             )
+            if code != 0:
+                logger.warning(
+                    "merged %s into %s but could not delete the branch (exit %d): %s",
+                    ref.branch,
+                    ref.base,
+                    code,
+                    err.strip(),
+                )
         finally:
-            shutil.rmtree(workdir, ignore_errors=True)
+            shutil.rmtree(workdir, onerror=_clear_readonly_and_retry)
 
 
 def resolve_backend(repo_url: str, git_ops: Any) -> GitBackend:
