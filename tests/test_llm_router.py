@@ -220,6 +220,6 @@ def test_every_call_site_default_has_a_role():
 
     unmapped = set(CALL_SITE_DEFAULTS) - set(ROLE_OF_CALL_SITE)
     assert unmapped == set(), (
-        "every brain call-site except derive_tasks (deterministic, local-only) "
-        f"must map to a role; unmapped: {sorted(unmapped)}"
+        "every brain call-site must map to a role, with no exceptions; "
+        f"unmapped: {sorted(unmapped)}"
     )
