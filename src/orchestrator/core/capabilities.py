@@ -1,20 +1,21 @@
 import json
 import logging
-from pathlib import Path
 from typing import Any
+
+from orchestrator.core.settings_file import capabilities_file_path
 
 
 logger = logging.getLogger(__name__)
 
-# Assuming the root directory is 4 levels up from this file (src/orchestrator/core/capabilities.py)
-DEFAULT_PATH = str(
-    Path(__file__).parent.parent.parent.parent / "config" / "model_capabilities.json"
-)
-
 
 class CapabilityCatalog:
-    def __init__(self, path: str = DEFAULT_PATH) -> None:
-        self.path = path
+    def __init__(self, path: str | None = None) -> None:
+        # Resolved at call time via the shared settings_file seam, not frozen
+        # into a keyword-argument default at import time: the latter would
+        # keep serving whatever path was current on first import even if
+        # PRAXIS_CAPABILITIES_PATH changed afterward (see
+        # settings_file.config_file_path for the same reasoning).
+        self.path = path if path is not None else capabilities_file_path()
         self._data: dict[str, dict[str, Any]] = {}
         self.as_of: str | None = None
         self._load()

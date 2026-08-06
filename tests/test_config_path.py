@@ -335,8 +335,22 @@ def test_every_key_init_manages_reaches_the_container():
 
 
 @pytest.mark.unit
-def test_no_module_hardcodes_the_config_path():
-    """Grep guard: one resolver, no scattered literals."""
+@pytest.mark.parametrize(
+    "literal",
+    ["config/praxis.yaml", "model_capabilities.json"],
+)
+def test_no_module_hardcodes_the_config_path(literal):
+    """Grep guard: one resolver per config file, no scattered literals.
+
+    ``model_capabilities.json`` is checked as a bare filename, not the full
+    ``config/model_capabilities.json``, because before this guard was
+    extended ``core/capabilities.py`` built its own path by joining
+    ``"config"`` and ``"model_capabilities.json"`` as two separate ``Path()``
+    operands: the concatenated substring never appeared in the file, so a
+    full-path search would have missed that hardcode entirely. The bare
+    filename catches it (and still catches a full-path literal, since it is
+    a substring of one).
+    """
     from pathlib import Path
 
     src = Path(__file__).resolve().parents[1] / "src"
@@ -344,6 +358,6 @@ def test_no_module_hardcodes_the_config_path():
         path
         for path in src.rglob("*.py")
         if path.name != "settings_file.py"
-        and "config/praxis.yaml" in path.read_text(encoding="utf-8")
+        and literal in path.read_text(encoding="utf-8")
     ]
     assert offenders == [], f"hardcoded config path in: {offenders}"

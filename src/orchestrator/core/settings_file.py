@@ -21,6 +21,15 @@ _DEFAULT_CONFIG_PATH = "config/praxis.yaml"
 
 _CONFIG_PATH_ENV = "PRAXIS_CONFIG_PATH"
 
+# Default location of the bundled model capability snapshot, relative to the
+# process CWD.  Same reasoning as _DEFAULT_CONFIG_PATH above: the container's
+# WORKDIR is /app and the Dockerfile both COPYs and bind-mounts config/ there,
+# so this resolves to the same file whether run bare from the repo root or
+# inside the container.
+_DEFAULT_CAPABILITIES_PATH = "config/model_capabilities.json"
+
+_CAPABILITIES_PATH_ENV = "PRAXIS_CAPABILITIES_PATH"
+
 #: Absolute paths already reported as missing.  Module state because the
 #: warning has to survive across calls: `load_yaml_settings` runs on every
 #: `EffectiveSettings._get_yaml()`, so a per-call warning would bury the log
@@ -41,6 +50,23 @@ def config_file_path() -> str:
         Filesystem path to the YAML settings file, which need not exist.
     """
     return os.environ.get(_CONFIG_PATH_ENV) or _DEFAULT_CONFIG_PATH
+
+
+def capabilities_file_path() -> str:
+    """Return the path to the bundled model capability snapshot.
+
+    Mirrors ``config_file_path()``: ``PRAXIS_CAPABILITIES_PATH`` overrides the
+    default so a test or an alternate deployment can point elsewhere. This is
+    the ONLY place ``core.capabilities.CapabilityCatalog`` may decide where
+    ``model_capabilities.json`` lives; a hardcoded literal anywhere else
+    reintroduces the class of bug ``config_file_path()`` exists to prevent
+    for ``praxis.yaml`` (``tests/test_config_path.py`` greps for both).
+
+    Returns:
+        Filesystem path to the capability snapshot JSON, which need not
+        exist (``CapabilityCatalog`` degrades to an empty catalog).
+    """
+    return os.environ.get(_CAPABILITIES_PATH_ENV) or _DEFAULT_CAPABILITIES_PATH
 
 
 def load_yaml_settings(path: str, env: dict[str, str] | None = None) -> dict[str, Any]:
