@@ -1,19 +1,24 @@
-"""Shared read-only remote preflight for GitHub-backed dispatch paths.
+"""Shared read-only preflight for GitHub-backed and local-backed dispatch paths.
 
-Praxis orchestrates github.com repositories only. Every worker container clones
-the repo from its GitHub remote, so a dispatch against an unreachable repo, a
-missing or expired credential, a non-github.com URL, or a missing base branch is
-doomed. This module validates all of that with read-only remote calls BEFORE any
+Every worker container clones the repo from somewhere before it can do any
+work, so a dispatch against an unreachable repo, a missing or expired
+credential, a non-github.com URL, or a missing base branch is doomed. This
+module validates all of that with cheap, read-only checks BEFORE any
 container is spawned, and raises a typed :class:`PreflightError` that the API
-layer maps to an HTTP status. It stays FastAPI-free so it can be unit-tested in
-isolation.
+layer maps to an HTTP status. A local bare repo (see
+:mod:`orchestrator.core.git_backend`) takes its own credential-free path;
+everything else stays GitHub-only. It stays FastAPI-free so it can be
+unit-tested in isolation.
 """
 
 from __future__ import annotations
 
+import asyncio
 from enum import Enum
+from pathlib import Path
 from typing import Protocol
 
+from orchestrator.core.git_backend import is_local_repo_url, local_repo_path
 from orchestrator.core.git_ops import GitOps
 
 
@@ -43,6 +48,8 @@ class PreflightKind(Enum):
     MISSING_BRANCH = "missing_branch"
     MISSING_FILE = "missing_file"
     BASE_SHA_MISMATCH = "base_sha_mismatch"
+    MISSING_REPO = "missing_repo"
+    NOT_A_REPO = "not_a_repo"
 
 
 class PreflightError(Exception):
@@ -63,6 +70,8 @@ _STATUS_FOR_KIND: dict[PreflightKind, int] = {
     PreflightKind.AUTH: 422,
     PreflightKind.NETWORK: 502,
     PreflightKind.BASE_SHA_MISMATCH: 409,
+    PreflightKind.MISSING_REPO: 422,
+    PreflightKind.NOT_A_REPO: 422,
 }
 
 
@@ -107,6 +116,65 @@ def credential_configured(settings: object) -> bool:
     return has_app or token not in _PLACEHOLDER_TOKENS
 
 
+async def _preflight_local(repo_url: str, base: str, branch: str | None) -> list[str]:
+    """Validate a local bare repo: it exists, it is bare, the branch is there.
+
+    Runs no network calls and needs no credential. This is the "evaluate
+    Praxis with zero GitHub credentials" path.
+
+    Args:
+        repo_url: A ``file://`` URL or filesystem path to the bare repo.
+        base: Base branch name to verify.
+        branch: Optional named branch (e.g. plan branch) to verify.
+
+    Returns:
+        An empty list; local mode never emits warnings.
+
+    Raises:
+        PreflightError: If the path is missing, not a repo, not bare, or a
+            named branch is absent.
+    """
+    path = Path(local_repo_path(repo_url))
+    if not path.exists():
+        raise PreflightError(
+            PreflightKind.MISSING_REPO,
+            f"local repository path does not exist: {path}",
+        )
+
+    async def _git(*args: str) -> tuple[int, str]:
+        proc = await asyncio.create_subprocess_exec(
+            "git",
+            "-C",
+            str(path),
+            *args,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        out, _ = await proc.communicate()
+        return proc.returncode or 0, out.decode(errors="replace").strip()
+
+    code, is_bare = await _git("rev-parse", "--is-bare-repository")
+    if code != 0:
+        raise PreflightError(
+            PreflightKind.NOT_A_REPO,
+            f"not a git repository: {path}",
+        )
+    if is_bare != "true":
+        raise PreflightError(
+            PreflightKind.NOT_A_REPO,
+            f"local repository must be BARE (workers push to it): {path}",
+        )
+
+    for name in filter(None, (base, branch)):
+        code, _ = await _git("rev-parse", "--verify", f"refs/heads/{name}")
+        if code != 0:
+            raise PreflightError(
+                PreflightKind.MISSING_BRANCH,
+                f"branch not found in local repository: {name}",
+            )
+    return []
+
+
 async def preflight_remote(
     git: _GitOpsProtocol,
     repo_url: str,
@@ -120,6 +188,8 @@ async def preflight_remote(
     """Run cheapest-first read-only remote checks before spawning a worker.
 
     Steps (fail-fast):
+        0. Local bare repo short-circuit via :func:`_preflight_local`;
+           no network calls, no credential.
         1. GitHub-only via ``GitOps.repo_slug``.
         2. Skip + warn when no credential.
         3. Reachability / auth / base branch via one ``remote_head_sha`` call.
@@ -144,6 +214,10 @@ async def preflight_remote(
     Raises:
         PreflightError: On a fatal check failure.
     """
+    # Step 0: local mode, a bare repo on disk. No remote calls, no credential.
+    if is_local_repo_url(repo_url):
+        return await _preflight_local(repo_url, base, branch)
+
     warnings: list[str] = []
 
     # Step 1: GitHub-only
