@@ -552,7 +552,7 @@ async def test_list_projects_returns_slim_rows() -> None:
 async def test_list_projects_empty() -> None:
     client = FakeClient({("GET", "/api/projects"): []})
     result = await server.list_projects_impl(client)
-    assert result == {"projects": []}
+    assert result == {"summary": "0 projects configured.", "projects": []}
 
 
 async def test_list_projects_client_error_returns_error_shape() -> None:

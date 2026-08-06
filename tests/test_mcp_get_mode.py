@@ -55,4 +55,8 @@ async def test_get_mode_impl_error_handling() -> None:
             raise PraxisClientError("connection_error", "unreachable")  # noqa: EM101
 
     result = await get_mode_impl(ErrClient())
-    assert result == {"error": "connection_error", "message": "unreachable"}
+    assert result == {
+        "summary": "Praxis error: unreachable",
+        "error": "connection_error",
+        "message": "unreachable",
+    }

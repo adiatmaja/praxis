@@ -348,6 +348,10 @@ the relevant subsystem. Condensed index:
 - **`_normalize_edit_locations` must never raise**: it normalizes raw brain JSON
   `files` into the edit locations floor section; a `TypeError` aborts the loop, so
   it returns None on garbage input rather than raising.
+- **MCP payloads lead with a `summary` key, `get_task_logs` tails at 40 KB**: dict
+  insertion order is what the client renders, so every state-returning tool puts
+  a one-line summary first; a clipped log always says so, tailing the last
+  `LOG_TAIL_CHARS`, never the head.
 
 ## Documentation
 

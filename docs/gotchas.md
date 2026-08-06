@@ -435,3 +435,14 @@ keep the CLAUDE.md index in sync.
   because a `TypeError` here aborts the whole orchestration loop. Before it
   existed, a bare string `files` value iterated character-by-character into the
   floor section, and a non-iterable value raised an unhandled exception.
+- **MCP payloads lead with a `summary` key, and `get_task_logs` tails**:
+  every state-returning MCP tool puts a one-line human summary first in its
+  returned dict, because dict insertion order is what the client renders and the
+  first line is what a reader actually sees. `get_task_logs` clips to the LAST
+  `LOG_TAIL_CHARS` (40 KB) and says so both in the payload (`truncated`,
+  `total_chars`) and inline in the text: Claude Code warns above 10,000 tokens of
+  MCP output and caps at 25,000 by default, so an unbounded dump is truncated by
+  the client exactly when a task has run long enough to wedge. Tail, never head:
+  the top of a failing run's log is startup banner. Note that MCP tool
+  DESCRIPTIONS also truncate, at 2 KB each, but Praxis was measured on
+  2026-08-06 and its largest is 942 B, so there is nothing to fix there.

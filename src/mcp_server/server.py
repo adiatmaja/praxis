@@ -31,8 +31,40 @@ def load_orchestration_guide() -> str:
     )
 
 
+# Claude Code warns above 10,000 tokens of MCP output and caps at 25,000 by
+# default (roughly 100 KB of text). Container logs for a retried task exceed
+# that easily, so the tool tails rather than dumps: for failure triage the
+# useful end of a log is the bottom, not the top. Raising the client-side
+# limit would not help; the head of a 5 MB log is noise either way.
+LOG_TAIL_CHARS = 40_000
+
+
 def _error(exc: PraxisClientError) -> dict[str, Any]:
-    return {"error": exc.code, "message": exc.message}
+    return {
+        "summary": f"Praxis error: {exc.message}",
+        "error": exc.code,
+        "message": exc.message,
+    }
+
+
+def _handle_summary(result: dict[str, Any], id_key: str, label: str) -> str:
+    """One human-readable line for a dispatch/execute-plan handle.
+
+    Args:
+        result: The raw API response dict (task_id/plan_id, status, ...).
+        id_key: Which id field identifies this handle (``task_id`` or
+            ``plan_id``).
+        label: Leading verb phrase, e.g. ``"Dispatched"``.
+
+    Returns:
+        A short line such as ``"Dispatched: queued (t1)"``.
+    """
+    status = result.get("status") or "submitted"
+    line = f"{label}: {status}"
+    ident = result.get(id_key)
+    if ident:
+        line += f" ({ident})"
+    return line
 
 
 async def dispatch_task_impl(
@@ -73,6 +105,8 @@ async def dispatch_task_impl(
     dash = _dashboard_url(client)
     if dash and isinstance(result, dict) and "dashboard_url" in result:
         result["dashboard_url"] = dash
+    if isinstance(result, dict):
+        result = {"summary": _handle_summary(result, "task_id", "Dispatched"), **result}
     return result
 
 
@@ -113,6 +147,11 @@ async def execute_plan_impl(
     dash = _dashboard_url(client)
     if dash and isinstance(result, dict) and "dashboard_url" in result:
         result["dashboard_url"] = dash
+    if isinstance(result, dict):
+        result = {
+            "summary": _handle_summary(result, "plan_id", "Plan submitted"),
+            **result,
+        }
     return result
 
 
@@ -142,11 +181,29 @@ async def _approvals_digest_line(client: Any) -> str:
 
 async def pending_approvals_impl(client: Any) -> dict[str, Any]:
     """Return the summary of every task parked at the human merge gate."""
+    from orchestrator.core.approvals import digest_line
+
     try:
         result = await client.get("/api/approvals/pending")
     except PraxisClientError as exc:
         return _error(exc)
-    return result if isinstance(result, dict) else {}
+    if not isinstance(result, dict):
+        return {"summary": "No work parked at the merge gate."}
+    summary = digest_line(result) or "No work parked at the merge gate."
+    return {"summary": summary, **result}
+
+
+def _task_summary(task: dict[str, Any]) -> str:
+    """One human-readable line for a task, as the first key of the payload."""
+    title = task.get("title") or task.get("id") or "task"
+    status = _TASK_STATUS_MAP.get(task.get("status", ""), task.get("status"))
+    parts = [f"{title}: {status}"]
+    if task.get("pr_url"):
+        parts.append(str(task["pr_url"]))
+    attempt = task.get("attempt")
+    if isinstance(attempt, int) and attempt > 1:
+        parts.append(f"attempt {attempt}")
+    return ", ".join(parts)
 
 
 async def poll_task_impl(client: Any, task_id: str) -> dict[str, Any]:
@@ -176,8 +233,10 @@ async def poll_task_impl(client: Any, task_id: str) -> dict[str, Any]:
     raw_status = task.get("status")
     awaiting = raw_status == "passed"
     approvals = await _approvals_digest_line(client)
+    summary = _task_summary(task)
     if raw_status == "needs_clarification":
         return {
+            "summary": summary,
             "task_id": task_id,
             "status": "awaiting_clarification",
             "question": task.get("clarification_question") or "",
@@ -187,6 +246,7 @@ async def poll_task_impl(client: Any, task_id: str) -> dict[str, Any]:
             "approvals": approvals,
         }
     return {
+        "summary": summary,
         "task_id": task_id,
         "status": "awaiting_merge" if awaiting else raw_status,
         "pr_url": task.get("pr_url"),
@@ -397,6 +457,20 @@ def derive_terminal_incomplete_state(
     }
 
 
+def _plan_summary(tasks: list[dict[str, Any]]) -> str:
+    """One human-readable line for a plan's leaf states."""
+    total = len(tasks)
+    merged = sum(1 for t in tasks if t.get("status") == "merged")
+    gated = sum(1 for t in tasks if str(t.get("status")) in _GATED_STATUSES)
+    failed = sum(1 for t in tasks if t.get("status") == "failed")
+    parts = [f"{merged} of {total} leaves merged"]
+    if gated:
+        parts.append(f"{gated} awaiting approval")
+    if failed:
+        parts.append(f"{failed} failed")
+    return ", ".join(parts)
+
+
 async def poll_plan_impl(client: Any, plan_id: str) -> dict[str, Any]:
     """Return the plan status plus a one-line summary of every task in the plan.
 
@@ -430,6 +504,7 @@ async def poll_plan_impl(client: Any, plan_id: str) -> dict[str, Any]:
     term = derive_terminal_incomplete_state(plan_data.get("status"), tasks)
     approvals = await _approvals_digest_line(client)
     return {
+        "summary": _plan_summary(tasks),
         "plan_id": plan_id,
         "status": plan_data.get("status"),
         "error": plan_data.get("error"),
@@ -494,7 +569,10 @@ async def list_projects_impl(client: Any) -> dict[str, Any]:
     except PraxisClientError as exc:
         return _error(exc)
     rows = projects if isinstance(projects, list) else []
+    count = len(rows)
+    noun = "project" if count == 1 else "projects"
     return {
+        "summary": f"{count} {noun} configured.",
         "projects": [
             # Defensive .get(): a malformed row must not raise out of an MCP tool.
             {
@@ -505,19 +583,38 @@ async def list_projects_impl(client: Any) -> dict[str, Any]:
                 "harness": row.get("harness"),
             }
             for row in rows
-        ]
+        ],
     }
 
 
 async def get_task_logs_impl(client: Any, task_id: str) -> dict[str, Any]:
-    """Return concatenated agent-run logs for a task (inline failure triage)."""
+    """Return the TAIL of a task's agent-run logs (inline failure triage).
+
+    Logs are concatenated across every run for the task, then clipped to the
+    last ``LOG_TAIL_CHARS`` characters. Truncation is announced in the payload
+    and inline in the text: a silently clipped log invites the reader to trust
+    an incomplete picture, which is worse than a short one.
+    """
     try:
         data = await client.get(f"/api/tasks/{task_id}")
     except PraxisClientError as exc:
         return _error(exc)
     runs = data.get("runs", [])
     logs = "".join(str(run.get("logs") or "") for run in runs)
-    return {"task_id": task_id, "logs": logs}
+    total = len(logs)
+    truncated = total > LOG_TAIL_CHARS
+    if truncated:
+        logs = (
+            f"[truncated: showing the last {LOG_TAIL_CHARS} of {total} "
+            "characters; the tail is what matters for triage]\n"
+            + logs[-LOG_TAIL_CHARS:]
+        )
+    return {
+        "task_id": task_id,
+        "logs": logs,
+        "truncated": truncated,
+        "total_chars": total,
+    }
 
 
 async def cancel_task_impl(client: Any, task_id: str) -> dict[str, Any]:
@@ -545,7 +642,17 @@ def _dashboard_url(client: Any) -> str:
 
 # --- FastMCP registration -------------------------------------------------
 
-mcp = FastMCP("praxis")
+mcp = FastMCP(
+    "praxis",
+    instructions=(
+        "Praxis delegates implementation to another provider or harness and "
+        "hands back a reviewed pull request. Read the praxis://guide/orchestration "
+        "resource before your first dispatch. Typical loop: get_project to read a "
+        "repo's configured worker, dispatch_task or execute_plan to delegate, "
+        "poll_task or poll_plan until a task reports awaiting_merge, then relay "
+        "the PR URL to the human for approval. Praxis never merges without them."
+    ),
+)
 
 
 @mcp.tool()
