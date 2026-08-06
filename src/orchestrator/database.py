@@ -226,6 +226,43 @@ async def _migration_0006_worker_session(connection: aiosqlite.Connection) -> No
         )
 
 
+async def _migration_0007_leaf_triage(connection: aiosqlite.Connection) -> None:
+    """Add the columns adaptive split-on-failure and escalation need.
+
+    The umbrella spec's DDL names three columns (``parent_task_id``,
+    ``difficulty_score``, ``leaf_type``).  Four more are required to enforce the
+    spec's own hard bounds durably rather than in memory:
+
+    - ``triage_decision``: presence enforces "one triage call per leaf lifetime".
+    - ``escalation_index``: how many ``implement_escalation`` entries this leaf
+      has already burned, so escalation stops at the list length.
+    - ``implement_harness`` / ``implement_model``: the model that ACTUALLY
+      implemented this attempt.  Outcome attribution must never credit the
+      original worker with an escalated success, or the calibration loop learns
+      lies.
+
+    ``parent_task_id`` doubles as the one-split-generation guard: a task with a
+    parent may never be split again.
+    """
+    cursor = await connection.execute("PRAGMA table_info(tasks)")
+    cols = {row[1] for row in await cursor.fetchall()}
+    additions = (
+        ("parent_task_id", "TEXT"),
+        ("difficulty_score", "REAL"),
+        ("leaf_type", "TEXT"),
+        ("triage_decision", "TEXT"),
+        ("escalation_index", "INTEGER NOT NULL DEFAULT 0"),
+        ("implement_harness", "TEXT"),
+        ("implement_model", "TEXT"),
+    )
+    for name, decl in additions:
+        if name not in cols:
+            await connection.execute(f"ALTER TABLE tasks ADD COLUMN {name} {decl}")  # nosec B608 - fixed literal column names, no user input
+    await connection.execute(
+        "CREATE INDEX IF NOT EXISTS idx_tasks_parent ON tasks (parent_task_id)"
+    )
+
+
 MIGRATIONS: list[Migration] = [
     Migration(1, "baseline: schema as of 2026-07-02", _migration_0001_baseline),
     Migration(
@@ -252,6 +289,11 @@ MIGRATIONS: list[Migration] = [
         6,
         "add tasks.worker_session_id/worker_session_harness for session resume",
         _migration_0006_worker_session,
+    ),
+    Migration(
+        7,
+        "add tasks triage/split/escalation columns for decomposition standard v2",
+        _migration_0007_leaf_triage,
     ),
 ]
 
