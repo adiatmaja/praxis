@@ -80,7 +80,9 @@ class ReconcileMixin:
 
         Runs each orchestration pass (and therefore at startup). It:
         - fails orphaned runs when the agent manager is unavailable or the
-          container has vanished/exited without a completion callback, and
+          container has vanished/exited without a completion callback,
+        - closes out (never retries) a run whose task was SUPERSEDED by split
+          children, and
         - (re)attaches a live-log monitor to runs whose container is alive.
 
         This is what lets a task that was ``in_progress`` when the
@@ -96,6 +98,19 @@ class ReconcileMixin:
                 for run in running:
                     monitor = self._monitors.get(run["id"])
                     if monitor is not None and not monitor.done():
+                        continue
+                    task = await self._tq.get_task(run["task_id"])
+                    if task is not None and task["status"] == TaskStatus.SUPERSEDED:
+                        # The leaf was replaced by split children; its container
+                        # is abandoned work, not a run to retry. Reconciling it
+                        # normally would fail_task then retry_task, silently
+                        # resurrecting the parent as pending.
+                        await self._tq.complete_agent_run(
+                            run["id"],
+                            "stopped",
+                            str(run.get("logs") or "")
+                            or "Task superseded; agent run abandoned.",
+                        )
                         continue
                     status = self._agents.get_container_status(run["container_id"])
                     if status is None:
