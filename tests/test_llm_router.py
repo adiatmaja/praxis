@@ -204,3 +204,22 @@ async def test_run_passes_cwd_to_subprocess(mocker):
 def test_plan_review_call_site_registered():
     cfg = CALL_SITE_DEFAULTS["plan_review"]
     assert cfg["provider"] == "claude"  # capability judgment needs the brain
+
+
+@pytest.mark.unit
+def test_leaf_failure_triage_is_a_registered_call_site():
+    assert "leaf_failure_triage" in CALL_SITE_DEFAULTS
+    cfg = CALL_SITE_DEFAULTS["leaf_failure_triage"]
+    assert cfg["provider"] == "claude"
+    assert cfg["model"] == "claude-sonnet-4-6"
+
+
+@pytest.mark.unit
+def test_every_call_site_default_has_a_role():
+    from orchestrator.core.roles import ROLE_OF_CALL_SITE
+
+    unmapped = set(CALL_SITE_DEFAULTS) - set(ROLE_OF_CALL_SITE)
+    assert unmapped == set(), (
+        "every brain call-site except derive_tasks (deterministic, local-only) "
+        f"must map to a role; unmapped: {sorted(unmapped)}"
+    )

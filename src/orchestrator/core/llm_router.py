@@ -103,6 +103,15 @@ CALL_SITE_DEFAULTS: dict[str, dict[str, str | None]] = {
         "model": "claude-sonnet-4-6",
         "effort": None,
     },
+    # Triage of a twice-failed leaf: read the failure evidence and decide
+    # retry / split / escalate / human. Structured judgment over a bounded
+    # evidence pack, same tier as plan_review; resolves through the plan seat's
+    # fallback chain.
+    "leaf_failure_triage": {
+        "provider": "claude",
+        "model": "claude-sonnet-4-6",
+        "effort": "medium",
+    },
     "answer_clarification": {
         "provider": "claude",
         "model": "claude-sonnet-4-6",

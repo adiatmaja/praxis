@@ -7,6 +7,7 @@ MODEL_ROLES: tuple[str, ...] = ("plan", "review", "implement")
 ROLE_OF_CALL_SITE: dict[str, str] = {
     "plan_spec": "plan",
     "plan_review": "plan",
+    "leaf_failure_triage": "plan",
     "derive_tasks": "plan",
     "analyze_improvements": "plan",
     "answer_clarification": "plan",
