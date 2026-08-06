@@ -494,25 +494,37 @@ def _hold_enter(monkeypatch):
         monkeypatch.setattr(init_mod, name, _Default)
 
 
-def _stub_the_world(monkeypatch):
+def _stub_the_world(monkeypatch, healthy: bool = True, doctor_code: int = 0):
     """Replace everything `init` does outside the working directory.
 
     Without this an `init()` under test shells out to a real `docker compose
     build`, so the stubs are what make the entry point testable at all rather
     than a convenience.
 
+    Args:
+        monkeypatch: The pytest fixture doing the patching.
+        healthy: What `/health` polling reports.
+        doctor_code: The doctor's verdict, which is init's own exit code.
+
     Returns:
-        The recorded `docker compose` argument lists, in call order.
+        A record of what init did: "compose" argument lists in call order,
+        and "doctor" (url, token) pairs.
     """
-    compose_calls: list[list[str]] = []
+    calls: dict[str, list] = {"compose": [], "doctor": []}
 
     def _fake_compose(args, _what):
-        compose_calls.append(args)
+        calls["compose"].append(args)
+
+    def _fake_doctor(url, token):
+        calls["doctor"].append((url, token))
+        return doctor_code
 
     monkeypatch.setattr(init_mod, "_compose", _fake_compose)
-    monkeypatch.setattr(init_mod, "_wait_for_health", lambda _url, _timeout_s=180: True)
-    monkeypatch.setattr(init_mod, "_run_doctor", lambda _url, _token: 0)
-    return compose_calls
+    monkeypatch.setattr(
+        init_mod, "_wait_for_health", lambda _url, _timeout_s=180: healthy
+    )
+    monkeypatch.setattr(init_mod, "_run_doctor", _fake_doctor)
+    return calls
 
 
 @pytest.fixture
@@ -739,3 +751,277 @@ def test_a_blank_github_answer_still_keeps_the_existing_credential(monkeypatch):
         ),
     )
     assert _dotenv(merged)["GITHUB_TOKEN"] == "ghp_real"
+
+
+# --------------------------------------------------------------------------
+# `init()` itself.
+#
+# Everything above this line tests a pure helper.  The entry point that
+# decides what to write and reports what it did had no coverage at all, which
+# is how a compose file that never forwarded the worker preset and a
+# guard-less write into an unrelated directory both survived a whole phase
+# with the suite green.
+#
+# Every test below runs inside `fake_root`, which chdirs into `tmp_path`.  The
+# repository's own `.env` is never read, written or deleted.
+# --------------------------------------------------------------------------
+
+#: A two-entry menu so a test can prove the CHOICE landed, not just a default.
+#: The second entry is `gemini-agy`'s real shape: a model containing spaces
+#: (which must survive quoting through a real file) and no endpoint (which
+#: must clear a previous preset's `LM_STUDIO_URL`).
+TWO_PRESETS = [
+    {
+        "name": "local-lmstudio",
+        "label": "Local GPU via LM Studio",
+        "harness": "opencode",
+        "model": "qwen3-32b",
+        "endpoint": "http://host.docker.internal:1234",
+        "requires": [],
+    },
+    {
+        "name": "gemini-agy",
+        "label": "Gemini via the agy harness",
+        "harness": "agy",
+        "model": "Gemini 3.6 Flash (High)",
+        "endpoint": "",
+        "requires": [],
+    },
+]
+
+
+def _scripted(monkeypatch, answers: dict):
+    """Answer init's prompts by substring match, else the default (Enter).
+
+    Keyed on the prompt text rather than on call order, because the order
+    changes with the state of `.env`: the "Reuse the AUTH_TOKEN" and
+    "Update .env?" prompts only appear when a file is already there.
+    """
+
+    def _prompt_class():
+        class _Scripted:
+            @staticmethod
+            def ask(prompt="", **kwargs):
+                for needle, value in answers.items():
+                    if needle in str(prompt):
+                        return value
+                return kwargs.get("default")
+
+        return _Scripted
+
+    for name in ("Confirm", "IntPrompt", "Prompt"):
+        monkeypatch.setattr(init_mod, name, _prompt_class())
+
+
+def _run_init(
+    monkeypatch,
+    answers: dict | None = None,
+    presets: list | None = None,
+    healthy: bool = True,
+    doctor_code: int = 0,
+) -> dict:
+    """Drive a full `init()` inside the current directory.
+
+    Returns:
+        The `_stub_the_world` record, plus "exit_code".
+    """
+    _scripted(monkeypatch, answers or {})
+    calls = _stub_the_world(monkeypatch, healthy=healthy, doctor_code=doctor_code)
+    monkeypatch.setattr(
+        init_mod,
+        "_fetch_presets_or_defaults",
+        lambda: [dict(p) for p in (presets or TWO_PRESETS)],
+    )
+    with pytest.raises(typer.Exit) as exit_info:
+        init_mod.init()
+    calls["exit_code"] = exit_info.value.exit_code
+    return calls
+
+
+@pytest.mark.unit
+def test_a_fresh_run_writes_exactly_the_managed_keys(fake_root, monkeypatch):
+    """Exact equality, because both directions of drift are silent.
+
+    A missing key leaves the container falling back to a default nobody chose;
+    an extra one is `init` writing outside the contract `merge_env` enforces.
+    Neither raises, and the operator is told the file was written either way.
+    """
+    _run_init(monkeypatch, {"Auth token": "tok", "GitHub token": "ghp_x"})
+
+    written = _dotenv((fake_root / ".env").read_text(encoding="utf-8"))
+    assert written == {
+        "AUTH_TOKEN": "tok",
+        "GITHUB_TOKEN": "ghp_x",
+        "PORT": "12323",
+        "LM_STUDIO_URL": "http://host.docker.internal:1234",
+        "DEFAULT_WORKER_HARNESS": "opencode",
+        "DEFAULT_WORKER_MODEL": "qwen3-32b",
+    }
+
+
+@pytest.mark.unit
+def test_a_fresh_local_mode_run_writes_no_github_token_line(fake_root, monkeypatch):
+    """'skip' has to reach the file as an absent key, not an empty one.
+
+    `GITHUB_TOKEN=` reads as configured to anyone looking at the file and is
+    useless to everything that consumes it.
+    """
+    _run_init(monkeypatch, {"Auth token": "tok", "GitHub token": "skip"})
+    assert "GITHUB_TOKEN" not in (fake_root / ".env").read_text(encoding="utf-8")
+
+
+@pytest.mark.unit
+def test_a_re_run_does_not_rotate_an_existing_auth_token(fake_root, monkeypatch):
+    """Holding Enter through a re-run must not invalidate every MCP client.
+
+    Rotating it is silent from init's side: it writes the new token, runs the
+    doctor with the new token, and reports green.  The breakage surfaces in
+    every already-configured client instead, as a 401 with no explanation.
+    """
+    (fake_root / ".env").write_text("AUTH_TOKEN=do-not-rotate\n", encoding="utf-8")
+
+    _run_init(monkeypatch)
+
+    written = _dotenv((fake_root / ".env").read_text(encoding="utf-8"))
+    assert written["AUTH_TOKEN"] == "do-not-rotate"
+
+
+@pytest.mark.unit
+def test_a_re_run_preserves_an_unmanaged_key_its_position_and_its_comment(
+    fake_root, monkeypatch
+):
+    """The whole `.env` merge contract, asserted through the real entry point.
+
+    `merge_env` is tested directly above; this proves `init` actually routes
+    an existing file through it rather than through `build_env_file`, which
+    would silently discard every unmanaged key on the first re-run.
+    """
+    (fake_root / ".env").write_text(
+        "TZ=Asia/Jakarta   # my zone\n"
+        "AUTH_TOKEN=existing-token\n"
+        "\n"
+        "# volume notes\n"
+        "GEMINI_CREDS_VOLUME=praxis-gemini-creds\n",
+        encoding="utf-8",
+    )
+
+    _run_init(monkeypatch)
+
+    lines = (fake_root / ".env").read_text(encoding="utf-8").splitlines()
+    assert lines[:5] == [
+        "TZ=Asia/Jakarta   # my zone",
+        "AUTH_TOKEN=existing-token",
+        "",
+        "# volume notes",
+        "GEMINI_CREDS_VOLUME=praxis-gemini-creds",
+    ]
+
+
+@pytest.mark.unit
+def test_the_chosen_preset_is_what_lands_in_the_file(fake_root, monkeypatch):
+    """Answer 2, not the default, so the CHOICE is what is pinned.
+
+    Taking the default here would pass even if `_choose_preset`'s return value
+    were dropped on the floor between the menu and the file.
+    """
+    _run_init(monkeypatch, {"Auth token": "tok", "Preset": 2})
+
+    written = _dotenv((fake_root / ".env").read_text(encoding="utf-8"))
+    assert written["DEFAULT_WORKER_HARNESS"] == "agy"
+    assert written["DEFAULT_WORKER_MODEL"] == "Gemini 3.6 Flash (High)"
+
+
+@pytest.mark.unit
+def test_switching_preset_on_a_re_run_clears_the_previous_endpoint(
+    fake_root, monkeypatch
+):
+    """A half-applied switch is a config the operator believes they replaced.
+
+    `gemini-agy` authors an empty endpoint, so the previous preset's
+    `LM_STUDIO_URL` has to go.  Left behind it points `agy` at an LM Studio
+    box, and nothing in the file or the logs says the two disagree.
+    """
+    (fake_root / ".env").write_text(
+        "AUTH_TOKEN=tok\n"
+        "LM_STUDIO_URL=http://host.docker.internal:1234\n"
+        "DEFAULT_WORKER_HARNESS=opencode\n"
+        "DEFAULT_WORKER_MODEL=qwen3-32b\n",
+        encoding="utf-8",
+    )
+
+    _run_init(monkeypatch, {"Preset": 2})
+
+    text = (fake_root / ".env").read_text(encoding="utf-8")
+    assert "LM_STUDIO_URL" not in text
+    assert _dotenv(text)["DEFAULT_WORKER_HARNESS"] == "agy"
+
+
+@pytest.mark.unit
+def test_declining_the_update_leaves_the_file_byte_identical(fake_root, monkeypatch):
+    """No has to mean no, including for the answers already collected."""
+    original = "AUTH_TOKEN=keepme\nPORT=9999\n"
+    (fake_root / ".env").write_text(original, encoding="utf-8")
+
+    _run_init(monkeypatch, {"Update": False, "Auth token": "discarded", "Preset": 2})
+
+    assert (fake_root / ".env").read_text(encoding="utf-8") == original
+
+
+@pytest.mark.unit
+def test_declining_the_update_makes_the_rest_of_the_run_follow_the_file(
+    fake_root, monkeypatch
+):
+    """Compose reads `.env`, so the discarded answers cannot drive the verify.
+
+    Carrying them on would poll and authenticate against a port and token the
+    running container never received: the doctor then reports an unreachable
+    or 401 orchestrator that is in fact healthy, and the operator debugs a
+    problem that does not exist.
+    """
+    (fake_root / ".env").write_text("AUTH_TOKEN=keepme\nPORT=9999\n", encoding="utf-8")
+
+    calls = _run_init(
+        monkeypatch,
+        {"Update": False, "Auth token": "discarded", "Dashboard port": 1234},
+    )
+
+    assert calls["doctor"] == [("http://127.0.0.1:9999", "keepme")]
+
+
+@pytest.mark.unit
+def test_init_builds_the_agent_images_before_starting_the_orchestrator(
+    fake_root, monkeypatch
+):
+    """Skipping the agent build leaves an install that only fails at dispatch.
+
+    The orchestrator comes up, the doctor goes green, and the first dispatched
+    task dies on a missing `opencode-agent:latest` minutes or days later.
+    """
+    calls = _run_init(monkeypatch)
+
+    assert calls["compose"] == [
+        ["--profile", "agents", "build"],
+        ["up", "-d", "--build"],
+    ]
+
+
+@pytest.mark.unit
+def test_the_exit_code_is_the_doctors_verdict(fake_root, monkeypatch):
+    """A scripted install has to be able to gate on "it actually works".
+
+    Exiting 0 regardless turns every red row into something only a human
+    reading the table would ever notice.
+    """
+    calls = _run_init(monkeypatch, doctor_code=2)
+    assert calls["exit_code"] == 2
+
+
+@pytest.mark.unit
+def test_an_orchestrator_that_never_becomes_healthy_fails_without_a_verdict(
+    fake_root, monkeypatch
+):
+    """Running the doctor against a dead orchestrator reports the wrong problem."""
+    calls = _run_init(monkeypatch, healthy=False)
+
+    assert calls["exit_code"] == 1
+    assert calls["doctor"] == []
