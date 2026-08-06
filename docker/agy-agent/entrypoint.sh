@@ -13,6 +13,11 @@ set -euo pipefail
 : "${CALLBACK_URL:?CALLBACK_URL is required}"
 : "${TASK_ID:?TASK_ID is required}"
 
+# Which git plumbing to use: "github" (PRs via gh) or "local" (a bind-mounted
+# bare repo, no credential, no PR object). Defaults to github so an older
+# orchestrator that does not set it behaves exactly as before.
+GIT_BACKEND="${GIT_BACKEND:-github}"
+
 WORKSPACE="/home/agent/workspace"
 STATUS="completed"
 PR_URL=""
@@ -50,6 +55,18 @@ fi
 
 json_escape() {
     python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))'
+}
+
+# Percent-encode a branch name so it survives the praxis-local:// query string.
+# The orchestrator parses that URL with
+#   ^praxis-local://pr\?branch=([^&]+)&base=([^&]+)$
+# and percent-decodes each group, so the two characters that MUST be encoded
+# are '&' (it would terminate the group early and break the whole match) and
+# '%' (an unencoded one would be mis-decoded on the way back). '/' is encoded
+# because every Praxis branch has one; ' ' because a caller-named branch may.
+# Order matters: '%' first, or the escapes introduced below get re-escaped.
+url_encode() {
+    printf '%s' "$1" | sed -e 's|%|%25|g' -e 's|/|%2F|g' -e 's| |%20|g' -e 's|&|%26|g'
 }
 
 send_callback() {
@@ -114,7 +131,13 @@ echo "Repo: ${REPO_URL}"
 echo "Branch: ${BRANCH}  Base: ${BASE_BRANCH}  Model: ${MODEL}"
 
 echo "--- Configuring git auth ---"
-git config --global credential.helper '!f() { echo "username=x-access-token"; echo "password=${GH_TOKEN}"; }; f'
+# Local mode clones from a bind-mounted bare repo; there is no credential to
+# configure (GH_TOKEN is a placeholder there, satisfying the guard above).
+if [ "${GIT_BACKEND}" = "github" ]; then
+    git config --global credential.helper '!f() { echo "username=x-access-token"; echo "password=${GH_TOKEN}"; }; f'
+else
+    echo "Local backend: skipping credential helper"
+fi
 
 echo "--- Cloning repository ---"
 git clone "${REPO_URL}" "${WORKSPACE}"
@@ -391,6 +414,17 @@ else
     git push -u --force origin "${BRANCH}"
 fi
 
+if [ "${GIT_BACKEND}" = "local" ]; then
+    # No PR objects exist in local mode; the orchestrator reviews the branch
+    # against its base directly. Report the same (branch, base) pair it will
+    # parse back out of tasks.pr_url. Every gh call, the reuse lookup included,
+    # is inside the else: gh has no credential and no remote in local mode.
+    PR_URL="praxis-local://pr?branch=$(url_encode "${BRANCH}")&base=$(url_encode "${BASE_BRANCH}")"
+    echo "Local backend: reporting ${PR_URL}"
+else
+# The block below is deliberately NOT re-indented: the --body value is a
+# multi-line string literal, so indenting its continuation lines would change
+# the PR body text. Left byte-identical so GitHub mode is provably unchanged.
 echo "--- Creating PR ---"
 # A previous attempt may already have opened a PR for this branch; reuse it.
 if PR_URL=$(gh pr view "${BRANCH}" --json url --jq .url 2>/dev/null) && [ -n "${PR_URL}" ]; then
@@ -407,4 +441,5 @@ Implemented by \`${MODEL}\` (harness: agy)" \
 fi
 
 echo "PR created: ${PR_URL}"
+fi
 echo "=== agy agent completed ==="
