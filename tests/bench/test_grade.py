@@ -219,7 +219,13 @@ def test_select_report_breaks_an_mtime_tie_by_name(tmp_path):
     for path in (first, second):
         path.write_text("{}", encoding="utf-8")
         os.utime(path, (1_600_000_000, 1_600_000_000))
+    # Order-independence alone does not pin WHICH file wins: a comparator with
+    # its name tiebreak polarity reversed is still self-consistent under
+    # argument-order reversal and would pass this assertion unchanged.
     assert select_report([first, second]) == select_report([second, first])
+    # Name it: on a tie, the alphabetically LAST name wins ("b" over "a").
+    assert select_report([first, second]) == second
+    assert select_report([second, first]) == second
 
 
 @pytest.mark.unit

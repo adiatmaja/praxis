@@ -392,6 +392,118 @@ async def test_every_attempt_is_recorded_even_when_the_client_raises(tmp_path):
 
 
 # --------------------------------------------------------------------------
+# The decompose-branch leaf metrics, which the published retry numbers derive
+# from
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+async def test_the_decompose_branch_records_all_four_leaf_metrics(tmp_path):
+    """RecordingClient.plan_tasks is built to exercise all four computations:
+
+    one task at attempt 2 (one retry), one at attempt 1 (no retry); one
+    carrying a ``clarification_question``, one without; one ``merged``
+    (not gated), one ``passed`` (gated). Condition C decomposes without a
+    verify gate, so no ``verify_cmd`` is needed to reach this branch.
+    """
+    # C requires its matched no-gate pair A in the same plan_attempts call.
+    attempts = plan_attempts([_instance()], ["A", "C"], ["local-openweight"], seeds=[1])
+    attempt = next(a for a in attempts if a.condition.key == "C")
+    client = RecordingClient()
+    out_path = tmp_path / "attempts.jsonl"
+    record = await run_attempt(
+        attempt,
+        client,
+        run_id="run-1",
+        repo_root=tmp_path,
+        out_path=out_path,
+        verify_cmd_default=None,
+    )
+    assert record.leaf_count == 2
+    assert record.leaf_retries == 1
+    assert record.clarifications == 1
+    assert record.human_gate_touches == 1
+
+    written = json.loads(out_path.read_text(encoding="utf-8").strip())
+    assert written["leaf_count"] == 2
+    assert written["leaf_retries"] == 1
+    assert written["clarifications"] == 1
+    assert written["human_gate_touches"] == 1
+
+
+# --------------------------------------------------------------------------
+# The attempt timeout, which must produce a recorded row per branch, never a
+# dropped attempt
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+async def test_a_dispatch_attempt_that_never_reaches_terminal_status_times_out(
+    tmp_path, monkeypatch
+):
+    """The dispatch/task-poll branch's ``while ... else`` sets the timeout error.
+
+    ``RecordingClient.get_task`` sticks on its last scripted state rather than
+    falling back to a terminal one once the script drains (see its docstring),
+    so a single-element ``task_states`` list stays non-terminal forever and the
+    poll can only end by hitting the deadline.
+    """
+    monkeypatch.setattr("bench.runner._POLL_INTERVAL_S", 0)
+    monkeypatch.setattr("bench.runner._ATTEMPT_TIMEOUT_S", 0.1)
+    attempt = plan_attempts([_instance()], ["A"], ["local-openweight"], seeds=[1])[0]
+    client = RecordingClient(task_states=["in_progress"])
+    out_path = tmp_path / "attempts.jsonl"
+    record = await run_attempt(
+        attempt,
+        client,
+        run_id="run-1",
+        repo_root=tmp_path,
+        out_path=out_path,
+        verify_cmd_default=None,
+    )
+    assert record.error == "attempt timed out"
+    written = json.loads(out_path.read_text(encoding="utf-8").strip())
+    assert written["error"] == "attempt timed out"
+
+
+@pytest.mark.unit
+async def test_a_decompose_attempt_that_never_reaches_terminal_status_times_out(
+    tmp_path, monkeypatch
+):
+    """The decompose/plan-poll branch's ``while ... else`` sets the timeout error.
+
+    Unlike ``RecordingClient.poll_plan`` (which always reports ``completed``),
+    this stub returns a non-terminal ``running`` status on every call, forever,
+    so the poll can only end by hitting the deadline rather than by silently
+    landing on a terminal state.
+    """
+    monkeypatch.setattr("bench.runner._POLL_INTERVAL_S", 0)
+    monkeypatch.setattr("bench.runner._ATTEMPT_TIMEOUT_S", 0.1)
+
+    class NeverTerminalPlanClient(RecordingClient):
+        async def poll_plan(self, plan_id: str) -> dict[str, Any]:
+            self.calls.append(("poll_plan", plan_id))
+            return {"status": "running"}
+
+    # C requires its matched no-gate pair A in the same plan_attempts call.
+    attempts = plan_attempts([_instance()], ["A", "C"], ["local-openweight"], seeds=[1])
+    attempt = next(a for a in attempts if a.condition.key == "C")
+    client = NeverTerminalPlanClient()
+    out_path = tmp_path / "attempts.jsonl"
+    record = await run_attempt(
+        attempt,
+        client,
+        run_id="run-1",
+        repo_root=tmp_path,
+        out_path=out_path,
+        verify_cmd_default=None,
+    )
+    assert record.error == "attempt timed out"
+    written = json.loads(out_path.read_text(encoding="utf-8").strip())
+    assert written["error"] == "attempt timed out"
+
+
+# --------------------------------------------------------------------------
 # The problem statement, which the committed sample has to carry
 # --------------------------------------------------------------------------
 
