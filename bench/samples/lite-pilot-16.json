@@ -1,0 +1,173 @@
+{
+  "corpus": "swe-bench-lite",
+  "seed": 20260806,
+  "per_stratum": 4,
+  "per_cell_counts": {
+    "medium/big": 4,
+    "medium/mid": 4,
+    "small/big": 4,
+    "small/mid": 4
+  },
+  "instances": [
+    {
+      "instance_id": "django__django-10914",
+      "upstream": "https://github.com/django/django.git",
+      "base_commit": "e7fd69d051eaa67cb17f172a39b57253e9cb831a",
+      "patch_files": 1,
+      "patch_loc": 2,
+      "repo_files": 6054,
+      "stratum_patch": "small",
+      "stratum_repo": "big"
+    },
+    {
+      "instance_id": "django__django-17051",
+      "upstream": "https://github.com/django/django.git",
+      "base_commit": "b7a17b0ea0a2061bae752a3a2292007d41825814",
+      "patch_files": 1,
+      "patch_loc": 7,
+      "repo_files": 6707,
+      "stratum_patch": "medium",
+      "stratum_repo": "big"
+    },
+    {
+      "instance_id": "mwaskom__seaborn-2848",
+      "upstream": "https://github.com/mwaskom/seaborn.git",
+      "base_commit": "94621cef29f80282436d73e8d2c0aa76dab81273",
+      "patch_files": 1,
+      "patch_loc": 7,
+      "repo_files": 260,
+      "stratum_patch": "medium",
+      "stratum_repo": "mid"
+    },
+    {
+      "instance_id": "pydata__xarray-3364",
+      "upstream": "https://github.com/pydata/xarray.git",
+      "base_commit": "863e49066ca4d61c9adfe62aca3bf21b90e1af8c",
+      "patch_files": 1,
+      "patch_loc": 10,
+      "repo_files": 234,
+      "stratum_patch": "medium",
+      "stratum_repo": "mid"
+    },
+    {
+      "instance_id": "pydata__xarray-4094",
+      "upstream": "https://github.com/pydata/xarray.git",
+      "base_commit": "a64cf2d5476e7bbda099b34c40b7be1880dbd39a",
+      "patch_files": 1,
+      "patch_loc": 2,
+      "repo_files": 258,
+      "stratum_patch": "small",
+      "stratum_repo": "mid"
+    },
+    {
+      "instance_id": "pydata__xarray-4493",
+      "upstream": "https://github.com/pydata/xarray.git",
+      "base_commit": "a5f53e203c52a7605d5db799864046471115d04f",
+      "patch_files": 1,
+      "patch_loc": 10,
+      "repo_files": 266,
+      "stratum_patch": "medium",
+      "stratum_repo": "mid"
+    },
+    {
+      "instance_id": "pydata__xarray-5131",
+      "upstream": "https://github.com/pydata/xarray.git",
+      "base_commit": "e56905889c836c736152b11a7e6117a229715975",
+      "patch_files": 1,
+      "patch_loc": 2,
+      "repo_files": 284,
+      "stratum_patch": "small",
+      "stratum_repo": "mid"
+    },
+    {
+      "instance_id": "pylint-dev__pylint-7228",
+      "upstream": "https://github.com/pylint-dev/pylint.git",
+      "base_commit": "d597f252915ddcaaa15ccdfcb35670152cb83587",
+      "patch_files": 1,
+      "patch_loc": 13,
+      "repo_files": 3379,
+      "stratum_patch": "medium",
+      "stratum_repo": "big"
+    },
+    {
+      "instance_id": "pytest-dev__pytest-11148",
+      "upstream": "https://github.com/pytest-dev/pytest.git",
+      "base_commit": "2f7415cfbc4b6ca62f9013f1abd27136f46b9653",
+      "patch_files": 1,
+      "patch_loc": 2,
+      "repo_files": 576,
+      "stratum_patch": "small",
+      "stratum_repo": "big"
+    },
+    {
+      "instance_id": "pytest-dev__pytest-5103",
+      "upstream": "https://github.com/pytest-dev/pytest.git",
+      "base_commit": "10ca84ffc56c2dd2d9dc4bd71b7b898e083500cd",
+      "patch_files": 1,
+      "patch_loc": 25,
+      "repo_files": 418,
+      "stratum_patch": "medium",
+      "stratum_repo": "mid"
+    },
+    {
+      "instance_id": "pytest-dev__pytest-5227",
+      "upstream": "https://github.com/pytest-dev/pytest.git",
+      "base_commit": "2051e30b9b596e944524ccb787ed20f9f5be93e3",
+      "patch_files": 1,
+      "patch_loc": 2,
+      "repo_files": 434,
+      "stratum_patch": "small",
+      "stratum_repo": "mid"
+    },
+    {
+      "instance_id": "pytest-dev__pytest-7168",
+      "upstream": "https://github.com/pytest-dev/pytest.git",
+      "base_commit": "4787fd64a4ca0dba5528b5651bddd254102fe9f3",
+      "patch_files": 1,
+      "patch_loc": 2,
+      "repo_files": 484,
+      "stratum_patch": "small",
+      "stratum_repo": "mid"
+    },
+    {
+      "instance_id": "pytest-dev__pytest-8365",
+      "upstream": "https://github.com/pytest-dev/pytest.git",
+      "base_commit": "4964b468c83c06971eb743fbc57cc404f760c573",
+      "patch_files": 1,
+      "patch_loc": 7,
+      "repo_files": 535,
+      "stratum_patch": "medium",
+      "stratum_repo": "big"
+    },
+    {
+      "instance_id": "scikit-learn__scikit-learn-13497",
+      "upstream": "https://github.com/scikit-learn/scikit-learn.git",
+      "base_commit": "26f690961a52946dd2f53bf0fdd4264b2ae5be90",
+      "patch_files": 1,
+      "patch_loc": 14,
+      "repo_files": 1202,
+      "stratum_patch": "medium",
+      "stratum_repo": "big"
+    },
+    {
+      "instance_id": "sympy__sympy-13647",
+      "upstream": "https://github.com/sympy/sympy.git",
+      "base_commit": "67e3c956083d0128a621f65ee86a7dacd4f9f19f",
+      "patch_files": 1,
+      "patch_loc": 2,
+      "repo_files": 1507,
+      "stratum_patch": "small",
+      "stratum_repo": "big"
+    },
+    {
+      "instance_id": "sympy__sympy-19487",
+      "upstream": "https://github.com/sympy/sympy.git",
+      "base_commit": "25fbcce5b1a4c7e3956e6062930f4a44ce95a632",
+      "patch_files": 1,
+      "patch_loc": 3,
+      "repo_files": 1770,
+      "stratum_patch": "small",
+      "stratum_repo": "big"
+    }
+  ]
+}
