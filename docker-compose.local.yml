@@ -24,6 +24,13 @@ services:
       # kept serving the baked-in value. PRAXIS_CONFIG_PATH comes from the base
       # file through the compose environment merge.
       - ./config:/app/config:ro
+      # Harness entrypoint sources, read-only: `praxis doctor`'s
+      # agent_image_freshness check stats docker/*/entrypoint.sh to prove each
+      # agent image was built AFTER its entrypoint last changed. The image does
+      # not COPY docker/, so without this mount the check compares nothing and a
+      # stale agent image keeps running old logic silently. It matters most in
+      # dev, where entrypoints are edited and the rebuild is easy to forget.
+      - ./docker:/app/docker:ro
     command: uvicorn orchestrator.main:app --host 0.0.0.0 --port 8080 --reload
     environment:
       - AUTH_TOKEN=${AUTH_TOKEN:-dev-token}

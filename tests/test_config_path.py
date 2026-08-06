@@ -27,6 +27,13 @@ DEV_COMPOSE = yaml.safe_load(
 
 CONFIG_MOUNT_TARGET = "/app/config"
 
+# The harness entrypoint sources, pinned here for the same reason as the config
+# mount: `praxis doctor`'s agent_image_freshness check stats them to prove each
+# agent image was built after its entrypoint last changed, the orchestrator
+# image does not COPY docker/, and deleting the mount turns the check inert
+# with every Python test still green.
+DOCKER_MOUNT_TARGET = "/app/docker"
+
 
 def _mounts(compose: dict) -> list[tuple[str, str, str]]:
     """Return the orchestrator's short-form volumes as (source, target, mode).
@@ -198,6 +205,38 @@ def test_the_dev_stack_resolves_into_that_mount():
         "PRAXIS_CONFIG_PATH", base["PRAXIS_CONFIG_PATH"]
     )
     assert effective.startswith(f"{CONFIG_MOUNT_TARGET}/")
+
+
+@pytest.mark.unit
+def test_the_base_compose_bind_mounts_the_entrypoint_sources_read_only():
+    """Without this line agent_image_freshness compares nothing, forever.
+
+    The orchestrator Dockerfile copies src/, web/ and config/ but not docker/,
+    so in a container `_entrypoint_mtimes()` can only see the entrypoints
+    through this mount. Read-only because doctor never does more than stat
+    them.
+    """
+    assert ("./docker", DOCKER_MOUNT_TARGET, "ro") in _mounts(BASE_COMPOSE)
+
+
+@pytest.mark.unit
+def test_the_dev_stack_gets_the_entrypoint_mount_too():
+    """Asserted on the MERGED volumes, which is what compose actually runs."""
+    assert _merged_mounts()[DOCKER_MOUNT_TARGET] == ("./docker", "ro")
+
+
+@pytest.mark.unit
+def test_the_entrypoint_mount_lands_where_the_gathering_code_looks():
+    """The mount target and the path doctor stats must agree.
+
+    The orchestrator image sets `WORKDIR /app`, so the CWD-relative path in
+    `api/doctor._ENTRYPOINT_ROOT` resolves to the mount target above inside a
+    container and to the checkout for a bare `uv run uvicorn` from the repo
+    root. Either one drifting makes the mount dead weight.
+    """
+    from orchestrator.api.doctor import _ENTRYPOINT_ROOT
+
+    assert f"/app/{_ENTRYPOINT_ROOT.as_posix()}" == DOCKER_MOUNT_TARGET
 
 
 @pytest.mark.unit

@@ -79,14 +79,34 @@ def probe_build_stamp(baked_commit: str, live_commit: str | None) -> CheckResult
     )
 
 
-def probe_agent_images(present: dict[str, bool]) -> CheckResult:
-    """Red when any registered harness image has not been built."""
+def probe_agent_images(
+    present: dict[str, bool], errors: dict[str, str] | None = None
+) -> CheckResult:
+    """Red when any registered harness image has not been built.
+
+    Args:
+        present: ``image_tag`` to whether the daemon reported it built.
+        errors: ``image_tag`` to the failure text for tags whose presence could
+            NOT be determined (a daemon that answered the ping but failed the
+            image query).  Those are amber, never green: an image nobody could
+            look at is unknown, and reporting unknown as fine is the silent
+            pass this check exists to remove.  A definite miss still wins,
+            since red outranks amber.
+    """
+    errors = errors or {}
     missing = sorted(tag for tag, ok in present.items() if not ok)
     if missing:
         return CheckResult(
             check_id="agent_images",
             status=CheckStatus.RED,
             detail=f"missing image(s): {', '.join(missing)}",
+        )
+    if errors:
+        listed = "; ".join(f"{tag} ({why})" for tag, why in sorted(errors.items()))
+        return CheckResult(
+            check_id="agent_images",
+            status=CheckStatus.AMBER,
+            detail=f"could not check image(s): {listed}",
         )
     return CheckResult(
         check_id="agent_images",
@@ -96,23 +116,58 @@ def probe_agent_images(present: dict[str, bool]) -> CheckResult:
 
 
 def probe_agent_image_freshness(
-    images: dict[str, float | None], entrypoint_mtimes: dict[str, float]
+    images: dict[str, float | None],
+    entrypoint_mtimes: dict[str, float],
+    errors: dict[str, str] | None = None,
 ) -> CheckResult:
     """Red when any agent image predates its entrypoint source.
 
     This converts the project's oldest silent failure into a red light: a stale
     agent image runs old entrypoint logic while the source looks current.
+
+    A tag can only be judged when BOTH its build time and its entrypoint's
+    mtime are known.  Tags that could not be compared are named in the detail
+    and pull the verdict to amber, and comparing NOTHING at all is amber on its
+    own.  A green reading "all agent images newer than their entrypoints" when
+    nothing was compared is textually indistinguishable from a verified pass,
+    which is the same class of silent lie the check was added to retire.
+
+    Args:
+        images: ``image_tag`` to build time, or None when it is unknown.
+        entrypoint_mtimes: ``image_tag`` to its entrypoint source's mtime.
+        errors: ``image_tag`` to the failure text for tags that could not be
+            inspected at all; named among the unchecked.
     """
+    errors = errors or {}
+    comparable = sorted(tag for tag in images if tag in entrypoint_mtimes)
     stale = [
-        tag
-        for tag, built_at in images.items()
-        if tag in entrypoint_mtimes and image_is_stale(built_at, entrypoint_mtimes[tag])
+        tag for tag in comparable if image_is_stale(images[tag], entrypoint_mtimes[tag])
     ]
     if stale:
         return CheckResult(
             check_id="agent_image_freshness",
             status=CheckStatus.RED,
-            detail=f"stale image(s): {', '.join(sorted(stale))}",
+            detail=f"stale image(s): {', '.join(stale)}",
+        )
+    unchecked = sorted((set(images) - set(comparable)) | set(errors))
+    if not comparable:
+        listed = f": {', '.join(unchecked)}" if unchecked else ""
+        return CheckResult(
+            check_id="agent_image_freshness",
+            status=CheckStatus.AMBER,
+            detail=(
+                "nothing compared: no entrypoint source was available here, so "
+                f"image freshness is unverified{listed}"
+            ),
+        )
+    if unchecked:
+        return CheckResult(
+            check_id="agent_image_freshness",
+            status=CheckStatus.AMBER,
+            detail=(
+                f"{', '.join(comparable)} newer than their entrypoints; "
+                f"could not check: {', '.join(unchecked)}"
+            ),
         )
     return CheckResult(
         check_id="agent_image_freshness",
@@ -190,19 +245,35 @@ def probe_planner_cli(cli_available: bool, authenticated: bool) -> CheckResult:
 
 
 def probe_worker_endpoint(
-    reachable: bool, models: list[str], configured_model: str
+    reachable: bool, models: list[str], configured_model: str, error: str = ""
 ) -> CheckResult:
     """Green only when the endpoint answers AND the configured model is loaded.
 
     Reachable-but-wrong-model is the failure that looks like success: the
     dashboard shows a connected endpoint and every dispatch fails on a model
     the server does not have.
+
+    An EMPTY ``configured_model`` means "nothing to check here" and must stay
+    green.  The gathering layer passes "" when the configured worker harness
+    does not talk to an OpenAI-compatible endpoint at all (agy/Gemini calls
+    its own API), so its model name will never appear in ``/v1/models``;
+    comparing the two is a category error and a permanent false red on a
+    correct install.
+
+    Args:
+        reachable: Whether ``GET /v1/models`` returned a usable body.
+        models: The model ids the endpoint reported loaded.
+        configured_model: The model to look for, or "" when there is none.
+        error: Failure text when the probe itself broke, surfaced in the row
+            so an unexpected body (a proxy's HTML, a JSON list) is named
+            rather than reported as a plain timeout.
     """
     if not reachable:
+        detail = "worker endpoint did not answer a usable GET /v1/models"
         return CheckResult(
             check_id="worker_endpoint",
             status=CheckStatus.RED,
-            detail="worker endpoint did not answer GET /v1/models",
+            detail=f"{detail}: {error}" if error else detail,
         )
     if configured_model and configured_model not in models:
         loaded = ", ".join(models) or "(none)"

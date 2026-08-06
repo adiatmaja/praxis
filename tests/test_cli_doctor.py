@@ -117,3 +117,63 @@ def test_doctor_renders_a_table_when_the_api_is_unreachable(monkeypatch):
     assert "orchestrator" in result.stdout.lower()
     # The orchestrator_health check's own registry hint, not a fabricated one.
     assert "docker compose up" in result.stdout
+
+
+def _client_returning(status: int, body: str):
+    """A `cli.main.httpx.Client` stand-in whose GET answers a fixed status."""
+
+    class FakeClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def get(self, url: str, **kwargs):
+            return httpx.Response(status, text=body)
+
+    return FakeClient
+
+
+@pytest.mark.unit
+def test_doctor_renders_a_table_on_a_401(monkeypatch):
+    """The bypass that mattered most: doctor's own auth check.
+
+    `/api/doctor` is auth-gated, so a wrong AUTH_TOKEN, one of doctor's eleven
+    checks, is the likeliest way to hit an error status. Routed through
+    `cli.main._check_dict` it printed `Error 401: Unauthorized` and exited
+    before `render()` ever ran, so the operator got no table and no hint for
+    the very check that explains the failure.
+    """
+    monkeypatch.setenv("ORCHESTRATOR_TOKEN", "wrong-token")
+    monkeypatch.setattr("cli.main.httpx.Client", _client_returning(401, "Unauthorized"))
+
+    result = runner.invoke(app, ["doctor"])
+
+    assert isinstance(result.exception, SystemExit)
+    assert result.exit_code == 1
+    assert "praxis doctor" in result.stdout  # the table itself, not a bare error
+    assert "401" in result.stdout
+    # The auth_token check's own registry hint.
+    assert "check AUTH_TOKEN" in result.stdout
+
+
+@pytest.mark.unit
+def test_doctor_renders_a_table_on_a_500(monkeypatch):
+    """A server-side fault points at orchestrator_health, not at the token."""
+    monkeypatch.setenv("ORCHESTRATOR_TOKEN", "test-token")
+    monkeypatch.setattr(
+        "cli.main.httpx.Client", _client_returning(500, "Internal Server Error")
+    )
+
+    result = runner.invoke(app, ["doctor"])
+
+    assert isinstance(result.exception, SystemExit)
+    assert result.exit_code == 1
+    assert "praxis doctor" in result.stdout
+    assert "500" in result.stdout
+    # The orchestrator_health check's own registry hint.
+    assert "docker compose up" in result.stdout

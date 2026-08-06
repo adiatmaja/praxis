@@ -90,6 +90,24 @@ def test_worker_endpoint_green_when_the_model_is_loaded():
 
 
 @pytest.mark.unit
+def test_worker_endpoint_green_when_there_is_no_model_to_check():
+    """An empty configured model means "nothing to check here", not a mismatch.
+
+    The gathering layer deliberately passes "" when the configured worker
+    harness does not talk to an OpenAI-compatible endpoint at all (agy/Gemini
+    calls its own API), because its model name will never appear in
+    `/v1/models`. Dropping the `configured_model and` half of the guard turns
+    every such install into a permanent false RED while leaving the rest of
+    the suite green, which is exactly how it shipped before, so it is pinned
+    here.
+    """
+    result = probe_worker_endpoint(
+        reachable=True, models=["qwen3.6-27b"], configured_model=""
+    )
+    assert result.status is CheckStatus.GREEN
+
+
+@pytest.mark.unit
 def test_agent_image_freshness_red_when_the_entrypoint_is_newer():
     result = probe_agent_image_freshness(
         images={"opencode-agent:latest": 100.0},
@@ -106,6 +124,60 @@ def test_agent_image_freshness_green_when_images_are_newer():
         entrypoint_mtimes={"opencode-agent:latest": 200.0},
     )
     assert result.status is CheckStatus.GREEN
+
+
+@pytest.mark.unit
+def test_agent_image_freshness_amber_when_nothing_was_compared():
+    """A green that compared nothing is a lie, and was the shipped behaviour.
+
+    With no entrypoint source readable, this returned GREEN with a detail
+    textually identical to a verified pass. In a container that was ALWAYS the
+    case, so the check the plan added to catch stale agent images reported a
+    clean bill of health without ever looking at one.
+    """
+    result = probe_agent_image_freshness(
+        images={"opencode-agent:latest": 300.0}, entrypoint_mtimes={}
+    )
+    assert result.status is CheckStatus.AMBER
+    assert "opencode-agent:latest" in result.detail
+
+
+@pytest.mark.unit
+def test_agent_image_freshness_amber_when_only_some_tags_were_compared():
+    """A partial pass must name what it could not check, not imply it did."""
+    result = probe_agent_image_freshness(
+        images={"opencode-agent:latest": 300.0, "agy-agent:latest": 300.0},
+        entrypoint_mtimes={"opencode-agent:latest": 200.0},
+    )
+    assert result.status is CheckStatus.AMBER
+    assert "agy-agent:latest" in result.detail
+
+
+@pytest.mark.unit
+def test_agent_image_freshness_stays_red_when_a_comparable_tag_is_stale():
+    """A definite stale image outranks an unknown one: red beats amber."""
+    result = probe_agent_image_freshness(
+        images={"opencode-agent:latest": 100.0, "agy-agent:latest": 300.0},
+        entrypoint_mtimes={"opencode-agent:latest": 200.0},
+    )
+    assert result.status is CheckStatus.RED
+    assert "opencode-agent:latest" in result.detail
+
+
+@pytest.mark.unit
+def test_agent_images_amber_when_presence_could_not_be_determined():
+    """A daemon that answered the ping but failed the image query.
+
+    Unknown is not green: reporting an unverified image as present is the same
+    silent pass the freshness check above exists to remove.
+    """
+    result = probe_agent_images(
+        present={"opencode-agent:latest": True},
+        errors={"agy-agent:latest": "APIError: 500 Server Error"},
+    )
+    assert result.status is CheckStatus.AMBER
+    assert "agy-agent:latest" in result.detail
+    assert "APIError" in result.detail
 
 
 @pytest.mark.unit

@@ -6,19 +6,26 @@ Every check's DECISION logic lives in ``core/doctor_probes.py`` and is pure
 ``Settings`` values) and binding each probe's facts into a zero-argument
 closure before handing the map to ``run_checks`` (which never accepts a
 shared context; see its docstring).
+
+Gathering happens BEFORE ``run_checks``, so it sits outside that function's
+per-probe exception shield and needs its own.  Every unit below therefore runs
+through ``_safe``, and ``get_doctor`` wraps the whole phase besides.  The
+guard is deliberately per UNIT rather than per exception type: see ``_safe``.
 """
 
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
 import os
 import socket
 import subprocess
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeVar
 
 import docker.errors
 import httpx
@@ -30,6 +37,7 @@ from orchestrator.api.system import _probe_provider
 from orchestrator.core import doctor_probes as probes
 from orchestrator.core.build_info import build_stamp
 from orchestrator.core.doctor import (
+    CHECKS,
     CheckResult,
     CheckStatus,
     overall_status,
@@ -47,6 +55,90 @@ router = APIRouter(tags=["doctor"], dependencies=[Depends(verify_token)])
 # operator never actually set a real token.
 _PLACEHOLDER_AUTH_TOKEN = "change-me"
 
+#: Where the harness entrypoint sources live, relative to the process CWD.
+#: The orchestrator image sets ``WORKDIR /app`` and both compose files bind
+#: mount ``./docker`` there read-only, so this one relative path resolves both
+#: inside a container and for a bare ``uv run uvicorn`` from the repo root.
+#: tests/test_config_path.py pins the mount and this constant against each
+#: other; either drifting makes agent_image_freshness compare nothing.
+_ENTRYPOINT_ROOT = Path("docker")
+
+_T = TypeVar("_T")
+
+
+async def _safe(unit: str, gather: Callable[[], Any], default: _T) -> tuple[_T, str]:
+    """Run one gathering unit, turning ANY exception into a degraded fact.
+
+    The guard is per UNIT, not per exception type, and that is the whole
+    point.  Enumerating tolerable exceptions is a losing race against an open
+    set of IO failures: a daemon that answers a ping then 500s, a proxy
+    returning HTML where JSON was promised, a revoked credential, a vanished
+    mount.  Two such holes shipped (``docker.errors.ImageNotFound`` only, and
+    ``(httpx.HTTPError, ValueError, KeyError)`` only) and each 500d the one
+    endpoint whose entire job is answering on a broken machine.  The set of
+    gathering units, by contrast, is small, closed, and visible in this file.
+
+    Args:
+        unit: Short name of the gathering unit, for the log line only.
+        gather: A zero-argument callable; an awaitable result is awaited.
+        default: The degraded fact to use when ``gather`` raises.
+
+    Returns:
+        ``(value, "")`` on success, ``(default, "TypeName: message")`` on any
+        exception.  Callers thread that message into the affected row, so a
+        degraded check still names what broke instead of going quiet.
+    """
+    try:
+        outcome = gather()
+        if inspect.isawaitable(outcome):
+            outcome = await outcome
+    except Exception as exc:  # noqa: BLE001 - a broken unit is a degraded fact
+        logger.warning("doctor gathering unit %s failed: %s", unit, exc, exc_info=True)
+        return default, f"{type(exc).__name__}: {exc}"
+    return outcome, ""
+
+
+def _degraded(check_id: str, what: str, error: str) -> CheckResult:
+    """AMBER row for a check whose own facts could not be gathered.
+
+    Amber and not red: a gathering failure leaves the check UNKNOWN, and
+    inventing a verdict from a fact nobody obtained is the silent lie this
+    endpoint exists to remove.  The exception text rides along so the row is
+    still worth reading.
+    """
+    return CheckResult(
+        check_id=check_id,
+        status=CheckStatus.AMBER,
+        detail=f"not checked: could not gather {what} ({error})",
+    )
+
+
+def _gathering_failed_probes(error: str) -> dict[str, Any]:
+    """Last-resort probe map when the whole gathering phase raised.
+
+    Shaped exactly like ``cli/doctor._unreachable_payload``: the one row this
+    process actually knows something about goes red carrying the failure, and
+    every other becomes an honest "not checked" amber rather than a fabricated
+    verdict.  ``orchestrator_health`` is that row because the orchestrator's
+    own diagnosis code is what broke, and it keeps the overall status red so
+    the CLI still exits non-zero.
+    """
+    results: dict[str, CheckResult] = {}
+    for check in CHECKS:
+        if check.check_id == "orchestrator_health":
+            results[check.check_id] = CheckResult(
+                check_id=check.check_id,
+                status=CheckStatus.RED,
+                detail=f"doctor could not gather any facts: {error}",
+            )
+        else:
+            results[check.check_id] = CheckResult(
+                check_id=check.check_id,
+                status=CheckStatus.AMBER,
+                detail=f"not checked: doctor's fact gathering failed ({error})",
+            )
+    return {check_id: (lambda r=result: r) for check_id, result in results.items()}
+
 
 @dataclass
 class _DockerFacts:
@@ -56,6 +148,9 @@ class _DockerFacts:
     error: str = ""
     image_present: dict[str, bool] = field(default_factory=dict)
     image_created_at: dict[str, float | None] = field(default_factory=dict)
+    #: Tags the daemon refused to describe, mapped to the failure text.  Not
+    #: the same thing as absent: unknown, and reported as such.
+    image_errors: dict[str, str] = field(default_factory=dict)
     published_port: int | None = None
 
 
@@ -88,7 +183,7 @@ def _resolve_published_port(client: Any) -> int | None:
         host_bindings = bindings.get("8080/tcp") or []
         if host_bindings and host_bindings[0].get("HostPort"):
             return int(host_bindings[0]["HostPort"])
-    except (docker.errors.DockerException, KeyError, ValueError, TypeError) as exc:
+    except Exception as exc:  # noqa: BLE001 - an unknown port is a degraded fact
         logger.debug("could not resolve the published port: %s", exc)
     return None
 
@@ -98,11 +193,12 @@ def _gather_docker_facts(resolve_port: bool) -> _DockerFacts:
     try:
         client = docker.from_env()  # type: ignore[attr-defined]
         client.ping()
-    except docker.errors.DockerException as exc:
+    except Exception as exc:  # noqa: BLE001 - an unreachable daemon IS a verdict
         return _DockerFacts(reachable=False, error=f"{type(exc).__name__}: {exc}")
 
     image_present: dict[str, bool] = {}
     image_created_at: dict[str, float | None] = {}
+    image_errors: dict[str, str] = {}
     for harness in REGISTRY.values():
         tag = harness.image
         try:
@@ -110,14 +206,23 @@ def _gather_docker_facts(resolve_port: bool) -> _DockerFacts:
             image_present[tag] = True
             image_created_at[tag] = _parse_created(image.attrs.get("Created"))
         except docker.errors.ImageNotFound:
+            # The only DEFINITE verdict here: the image is not built.
             image_present[tag] = False
             image_created_at[tag] = None
+        except Exception as exc:  # noqa: BLE001 - every other failure is UNKNOWN
+            # A daemon that answered the ping and then failed this query (an
+            # APIError from a 500, a mid-request disconnect) tells us nothing
+            # about the image. Recorded as unknown so this one tag degrades
+            # and the daemon row still reports what it does know.
+            logger.warning("could not inspect image %s: %s", tag, exc)
+            image_errors[tag] = f"{type(exc).__name__}: {exc}"
 
     published_port = _resolve_published_port(client) if resolve_port else None
     return _DockerFacts(
         reachable=True,
         image_present=image_present,
         image_created_at=image_created_at,
+        image_errors=image_errors,
         published_port=published_port,
     )
 
@@ -125,18 +230,20 @@ def _gather_docker_facts(resolve_port: bool) -> _DockerFacts:
 def _entrypoint_mtimes() -> dict[str, float]:
     """Return {image_tag: source mtime} for entrypoints readable from here.
 
-    ``docker/<harness>-agent/entrypoint.sh`` is not part of either compose
-    file's mounts (only ``src/``, ``web/``, ``.git/``, ``config/`` are), so
-    inside ANY containerized deployment this always comes back empty; only a
-    bare ``uv run uvicorn`` started from the repo root can see it (its CWD
-    IS the checkout). A tag missing from this dict is simply excluded from
-    the freshness comparison rather than reported red or green: see
-    ``probe_agent_image_freshness``, which only flags tags present in BOTH
-    dicts.
+    ``docker/<harness>-agent/entrypoint.sh`` is not COPYed into the
+    orchestrator image, so a container can only see it through the
+    ``./docker:/app/docker:ro`` mount both compose files carry; a bare
+    ``uv run uvicorn`` from the repo root sees it because its CWD IS the
+    checkout. Either way ``_ENTRYPOINT_ROOT`` is the one path to look at.
+
+    A tag missing from this dict is named as unchecked by
+    ``probe_agent_image_freshness`` rather than silently excluded: without the
+    mount this returned {} in every containerized deployment and the check
+    reported a green it had not earned.
     """
     mtimes: dict[str, float] = {}
     for harness in REGISTRY.values():
-        entrypoint = Path("docker") / f"{harness.id}-agent" / "entrypoint.sh"
+        entrypoint = _ENTRYPOINT_ROOT / f"{harness.id}-agent" / "entrypoint.sh"
         try:
             mtimes[harness.image] = entrypoint.stat().st_mtime
         except OSError as exc:
@@ -203,28 +310,53 @@ def _unreachable_docker_result(
     )
 
 
+def _settings_worker(settings: Any) -> dict[str, str]:
+    """The global default worker as plain ``Settings`` values."""
+    return {
+        "harness": settings.default_worker_harness,
+        "model": settings.default_worker_model,
+    }
+
+
 async def _build_probes(request: Request) -> dict[str, Any]:
-    """Gather every fact once, then bind each into a zero-argument probe."""
+    """Gather every fact once, then bind each into a zero-argument probe.
+
+    Every unit of live IO below goes through ``_safe`` and every check whose
+    facts came back degraded gets a ``_degraded`` amber row naming the
+    failure, rather than a verdict computed from a fact nobody obtained.
+    ``get_doctor`` still wraps this whole function, so even the binding code
+    between the units cannot break the response.
+    """
     settings = request.app.state.settings
     es = getattr(request.app.state, "effective_settings", None)
     db = request.app.state.db
 
-    in_container = _in_container()
-    docker_facts = await asyncio.to_thread(_gather_docker_facts, in_container)
-    entrypoint_mtimes = _entrypoint_mtimes()
+    in_container, _ = await _safe("in_container", _in_container, False)
+    docker_facts, docker_error = await _safe(
+        "docker",
+        lambda: asyncio.to_thread(_gather_docker_facts, in_container),
+        _DockerFacts(reachable=False),
+    )
+    if docker_error:
+        docker_facts = _DockerFacts(reachable=False, error=docker_error)
+    no_mtimes: dict[str, float] = {}
+    entrypoint_mtimes, mtimes_error = await _safe(
+        "entrypoint_mtimes", _entrypoint_mtimes, no_mtimes
+    )
 
     if es is not None:
-        lm_studio_url = await es.lm_studio_url()
+        lm_studio_url, lm_url_error = await _safe(
+            "lm_studio_url", es.lm_studio_url, settings.lm_studio_url
+        )
+        default_worker, worker_cfg_error = await _safe(
+            "default_worker", es.auto_delegate_worker, _settings_worker(settings)
+        )
     else:
-        lm_studio_url = settings.lm_studio_url
-    worker_reachable, worker_models = await _probe_lm_studio(lm_studio_url)
-    default_worker = (
-        es.auto_delegate_worker()
-        if es is not None
-        else {
-            "harness": settings.default_worker_harness,
-            "model": settings.default_worker_model,
-        }
+        lm_studio_url, lm_url_error = settings.lm_studio_url, ""
+        default_worker, worker_cfg_error = _settings_worker(settings), ""
+    no_models: tuple[bool, list[str]] = (False, [])
+    (worker_reachable, worker_models), worker_probe_error = await _safe(
+        "worker_endpoint", lambda: _probe_lm_studio(lm_studio_url), no_models
     )
     worker_harness_id = default_worker.get("harness") or default_harness_id()
     worker_harness_spec = (
@@ -244,26 +376,45 @@ async def _build_probes(request: Request) -> dict[str, Any]:
         settings.github_token
         or (settings.github_app_id and settings.github_app_private_key)
     )
-    local_mode = await _is_local_mode(db)
+    local_mode, local_mode_error = await _safe(
+        "local_mode", lambda: _is_local_mode(db), False
+    )
 
-    provider = await _probe_provider("claude")
+    no_provider: dict[str, Any] = {"cli_available": False, "authenticated": False}
+    provider, provider_error = await _safe(
+        "planner_cli", lambda: _probe_provider("claude"), no_provider
+    )
 
-    live_commit = _live_commit()
-    baked_commit = build_stamp()["commit"]
+    # In a thread: a hung `git` would otherwise stall the event loop for the
+    # subprocess timeout on every /api/doctor call, blocking other in-flight
+    # requests and the SSE stream along with it.
+    no_commit: str | None = None
+    live_commit, live_commit_error = await _safe(
+        "live_commit", lambda: asyncio.to_thread(_live_commit), no_commit
+    )
+    baked_commit, baked_commit_error = await _safe(
+        "build_stamp", lambda: build_stamp()["commit"], "unknown"
+    )
 
-    config_path = config_file_path()
+    config_path, config_path_error = await _safe("config_path", config_file_path, "")
 
     result_map: dict[str, CheckResult] = {}
 
     if docker_facts.reachable:
         result_map["docker_daemon"] = probes.probe_docker_daemon(reachable=True)
         result_map["agent_images"] = probes.probe_agent_images(
-            present=docker_facts.image_present
+            present=docker_facts.image_present, errors=docker_facts.image_errors
         )
-        result_map["agent_image_freshness"] = probes.probe_agent_image_freshness(
-            images=docker_facts.image_created_at,
-            entrypoint_mtimes=entrypoint_mtimes,
-        )
+        if mtimes_error:
+            result_map["agent_image_freshness"] = _degraded(
+                "agent_image_freshness", "the entrypoint sources", mtimes_error
+            )
+        else:
+            result_map["agent_image_freshness"] = probes.probe_agent_image_freshness(
+                images=docker_facts.image_created_at,
+                entrypoint_mtimes=entrypoint_mtimes,
+                errors=docker_facts.image_errors,
+            )
     else:
         result_map["docker_daemon"] = probes.probe_docker_daemon(
             reachable=False, detail=docker_facts.error
@@ -276,24 +427,57 @@ async def _build_probes(request: Request) -> dict[str, Any]:
         )
 
     result_map["orchestrator_health"] = probes.probe_orchestrator_health(healthy=True)
-    result_map["build_stamp"] = probes.probe_build_stamp(
-        baked_commit=baked_commit, live_commit=live_commit
-    )
+
+    stamp_error = baked_commit_error or live_commit_error
+    if stamp_error:
+        result_map["build_stamp"] = _degraded(
+            "build_stamp", "the running and working-tree commits", stamp_error
+        )
+    else:
+        result_map["build_stamp"] = probes.probe_build_stamp(
+            baked_commit=baked_commit, live_commit=live_commit
+        )
+
     result_map["auth_token"] = probes.probe_auth_token(
         configured=bool(settings.auth_token),
         placeholder=settings.auth_token == _PLACEHOLDER_AUTH_TOKEN,
     )
-    result_map["git_credential"] = probes.probe_git_credential(
-        configured=has_git_creds, local_mode=local_mode
-    )
-    result_map["planner_cli"] = probes.probe_planner_cli(
-        cli_available=provider["cli_available"], authenticated=provider["authenticated"]
-    )
-    result_map["worker_endpoint"] = probes.probe_worker_endpoint(
-        reachable=worker_reachable,
-        models=worker_models,
-        configured_model=configured_worker_model,
-    )
+
+    # Only when no credential is configured does local mode change the verdict,
+    # so an unreadable project table is only a degradation in that case.
+    if local_mode_error and not has_git_creds:
+        result_map["git_credential"] = _degraded(
+            "git_credential", "the configured projects' repo URLs", local_mode_error
+        )
+    else:
+        result_map["git_credential"] = probes.probe_git_credential(
+            configured=has_git_creds, local_mode=local_mode
+        )
+
+    if provider_error:
+        result_map["planner_cli"] = _degraded(
+            "planner_cli", "the planner CLI's state", provider_error
+        )
+    else:
+        result_map["planner_cli"] = probes.probe_planner_cli(
+            cli_available=bool(provider.get("cli_available")),
+            authenticated=bool(provider.get("authenticated")),
+        )
+
+    worker_config_error = lm_url_error or worker_cfg_error
+    if worker_config_error:
+        result_map["worker_endpoint"] = _degraded(
+            "worker_endpoint",
+            "the worker endpoint's configuration",
+            worker_config_error,
+        )
+    else:
+        result_map["worker_endpoint"] = probes.probe_worker_endpoint(
+            reachable=worker_reachable,
+            models=worker_models,
+            configured_model=configured_worker_model,
+            error=worker_probe_error,
+        )
 
     callback_url = settings.agent_callback_url
     if not callback_url:
@@ -316,26 +500,51 @@ async def _build_probes(request: Request) -> dict[str, Any]:
                 port=published_port, callback_url=callback_url
             )
 
-    if not in_container:
+    if config_path_error:
+        result_map["config_mount"] = _degraded(
+            "config_mount", "the settings YAML path", config_path_error
+        )
+    elif not in_container:
         result_map["config_mount"] = CheckResult(
             check_id="config_mount",
             status=CheckStatus.GREEN,
             detail=f"{config_path} read directly from the working tree (no container)",
         )
     else:
-        mount_dir = os.path.dirname(os.path.abspath(config_path)) or os.sep
-        mounted = os.path.ismount(mount_dir)
-        result_map["config_mount"] = probes.probe_config_mount(
-            config_path=config_path, mounted=mounted
+        mounted, mount_error = await _safe(
+            "config_mount",
+            lambda: os.path.ismount(
+                os.path.dirname(os.path.abspath(config_path)) or os.sep
+            ),
+            False,
         )
+        if mount_error:
+            result_map["config_mount"] = _degraded(
+                "config_mount", "the settings YAML's mount state", mount_error
+            )
+        else:
+            result_map["config_mount"] = probes.probe_config_mount(
+                config_path=config_path, mounted=mounted
+            )
 
     return {check_id: (lambda r=result: r) for check_id, result in result_map.items()}
 
 
 @router.get("/doctor")
 async def get_doctor(request: Request) -> dict[str, Any]:
-    """Diagnose this Praxis installation: one result per registered check."""
-    results = await run_checks(await _build_probes(request))
+    """Diagnose this Praxis installation: one result per registered check.
+
+    Answers 200 with a diagnosis in EVERY case.  ``_build_probes`` guards each
+    gathering unit itself; this outer guard covers the code BETWEEN those
+    units, so no future edit here can reintroduce a 500 from the one endpoint
+    an operator reaches for when the machine is broken.
+    """
+    try:
+        probe_map = await _build_probes(request)
+    except Exception as exc:  # noqa: BLE001 - the endpoint must always answer
+        logger.exception("doctor fact gathering failed wholesale")
+        probe_map = _gathering_failed_probes(f"{type(exc).__name__}: {exc}")
+    results = await run_checks(probe_map)
     return {
         "status": overall_status(results).value,
         "checks": [
