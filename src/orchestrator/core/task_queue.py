@@ -9,8 +9,9 @@ from datetime import UTC, datetime
 from typing import Any
 
 from orchestrator.core.clarification_states import ASKED
+from orchestrator.core.leaf_split import rewire_plan_for_split
 from orchestrator.database import Database
-from orchestrator.models.schemas import PlanStatus, TaskStatus
+from orchestrator.models.schemas import LeafTask, PlanStatus, TaskStatus
 
 
 logger = logging.getLogger(__name__)
@@ -243,6 +244,167 @@ class TaskQueue:
             (TaskStatus.PENDING, int(task["attempt"]) + 1, now, task_id),
         )
 
+    async def record_triage_decision(self, task_id: str, decision: str) -> None:
+        """Stamp the triage decision so a leaf is never triaged twice.
+
+        Presence of ``triage_decision`` is the durable enforcement of the
+        "one triage brain call per leaf lifetime" bound.
+        """
+        now = datetime.now(UTC).isoformat()
+        await self._db.execute(
+            "UPDATE tasks SET triage_decision = ?, updated_at = ? WHERE id = ?",
+            (decision, now, task_id),
+        )
+
+    async def supersede_task(self, task_id: str, decision: str, reason: str) -> None:
+        """Retire a task that was replaced by split children.
+
+        SUPERSEDED is terminal and counts as neither a success nor a failure in
+        ``task_outcomes``; the split decision itself is the recorded event.  The
+        worker session handle is dropped for the same reason it is on any other
+        terminal transition: it can only ever be stale from here.
+        """
+        now = datetime.now(UTC).isoformat()
+        await self._db.execute(
+            """UPDATE tasks
+               SET status = ?, triage_decision = ?, review_feedback = ?,
+                   updated_at = ?,
+                   worker_session_id = NULL, worker_session_harness = NULL
+               WHERE id = ?""",
+            (TaskStatus.SUPERSEDED, decision, reason, now, task_id),
+        )
+
+    async def insert_split_children(
+        self,
+        plan_id: str,
+        parent_task_id: str,
+        parent_slug: str,
+        children: list[LeafTask],
+    ) -> list[str]:
+        """Rewire the plan graph and append one task row per split child.
+
+        Children are APPENDED to both ``plans.opus_plan`` and the ``tasks``
+        table, in the same order, and the parent row is left in place.
+        ``get_dispatchable_tasks`` maps the two lists positionally, so any other
+        ordering silently mis-associates every task after the parent.
+
+        Children start at ``attempt = 2``, so with the default ``max_retries``
+        of 3 they get two tries rather than a fresh three (spec bound: children
+        inherit the remaining retry budget, they do not reset it).
+
+        THIS METHOD IS NOT ATOMIC, and the write order is the mitigation.
+        ``Database.execute`` commits every statement on its own and ``Database``
+        exposes no transaction API, so the child INSERTs and the graph UPDATE
+        cannot be made one unit.  The rows are therefore written FIRST and the
+        graph LAST, which is deliberately the reverse of ``activate_plan``:
+
+        - Rows first (chosen): a crash between the two leaves rows that the
+          graph never names.  ``get_dispatchable_tasks`` builds its slug map by
+          enumerating the GRAPH under ``if index < len(tasks)``, so the surplus
+          rows are simply never mapped.  Nothing raises, the plan merely fails
+          to complete, and the state is diagnosable and repairable.
+        - Graph first (rejected): a crash between the two leaves the parent's
+          dependents pointing at child slugs that have no row, and the
+          dangling-dependency check in ``get_dispatchable_tasks`` then raises
+          ``ValueError`` on every orchestration tick for that plan.  That is a
+          hard wedge with no recovery path.
+
+        ``activate_plan`` writes graph-then-rows, but it runs before any work
+        exists on the plan, so recovery there is to discard and recreate.  A
+        split lands mid-flight on a plan that may already have merged leaves,
+        where recreation is not available.
+
+        Args:
+            plan_id: The plan owning the parent.
+            parent_task_id: DB id of the leaf being split.
+            parent_slug: Graph slug of the leaf being split.
+            children: Validated ``LeafTask`` children from triage.
+
+        Returns:
+            The new task row ids, in append order.
+
+        Raises:
+            ValueError: If the plan has no task graph, or if ``parent_slug`` has
+                already been split.  The second case is propagated from
+                ``rewire_plan_for_split``: duplicate child slugs would collapse
+                the positional map, so it fails closed rather than appending.
+            KeyError: If ``parent_slug`` is not present in the plan graph.
+        """
+        plan = await self.get_plan(plan_id)
+        if plan is None or not plan.get("opus_plan"):
+            message = f"plan {plan_id} has no task graph to split"
+            raise ValueError(message)
+
+        opus_plan = json.loads(plan["opus_plan"])
+        # Rewires the in-memory graph only, and raises every rejection before
+        # its first mutation, so a refusal here writes nothing at all.
+        appended = rewire_plan_for_split(opus_plan, parent_slug, children)
+
+        new_ids: list[str] = []
+        for child_data in appended:
+            child_id = str(uuid.uuid4())
+            await self._db.execute(
+                """INSERT INTO tasks
+                   (id, plan_id, title, description, branch_name,
+                    parent_task_id, leaf_type, attempt)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, 2)""",
+                (
+                    child_id,
+                    plan_id,
+                    child_data["title"],
+                    child_data["description"],
+                    f"agent/{child_data['slug']}",
+                    parent_task_id,
+                    child_data.get("leaf_type"),
+                ),
+            )
+            new_ids.append(child_id)
+
+        # Last, and only once every child row exists: publishing the graph is
+        # what makes the new child slugs resolvable to a row.
+        await self._db.execute(
+            "UPDATE plans SET opus_plan = ? WHERE id = ?",
+            (json.dumps(opus_plan), plan_id),
+        )
+        logger.info(
+            "Split task %s into %d children on plan %s",
+            parent_task_id,
+            len(new_ids),
+            plan_id,
+        )
+        return new_ids
+
+    async def set_task_implementer(
+        self, task_id: str, harness: str, model: str, index: int
+    ) -> None:
+        """Pin the implementer for this task's next dispatch (escalation).
+
+        Outcome attribution reads these columns, so an escalated success is
+        never credited to the original worker.
+        """
+        now = datetime.now(UTC).isoformat()
+        await self._db.execute(
+            """UPDATE tasks
+               SET implement_harness = ?, implement_model = ?,
+                   escalation_index = ?, updated_at = ?
+               WHERE id = ?""",
+            (harness, model, index, now, task_id),
+        )
+
+    async def append_progress_note(self, task_id: str, note: str) -> None:
+        """Append a block to the task's progress note (folded into the Bible)."""
+        task = await self.get_task(task_id)
+        if task is None:
+            message = f"Task {task_id} not found"
+            raise ValueError(message)
+        existing = task.get("progress_note") or ""
+        merged = f"{existing}\n\n{note}".strip()
+        now = datetime.now(UTC).isoformat()
+        await self._db.execute(
+            "UPDATE tasks SET progress_note = ?, updated_at = ? WHERE id = ?",
+            (merged, now, task_id),
+        )
+
     async def set_task_pr_url(self, task_id: str, pr_url: str) -> None:
         now = datetime.now(UTC).isoformat()
         await self._db.execute(
@@ -304,18 +466,27 @@ class TaskQueue:
             if task is None or task["status"] != TaskStatus.PENDING:
                 continue
             dependencies = task_data.get("depends_on", [])
+            # A SUPERSEDED dependency is satisfied, not outstanding: it was
+            # replaced by split children and will never reach MERGED, so
+            # requiring MERGED alone deadlocks every dependent of it.
             if all(
-                slug_to_task.get(dep, {}).get("status") == TaskStatus.MERGED
+                slug_to_task.get(dep, {}).get("status")
+                in (TaskStatus.MERGED, TaskStatus.SUPERSEDED)
                 for dep in dependencies
             ):
                 dispatchable.append(task)
         return dispatchable
 
     async def all_tasks_done(self, plan_id: str) -> bool:
+        """True when every task is MERGED or SUPERSEDED.
+
+        A SUPERSEDED parent was replaced by its split children; it will never
+        reach MERGED, so treating it as outstanding would stop every split plan
+        from ever completing.
+        """
         tasks = await self.get_tasks_for_plan(plan_id)
-        return bool(tasks) and all(
-            task["status"] == TaskStatus.MERGED for task in tasks
-        )
+        done = {TaskStatus.MERGED, TaskStatus.SUPERSEDED}
+        return bool(tasks) and all(task["status"] in done for task in tasks)
 
     async def create_agent_run(self, task_id: str, container_id: str) -> str:
         run_id = str(uuid.uuid4())
