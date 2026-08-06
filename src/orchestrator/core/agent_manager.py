@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Any
 import docker.errors
 import httpx
 
+from orchestrator.core.git_backend import is_local_repo_url, local_repo_path
 from orchestrator.core.github_credentials import (
     GitHubCredentialProvider,
     PatCredentialProvider,
@@ -25,6 +26,15 @@ from orchestrator.core.harnesses import REGISTRY, default_harness_id
 # Three parallel clones of even a moderate repo can easily consume 1-3 GB of
 # Docker graph-driver space; 2 GB gives a reasonable safety buffer.
 _MIN_FREE_DISK_BYTES: int = 2 * 1024 * 1024 * 1024  # 2 GiB
+
+# Where a local bare repo is bind-mounted inside the agent container. Fixed so
+# the entrypoint can clone from a stable path regardless of the host layout.
+LOCAL_REPO_MOUNT = "/srv/praxis-repo.git"
+
+# The entrypoint hard-requires GH_TOKEN (`: "${GH_TOKEN:?...}"`). Local mode has
+# no credential, so a placeholder satisfies the guard; the entrypoint skips
+# every credential-helper and gh call when GIT_BACKEND=local.
+_LOCAL_GH_TOKEN_PLACEHOLDER = "local-mode-no-token"  # nosec B105 - not a secret
 
 # Maximum number of concurrently running praxis-agent-* containers. Parallel
 # clones exhaust disk and stall the Docker daemon when this is unconstrained.
@@ -133,6 +143,25 @@ def _opencode_session_volume_name(base_volume: str, task_id: str) -> str:
     return f"{base_volume}-{safe_id}"
 
 
+def local_repo_volume(repo_url: str) -> dict[str, dict[str, str]]:
+    """Return the Docker volume mapping for a local bare repo, or {} for remote.
+
+    The mount is read-write: a worker must both clone from and push back to
+    the bare repo, and a read-only mount would let it clone successfully but
+    fail on push deep inside the container with a confusing error.
+
+    Args:
+        repo_url: The project's configured repository URL or path.
+
+    Returns:
+        A single-entry Docker volumes dict keyed by host path, or {} when
+        ``repo_url`` is not a local repo.
+    """
+    if not is_local_repo_url(repo_url):
+        return {}
+    return {local_repo_path(repo_url): {"bind": LOCAL_REPO_MOUNT, "mode": "rw"}}
+
+
 def build_spawn_env(
     repo_url: str,
     branch: str,
@@ -157,17 +186,19 @@ def build_spawn_env(
     worker_session_id: str | None = None,
 ) -> dict[str, str]:
     """Build environment variables dictionary for spawned agent containers."""
+    local_mode = is_local_repo_url(repo_url)
     environment: dict[str, str] = {
-        "REPO_URL": repo_url,
+        "REPO_URL": LOCAL_REPO_MOUNT if local_mode else repo_url,
         "BRANCH": branch,
         "BASE_BRANCH": base_branch,
         "TASK_PROMPT": task_prompt,
         "OPENAI_API_BASE": f"{container_lm_url}/v1",
         "MODEL": model_name,
         "HARNESS": harness_id,
-        "GH_TOKEN": gh_token,
+        "GH_TOKEN": _LOCAL_GH_TOKEN_PLACEHOLDER if local_mode else (gh_token or ""),
         "CALLBACK_URL": callback_url,
         "TASK_ID": task_id,
+        "GIT_BACKEND": "local" if local_mode else "github",
     }
     if git_author_name:
         environment["GIT_AUTHOR_NAME"] = git_author_name
@@ -296,7 +327,11 @@ class AgentManager:
         else:
             lm_studio_url = self._lm_studio_url
         container_lm_url = _container_host_url(lm_studio_url)
-        gh_token = await self._provider.token_for_repo(repo_url)
+        gh_token = (
+            ""
+            if is_local_repo_url(repo_url)
+            else await self._provider.token_for_repo(repo_url)
+        )
 
         context_limit: int | None = None
         if harness_id != "agy":
@@ -361,6 +396,7 @@ class AgentManager:
                 "bind": "/home/agent/.local/share/opencode",
                 "mode": "rw",
             }
+        volumes.update(local_repo_volume(repo_url))
 
         container_name = f"praxis-agent-{task_id[:8]}"
         self._remove_existing_container(container_name)
