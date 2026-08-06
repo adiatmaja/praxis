@@ -1,0 +1,84 @@
+# Praxis decomposition benchmark: $run_id
+
+Generated from $rows attempts. Raw JSONL is committed alongside this report.
+
+## Predicted shape (stated before the numbers)
+
+The expected effect concentrates in the **mid-difficulty** stratum. At the small
+end a monolithic attempt already succeeds, so there is nothing for decomposition
+to add; at the large end the task is beyond the worker whatever its shape. A
+near-zero effect at both extremes is the predicted and honest result, not a
+disappointment. This paragraph was written before the run.
+
+## Design
+
+| Condition | What runs | Isolates |
+|-----------|-----------|----------|
+| A | monolithic, no verify gate | baseline |
+| B | Praxis decomposition, verify gate on | decomposition |
+| C | decomposition, verify gate off | decomposition versus verification |
+| D | decomposition plus adaptive split | the adaptive policy delta |
+
+A and C are a matched gateless pair; the runner refuses to run C without A.
+
+## Per-stratum resolve rates
+
+$stratum_table
+
+Intervals are Wilson score intervals at 95 percent. An empty cell is reported
+as (0.00, 1.00): no evidence, not a measured zero.
+
+## Paired comparisons
+
+$mcnemar_table
+
+Exact binomial McNemar on the discordant pairs. The design is within-subject,
+so the unpaired chi-square would be the wrong test.
+
+## Cost
+
+$cost_table
+
+Cost is reported per RESOLVED task, not per attempt. A condition that
+resolves nothing shows an infinite cost, because reporting zero there would
+read as free.
+
+## Plausible but wrong
+
+$plausible_table
+
+Patches that applied and built but did not resolve the issue. AutoCodeRover
+(arXiv 2404.05427) found 35 percent of plausible patches wrong; a worker
+gaming surface checks shows up here first.
+
+## Contamination
+
+The worker models used were $workers, with a training cutoff of
+$model_cutoff. SWE-bench instances are drawn from public repositories that
+predate that cutoff, so memorization cannot be excluded. Treat every
+absolute number as an upper bound. The decontaminated alternative is
+SWE-rebench; a robustness check on its subset is the correct follow-up and
+has not been run here unless stated below.
+
+## Correlational anchors
+
+The stratum boundaries come from SWE-bench Goes Live! (arXiv 2505.23419),
+which reports correlations between gold-patch shape and resolve rate. They
+are not causal claims and the strata inherit that limitation. The
+comparisons WITHIN a stratum are the causal part of this design; the
+boundaries themselves are not.
+
+## Failure-class analysis
+
+$failure_analysis
+
+Ten failures were hand-inspected and classified plan-shaped (the
+decomposition was wrong) versus execution-shaped (the decomposition was
+fine and the worker failed anyway). Hierarchical failure analysis (arXiv
+2603.14248) finds that decomposition only fixes the former, so this
+classification, not the headline number, is what says whether more
+decomposition work is worth doing.
+
+## Limitations
+
+$limitations

@@ -1,0 +1,257 @@
+"""The report template's caveats are structural, not a matter of remembering."""
+
+from __future__ import annotations
+
+import json
+import re
+from string import Template
+from typing import Any
+
+import pytest
+
+from bench.config import CONDITIONS, PATCH_SIZE_STRATA, REPO_SIZE_STRATA
+from bench.report import TEMPLATE_PATH, build_report, per_stratum_table
+
+
+def _row(**overrides: Any) -> dict[str, Any]:
+    base: dict[str, Any] = {
+        "run_id": "full-01",
+        "instance_id": "a__b-1",
+        "condition": "B",
+        "worker": "local-openweight",
+        "seed": 1,
+        "stratum_patch": "medium",
+        "stratum_repo": "mid",
+        "resolved": True,
+        "plausible": True,
+        "leaf_count": 3,
+        "leaf_retries": 0,
+        "whole_task_retries": 0,
+        "clarifications": 0,
+        "human_gate_touches": 0,
+        "brain_tokens": 1000,
+        "worker_tokens": 4000,
+        "wall_clock_s": 100.0,
+        "error": None,
+    }
+    base.update(overrides)
+    return base
+
+
+MANDATORY_HEADINGS = (
+    "Contamination",
+    "Correlational anchors",
+    "Failure-class analysis",
+    "Predicted shape",
+)
+
+
+@pytest.mark.unit
+def test_per_stratum_table_groups_by_cell_and_condition() -> None:
+    rows = [
+        _row(condition="A", resolved=False),
+        _row(condition="B", resolved=True),
+        _row(condition="B", instance_id="a__b-2", resolved=False),
+    ]
+    table = per_stratum_table(rows)
+    key = ("medium", "mid", "B")
+    assert table[key]["trials"] == 2
+    assert table[key]["resolved"] == 1
+    assert 0.0 < table[key]["ci_low"] < table[key]["rate"] < table[key]["ci_high"] < 1.0
+
+
+@pytest.mark.unit
+def test_errored_rows_count_in_the_denominator() -> None:
+    """Dropping a crashed attempt inflates the rate. It stays in trials."""
+    rows = [
+        _row(resolved=True),
+        _row(instance_id="a__b-2", resolved=False, error="timeout"),
+    ]
+    table = per_stratum_table(rows)
+    assert table[("medium", "mid", "B")]["trials"] == 2
+
+
+@pytest.mark.unit
+def test_cost_per_resolved_task_is_reported_not_cost_per_attempt() -> None:
+    rows = [
+        _row(resolved=True, brain_tokens=1000, worker_tokens=1000),
+        _row(
+            instance_id="a__b-2", resolved=False, brain_tokens=1000, worker_tokens=1000
+        ),
+    ]
+    table = per_stratum_table(rows)
+    cell = table[("medium", "mid", "B")]
+    # 4000 tokens spent, 1 resolved.
+    assert cell["tokens_per_resolved"] == pytest.approx(4000.0)
+
+
+@pytest.mark.unit
+def test_cost_per_resolved_is_infinite_when_nothing_resolved() -> None:
+    """Reporting 0 there would read as free, which is the opposite of true."""
+    rows = [_row(resolved=False, brain_tokens=1000, worker_tokens=1000)]
+    cell = per_stratum_table(rows)[("medium", "mid", "B")]
+    assert cell["tokens_per_resolved"] == float("inf")
+
+
+@pytest.mark.unit
+def test_the_report_contains_every_mandatory_honesty_section(tmp_path: Any) -> None:
+    rows = [_row(condition="A", resolved=False), _row(condition="B", resolved=True)]
+    path = tmp_path / "rows.jsonl"
+    path.write_text("\n".join(json.dumps(r) for r in rows) + "\n", encoding="utf-8")
+    report = build_report(rows, run_id="full-01", model_cutoff="2026-03")
+    for heading in MANDATORY_HEADINGS:
+        assert heading in report
+
+
+@pytest.mark.unit
+def test_the_report_names_the_model_cutoff_in_the_contamination_note() -> None:
+    report = build_report([_row()], run_id="full-01", model_cutoff="2026-03")
+    assert "2026-03" in report
+    assert "SWE-rebench" in report
+
+
+@pytest.mark.unit
+def test_the_report_states_the_predicted_shape_up_front() -> None:
+    """Stating the expectation before the numbers is what stops post-hoc storytelling."""
+    report = build_report([_row()], run_id="full-01", model_cutoff="2026-03")
+    assert "mid-difficulty" in report
+
+
+@pytest.mark.unit
+def test_the_report_reports_the_plausible_but_wrong_rate() -> None:
+    rows = [_row(resolved=False, plausible=True), _row(instance_id="a__b-2")]
+    report = build_report(rows, run_id="full-01", model_cutoff="2026-03")
+    assert "plausible" in report.lower()
+
+
+@pytest.mark.unit
+def test_the_report_renders_the_ab_and_bc_mcnemar_p_values() -> None:
+    rows = [
+        _row(condition="A", instance_id=f"i{i}", resolved=False) for i in range(5)
+    ] + [_row(condition="B", instance_id=f"i{i}", resolved=True) for i in range(5)]
+    report = build_report(rows, run_id="full-01", model_cutoff="2026-03")
+    assert "A vs B" in report
+    assert "p =" in report
+
+
+# --- Additional tests for the corrections above the plan's minimum ---
+
+
+@pytest.mark.unit
+def test_the_template_file_itself_contains_every_mandatory_heading() -> None:
+    """The headings must be structural: present in the template ON DISK.
+
+    ``assert heading in report`` alone would be satisfied by a single stray
+    mention anywhere in a rendered document. Reading the committed template
+    directly is what proves a report without these sections is not
+    producible, rather than merely "happened to be there this time".
+    """
+    text = TEMPLATE_PATH.read_text(encoding="utf-8")
+    for heading in MANDATORY_HEADINGS:
+        assert heading in text
+
+
+@pytest.mark.unit
+def test_the_template_is_located_relative_to_the_module_not_the_cwd(
+    tmp_path: Any, monkeypatch: Any
+) -> None:
+    """A CWD-relative template path breaks the moment the CLI runs from
+    anywhere but the repo root; the bench is run by an operator from a shell.
+    """
+    monkeypatch.chdir(tmp_path)
+    report = build_report([_row()], run_id="full-01", model_cutoff="2026-03")
+    assert "Contamination" in report
+
+
+@pytest.mark.unit
+def test_build_report_handles_an_empty_rows_list_without_raising() -> None:
+    report = build_report([], run_id="full-01", model_cutoff="2026-03")
+    for heading in MANDATORY_HEADINGS:
+        assert heading in report
+
+
+@pytest.mark.unit
+def test_every_template_placeholder_is_actually_supplied_and_substituted() -> None:
+    """Every ``$name`` the template declares must be in the substitution map,
+    and none may survive unsubstituted in the rendered output.
+
+    ``string.Template.substitute`` already raises ``KeyError`` for a missing
+    key (so ``build_report`` succeeding at all proves every declared
+    placeholder was supplied); this test additionally scans the rendered
+    output for leftover ``$identifier`` syntax to catch a placeholder that
+    silently failed to expand.
+    """
+    text = TEMPLATE_PATH.read_text(encoding="utf-8")
+    declared = Template(text).get_identifiers()
+    assert declared, "the template should declare at least one placeholder"
+
+    report = build_report([_row()], run_id="full-01", model_cutoff="2026-03")
+    assert not re.search(r"\$\{?[A-Za-z_][A-Za-z0-9_]*\}?", report)
+
+
+@pytest.mark.unit
+def test_a_stray_brace_in_the_template_does_not_break_rendering() -> None:
+    """``string.Template`` treats ``{`` and ``}`` as ordinary characters,
+    unlike ``str.format``, which would raise on the first unescaped brace in
+    published prose.
+    """
+    text = (
+        TEMPLATE_PATH.read_text(encoding="utf-8") + "\nliteral { brace } at the end.\n"
+    )
+    rendered = Template(text).substitute(
+        run_id="x",
+        rows=0,
+        stratum_table="",
+        mcnemar_table="",
+        cost_table="",
+        plausible_table="",
+        workers="w",
+        model_cutoff="2026-01",
+        failure_analysis="",
+        limitations="",
+    )
+    assert "literal { brace } at the end." in rendered
+
+
+@pytest.mark.unit
+def test_empty_stratum_cells_render_as_no_evidence_not_a_measured_zero() -> None:
+    """5 of the 9 (patch, repo) strata are unpopulated in every SWE-bench
+    Lite run; each must read "no evidence", not "0 percent resolved".
+    """
+    rows = [
+        _row(stratum_patch="medium", stratum_repo="mid", condition="B", resolved=True)
+    ]
+    report = build_report(rows, run_id="full-01", model_cutoff="2026-03")
+    assert "| small | tiny | A | 0 | 0 | 0.00 | (0.00, 1.00) |" in report
+    assert "| small | tiny | A | 0 | 0 | 0.00 | 0.00 |" not in report
+
+
+@pytest.mark.unit
+def test_the_stratum_table_covers_the_full_design_grid() -> None:
+    """Every (patch stratum, repo stratum, condition) combination the design
+    declares appears somewhere in the table, populated or not.
+    """
+    report = build_report([_row()], run_id="full-01", model_cutoff="2026-03")
+    for patch in PATCH_SIZE_STRATA:
+        for repo in REPO_SIZE_STRATA:
+            for condition in CONDITIONS:
+                assert f"| {patch} | {repo} | {condition.key} |" in report
+
+
+@pytest.mark.unit
+def test_every_stratum_row_carries_its_trial_count_beside_the_rate() -> None:
+    """A rate rendered without its trial count cannot distinguish "never
+    run" from "ran, resolved nothing"; the column must always be present.
+    """
+    report = build_report([_row()], run_id="full-01", model_cutoff="2026-03")
+    header = (
+        "| patch stratum | repo stratum | condition | n | resolved | rate | 95% CI |"
+    )
+    assert header in report
+
+
+@pytest.mark.unit
+def test_the_cost_table_renders_infinite_not_zero_when_nothing_resolved() -> None:
+    rows = [_row(condition="A", resolved=False, brain_tokens=500, worker_tokens=500)]
+    report = build_report(rows, run_id="full-01", model_cutoff="2026-03")
+    assert "infinite (nothing resolved)" in report
