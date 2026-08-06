@@ -65,6 +65,14 @@ class BibleSources:
 # floors by construction. ``goal`` and ``handover`` are Praxis-specific floors:
 # dropping the handover makes a re-dispatched worker redo completed work, which
 # is a worse failure than losing narrative.
+#
+# ``fit_sections`` never consults ``priority`` to decide which floor sections
+# to keep (it keeps all of them unconditionally), so the floor ranks below
+# only mean something because ``build_bible`` sorts every section, floor and
+# non-floor alike, by this value before handing them to ``fit_sections``. That
+# sort is what makes the ranks load-bearing: it is also what fixes their
+# emitted order in the assembled Bible, not just the fit order of the
+# droppable tail.
 _P_GOAL = 0
 _P_PLAN = 1
 _P_EDITS = 2
@@ -144,6 +152,10 @@ def build_bible(src: BibleSources) -> str:
         raw_sections.append(
             Section("repo", f"# REPO MEMORY\n{src.repo_memory}", _P_REPO)
         )
+
+    # Priority determines emitted order for every section, floors included;
+    # see the comment on the _P_* constants above.
+    raw_sections.sort(key=lambda s: s.priority)
 
     for s in raw_sections:
         s.text = scrub_context(s.text) or s.text

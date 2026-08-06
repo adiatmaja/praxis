@@ -182,3 +182,32 @@ def test_a_plan_text_that_alone_blows_the_budget_raises():
     src.plan_slice = "y" * 400_000
     with pytest.raises(ContextBudgetExceeded):
         build_bible(src)
+
+
+@pytest.mark.unit
+def test_floor_section_order_follows_priority_ranks(monkeypatch):
+    """_P_GOAL through _P_HANDOVER must be load-bearing, not decorative.
+
+    fit_sections keeps every floor section unconditionally and never
+    consults priority to decide which floors to keep, so the only way a
+    floor's rank can matter at all is if build_bible uses it to order the
+    assembled sections. This test proves that wiring exists by swapping the
+    goal and handover ranks and checking the swap flips their order in the
+    rendered Bible. Before build_bible sorted by priority, the two floor
+    sections were emitted in construction order regardless of priority, so
+    this assertion failed: the handover, built and appended after the goal,
+    still rendered after it even when ranked first.
+    """
+    import orchestrator.core.worker_bible as wb
+
+    monkeypatch.setattr(wb, "_P_GOAL", 99)
+    monkeypatch.setattr(wb, "_P_HANDOVER", -1)
+
+    src = BibleSources(
+        goal="GOALMARK",
+        handover="HANDOVERMARK",
+        context_window=8192,
+    )
+    bible = build_bible(src)
+
+    assert bible.index("HANDOVERMARK") < bible.index("GOALMARK")
