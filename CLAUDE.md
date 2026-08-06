@@ -391,9 +391,37 @@ the relevant subsystem. Condensed index:
   (`/srv/praxis-repo.git`), rewriting `REPO_URL` and setting `GIT_BACKEND=local`
   so both entrypoints skip credential setup and `gh pr create`. Unset
   `GIT_BACKEND` defaults to `github`. Entrypoint changes need an agent IMAGE REBUILD.
+- **Both entrypoints collapse `GIT_BACKEND` to one `IS_LOCAL_BACKEND` boolean**
+  before any guard (the `REUSING_BRANCH` precedent in the same files), and the
+  guards are tested by EXECUTING the real sliced regions against `gh`/`git`
+  spies. A substring-grep-near-the-guard test cannot see polarity or containment.
 - **`url_encode` must escape `%` before `/`, space, and `&`**: wrong order
   double-escapes `&` and `PullRequestRef.from_url` decodes the wrong branch
   name silently, no error anywhere, the reviewable change just vanishes.
+- **`GitHubBackend` refuses ANY ref with `repo=None`**, not just a `github`-tagged
+  one: the backend comes from `project["repo_url"]` and the ref from
+  `task["pr_url"]`, two independent sources, so a `local` ref can reach it and
+  `repo=None` makes `gh` act on the orchestrator's own cwd. `to_url()` guards the
+  same way. Never backfill the repo from the project: for a fork PR that silently
+  targets the wrong one.
+- **An unparseable `pr_url` fails the task, it never returns silently**: a bare
+  `return` leaves the task REVIEWING, the loop re-enters it every tick, REVIEWING
+  counts as active so the plan never completes, and `plan_stalled` needs
+  `not active` so it never fires. One log line per interval, forever.
+- **The worker preset reaches the container as a BARE compose pass-through**
+  (`- DEFAULT_WORKER_HARNESS`), never `${VAR:-default}` and never `- VAR=${VAR}`:
+  `Settings.__init__` drops a YAML key whenever the name is in `os.environ`, and
+  both expansion forms set the variable (to a default, or to empty) when unset,
+  silently suppressing the mounted `config/praxis.yaml`. Bare yields `null` when
+  unset, so the YAML stays authoritative. `tests/test_config_path.py` pins every
+  `init.MANAGED_KEYS` entry.
+- **`praxis init` refuses to run outside the repo root**: it used to write a live
+  `AUTH_TOKEN` into whatever directory you ran it from. The guard runs before any
+  prompt and accepts a renamed fork that still ships the `praxis` console script.
+- **`load_yaml_settings` warns once per missing path**: `EffectiveSettings._get_yaml`
+  has no memoization, so it runs on every lookup. It only fires on a path that does
+  not EXIST; a dropped `./config` mount leaves the baked copy present and stale, and
+  that case belongs to the doctor's `config_mount` probe.
 
 ## Documentation
 

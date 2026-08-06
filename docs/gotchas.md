@@ -499,10 +499,28 @@ keep the CLAUDE.md index in sync.
   "PR" is a `praxis-local://pr?branch=...&base=...` string stored in the
   existing `tasks.pr_url` column, so there is no schema change; parse it with
   `PullRequestRef.from_url`, never with string slicing. `GitHubBackend` itself
-  raises `ValueError` when a `backend="github"` ref carries `repo=None`,
-  because a `None` repo makes `gh` resolve against the orchestrator's own cwd
-  and act on the wrong repository; that is the fail-closed guard behind the
-  repo's existing `--repo` gotcha, now shared by both backends' construction.
+  raises `ValueError` for ANY ref carrying `repo=None`, not merely a
+  `backend="github"` one, because a `None` repo makes `gh` resolve against the
+  orchestrator's own cwd and act on the wrong repository; that is the
+  fail-closed guard behind the repo's existing `--repo` gotcha. Keying it on
+  the ref's own `backend` tag was a hole: the backend is resolved from
+  `project["repo_url"]` while the ref is parsed from `task["pr_url"]`, two
+  independent sources, so a `local` ref reaching `GitHubBackend` sailed
+  straight past a backend-keyed check. `to_url()` guards the same way, so a
+  repo-less github ref cannot poison a `tasks.pr_url` row with
+  `https://github.com/None/pull/42`. Do NOT reintroduce a "backfill the repo
+  from the project" fallback: it is unreachable given `from_url`'s regex, and
+  reachable it would substitute the project's slug for the PR's, silently
+  targeting the wrong repository for a fork PR.
+- **A `pr_url` that no longer parses must FAIL the task, never return quietly**:
+  `review_task` routes it through the same fail-and-retry path a failed review
+  uses. A bare `return` (which is what the plan originally specified) wedges the
+  plan forever, and silently: the task stays `REVIEWING`, the orchestration loop
+  re-enters `review_task` on every tick, `REVIEWING` counts toward `active` so
+  the plan never reaches `COMPLETED`, and `plan_stalled` requires `not active`
+  so it never fires either. The only symptom is one log line per loop interval.
+  `approve_task_merge` and `reject_task_merge` raise `ValueError` instead,
+  because they are API-driven and an operator's click must not no-op.
 - **The local repo MUST be bare**: workers push to it, and git refuses a push
   to a checked-out branch. `core/preflight._preflight_local` enforces this with
   a `rev-parse --is-bare-repository` check and returns 422 (`NOT_A_REPO`) so
@@ -517,6 +535,22 @@ keep the CLAUDE.md index in sync.
   (`: "${GH_TOKEN:?...}"`). An unset `GIT_BACKEND` defaults to `github`, so an
   older orchestrator against a new image behaves exactly as before. Changing
   either entrypoint needs an agent IMAGE REBUILD.
+- **Both entrypoints collapse `GIT_BACKEND` into one `IS_LOCAL_BACKEND` boolean
+  before any guard reads it**, mirroring the `REUSING_BRANCH` precedent that
+  already exists in the same files for exactly this drift reason. Before that,
+  the credential helper tested `= "github"` and the PR block tested `= "local"`,
+  opposite sides of two different values, so any third value (a typo, a future
+  backend, a stale image) got NO credential helper AND the full `gh` path, the
+  worst combination available. Equally important: **test these guards by
+  EXECUTING them, not by grepping near them.** The original tests asserted the
+  string `GIT_BACKEND` appeared within a line window of each `gh` call, and
+  inverting either guard, closing the guard early so every `gh` call ran
+  unconditionally, and moving the `GIT_BACKEND` default below its first use all
+  left the entire suite green. `tests/test_entrypoint_local_backend.py` now
+  slices the real regions out of the committed file and runs them under bash
+  with `gh` and `git` replaced by argv-logging spies. Note the failure this
+  catches is invisible in production: a stray `gh pr view` in local mode is
+  swallowed by its own `2>/dev/null`, then clobbers `PR_URL` to empty.
 - **`url_encode` must escape `%` before `/`, space, and `&`, in that order**:
   the entrypoint builds `praxis-local://pr?branch=...&base=...` with a
   four-`sed` pipeline, and `PullRequestRef.from_url` parses it back with a
@@ -529,3 +563,46 @@ keep the CLAUDE.md index in sync.
   the wrong branch name instead of raising. Verified live: `agent/fix&more`
   round-tripped through the wrong order comes back as `agent/fix%26more`, not
   `agent/fix&more`.
+
+- **The worker preset reaches the container as a BARE compose pass-through**:
+  both compose files list `- DEFAULT_WORKER_HARNESS` and `- DEFAULT_WORKER_MODEL`
+  with no `=` and no default. This is deliberate and the two obvious
+  alternatives are both wrong. `Settings.__init__` drops a YAML key whenever
+  that name is present in `os.environ`, and precedence is env > YAML > field
+  default. `- VAR=${VAR:-something}` therefore wins on every run and permanently
+  suppresses the mounted `config/praxis.yaml`; `- VAR=${VAR}` is worse in a
+  subtler way, because when the variable is unset compose sets it to an EMPTY
+  string, which is still "in `os.environ`" and so suppresses the YAML just the
+  same while looking like nothing was configured. Only the bare form resolves to
+  `null`, i.e. genuinely absent, leaving the YAML authoritative. It still reads
+  the project `.env`, which is where `praxis init` writes. Before this,
+  `LM_STUDIO_URL` was forwarded and the two preset keys were not, so half of one
+  preset applied and nothing reported the disagreement.
+  `tests/test_config_path.py` pins every `init.MANAGED_KEYS` entry, so a newly
+  managed key that nobody forwards fails the suite. Caveat, still open:
+  `LM_STUDIO_URL` itself remains on the `${VAR:-default}` form, because that
+  default is the only source of `host.docker.internal` for a containerized
+  deployment; six other `Settings` fields share that shape.
+- **`praxis init` refuses to run outside the repo root**: it previously assumed
+  its CWD was the checkout and, run anywhere else, wrote a `.env` containing a
+  live `AUTH_TOKEN` into that unrelated directory while naming neither the
+  directory nor the secret. `repo_root_problem()` returns a REASON rather than a
+  bool and requires `pyproject.toml`, `.env.example`, and `docker-compose.yml`
+  together with either a PEP 503 normalized `[project] name` of `praxis` or a
+  `praxis` entry under `[project.scripts]`, so a renamed downstream fork that
+  still ships the CLI is accepted rather than locked out by a message telling it
+  to `cd` where it already is. The guard runs before any prompt, not merely
+  before the write, and it fails closed on a malformed or structurally odd
+  `pyproject.toml` (a `[project]` that parses to a string or an array must yield
+  `""`, never an `AttributeError` traceback out of the first command a new
+  operator ever runs).
+- **`load_yaml_settings` warns ONCE per distinct missing path**, not once per
+  call: `EffectiveSettings._get_yaml` has no memoization at all and re-reads the
+  file on every capability, escalation, registry, and preset lookup, so an
+  unconditional warning would flood the log on a hot path. Before this a typo in
+  `PRAXIS_CONFIG_PATH` silently reverted every YAML default with no log line
+  anywhere. Note precisely what it does NOT cover: `docker/orchestrator/Dockerfile`
+  does `COPY config/ config/`, so if the `./config:/app/config:ro` mount is
+  dropped the baked copy is still PRESENT, just stale, and an absence check
+  cannot see it. That case is the doctor's `config_mount` probe, which detects it
+  via `os.path.ismount`. The two are complementary, not redundant.
