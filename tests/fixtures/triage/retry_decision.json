@@ -1,0 +1,6 @@
+{
+  "decision": "retry",
+  "reason": "The worker misread the acceptance command; the leaf itself is correctly sized.",
+  "children": null,
+  "refined_prompt": "Run `uv run pytest tests/test_widget.py -k make_widget`, not the whole suite."
+}

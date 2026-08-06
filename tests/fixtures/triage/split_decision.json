@@ -1,0 +1,53 @@
+{
+  "decision": "split",
+  "reason": "The leaf touches the model, the API, and the dashboard in one unit; both failures were in the dashboard half while the model half was correct.",
+  "children": [
+    {
+      "schema_version": 2,
+      "id": "add-widget-model-s1",
+      "title": "Add the Widget model",
+      "description": "Add the Widget pydantic model and its tests.",
+      "plan_text": "## Goal\nAdd the Widget model.\n## Files\nsrc/orchestrator/models/schemas.py\n## Steps\n1. Add class Widget.\n## Acceptance\nRun `uv run pytest tests/test_schemas.py`",
+      "depends_on": [],
+      "checklist": [
+        {
+          "text": "Add the Widget model"
+        }
+      ],
+      "needs_stronger_model": false,
+      "files": [
+        "src/orchestrator/models/schemas.py"
+      ],
+      "task_type": "feature",
+      "estimated_loc": 30,
+      "verification": "Run `uv run pytest tests/test_schemas.py` and confirm it passes",
+      "leaf_type": "function_add",
+      "neighbor_contracts": null
+    },
+    {
+      "schema_version": 2,
+      "id": "add-widget-model-s2",
+      "title": "Render the Widget in the dashboard",
+      "description": "Add the widget row to the dashboard task table.",
+      "plan_text": "## Goal\nRender the widget.\n## Files\nweb/app.js\n## Steps\n1. Add the row renderer.\n## Acceptance\nRun `uv run pytest tests/visual`",
+      "depends_on": [
+        "add-widget-model-s1"
+      ],
+      "checklist": [
+        {
+          "text": "Render the Widget in the dashboard"
+        }
+      ],
+      "needs_stronger_model": false,
+      "files": [
+        "web/app.js"
+      ],
+      "task_type": "feature",
+      "estimated_loc": 25,
+      "verification": "Run `uv run pytest tests/visual` and confirm it passes",
+      "leaf_type": "function_add",
+      "neighbor_contracts": null
+    }
+  ],
+  "refined_prompt": null
+}

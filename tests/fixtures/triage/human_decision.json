@@ -1,0 +1,6 @@
+{
+  "decision": "human",
+  "reason": "The leaf's acceptance test contradicts the plan contract; a human must resolve which is authoritative.",
+  "children": null,
+  "refined_prompt": null
+}

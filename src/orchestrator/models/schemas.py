@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from enum import StrEnum
 from sys import version_info
-from typing import TypedDict
+from typing import Literal, TypedDict
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -137,6 +137,43 @@ class LeafTask(BaseModel):
             self.plan_text = self.description
         if not self.checklist:
             self.checklist = [LeafChecklistItem(text=self.title)]
+        return self
+
+
+class TriageDecision(BaseModel):
+    """The brain's verdict on a leaf that failed twice.
+
+    Contract from the Usable Praxis spec section 2.2.  Malformed output gets
+    one re-ask with the validation errors (same pattern as F3's informed
+    rounds); a second failure falls back to ``human``.  Fail closed, never
+    guess.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    decision: Literal["retry", "split", "escalate", "human"]
+    reason: str
+    children: list[LeafTask] | None = None
+    refined_prompt: str | None = None
+
+    @model_validator(mode="after")
+    def _check_children_match_decision(self) -> TriageDecision:
+        if self.decision == "split":
+            if not self.children:
+                message = "children are required when decision == 'split'"
+                raise ValueError(message)
+            if not 2 <= len(self.children) <= 4:
+                message = (
+                    "a split must produce between 2 and 4 children, "
+                    f"got {len(self.children)}"
+                )
+                raise ValueError(message)
+        elif self.children:
+            message = (
+                "children are only allowed when decision == 'split', "
+                f"not '{self.decision}'"
+            )
+            raise ValueError(message)
         return self
 
 

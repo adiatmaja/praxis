@@ -1,0 +1,6 @@
+{
+  "decision": "escalate",
+  "reason": "Both attempts produced syntactically valid but semantically wrong async code; this is a capability ceiling, not a sizing problem.",
+  "children": null,
+  "refined_prompt": null
+}
