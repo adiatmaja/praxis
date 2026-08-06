@@ -18,6 +18,20 @@ set -euo pipefail
 # orchestrator that does not set it behaves exactly as before.
 GIT_BACKEND="${GIT_BACKEND:-github}"
 
+# Single source of truth for "this run uses the local git backend". Derived
+# once here and tested everywhere else, so the two spots (credential helper
+# below, PR block further down) can never drift apart again -- exactly the
+# REUSING_BRANCH precedent below, for exactly the same reason. They used to
+# test opposite sides of DIFFERENT values (= "github" here, = "local" there),
+# so any third value -- a typo, a future backend, an agent image lagging the
+# orchestrator -- got NO credential helper AND the full gh path, the worst
+# possible combination. One boolean makes anything that is not exactly "local"
+# behave as github, which is the safe default.
+IS_LOCAL_BACKEND=0
+if [ "${GIT_BACKEND}" = "local" ]; then
+    IS_LOCAL_BACKEND=1
+fi
+
 WORKSPACE="/home/agent/workspace"
 STATUS="completed"
 PR_URL=""
@@ -133,10 +147,10 @@ echo "Branch: ${BRANCH}  Base: ${BASE_BRANCH}  Model: ${MODEL}"
 echo "--- Configuring git auth ---"
 # Local mode clones from a bind-mounted bare repo; there is no credential to
 # configure (GH_TOKEN is a placeholder there, satisfying the guard above).
-if [ "${GIT_BACKEND}" = "github" ]; then
-    git config --global credential.helper '!f() { echo "username=x-access-token"; echo "password=${GH_TOKEN}"; }; f'
-else
+if [ "${IS_LOCAL_BACKEND}" = "1" ]; then
     echo "Local backend: skipping credential helper"
+else
+    git config --global credential.helper '!f() { echo "username=x-access-token"; echo "password=${GH_TOKEN}"; }; f'
 fi
 
 echo "--- Cloning repository ---"
@@ -414,7 +428,7 @@ else
     git push -u --force origin "${BRANCH}"
 fi
 
-if [ "${GIT_BACKEND}" = "local" ]; then
+if [ "${IS_LOCAL_BACKEND}" = "1" ]; then
     # No PR objects exist in local mode; the orchestrator reviews the branch
     # against its base directly. Report the same (branch, base) pair it will
     # parse back out of tasks.pr_url. Every gh call, the reuse lookup included,
