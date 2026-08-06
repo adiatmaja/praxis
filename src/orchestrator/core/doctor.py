@@ -120,9 +120,14 @@ CHECKS: tuple[Check, ...] = (
         "set AGENT_CALLBACK_URL to match PORT in .env, or unset it so it is "
         "derived; a mismatch 404s every agent callback",
     ),
+    # The label deliberately says "settings YAML" rather than spelling the
+    # path out. tests/test_config_path.py greps every module under src/ for
+    # that literal, because one resolver owning the path is what stops the
+    # 2026-07-27 bug returning, and the grep cannot tell a display string from
+    # a real read. Keeping the guard strict is worth more than the extra word.
     Check(
         "config_mount",
-        "config/praxis.yaml is mounted, not baked",
+        "Settings YAML is mounted, not baked",
         "add the `./config:/app/config:ro` volume and PRAXIS_CONFIG_PATH to "
         "your compose file",
     ),
