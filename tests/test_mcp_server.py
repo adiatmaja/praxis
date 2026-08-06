@@ -47,6 +47,45 @@ async def test_dispatch_task_forwards_and_returns_handle() -> None:
     assert body["model"] == "qwen3-32b"
 
 
+async def test_dispatch_task_impl_forwards_files_verification_neighbor_contracts() -> (
+    None
+):
+    """The MCP surface is the primary one; a caller must be able to set the
+    same edit-locations/acceptance/neighbor-contracts a decomposed leaf gets."""
+    client = FakeClient({("POST", "/api/dispatch"): {"ok": True}})
+    await server.dispatch_task_impl(
+        client,
+        repo_url="https://github.com/u/r",
+        instructions="add X",
+        model="qwen3-32b",
+        files=["src/api/users.py", "src/api/schemas.py"],
+        verification="uv run pytest tests/test_users.py",
+        neighbor_contracts="def get_user(id: str) -> dict | None: ...",
+    )
+    _, _, body = client.calls[0]
+    assert body["files"] == ["src/api/users.py", "src/api/schemas.py"]
+    assert body["verification"] == "uv run pytest tests/test_users.py"
+    assert body["neighbor_contracts"] == "def get_user(id: str) -> dict | None: ..."
+
+
+async def test_dispatch_task_impl_omits_files_verification_neighbor_contracts_when_none() -> (
+    None
+):
+    """Every existing caller omits the three fields; the POST body must stay
+    byte-identical to before this change (no new keys)."""
+    client = FakeClient({("POST", "/api/dispatch"): {"ok": True}})
+    await server.dispatch_task_impl(
+        client,
+        repo_url="https://github.com/u/r",
+        instructions="add X",
+        model="qwen3-32b",
+    )
+    _, _, body = client.calls[0]
+    assert "files" not in body
+    assert "verification" not in body
+    assert "neighbor_contracts" not in body
+
+
 async def test_poll_task_maps_status_and_pr() -> None:
     client = FakeClient(
         {
@@ -166,6 +205,39 @@ async def test_tool_error_is_returned_not_raised() -> None:
     result = await server.poll_task_impl(FailClient(), task_id="t1")  # type: ignore[arg-type]
     assert result["error"] == "connection_error"
     assert "down" in result["message"]
+
+
+def test_dispatch_task_tool_exposes_files_verification_neighbor_contracts() -> None:
+    """The registered ``dispatch_task`` MCP tool (not just its _impl helper)
+    must declare files/verification/neighbor_contracts as callable parameters,
+    or an orchestrating agent has no way to discover it can pass them."""
+    tools = {t.name: t for t in server.mcp._tool_manager.list_tools()}
+    properties = tools["dispatch_task"].parameters["properties"]
+    assert "files" in properties
+    assert "verification" in properties
+    assert "neighbor_contracts" in properties
+
+
+async def test_dispatch_task_tool_wrapper_forwards_the_three_fields(
+    monkeypatch: Any,
+) -> None:
+    """Exercise the real ``@mcp.tool()`` wrapper (``t.fn``), not ``_impl``
+    directly, so a wrapper that forgets to pass a kwarg through is caught."""
+    tools = {t.name: t for t in server.mcp._tool_manager.list_tools()}
+    fake = FakeClient({("POST", "/api/dispatch"): {"ok": True}})
+    monkeypatch.setattr(server.PraxisClient, "from_env", classmethod(lambda _cls: fake))
+    await tools["dispatch_task"].fn(
+        repo_url="https://github.com/u/r",
+        instructions="add X",
+        model="qwen3-32b",
+        files=["src/api/users.py"],
+        verification="uv run pytest tests/test_users.py",
+        neighbor_contracts="def get_user(id: str) -> dict | None: ...",
+    )
+    _, _, body = fake.calls[0]
+    assert body["files"] == ["src/api/users.py"]
+    assert body["verification"] == "uv run pytest tests/test_users.py"
+    assert body["neighbor_contracts"] == "def get_user(id: str) -> dict | None: ..."
 
 
 def test_main_callable_and_registers_tools() -> None:

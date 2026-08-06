@@ -385,6 +385,72 @@ async def test_dispatch_plan_path_and_plan_text_stored_in_opus_plan(
     assert task["plan_text"] == "# Plan\n- step 1\n- step 2"
 
 
+async def test_dispatch_files_verification_neighbor_contracts_stored_in_opus_plan(
+    client: AsyncClient, auth_headers: dict[str, str], seeded_user: str, db: Database
+) -> None:
+    """A direct dispatch must reach the SAME opus_plan task-dict slots a
+    decomposed leaf's files/verification/neighbor_contracts populate, so the
+    worker context pack's edit-locations, acceptance, and neighbor-contracts
+    sections are not silently empty on the MCP surface."""
+    with patch("orchestrator.api.dispatch.GitOps") as mock_git:
+        inst = mock_git.return_value
+        inst.remote_head_sha = AsyncMock(return_value="abcdef")
+        resp = await client.post(
+            "/api/dispatch",
+            json={
+                "repo_url": "https://github.com/u/repo2",
+                "instructions": "implement feature Y",
+                "model": "qwen3-32b",
+                "files": ["src/api/users.py", "src/api/schemas.py"],
+                "verification": "uv run pytest tests/test_users.py",
+                "neighbor_contracts": "def get_user(id: str) -> dict | None: ...",
+            },
+            headers=auth_headers,
+        )
+    assert resp.status_code == 201, resp.text
+    plan_id = resp.json()["plan_id"]
+
+    plan_row = await db.fetch_one(
+        "SELECT opus_plan FROM plans WHERE id = ?", (plan_id,)
+    )
+    assert plan_row is not None
+    opus_plan = json.loads(plan_row["opus_plan"])
+    task = opus_plan["tasks"][0]
+    assert task["files"] == ["src/api/users.py", "src/api/schemas.py"]
+    assert task["verification"] == "uv run pytest tests/test_users.py"
+    assert task["neighbor_contracts"] == "def get_user(id: str) -> dict | None: ..."
+
+
+async def test_dispatch_omits_files_verification_neighbor_contracts_when_absent(
+    client: AsyncClient, auth_headers: dict[str, str], seeded_user: str, db: Database
+) -> None:
+    """Every existing caller omits the three fields; the opus_plan task dict
+    must stay byte-identical to before this change (no keys added)."""
+    with patch("orchestrator.api.dispatch.GitOps") as mock_git:
+        mock_git.return_value.remote_head_sha = AsyncMock(return_value="abcdef")
+        resp = await client.post(
+            "/api/dispatch",
+            json={
+                "repo_url": "https://github.com/u/repo3",
+                "instructions": "implement feature Z",
+                "model": "qwen3-32b",
+            },
+            headers=auth_headers,
+        )
+    assert resp.status_code == 201, resp.text
+    plan_id = resp.json()["plan_id"]
+
+    plan_row = await db.fetch_one(
+        "SELECT opus_plan FROM plans WHERE id = ?", (plan_id,)
+    )
+    assert plan_row is not None
+    opus_plan = json.loads(plan_row["opus_plan"])
+    task = opus_plan["tasks"][0]
+    assert "files" not in task
+    assert "verification" not in task
+    assert "neighbor_contracts" not in task
+
+
 # ---------------------------------------------------------------------------
 # expected_base_sha guard tests
 # ---------------------------------------------------------------------------

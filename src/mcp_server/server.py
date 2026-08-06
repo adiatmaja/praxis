@@ -77,6 +77,9 @@ async def dispatch_task_impl(
     context: str | None = None,
     local_context: str | None = None,
     expected_base_sha: str | None = None,
+    files: list[str] | None = None,
+    verification: str | None = None,
+    neighbor_contracts: str | None = None,
 ) -> dict[str, Any]:
     """Dispatch a single implementation task to a non-Anthropic worker model."""
     payload: dict[str, Any] = {
@@ -94,6 +97,12 @@ async def dispatch_task_impl(
         payload["local_context"] = local_context
     if expected_base_sha is not None:
         payload["expected_base_sha"] = expected_base_sha
+    if files is not None:
+        payload["files"] = files
+    if verification is not None:
+        payload["verification"] = verification
+    if neighbor_contracts is not None:
+        payload["neighbor_contracts"] = neighbor_contracts
     try:
         result = cast(dict[str, Any], await client.post("/api/dispatch", payload))
     except PraxisClientError as exc:
@@ -665,6 +674,9 @@ async def dispatch_task(
     context: str | None = None,
     local_context: str | None = None,
     expected_base_sha: str | None = None,
+    files: list[str] | None = None,
+    verification: str | None = None,
+    neighbor_contracts: str | None = None,
 ) -> dict[str, Any]:
     """Dispatch an implementation task to a non-Anthropic worker model inside Praxis.
 
@@ -683,6 +695,17 @@ async def dispatch_task(
     live values: the worker writes code, it does not run it.
 
     expected_base_sha: origin base sha you validated locally; server rejects a mismatch.
+
+    files: Optional list of repo-relative paths the worker should edit (the
+    same edit-locations slot a decomposed plan leaf gets). Improves worker
+    focus when you already know which files are in scope.
+
+    verification: Optional acceptance check for the worker to run before
+    finishing (e.g. a pytest command). Falls back to the project's configured
+    verify_cmd when omitted.
+
+    neighbor_contracts: Optional signatures of directly-adjacent functions or
+    endpoints the worker must not break while implementing this task.
     """
     return await dispatch_task_impl(
         PraxisClient.from_env(),
@@ -694,6 +717,9 @@ async def dispatch_task(
         context=context,
         local_context=local_context,
         expected_base_sha=expected_base_sha,
+        files=files,
+        verification=verification,
+        neighbor_contracts=neighbor_contracts,
     )
 
 

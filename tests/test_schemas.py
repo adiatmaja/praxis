@@ -412,6 +412,34 @@ def test_dispatch_request_context_defaults_none() -> None:
     assert req.context is None
 
 
+@pytest.mark.unit
+def test_dispatch_request_accepts_files_verification_neighbor_contracts() -> None:
+    """The three fields a decomposed leaf gets (files/verification/
+    neighbor_contracts) must also be settable on a direct dispatch, or the
+    MCP surface (the primary one) stays poorer than plan decomposition."""
+    req = DispatchRequest(
+        repo_url="https://github.com/o/r",
+        instructions="do x",
+        model="qwen3",
+        files=["src/api/users.py", "src/api/schemas.py"],
+        verification="uv run pytest tests/test_users.py",
+        neighbor_contracts="def get_user(id: str) -> dict | None: ...",
+    )
+    assert req.files == ["src/api/users.py", "src/api/schemas.py"]
+    assert req.verification == "uv run pytest tests/test_users.py"
+    assert req.neighbor_contracts == "def get_user(id: str) -> dict | None: ..."
+
+
+@pytest.mark.unit
+def test_dispatch_request_files_verification_neighbor_contracts_default_none() -> None:
+    req = DispatchRequest(
+        repo_url="https://github.com/o/r", instructions="do x", model="qwen3"
+    )
+    assert req.files is None
+    assert req.verification is None
+    assert req.neighbor_contracts is None
+
+
 def test_needs_clarification_status_exists():
     assert TaskStatus.NEEDS_CLARIFICATION == "needs_clarification"
     assert TaskStatus.NEEDS_CLARIFICATION != TaskStatus.FAILED

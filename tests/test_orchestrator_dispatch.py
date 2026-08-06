@@ -4,14 +4,16 @@
 from __future__ import annotations
 
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from httpx import AsyncClient
 
 from orchestrator.core.event_bus import EventBus
 from orchestrator.core.orchestrator import Orchestrator
 from orchestrator.core.task_queue import TaskQueue
 from orchestrator.database import Database
+from tests.conftest import seed_user
 
 
 async def _setup_with_plan_task(
@@ -200,3 +202,112 @@ class TestDispatchMixinEditLocations:
         assert "src/api/users.py" in bible
         assert "src/api/schemas.py" in bible
         assert "{'path'" not in bible
+
+
+@pytest.mark.integration
+async def test_directly_dispatched_files_verification_neighbor_contracts_reach_bible(
+    client: AsyncClient, auth_headers: dict[str, str], db: Database
+) -> None:
+    """The full real path, no hand-written opus_plan anywhere.
+
+    POST /api/dispatch with files/verification/neighbor_contracts -> the
+    endpoint's opus_plan task dict -> dispatch_pending_tasks reads it back via
+    slug_to_plan_task -> the worker bible. This is the test with teeth: if the
+    endpoint accepts the fields but drops them before the bible is built, the
+    schema-only and opus_plan-storage tests stay green while this one goes red.
+    """
+    await seed_user(db)
+    with patch("orchestrator.api.dispatch.GitOps") as mock_git:
+        mock_git.return_value.remote_head_sha = AsyncMock(return_value="abcdef")
+        resp = await client.post(
+            "/api/dispatch",
+            json={
+                "repo_url": "https://github.com/u/repo-e2e",
+                "instructions": "implement feature E2E",
+                "model": "qwen3-32b",
+                "files": ["src/api/users.py"],
+                "verification": "uv run pytest tests/test_users.py",
+                "neighbor_contracts": "def get_user(id: str) -> dict | None: ...",
+            },
+            headers=auth_headers,
+        )
+    assert resp.status_code == 201, resp.text
+    plan_id = resp.json()["plan_id"]
+    project_id = resp.json()["project_id"]
+
+    task_queue = TaskQueue(db)
+    project = await task_queue.get_project(project_id)
+    assert project is not None
+
+    mock_agent_manager = MagicMock()
+    mock_agent_manager.spawn_agent = AsyncMock(return_value="container-e2e")
+    mock_git_ops = AsyncMock()
+    mock_git_ops.branch_commit_log = AsyncMock(return_value=[])
+
+    orch = Orchestrator(
+        task_queue=task_queue,
+        agent_manager=mock_agent_manager,
+        opus_bridge=AsyncMock(),
+        git_ops=mock_git_ops,
+        event_bus=EventBus(),
+    )
+    orch._start_monitor = lambda *_: None  # type: ignore[assignment, method-assign]
+    orch._effective_settings = None
+
+    await orch.dispatch_pending_tasks(plan_id, dict(project))
+
+    mock_agent_manager.spawn_agent.assert_called_once()
+    bible = str(mock_agent_manager.spawn_agent.call_args.kwargs["bible_text"])
+    assert "# EDIT LOCATIONS" in bible
+    assert "src/api/users.py" in bible
+    assert "uv run pytest tests/test_users.py" in bible
+    assert "def get_user(id: str) -> dict | None: ..." in bible
+
+
+@pytest.mark.integration
+async def test_directly_dispatched_task_without_the_three_fields_is_unchanged(
+    client: AsyncClient, auth_headers: dict[str, str], db: Database
+) -> None:
+    """Every existing MCP/API caller omits the three fields; the bible must
+    stay exactly as it was before this feature (no invented sections)."""
+    await seed_user(db)
+    with patch("orchestrator.api.dispatch.GitOps") as mock_git:
+        mock_git.return_value.remote_head_sha = AsyncMock(return_value="abcdef")
+        resp = await client.post(
+            "/api/dispatch",
+            json={
+                "repo_url": "https://github.com/u/repo-e2e-plain",
+                "instructions": "implement feature plain",
+                "model": "qwen3-32b",
+            },
+            headers=auth_headers,
+        )
+    assert resp.status_code == 201, resp.text
+    plan_id = resp.json()["plan_id"]
+    project_id = resp.json()["project_id"]
+
+    task_queue = TaskQueue(db)
+    project = await task_queue.get_project(project_id)
+    assert project is not None
+
+    mock_agent_manager = MagicMock()
+    mock_agent_manager.spawn_agent = AsyncMock(return_value="container-e2e-plain")
+    mock_git_ops = AsyncMock()
+    mock_git_ops.branch_commit_log = AsyncMock(return_value=[])
+
+    orch = Orchestrator(
+        task_queue=task_queue,
+        agent_manager=mock_agent_manager,
+        opus_bridge=AsyncMock(),
+        git_ops=mock_git_ops,
+        event_bus=EventBus(),
+    )
+    orch._start_monitor = lambda *_: None  # type: ignore[assignment, method-assign]
+    orch._effective_settings = None
+
+    await orch.dispatch_pending_tasks(plan_id, dict(project))
+
+    mock_agent_manager.spawn_agent.assert_called_once()
+    bible = str(mock_agent_manager.spawn_agent.call_args.kwargs["bible_text"])
+    assert "# EDIT LOCATIONS" not in bible
+    assert "# NEIGHBOR INTERFACES" not in bible

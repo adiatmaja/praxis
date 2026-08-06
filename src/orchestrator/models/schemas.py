@@ -528,6 +528,19 @@ class DispatchRequest(BaseModel):
     When set, the server rejects the dispatch if it does not match the current
     ``origin/<branch>`` head (defense-in-depth against dispatching stale code
     when local commits were never pushed). Read-only remote compare."""
+    files: list[str] | None = None
+    """Edit locations for the worker (decomposition-standard rank 2), the same
+    shape as ``LeafTask.files``. A direct dispatch has no decomposition step to
+    supply this, so without it the worker's edit-locations pack section is
+    simply empty. Optional; omit to leave that section empty, as before."""
+    verification: str | None = None
+    """Acceptance check for the worker (decomposition-standard rank 3 slot).
+    Falls back to the project's ``verify_cmd`` when omitted, same as a
+    decomposed leaf that declares no check of its own."""
+    neighbor_contracts: str | None = None
+    """Signatures of direct neighbors the worker should not break
+    (decomposition-standard rank 4, optional), the same shape as
+    ``LeafTask.neighbor_contracts``."""
 
     @field_validator("repo_url")
     @classmethod
