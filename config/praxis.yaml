@@ -23,6 +23,25 @@ capability:
 escalation:
   policy: block   # block | brain | paid_fallback
 
+# Ordered implementer ladder for a leaf the brain triages as "escalate".
+# The implement seat is spawn-baked, so this is a dispatch-time substitution,
+# not a router fallback chain. Escalation stops when this list is exhausted;
+# the leaf then parks for a human.
+#
+# Every rung must name an implementer STRONGER than default_worker_model
+# (currently agy / "Gemini 3.6 Flash (High)"), or the escalation is a no-op.
+# Rung availability is deployment-specific: glm-4.7 needs an API key for the
+# hosted endpoint, and qwen3.6-27b needs LM Studio reachable.
+implement_escalation:
+  - harness: opencode
+    model: "glm-4.7"
+  - harness: opencode
+    model: "qwen3.6-27b"
+
+# Hard ceiling on leaves in one plan, counting split children. Adaptive
+# splitting without this is an unbounded token spend.
+max_leaves_per_plan: 24
+
 models:
   registry:
     - { name: opus,   provider: claude, model: claude-opus-4-8,   effort: high }

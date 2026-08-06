@@ -255,6 +255,25 @@ class EffectiveSettings:
         yaml_data = await self._get_yaml()
         return str(yaml_data.get("escalation", {}).get("policy", "block"))
 
+    async def implement_escalation(self) -> list[dict[str, Any]]:
+        """Return the ordered implementer escalation ladder from YAML.
+
+        Returns an empty list when unconfigured, which means "never escalate";
+        a triage ``escalate`` decision then falls through to ``human``.
+        """
+        yaml_data = await self._get_yaml()
+        ladder = yaml_data.get("implement_escalation") or []
+        return list(ladder) if isinstance(ladder, list) else []
+
+    async def max_leaves_per_plan(self) -> int:
+        """Return the hard ceiling on total leaves in one plan (default 24)."""
+        yaml_data = await self._get_yaml()
+        raw = yaml_data.get("max_leaves_per_plan", 24)
+        try:
+            return int(raw)
+        except (TypeError, ValueError):
+            return 24
+
     async def approvals_digest_interval_h(self) -> float:
         """Return hours between ``approvals_digest`` SSE events, YAML-configurable.
 
