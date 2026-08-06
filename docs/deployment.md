@@ -322,6 +322,7 @@ env vars); secrets (`AUTH_TOKEN`, GitHub App private key or `GITHUB_TOKEN`) stay
 | `PORT` | No | `12323` | Host port (uncommon by design to avoid 8080 collisions; MCP `PRAXIS_BASE_URL` and agent callbacks must match it) |
 | `GEMINI_CREDS_VOLUME` | No | `praxis-gemini-creds` | Docker volume holding agy OAuth creds; only used by the `agy` harness (see [agy setup](#agy-antigravity--gemini-harness--one-time-credential-setup)) |
 | `OPENCODE_SESSIONS_VOLUME` | No | `praxis-opencode-sessions` | BASE name for the per-task OpenCode session volumes used by worker session resume; the actual volume is `<base>-<task-id>` (see [OpenCode session volume](#opencode-session-volume-no-setup-required)). Unlike `GEMINI_CREDS_VOLUME`, needs no interactive seeding; unset disables persistence (cold starts, never an error) |
+| `PRAXIS_CONFIG_PATH` | No | `config/praxis.yaml` | Path to the global settings YAML. Compose sets it to `/app/config/praxis.yaml`, inside the read-only `./config` bind mount. Unlike every other `PRAXIS_*` var it is a pointer to the file, not a setting inside it, so it is never folded into the loaded settings |
 
 Global orchestrator defaults also live in `config/praxis.yaml` (env-overridable via `PRAXIS_*`),
 including the auto-delegate global default worker:
@@ -331,10 +332,11 @@ including the auto-delegate global default worker:
 | `default_worker_harness` | `opencode` | Harness for the global default worker used in auto-delegate mode and as a project fallback. Reference config sets `agy` |
 | `default_worker_model` | `""` | Model for the global default worker. Reference config sets `Gemini 3.6 Flash (High)` |
 
-> **Gotcha:** the dev compose (`docker-compose.local.yml`) mounts `src/`, `web/`, `.git/`, and
-> `data/` for hot-reload, but **not** `config/`. Editing `config/praxis.yaml` therefore has no
-> effect until you rebuild the orchestrator image (the YAML is baked in), unlike a `src/` edit
-> which hot-reloads. Rebuild with `docker compose ... up --build -d` after changing it.
+> **Mounted, not baked:** both compose files bind-mount `./config` read-only at
+> `/app/config`, and the base file points `PRAXIS_CONFIG_PATH` at it (the dev overlay
+> inherits that through the compose environment merge). Editing `config/praxis.yaml`
+> therefore takes effect on `docker compose restart orchestrator`, with no image rebuild.
+> This reverses the pre-2026-08-06 behavior, where the YAML was baked in at build time.
 
 The auto-delegate toggle itself is runtime state (`auto_delegate.enabled` in `settings_overrides`),
 set via `praxis mode on|off` or `PUT /api/settings/auto-delegate`, not a config file.
