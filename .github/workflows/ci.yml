@@ -26,14 +26,17 @@ jobs:
       - name: Install dependencies
         run: uv sync --extra dev
 
+      # bench/ is deliberately outside the wheel (packages.find roots at src/)
+      # and omitted from coverage, but it is NOT exempt from lint or types: it
+      # grows through the benchmark phases and would otherwise rot unchecked.
       - name: Format check
-        run: uv run ruff format --check src/ tests/
+        run: uv run ruff format --check src/ tests/ bench/
 
       - name: Lint
-        run: uv run ruff check src/ tests/
+        run: uv run ruff check src/ tests/ bench/
 
       - name: Type check
-        run: uv run mypy src/ --ignore-missing-imports
+        run: uv run mypy src/ bench/ --ignore-missing-imports
 
   test:
     strategy:
