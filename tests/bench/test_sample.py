@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from bench.sample import draw_stratified
+from bench.sample import draw_stratified, main
 
 
 def _pool(n: int = 400) -> list[dict]:
@@ -109,3 +109,25 @@ def test_the_committed_pilot_sample_is_valid():
         assert len(entry["base_commit"]) >= 7
         assert entry["stratum_patch"] in {"small", "medium", "large"}
         assert entry["stratum_repo"] in {"tiny", "mid", "big"}
+
+
+@pytest.mark.unit
+def test_the_written_sample_file_uses_lf_line_endings_only(tmp_path):
+    """The drawn sample is a COMMITTED artifact, and this repo is LF.
+
+    ``Path.write_text`` without an explicit ``newline`` translates line feeds
+    to ``os.linesep``, so on Windows the committed sample lands as CRLF against
+    a repo whose ``core.autocrlf`` is false. It reads back fine through ``json``
+    and through ``splitlines``, so nothing else in this file can see it. The
+    first committed draw was in fact CRLF for exactly this reason.
+    """
+    pool = tmp_path / "pool.json"
+    pool.write_text(json.dumps(_pool(30)), encoding="utf-8", newline="\n")
+    out = tmp_path / "sample.json"
+
+    assert main(["--pool", str(pool), "--out", str(out), "--per-stratum", "1"]) == 0
+
+    raw = out.read_bytes()
+    assert b"\r\n" not in raw
+    assert raw.endswith(b"\n")
+    assert json.loads(raw.decode("utf-8"))["instances"]

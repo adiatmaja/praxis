@@ -99,6 +99,10 @@ def main(argv: list[str] | None = None) -> int:
         )
         + "\n",
         encoding="utf-8",
+        # Without this, Windows text mode translates to CRLF and the COMMITTED
+        # sample lands with the wrong line endings in an LF repo. It still
+        # parses and still splits into lines, so nothing downstream notices.
+        newline="\n",
     )
     logger.info("wrote %d instances to %s", len(instances), args.out)
     return 0
