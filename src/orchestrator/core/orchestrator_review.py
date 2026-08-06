@@ -11,7 +11,7 @@ import contextlib
 import json
 import logging
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -27,6 +27,7 @@ from orchestrator.core.diff_guard import (
 )
 from orchestrator.core.diff_stats import diff_stats
 from orchestrator.core.failure_taxonomy import FailureClass
+from orchestrator.core.git_backend import GitBackend, PullRequestRef
 from orchestrator.core.git_ops import (
     checkout_branch,
     clone_with_token,
@@ -76,6 +77,33 @@ class ReviewMixin:
         _doc_indexer: Any
         _context_sync: Any
 
+        def _resolve_backend(self, repo_url: str) -> GitBackend:
+            pass
+
+    def _pull_request_ref(self, pr_url: str, repo_url: str) -> PullRequestRef:
+        """Parse a stored ``pr_url``, guaranteeing a GitHub ref names its repo.
+
+        Args:
+            pr_url: The task's stored ``pr_url``.
+            repo_url: The project's repository URL, used to fill a missing repo.
+
+        Returns:
+            The parsed reference.
+
+        Raises:
+            ValueError: If ``pr_url`` is not a recognized pull-request reference.
+        """
+        ref = PullRequestRef.from_url(pr_url)
+        if ref.backend == "github" and ref.repo is None:
+            # Target the PR's own repo explicitly; otherwise gh resolves the PR
+            # against the orchestrator's own cwd and acts on the wrong repository.
+            # Unreachable via ``from_url`` today (its GitHub regex always
+            # captures owner/name), so this is defense in depth for a future URL
+            # shape.  The load-bearing guard is ``GitHubBackend._repo``, which
+            # fails closed on a repo-less ref and is tested there.
+            ref = replace(ref, repo=self._git.repo_slug(repo_url))
+        return ref
+
     async def review_task(self, task_id: str, project: dict[str, Any]) -> None:
         """Review a task PR with Opus and merge or retry accordingly."""
 
@@ -96,12 +124,16 @@ class ReviewMixin:
             self._bus.publish({"type": "opus_queued", "action": "review"})
             return
 
-        pr_number = await self._git.extract_pr_number(task["pr_url"])
-        # Target the PR's own repo explicitly; otherwise gh resolves the PR
-        # against the orchestrator's own cwd and reviews the wrong diff.
-        repo = self._git.repo_slug(task["pr_url"]) or self._git.repo_slug(
-            project["repo_url"]
-        )
+        backend = self._resolve_backend(project["repo_url"])
+        try:
+            ref = self._pull_request_ref(task["pr_url"], project["repo_url"])
+        except ValueError:
+            logger.warning(
+                "Task %s has an unparseable pr_url %r; skipping review",
+                task_id,
+                task["pr_url"],
+            )
+            return
 
         # Resolve plan_text for this task from the plan's opus_plan task list.
         plan_text_for_review: str | None = None
@@ -129,7 +161,7 @@ class ReviewMixin:
         checkout: str | None
         with tempfile.TemporaryDirectory() as _checkout_dir:
             try:
-                await self._git.clone_pr_head(task["pr_url"], _checkout_dir)
+                await backend.checkout(ref, _checkout_dir)
                 checkout = _checkout_dir
             except Exception:  # noqa: BLE001 - degrade, never wedge review
                 logger.exception(
@@ -154,7 +186,7 @@ class ReviewMixin:
             # fail the task; on gate failure the diff is unused (verdict is fail).
             diff = ""
             if review is None:
-                diff = await self._git.get_pr_diff(".", pr_number, repo=repo)
+                diff = await backend.get_diff(ref)
                 review = await self._opus.review_diff(
                     diff,
                     task["description"] or task["title"],
@@ -229,7 +261,7 @@ class ReviewMixin:
             base_branch = plan.get("plan_branch_name") if plan else None
             if auto_merge_eligible(project, base_branch):
                 await _record("pass", None)
-                await self._git.merge_pr(".", pr_number, repo=repo)
+                await backend.merge(ref)
                 await self._tq.mark_merged(task_id)
                 await self._sync_plan_checkbox(task)
                 self._bus.publish(
@@ -261,7 +293,7 @@ class ReviewMixin:
             else FailureClass.FIXABLE_IN_PLACE.value
         )
         await _record("fail", fail_class)
-        await self._git.comment_on_pr(".", pr_number, feedback, repo=repo)
+        await backend.comment(ref, feedback)
         await self._tq.fail_task(task_id, feedback)
         if int(task["attempt"]) < int(project["max_retries"]):
             await self._tq.retry_task(task_id)
@@ -409,7 +441,10 @@ class ReviewMixin:
             project: Project dict (needs ``repo_url``).
 
         Raises:
-            ValueError: If the task is missing or not in the PASSED state.
+            ValueError: If the task is missing, not in the PASSED state, or
+                carries a ``pr_url`` no backend can parse.  This path is
+                operator-driven, so a bad ref must surface as an error rather
+                than let an approve click silently do nothing.
         """
         task = await self._tq.get_task(task_id)
         if task is None:
@@ -419,12 +454,14 @@ class ReviewMixin:
             msg = f"Task {task_id} is not awaiting merge"
             raise ValueError(msg)
 
-        pr_number = await self._git.extract_pr_number(task["pr_url"])
-        repo = self._git.repo_slug(task["pr_url"]) or self._git.repo_slug(
-            project["repo_url"]
-        )
+        backend = self._resolve_backend(project["repo_url"])
+        try:
+            ref = self._pull_request_ref(task["pr_url"], project["repo_url"])
+        except ValueError as exc:
+            msg = f"Task {task_id} has an unparseable pr_url {task['pr_url']!r}"
+            raise ValueError(msg) from exc
         # Human approval: no auto_merge gate or protected-branch check applies here.
-        await self._git.merge_pr(".", pr_number, repo=repo)
+        await backend.merge(ref)
         await self._tq.mark_merged(task_id)
         await self._sync_plan_checkbox(task)
         self._bus.publish(
@@ -449,7 +486,9 @@ class ReviewMixin:
             feedback: Optional rejection message posted as a PR comment.
 
         Raises:
-            ValueError: If the task is missing or not in the PASSED state.
+            ValueError: If the task is missing, not in the PASSED state, or
+                carries a ``pr_url`` no backend can parse.  Like approval, this
+                path is operator-driven and must never silently no-op.
         """
         task = await self._tq.get_task(task_id)
         if task is None:
@@ -460,11 +499,13 @@ class ReviewMixin:
             raise ValueError(msg)
 
         message = feedback or "Merge rejected by user."
-        pr_number = await self._git.extract_pr_number(task["pr_url"])
-        repo = self._git.repo_slug(task["pr_url"]) or self._git.repo_slug(
-            project["repo_url"]
-        )
-        await self._git.comment_on_pr(".", pr_number, message, repo=repo)
+        backend = self._resolve_backend(project["repo_url"])
+        try:
+            ref = self._pull_request_ref(task["pr_url"], project["repo_url"])
+        except ValueError as exc:
+            msg = f"Task {task_id} has an unparseable pr_url {task['pr_url']!r}"
+            raise ValueError(msg) from exc
+        await backend.comment(ref, message)
         await self._tq.fail_task(task_id, message)
         if int(task["attempt"]) < int(project["max_retries"]):
             await self._tq.retry_task(task_id)

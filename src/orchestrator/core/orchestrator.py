@@ -10,6 +10,7 @@ from typing import Any
 from orchestrator.core.agent_prompt import build_implementer_prompt
 from orchestrator.core.capability_events import CapabilityEventEmitter
 from orchestrator.core.event_bus import EventBus
+from orchestrator.core.git_backend import GitBackend, resolve_backend
 from orchestrator.core.llm_router import ProviderAuthError
 from orchestrator.core.orchestrator_dispatch import DispatchMixin
 from orchestrator.core.orchestrator_improve import ImprovementMixin
@@ -81,6 +82,17 @@ class Orchestrator(DispatchMixin, ReviewMixin, ReconcileMixin, ImprovementMixin)
         # Last time an approvals_digest SSE event was published (rate-limits
         # the event; the underlying summary is always fresh on every poll).
         self._last_approvals_digest_at: datetime | None = None
+
+    def _resolve_backend(self, repo_url: str) -> GitBackend:
+        """Return the git backend for a project. Overridable in tests.
+
+        Args:
+            repo_url: The project's configured repository URL or path.
+
+        Returns:
+            A ``GitBackend``: GitHub for a remote URL, local for a filesystem path.
+        """
+        return resolve_backend(repo_url, self._git)
 
     async def plan_and_activate(self, plan_id: str, project: dict[str, Any]) -> None:
         """Ask Opus to plan a pending spec and activate the resulting task graph."""
