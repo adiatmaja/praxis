@@ -31,6 +31,8 @@ jobs:
             echo "== $f"
             bash -n "$f"
           done
+      - name: Validate compose with the agents profile
+        run: docker compose --profile agents config --quiet
 
   build-agents:
     runs-on: ubuntu-latest

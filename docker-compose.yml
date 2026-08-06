@@ -68,6 +68,29 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
 
+  # Build-only entries so ONE documented command builds every image the
+  # orchestrator can spawn: `docker compose --profile agents build`. These are
+  # not long-running services; the `agents` profile keeps them out of a plain
+  # `docker compose up`. Note that an entrypoint.sh change still requires a
+  # rebuild; `praxis doctor` detects a stale image and says so.
+  opencode-agent:
+    build:
+      context: docker/opencode-agent
+      dockerfile: Dockerfile
+    image: opencode-agent:latest
+    command: ["true"]
+    profiles:
+      - agents
+
+  agy-agent:
+    build:
+      context: docker/agy-agent
+      dockerfile: Dockerfile
+    image: agy-agent:latest
+    command: ["true"]
+    profiles:
+      - agents
+
   caddy:
     image: caddy:2-alpine
     container_name: caddy
