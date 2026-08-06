@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from orchestrator.config import Settings
 from orchestrator.database import Database
 from orchestrator.models.schemas import CapabilityProfile
+
+
+if TYPE_CHECKING:
+    from orchestrator.core.worker_presets import WorkerPreset
 
 
 # Keys that callers are allowed to override at runtime.
@@ -82,6 +86,13 @@ class EffectiveSettings:
             "harness": self._settings.default_worker_harness,
             "model": self._settings.default_worker_model,
         }
+
+    async def worker_presets(self) -> list[WorkerPreset]:
+        """Return the configured worker presets, parsed and validated."""
+        from orchestrator.core.worker_presets import parse_presets
+
+        yaml_data = await self._get_yaml()
+        return parse_presets(yaml_data.get("worker_presets") or [])
 
     async def all_editable(self) -> dict[str, dict[str, Any]]:
         """Return {key: {"value": <effective>, "overridden": <bool>}} for editable keys."""

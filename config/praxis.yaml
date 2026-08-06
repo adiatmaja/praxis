@@ -32,3 +32,26 @@ models:
 default_worker_harness: agy
 default_worker_model: "Gemini 3.6 Flash (High)"
 
+# Named worker configurations. Choosing one sets harness, model, and endpoint
+# together; there is no new resolution logic, only fewer fields to get right.
+# `praxis init` offers hosted-openweight first because it needs no local GPU.
+worker_presets:
+  - name: hosted-openweight
+    label: "Hosted open-weight model (OpenAI-compatible endpoint)"
+    harness: opencode
+    model: "glm-4.7"
+    endpoint: "https://api.z.ai/v1"
+    requires: [api_key]
+  - name: local-lmstudio
+    label: "Local GPU via LM Studio"
+    harness: opencode
+    model: "qwen3.6-27b"
+    endpoint: "http://host.docker.internal:1234"
+    requires: []
+  - name: gemini-agy
+    label: "Gemini via the agy harness"
+    harness: agy
+    model: "Gemini 3.6 Flash (High)"
+    endpoint: ""
+    requires: [interactive_login]
+

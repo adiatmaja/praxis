@@ -417,7 +417,7 @@
           '<div class="formrow"><label>Name</label><input id="pf-name" required autocomplete="off"></div>' +
           '<div class="formrow"><label>Repository URL</label><input id="pf-repo" required autocomplete="off" placeholder="https://github.com/user/repo"></div>' +
           '<div class="formrow"><label>Model (implementer)</label>' +
-            '<select id="pf-model-select" onchange="onModelPreset(this.value)"><option value="">Loading models…</option></select>' +
+            '<select id="pf-model-select" onchange="onModelPreset(this)"><option value="">Loading models…</option></select>' +
             '<input id="pf-model" required autocomplete="off" placeholder="model id" style="margin-top:6px;display:none;"></div>' +
           '<div class="formrow"><label>Agent model (reasoning)</label>' +
             '<select id="pf-agent-model-preset" onchange="onAgentModelPreset(this.value)">' +
@@ -445,8 +445,9 @@
       return html;
     }
 
-    function onModelPreset(value) {
+    function onModelPreset(select) {
       const custom = document.getElementById("pf-model");
+      const value = select.value;
       if (value === "__custom__") {
         custom.style.display = "block";
         custom.value = "";
@@ -455,23 +456,46 @@
         custom.style.display = "none";
         custom.value = value;
       }
+      // Selecting a preset option sets the harness field too: presets are
+      // convenience wiring over harness+model+endpoint together.
+      const opt = select.selectedOptions && select.selectedOptions[0];
+      const harness = opt && opt.dataset.harness;
+      if (harness) {
+        const harnessSel = document.getElementById("project-harness");
+        if (harnessSel) harnessSel.value = harness;
+      }
     }
 
     async function loadLmModels() {
       const select = document.getElementById("pf-model-select");
       const custom = document.getElementById("pf-model");
       if (!select) return;
+      let presets = [];
+      try {
+        const data = await api("GET", "/api/settings/presets");
+        presets = data.presets || [];
+      } catch (e) { /* presets unavailable, fall through to the LM Studio list */ }
       let models = [];
       try {
         const data = await api("GET", "/api/lm-models");
         models = data.models || [];
       } catch (e) { /* fall through to manual entry */ }
-      if (models.length) {
-        select.innerHTML = models.map(m => '<option value="' + esc(m) + '">' + esc(m) + '</option>').join("") +
-          '<option value="__custom__">Custom…</option>';
-        if (custom) { custom.style.display = "none"; custom.value = models[0]; }
+      if (presets.length || models.length) {
+        const presetGroups = presets.map(p =>
+          '<optgroup label="' + esc(p.label) + '">' +
+            '<option value="' + esc(p.model) + '" data-harness="' + esc(p.harness) + '">' + esc(p.model) + '</option>' +
+          '</optgroup>'
+        ).join("");
+        const lmGroup = models.length
+          ? '<optgroup label="Other (from LM Studio)">' +
+              models.map(m => '<option value="' + esc(m) + '">' + esc(m) + '</option>').join("") +
+            '</optgroup>'
+          : "";
+        select.innerHTML = presetGroups + lmGroup + '<option value="__custom__">Custom…</option>';
+        select.style.display = "";
+        if (custom) { custom.style.display = "none"; custom.value = select.value; }
       } else {
-        // LM Studio unreachable — fall back to a free-text field
+        // Neither presets nor LM Studio are reachable, fall back to a free-text field
         select.style.display = "none";
         if (custom) { custom.style.display = "block"; custom.placeholder = "model id (LM Studio unreachable)"; }
       }
