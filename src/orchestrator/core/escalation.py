@@ -4,7 +4,10 @@ The implement seat is spawn-baked (the worker model is chosen when the
 container is created), so escalation cannot ride the LLM router's role fallback
 chain the way plan and review do.  It is a dispatch-time substitution: the task
 carries an ``escalation_index``, and the next dispatch reads the pair at that
-index from ``implement_escalation`` in ``config/praxis.yaml``.
+index from the ``implement_escalation`` key in the global settings YAML, which
+``EffectiveSettings.implement_escalation`` resolves.  The path to that file is
+decided in exactly one place, ``core/settings_file.config_file_path``; naming it
+literally here would trip the grep guard in ``tests/test_config_path.py``.
 
 Escalate a leaf, not a plan (FrugalGPT cascade economics, arXiv 2305.05176).
 """
