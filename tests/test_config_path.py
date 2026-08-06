@@ -34,6 +34,19 @@ CONFIG_MOUNT_TARGET = "/app/config"
 # with every Python test still green.
 DOCKER_MOUNT_TARGET = "/app/docker"
 
+#: The two compose files, keyed by the name a failure should name.
+COMPOSE_FILES = {
+    "docker-compose.yml": BASE_COMPOSE,
+    "docker-compose.local.yml": DEV_COMPOSE,
+}
+
+#: The worker preset `praxis init` records in `.env`.  Both halves have to
+#: reach the container together: forwarding only `LM_STUDIO_URL` (the state
+#: before 2026-08-06) left the endpoint from the operator's preset pointing at
+#: a harness and model the container never adopted, and nothing reported the
+#: disagreement.
+WORKER_PRESET_VARS = ("DEFAULT_WORKER_HARNESS", "DEFAULT_WORKER_MODEL")
+
 
 def _mounts(compose: dict) -> list[tuple[str, str, str]]:
     """Return the orchestrator's short-form volumes as (source, target, mode).
@@ -65,12 +78,38 @@ def _merged_mounts() -> dict[str, tuple[str, str]]:
     return merged
 
 
-def _environment(compose: dict) -> dict[str, str]:
-    """Return the orchestrator's `KEY=value` environment list as a dict."""
+def _environment(compose: dict) -> dict[str, str | None]:
+    """Return the orchestrator's environment list as a dict.
+
+    A bare `- KEY` entry (compose's pass-through form) maps to None, which is
+    a different thing from `- KEY=`: pass-through leaves the variable UNSET in
+    the container when the host has no value for it, while an expansion of an
+    unset variable sets it to the empty string.  Collapsing the two here would
+    hide exactly the distinction the worker-preset assertions below exist to
+    pin.
+    """
     env = compose["services"]["orchestrator"].get("environment", [])
     if isinstance(env, dict):
-        return {key: "" if value is None else str(value) for key, value in env.items()}
-    return dict(entry.split("=", 1) for entry in env)
+        return {
+            key: None if value is None else str(value) for key, value in env.items()
+        }
+    parsed: dict[str, str | None] = {}
+    for entry in env:
+        key, sep, value = entry.partition("=")
+        parsed[key] = value if sep else None
+    return parsed
+
+
+def _merged_environment() -> dict[str, str | None]:
+    """Environment as `docker compose -f base -f local` resolves it.
+
+    Compose merges `environment` key-wise with the later file winning, so a
+    variable stated only in the base file still reaches the dev stack.
+    """
+    merged: dict[str, str | None] = {}
+    for compose in (BASE_COMPOSE, DEV_COMPOSE):
+        merged.update(_environment(compose))
+    return merged
 
 
 @pytest.mark.unit
@@ -237,6 +276,62 @@ def test_the_entrypoint_mount_lands_where_the_gathering_code_looks():
     from orchestrator.api.doctor import _ENTRYPOINT_ROOT
 
     assert f"/app/{_ENTRYPOINT_ROOT.as_posix()}" == DOCKER_MOUNT_TARGET
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("var", WORKER_PRESET_VARS)
+@pytest.mark.parametrize("name", sorted(COMPOSE_FILES))
+def test_every_compose_file_forwards_the_worker_preset(name, var):
+    """`praxis init` writes the preset to .env; compose has to carry it in.
+
+    Dropped, the container falls back to config/praxis.yaml for its worker
+    defaults while still honouring the preset's LM_STUDIO_URL, which IS
+    forwarded.  The two halves of one preset then disagree, the operator is
+    told the preset was recorded, and no log line anywhere mentions that the
+    running worker is a different one.
+    """
+    assert var in _environment(COMPOSE_FILES[name]), (
+        f"{name} does not forward {var} into the orchestrator container"
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("var", WORKER_PRESET_VARS)
+@pytest.mark.parametrize("name", sorted(COMPOSE_FILES))
+def test_the_worker_preset_is_passed_through_never_given_a_compose_default(name, var):
+    """The bare form, because `- VAR=${VAR:-x}` inverts the precedence.
+
+    Settings precedence is env > YAML > field default.  Verified against
+    Docker Compose v5.3.0: `- VAR=${VAR}` with VAR unset yields `VAR: ""` in
+    the resolved config, so the container gets an authored empty value that
+    suppresses the mounted config/praxis.yaml entirely; a `:-default` is
+    worse still, since it wins on every run.  Bare `- VAR` yields `VAR: null`,
+    which is not set at all, so an operator who chose no preset keeps the YAML
+    in charge.  Both wrong forms are silent: the orchestrator boots and serves
+    a worker nobody selected.
+    """
+    assert _environment(COMPOSE_FILES[name])[var] is None, (
+        f"{name} must list {var} as a bare pass-through entry, not `{var}=...`: "
+        "an expansion sets the variable to an empty string when unset and the "
+        "mounted YAML default is then never read"
+    )
+
+
+@pytest.mark.unit
+def test_every_key_init_manages_reaches_the_container():
+    """The general case of the bug, so the next added key cannot repeat it.
+
+    Asserted on the MERGED environment, which is what the dev stack actually
+    runs: PORT is stated only in the base file and still reaches dev.
+    """
+    from cli.init import MANAGED_KEYS
+
+    merged = _merged_environment()
+    missing = [key for key in MANAGED_KEYS if key not in merged]
+    assert missing == [], (
+        f"`praxis init` writes {missing} to .env but no compose file forwards "
+        "them, so the operator's answer is inert in the container"
+    )
 
 
 @pytest.mark.unit

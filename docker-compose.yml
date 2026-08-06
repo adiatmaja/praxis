@@ -57,6 +57,16 @@ services:
       - GITHUB_TOKEN=${GITHUB_TOKEN}
       - DATABASE_URL=sqlite+aiosqlite:///data/orchestrator.db
       - LM_STUDIO_URL=${LM_STUDIO_URL:-http://host.docker.internal:1234}
+      # The worker preset `praxis init` records in .env. Listed BARE (compose's
+      # pass-through form), never as `${VAR}` or `${VAR:-default}`. Settings
+      # precedence is env > YAML > field default, and verified against Docker
+      # Compose v5.3.0: an unset `- VAR=${VAR}` resolves to `VAR: ""`, which is
+      # a set-but-empty variable that suppresses the mounted config/praxis.yaml
+      # for good; the bare form resolves to `VAR: null` and is simply not set,
+      # so an operator who chose no preset keeps the YAML in charge. The bare
+      # form still reads the project .env, which is where init writes.
+      - DEFAULT_WORKER_HARNESS
+      - DEFAULT_WORKER_MODEL
       - HOST=0.0.0.0
       - PORT=8080
       # Container timezone.  Keeps log timestamps in sync with the host so

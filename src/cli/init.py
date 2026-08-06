@@ -572,15 +572,15 @@ def _print_next_steps(api_url: str, token: str, preset: Mapping[str, Any]) -> No
     powershell = "; ".join(f'$env:{n}="{v}"' for n, v in exports.items())
     console.print(f"  (PowerShell: {powershell})", highlight=False)
 
-    # DEFAULT_WORKER_* are read from .env only by a bare `uvicorn` run: the
-    # compose files do not forward them into the container, which reads its
-    # worker defaults from the mounted settings YAML instead. Saying so beats
-    # letting the preset choice look like it took effect when it did not.
+    # Both compose files forward DEFAULT_WORKER_* as bare pass-through entries,
+    # so the preset written above is what the container resolves. The mounted
+    # settings YAML is still the fallback and still applies to a key `.env`
+    # does not set, which is why the doctor's own reading is the one to trust.
     console.print(
-        f"\n[yellow]Note:[/yellow] the containerized orchestrator reads its worker "
-        f"defaults from {config_file_path()}, not from .env. Preset "
-        f"{preset['name']!r} was recorded in .env for bare-uvicorn runs; check the "
-        "worker row in the table below for what the container actually resolved."
+        f"\n[yellow]Note:[/yellow] preset {preset['name']!r} was written to .env and "
+        f"is forwarded into the container, where it overrides the worker defaults in "
+        f"{config_file_path()}. Check the worker row in the table below for what the "
+        "orchestrator actually resolved."
     )
 
 

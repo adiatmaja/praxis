@@ -37,6 +37,15 @@ services:
       - GITHUB_TOKEN=${GITHUB_TOKEN:-ghp_dev}
       - DATABASE_URL=sqlite+aiosqlite:///data/orchestrator.db
       - LM_STUDIO_URL=${LM_STUDIO_URL:-http://host.docker.internal:1234}
+      # The worker preset `praxis init` records in .env. Bare pass-through, for
+      # the reason spelled out in the base file: `${VAR:-default}` would hand
+      # the container an authored value on every run and the mounted
+      # config/praxis.yaml would never be read again. No dev default for the
+      # same reason. Compose merges `environment` key-wise so the base entries
+      # already cover this stack; restated so reading this file alone is not
+      # misleading about what the dev orchestrator receives.
+      - DEFAULT_WORKER_HARNESS
+      - DEFAULT_WORKER_MODEL
       # Empty so build_info._resolve_commit() ignores the baked "dev" arg and
       # derives the live SHA from the mounted .git (stops /health showing "dev").
       - PRAXIS_BUILD_SHA=
