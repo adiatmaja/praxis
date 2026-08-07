@@ -5671,3 +5671,113 @@ Blocker 1 on Task 12 is CLEARED.
 5. **Nothing in engine Phase B or C, or bench Phase B or C, has ever run live.**
    This session did not change that. Every result remains from unit and
    integration tests.
+
+### Pilot re-scope execution record (2026-08-08, second session that day)
+
+**Status: both open decisions are CONFIRMED and acted on. Task 12 remains
+HUMAN-GATED and was NOT attempted; a live-environment probe found three
+additional blockers that were not known when the previous record was written.
+Task 17 is unchanged and still needs Task 12.**
+
+Committed on local `main`, NOT pushed: `ed73b38`. Gate at close: `ruff format
+--check` and `ruff check` clean across `src/`, `tests/`, `bench/`; `mypy src/
+bench/` clean; **2004 tests passing**.
+
+#### The two decisions, as confirmed
+
+**Conditions: A and C only.** `FAIL_TO_PASS` as condition B's gate is a CONFOUND,
+not the gold standard: those tests come from the gold `test_patch` and are what
+the official grader runs, so a gate executing them hands B the answer key and
+B-versus-C would measure whether having the marking scheme helps. A cheap proxy
+gate fails asymmetrically, since a null cannot distinguish "verification does not
+help" from "the gate was too weak to tell". A and C are a matched gateless pair
+and run in ONE invocation, removing the mid-run restart that nothing verifies.
+The flags are still REQUIRED; what is removed is the restart.
+
+**This answers LESS than the bench was designed to answer**, and `bench/README.md`
+now says so under its own heading. The verify-gate ablation is deferred to a
+scoped follow-up with a REGRESSION-ONLY gate (the repo's existing suite, gold
+tests excluded), which is a better experiment than the one specified.
+
+**Size: 2 per cell, 18 instances.** Re-drawn at the published seed and
+re-enriched, all 9 cells at exactly 2, every entry carrying its issue text.
+`lite-pilot-36.json` deleted rather than left beside its successor.
+`FULL_PER_STRATUM` untouched at 16.
+
+#### The design number moved, so the report template was grepped
+
+That rule was written last session after a false provenance claim was found
+inside a structurally mandatory honesty heading. It paid again immediately, in a
+different shape: the template's **Design table lists all four conditions and
+nothing stated which ran**. A two-arm pilot would have published a table
+describing arms that never executed, with no number in the report contradicting
+it.
+
+`build_report` now derives the statement from the ROWS: which conditions ran,
+which did not, and, when no gated arm ran, that the verify-gate ablation was not
+performed and `verify_cmd` was registered identically across arms and never
+executed. Derived rather than hand-written because an operator cannot forget it
+and it cannot disagree with the tables below it.
+
+Pinned with whole sentences AND the ABSENCE of the wrong one: a report that
+always claims the ablation was skipped is exactly as false as one that never says
+it, and a bare substring assertion cannot tell those apart. Mutations M15
+(emit unconditionally) and M16 (never name the arms that did not run) both go RED.
+
+#### Mutation checks
+
+Three, md5 printed before / mutated / restored, all RED. M14 revert
+`PILOT_PER_STRATUM` to 4 (caught by the committed-sample test, which now asserts
+against the constant AND pins the constant, so a sample and a config that agree
+with each other but not with the decision still fails). M15 and M16 as above.
+
+#### Blockers on Task 12 found by probing the live environment
+
+None of these were known when the previous record was written, and all three are
+the user's to clear. Nothing was fabricated: the pilot was not started.
+
+1. **The orchestrator is NOT RUNNING.** No `orchestrator` container; only
+   `buildx_buildkit_default`. It must be started with BOTH `PRAXIS_BENCH=1` and
+   `PRAXIS_BENCH_DISABLE_VERIFY=1` in its environment for the A and C arms.
+2. **NEITHER bench worker is currently usable.** `WORKERS` is
+   `local-openweight` (opencode, qwen3.6-27b) and `hosted-flash` (agy, Gemini
+   3.6 Flash High). The LM Studio endpoint sits behind a VPN that is off, a
+   standing environment fact, so the opencode worker cannot reach
+   `host.docker.internal:1234`; and `docker volume ls` shows **no
+   `praxis-gemini-creds` volume**, so agy has no credentials and per the known
+   gotcha `agy -p` then hangs with no stdout and ignores its timeout. One of the
+   two has to be made reachable before a single instance can run.
+3. `bench.prepare` has not been run: `bench/.work/` holds only `pool-lite.json`.
+   Agent-executable, deliberately not done, because it clones 18 upstream repos
+   and there is no point paying that until a worker exists.
+
+Unchanged and still required: `allow_local_repo_paths: true` in
+`config/praxis.yaml`. It is correctly still `false` in the committed file; that is
+the shipped default and turning it on in a git-tracked file would opt in every
+deployment, so the operator sets it locally. The file is MOUNTED, so it is a
+restart, never a rebuild.
+
+Note on the image: `praxis-orchestrator:latest` is 41 hours old and predates
+`4484f6f`, `e5f07ff` and `ed73b38`. The dev overlay mounts `./src`, so a restart
+picks the changes up; a production-compose run would need a rebuild.
+
+#### Still open
+
+1. Task 12 (the pilot) and Task 17 (the full matrix plus ten hand-classified
+   failures), both human-gated, both untouched.
+2. **Nothing verifies the orchestrator is in the bench mode a condition needs.**
+   Unchanged and now the single highest-value follow-up in this area: an A-and-C
+   invocation against an orchestrator started WITHOUT the flags produces rows
+   carrying the right label and the wrong arm, indistinguishable in the JSONL. A
+   bench-mode field on `/api/status` that the runner asserts against before the
+   first spawn is the fix.
+3. Everything else on the standing backlog is unchanged: `skipped`
+   indistinguishable from `passed` to both verify-gate callers, no per-instance
+   recovery in `bench/prepare.py` `main()`, `_discard_failed` swallowing
+   `OSError`, partial/promisor clones untested,
+   `BenchClient.register_project` untested at the HTTP layer, the GitHub half of
+   the merge gate, the local `compare_url` nonsense, `Database` with no
+   transaction API, the superseded parent's container, the duplicated
+   `orchestrator_fixture`, and `record_outcome` reading the REVIEW model.
+4. **Nothing in engine Phase B or C, or bench Phase B or C, has ever run live.**
+   This session did not change that either.

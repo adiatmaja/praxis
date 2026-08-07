@@ -6366,3 +6366,141 @@ Mapped from the umbrella spec's section 10:
 Items 4 through 7 of the spec's definition of done belong to the benchmark and
 product plans.
 
+
+### Deferred item 3 closeout record (2026-08-08)
+
+**Status: engine deferred item 3 is CLOSED, on its fourth carry.** Two commits on
+local `main`, NOT pushed: `4484f6f` (the fix as first written) and `e5f07ff` (the
+general case an adversarial review proved the first commit left open).
+
+Gate at close: `ruff format --check` and `ruff check` clean across `src/`,
+`tests/`, `bench/`; `mypy src/ bench/` clean; **2001 tests passing, 92 percent
+coverage** at `e5f07ff`.
+
+#### The defect, restated from the code rather than the backlog
+
+`validate_leaves` is called from exactly ONE place,
+`core/execute_plan_decompose.py`. The `plan_spec` path, the improvement path, a
+direct `POST /api/dispatch` and `core/leaf_split`'s appended children all reach
+`_build_worker_bible` with raw brain JSON. `acceptance = plan_task.get(
+"verification") or project.get("verify_cmd")` let an unvalidated
+`"manual review"` take the undroppable acceptance floor while the mechanical
+gate independently ran the project `verify_cmd`. The worker was briefed on prose
+and then failed by a command it was never shown.
+
+Confirmed by execution before fixing: with `verify_cmd = "uv run pytest -q"` and
+`"verification": "manual review"`, the rendered Bible read
+`# ACCEPTANCE (run this before you finish)\nmanual review`.
+
+#### What the first commit got wrong, and how it was caught
+
+`4484f6f` demoted a leaf check the HARD `verification` rule would reject, in
+favour of the project command. The adversarial review measured that this closes
+a keyword-matching SUBSET, not the item: `verification_defect` accepts any 5+
+character string carrying neither a runnable token nor one of seven blacklisted
+manual verbs. Measured against the real dispatch pipeline, `"the endpoint
+answers 422"`, `"ensure nothing else broke"` and `"confirm the page looks right
+in the browser"` all took the slot with the project command appearing NOWHERE in
+the pack, because `worker_bible.build_bible` used `acceptance or verify_cmd`.
+
+**The decompose prompt's own worked example is such a string.**
+`core/plan_review.py` teaches the brain to emit
+`"verification": "Run the test suite and confirm all tests pass"`, and
+`verification_defect` returns None for it. Verified independently by the
+orchestrator, not taken on the reviewer's word.
+
+The invariant the demotion rests on is sound and was kept: a value
+`validate_leaves` accepts must never be demoted at dispatch, or the validated
+path changes behavior. The general case therefore cannot be fixed by making the
+predicate stricter; it is fixed one layer down, where the two values meet.
+
+#### The fix as it stands
+
+`build_bible` states the project command ALONGSIDE whatever wins the acceptance
+slot whenever the two differ. They are additive, not alternatives, so the command
+that judges the branch is never invisible. Phrased as a fact ("Project verify
+command: X") rather than a promise about when it runs, because bench mode can
+disable the mechanical gate and a claim that it always runs would be false in
+exactly the arms the pilot uses.
+
+`verification_defect` and `is_runnable_verification` are one decision, shared by
+the HARD rule and the dispatch site, so the two cannot drift.
+
+Scope was widened deliberately, into `worker_bible.py` and `difficulty.py`. Named
+here because the exception was used: without the `build_bible` change the item
+stays open for every value the permissive rule accepts, which is most of them.
+
+#### Also fixed, all found by the review and confirmed by execution first
+
+1. **A non-string `verification` reached the undroppable floor as a Python
+   repr**, and `{"cmd": "pytest -q"}` even beat a configured project command
+   (measured, both polarities). `_normalize_verification` gives it the contract
+   `_normalize_edit_locations` already had for the other floor section fed from
+   the same raw dict: unusable means absent, and it never raises.
+2. **The `difficulty_flagged` mandatory-acceptance guard tested emptiness**, so
+   `"ok"`, a value `validate_leaves` rejects as too short, satisfied it. The one
+   leaf the difficulty gate warned about was the one that could ship with `ok`
+   as its entire acceptance floor. It asks the predicate now.
+3. **`r"\b eyeball\b"` had the space INSIDE the pattern**, after the `\b`, so
+   `"eyeball the output"` was never matched. Pre-existing, but this change made
+   the blacklist decide a worker's acceptance floor on every dispatch path
+   rather than trigger an informed re-ask, so a false negative there now ships
+   prose to a worker.
+4. `difficulty.extract_features` keeps its stricter positive-signal rule, now
+   with a comment saying the difference is deliberate: unifying the two would
+   hand the `+1.30 has_acceptance` weight to prose and corrupt exactly the
+   calibration data the engine plan exists to collect.
+
+#### Vacuous tests exposed by mutation
+
+- **The headline test was measured GREEN under the mutation it existed to
+  catch.** `test_non_runnable_verification_does_not_shadow_the_verify_cmd`
+  passes under `acceptance = None`, because `build_bible` falls back to
+  `verify_cmd` by itself. Reproduced by the orchestrator, not accepted on
+  report. At Bible level "substituted" and "discarded" are genuinely
+  indistinguishable while a project command exists, so the class docstring now
+  says which sibling carries the discrimination rather than pretending the
+  headline test does.
+- **The invariant the commit exists to establish had no test on one of its two
+  sides.** Substituting `_RUNNABLE_SIGNAL` at the dispatch site, i.e. drifting
+  stricter than the validator, left the whole suite green. Now pinned by a case
+  the validator accepts and no runnable token appears in.
+- The `str()` coercion was untested; removing it raises `AttributeError` out of
+  `dispatch_pending_tasks` on a non-string, aborting the whole loop pass.
+- `"by eye"` and `"eyeball"` had ZERO exclusive coverage in the corpus: every
+  entry containing them also contained `"review"`, so deleting either pattern
+  was invisible.
+- The three `verification_defect` messages were interchangeable to the suite.
+
+#### Mutation checks
+
+Sixteen run by the orchestrator, md5 printed before / mutated / restored for
+every one, `ast.parse` before each run, all RED after the one measured green was
+addressed. M1 revert the demotion; M2 predicate always True; M3 predicate always
+False (guards against over-demotion); M4 drop the keep-the-prose fallback; M5
+drop the min-length branch; M6 stop flagging non-runnable prose; M7 silence the
+override log; M6-bis discard instead of substitute (the vacuity proof); M8 revert
+`build_bible` to alternatives; M9 drop its difference guard; M10 let reprs
+through; M11 revert the flagged guard to an emptiness test; M12 restore the
+eyeball typo; M13 drift the dispatch site stricter than the validator. Every
+source file was hash-verified back to its exact pre-mutation bytes.
+
+#### Cleared from the deferred backlog
+
+**Engine item 3.** Do not carry it again.
+
+#### Still open
+
+1. **A leaf's `plan_text` "Acceptance" section is a SECOND unvalidated acceptance
+   criterion**, and this one reaches both the undroppable LEAF CONTRACT floor and
+   the review prompt's spec slot. It is caller-supplied on `POST /api/dispatch`
+   exactly as `verification` is, and `leaf_templates.BASE_SECTIONS` requires it.
+   Measured: a `plan_text` whose Acceptance section says "manual review only, do
+   not run tests" renders alongside an ACCEPTANCE section saying `uv run pytest
+   -q`, two contradicting floor sections in one document, and the review verdict
+   is judged against the prose one. It is verbatim by contract, so suppressing it
+   is not obviously right; this needs its own decision, not a reflex fix.
+2. A NUL byte in a remote `repo_url` still yields 500 rather than 422.
+3. The three threshold constants are still declared in three places.
+4. `files`, `verification` and `neighbor_contracts` are still not scrubbed on the
+   dispatch path the way `context` and `local_context` are.
