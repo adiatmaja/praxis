@@ -19,8 +19,12 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 
 from orchestrator.api.auth import verify_token
 from orchestrator.core.execute_plan_decompose import branch_slug, normalize_slugs
+from orchestrator.core.git_backend import is_local_repo_url
 from orchestrator.core.git_ops import GitOps
-from orchestrator.core.github_credentials import build_credential_provider
+from orchestrator.core.github_credentials import (
+    PatCredentialProvider,
+    build_credential_provider,
+)
 from orchestrator.core.harnesses import default_harness_id
 from orchestrator.core.merge_policy import is_protected_branch
 from orchestrator.core.preflight import (
@@ -125,6 +129,7 @@ async def execute_plan(request: Request, body: ExecutePlanRequest) -> dict[str, 
             ),
         )
 
+    expected: str | None = None
     if body.expected_base_sha is not None:
         expected = (body.expected_base_sha or "").strip()
         if not expected:
@@ -132,15 +137,33 @@ async def execute_plan(request: Request, body: ExecutePlanRequest) -> dict[str, 
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail="expected_base_sha must not be empty",
             )
+
+    # A LOCAL repo_url ALWAYS gets preflighted, not only when the caller
+    # supplied a base sha. The opt-in above answers "may a local path be used
+    # at all"; only `_preflight_local` answers "is this path a bare git repo",
+    # and this is the one endpoint of the three where that check used to be
+    # conditional. Without it `{"repo_url": "/"}` was accepted, a project row
+    # was written, and `agent_manager.local_repo_volume` would bind-mount the
+    # entire host filesystem read-write into an agent container.
+    is_local = is_local_repo_url(body.repo_url)
+    if expected is not None or is_local:
         base = body.branch or "main"
-        git = GitOps(build_credential_provider(settings))
+        cred_configured = credential_configured(settings)
+        # Local mode has no credential by design, and building a GitHub
+        # provider without one is not guaranteed to succeed; preflight
+        # short-circuits on a local URL before it touches `git` anyway.
+        provider: Any = (
+            build_credential_provider(settings)
+            if cred_configured
+            else PatCredentialProvider("")
+        )
         try:
             await preflight_remote(
-                git,
+                GitOps(provider),
                 body.repo_url,
                 base=base,
                 expected_base_sha=expected,
-                credential_configured=credential_configured(settings),
+                credential_configured=cred_configured,
             )
         except PreflightError as exc:
             raise HTTPException(

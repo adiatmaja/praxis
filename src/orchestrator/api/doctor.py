@@ -43,6 +43,7 @@ from orchestrator.core.doctor import (
     overall_status,
     run_checks,
 )
+from orchestrator.core.git_backend import is_local_repo_url
 from orchestrator.core.harnesses import REGISTRY, default_harness_id
 from orchestrator.core.settings_file import config_file_path
 
@@ -291,13 +292,18 @@ async def _is_local_mode(db: Any) -> bool:
 
     Doctor is a system-wide check with no project in scope, so "local mode"
     is read off the project table itself: if every registered project (or
-    there are none yet) uses a ``file://`` repo, no GitHub credential is
-    actually required and its absence is not a failure.
+    there are none yet) uses a local repo, no GitHub credential is actually
+    required and its absence is not a failure.
+
+    The test is ``git_backend.is_local_repo_url``, the same predicate the
+    backend seam, the preflight and the bind-mount decision all use.  It used
+    to be a SQL ``NOT LIKE 'file://%'``, which recognized one of that
+    function's five accepted forms; the benchmark registers plain filesystem
+    paths, so the deployment most obviously in local mode was the one this
+    reported a false credential problem for.
     """
-    row = await db.fetch_one(
-        "SELECT COUNT(*) AS n FROM projects WHERE repo_url NOT LIKE 'file://%'"
-    )
-    return (row["n"] if row else 0) == 0
+    rows = await db.fetch_all("SELECT repo_url FROM projects")
+    return all(is_local_repo_url(row["repo_url"] or "") for row in rows or [])
 
 
 def _unreachable_docker_result(

@@ -550,6 +550,49 @@ keep the CLAUDE.md index in sync.
   the literal `config/` + `praxis.yaml` path anywhere under `src/`:
   `tests/test_config_path.py` greps for it and a comment or an error message
   is enough to break the full suite.
+- **A local `repo_url` is preflighted on ALL THREE endpoints, and only
+  `_preflight_local` checks the SHAPE**: the `allow_local_repo_paths` gate
+  answers "may a local path be used at all"; it says nothing about whether the
+  path is a bare git repo. `/api/execute-plan` used to call `preflight_remote`
+  only inside `if body.expected_base_sha is not None:`, so a plain
+  `{"repo_url": "/"}` returned 201, wrote a project row, and
+  `agent_manager.local_repo_volume` would have bind-mounted the entire host
+  filesystem read-write into an LLM-driven agent container. Its two siblings
+  returned 422 for the identical payload. The endpoint now preflights whenever
+  `is_local_repo_url(body.repo_url)` is true, credential or not. Note also that
+  the opt-in is ADMISSION CONTROL, not a kill switch: turning it back off does
+  not stop an already-registered local project from being dispatched and
+  bind-mounted, because nothing re-checks at spawn time.
+- **A local `repo_url` is judged on its DECODED form, not the raw string**:
+  `git_backend.local_repo_path` percent-decodes a `file://` URL and expands `~`
+  before handing the result to git, so validating only the raw candidate leaves
+  the validated string and the consumed string different. `file://%2D%2Dupload-
+  pack=/bin/sh` decodes to `--upload-pack=/bin/sh`. The "it reaches git as a
+  single argv element so an embedded option is never re-split" argument, which
+  is correct for the remote forms, does NOT hold here: an argv element that
+  BEGINS with a dash is consumed as an option. Verified against real git:
+  `git clone --no-single-branch --upload-pack=/bin/sh dest` answers
+  `fatal: repository 'dest' does not exist`, i.e. the path was eaten as a flag.
+  So the option-injection fragments are checked against the decoded path too,
+  and a decoded path starting with `-` is refused outright. A dash ELSEWHERE in
+  the path is legitimate and stays allowed.
+- **`sanitize_branch_ref` is shared by both request schemas**: `branch` had the
+  same three-disagreeing-copies problem as `repo_url`, on a field that reaches
+  git's argv more directly. `DispatchRequest` sanitized it; `ExecutePlanRequest`
+  had no validator at all, so `branch="--upload-pack=/bin/sh"` was accepted and
+  became `plans.plan_branch_name`, then `BASE_BRANCH`, then `PullRequestRef.base`
+  (which round-trips intact through `quote`/`unquote`, since `-` is unreserved),
+  then a git argument. No end-to-end exploit was demonstrated, because
+  `git checkout <base>` dies on the unknown option first; it is fixed on the
+  principle, not on a proof of exploitability.
+- **`doctor._is_local_mode` asks `is_local_repo_url`, never a SQL `LIKE`**: it
+  used to run `SELECT COUNT(*) ... WHERE repo_url NOT LIKE 'file://%'`, which
+  recognizes one of the five forms that function accepts. `bench/runner.py`
+  registers plain filesystem paths, so a full benchmark deployment (every
+  project local, no GitHub credential by design) had `_is_local_mode` return
+  False and `praxis doctor` reported a false problem about the missing
+  credential. Exactly the disagreeing-copies pattern the shared policy exists
+  to kill.
 - **The local repo MUST be bare**: workers push to it, and git refuses a push
   to a checked-out branch. `core/preflight._preflight_local` enforces this with
   a `rev-parse --is-bare-repository` check and returns 422 (`NOT_A_REPO`) so

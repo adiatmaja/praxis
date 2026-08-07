@@ -21,7 +21,7 @@ from __future__ import annotations
 
 from enum import Enum
 
-from orchestrator.core.git_backend import is_local_repo_url
+from orchestrator.core.git_backend import is_local_repo_url, local_repo_path
 
 
 class RepoUrlKind(Enum):
@@ -102,6 +102,27 @@ def classify_repo_url(value: str) -> tuple[str, RepoUrlKind]:
         return candidate, RepoUrlKind.REMOTE
 
     if is_local_repo_url(candidate):
+        # Judge the DECODED form, because that is what reaches git.
+        # ``local_repo_path`` percent-decodes and expands ``~``, so checking
+        # only the raw candidate leaves a gap: ``file://%2D%2Dupload-pack=...``
+        # decodes to ``--upload-pack=...``. The "single argv element" argument
+        # that protects the remote forms does NOT protect this one, because an
+        # argv element beginning with a dash is read by git as an OPTION, not
+        # as the repository. Measured: ``git clone --no-single-branch
+        # --upload-pack=/bin/sh dest`` reports ``repository 'dest' does not
+        # exist``, i.e. the path was consumed as a flag.
+        decoded = local_repo_path(candidate)
+        decoded_lowered = decoded.lower()
+        for fragment in DANGEROUS_FRAGMENTS:
+            if fragment in decoded_lowered:
+                msg = f"repo_url must not decode to a path containing '{fragment}'"
+                raise ValueError(msg)
+        if decoded.startswith("-"):
+            msg = (
+                "repo_url must not decode to a path beginning with '-'; "
+                "git would read it as an option, not as the repository"
+            )
+            raise ValueError(msg)
         return candidate, RepoUrlKind.LOCAL
 
     raise ValueError(_REJECTED)

@@ -393,6 +393,27 @@ the relevant subsystem. Condensed index:
   `Settings.allow_local_repo_paths` (default OFF) via `core/preflight.assert_repo_url_allowed`,
   called at all three endpoints and failing CLOSED. Turning it on is what makes the local git
   backend and `bench/` reachable through REST. Never write the literal config path in `src/`.
+- **A local `repo_url` is preflighted on ALL THREE endpoints, unconditionally**:
+  `/api/execute-plan` used to run `preflight_remote` only when `expected_base_sha`
+  was supplied, so `{"repo_url": "/"}` was accepted, a project row was written, and
+  `agent_manager.local_repo_volume` would have bind-mounted the whole host filesystem
+  read-write into an agent container. It now preflights whenever `is_local_repo_url`
+  is true. The opt-in answers "may a local path be used"; only `_preflight_local`
+  answers "is it a bare repo". The opt-in is admission control, NOT a kill switch:
+  turning it off does not stop already-registered local projects from dispatching.
+- **A local `repo_url` is judged on its DECODED form**: `local_repo_path` percent-
+  decodes and expands `~`, so checking the raw candidate left `file://%2D%2Dupload-
+  pack=/bin/sh` (decoding to `--upload-pack=...`) admitted. The single-argv-element
+  argument does NOT protect the local backend: git reads an argv element starting
+  with `-` as an OPTION, verified (`git clone --no-single-branch --upload-pack=/bin/sh
+  dest` reports `repository 'dest' does not exist`). A decoded path starting with `-`
+  is refused; a dash elsewhere in the path is fine.
+- **`sanitize_branch_ref` is shared too**: `ExecutePlanRequest.branch` had no
+  validator while `DispatchRequest.branch` did, so `--upload-pack=/bin/sh` was
+  accepted there and became `plan_branch_name`, `BASE_BRANCH`, then git argv.
+- **`doctor._is_local_mode` uses `is_local_repo_url`, not a SQL `LIKE 'file://%'`**:
+  the LIKE recognized one of five local forms, and `bench/` registers plain paths,
+  so the most local deployment there is reported a false credential problem.
 - **The local repo MUST be bare**: `core/preflight._preflight_local` checks
   `rev-parse --is-bare-repository` and 422s (`NOT_A_REPO`) before any container
   spawns; local mode needs no GitHub credential at all.

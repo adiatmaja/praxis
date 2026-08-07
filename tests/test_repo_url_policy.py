@@ -24,6 +24,7 @@ HTTP-visible behavior is unchanged: a local path still gets a 422.
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -173,6 +174,61 @@ def test_option_injection_fragments_are_refused_anywhere_in_the_value(
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize(
+    "candidate",
+    [
+        pytest.param(
+            "file:///srv/r.git%20%2D%2Dupload-pack=/bin/sh", id="percent-encoded-option"
+        ),
+        pytest.param("file://%2D%2Dupload-pack=/bin/sh", id="percent-encoded-leading"),
+        pytest.param("file://%2Dc/core.pager=sh", id="percent-encoded-dash-c"),
+    ],
+)
+def test_a_percent_encoded_option_cannot_hide_inside_a_file_url(candidate: str) -> None:
+    """The validated string and the CONSUMED string must be the same thing.
+
+    ``git_backend.local_repo_path`` percent-decodes a ``file://`` URL before
+    handing it to git, so checking only the raw candidate leaves a gap:
+    ``file://%2D%2Dupload-pack=/bin/sh`` decodes to ``--upload-pack=/bin/sh``.
+    That is one argv element, but it is an argv element BEGINNING WITH A DASH,
+    and git consumes it as an option rather than as the repository. Measured:
+    ``git clone --no-single-branch --upload-pack=/bin/sh dest`` reports
+    ``repository 'dest' does not exist``, i.e. the path was eaten as a flag.
+    The "single argv element" argument that holds for the remote forms does
+    not hold here.
+    """
+    with pytest.raises(ValueError, match="repo_url"):
+        classify_repo_url(candidate)
+
+
+@pytest.mark.unit
+def test_a_bare_leading_dash_never_becomes_a_local_path() -> None:
+    """``-rf`` is not a local form at all and must not become one."""
+    with pytest.raises(ValueError, match="repo_url"):
+        classify_repo_url("-rf")
+
+
+@pytest.mark.unit
+def test_a_dash_inside_a_local_path_is_fine() -> None:
+    """Only the DECODED path's first character matters to git's argv parsing.
+
+    Refusing every path with a dash in it anywhere would reject ordinary
+    directory names, and it is not what makes the difference.
+    """
+    value, kind = classify_repo_url("/srv/praxis/-weird/r.git")
+    assert kind is RepoUrlKind.LOCAL
+    assert value == "/srv/praxis/-weird/r.git"
+
+
+@pytest.mark.unit
+def test_an_ordinary_file_url_still_decodes_and_passes() -> None:
+    """The decoded check must not refuse the legitimate case it guards."""
+    value, kind = classify_repo_url("file:///srv/praxis/my%20repo.git")
+    assert kind is RepoUrlKind.LOCAL
+    assert value == "file:///srv/praxis/my%20repo.git"
+
+
+@pytest.mark.unit
 def test_validate_repo_url_returns_the_stripped_value() -> None:
     assert validate_repo_url("  https://github.com/u/r  ") == "https://github.com/u/r"
 
@@ -234,6 +290,23 @@ def test_local_repo_paths_default_to_off(
 
 
 @pytest.mark.unit
+def test_the_shipped_yaml_also_ships_the_opt_in_off() -> None:
+    """The FIELD default is not the effective default; the YAML overlays it.
+
+    ``Settings.__init__`` overlays the settings YAML above field defaults, so
+    a test that passes an absent ``yaml_path`` pins only half the invariant:
+    flipping the committed YAML to ``true`` leaves it green while every real
+    deployment ships opted in. Read the committed file itself.
+    """
+    import yaml
+
+    from orchestrator.core.settings_file import config_file_path
+
+    shipped = yaml.safe_load(Path(config_file_path()).read_text(encoding="utf-8"))
+    assert shipped["allow_local_repo_paths"] is False
+
+
+@pytest.mark.unit
 def test_a_local_path_is_refused_when_the_setting_is_off() -> None:
     settings = type("S", (), {"allow_local_repo_paths": False})()
     with pytest.raises(PreflightError) as excinfo:
@@ -253,6 +326,68 @@ def test_a_local_path_is_allowed_when_the_setting_is_on() -> None:
 def test_a_remote_url_is_never_touched_by_the_gate(enabled: bool) -> None:
     settings = type("S", (), {"allow_local_repo_paths": enabled})()
     assert_repo_url_allowed("https://github.com/u/r", settings)
+
+
+# --------------------------------------------------------------------------
+# The same defect, one field over
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "branch",
+    [
+        pytest.param("--upload-pack=/bin/sh", id="leading-option"),
+        pytest.param("-rf", id="leading-dash"),
+        pytest.param("../escape", id="traversal"),
+        pytest.param("a//b", id="double-slash"),
+        pytest.param("has space", id="whitespace"),
+        pytest.param("x.lock", id="lock-suffix"),
+    ],
+)
+def test_both_schemas_sanitize_branch_identically(branch: str) -> None:
+    """``branch`` had the same three-copies problem, and reaches git's argv.
+
+    ``DispatchRequest`` sanitized it and ``ExecutePlanRequest`` did not, so
+    ``branch="--upload-pack=/bin/sh"`` was accepted there, became
+    ``plans.plan_branch_name``, then ``BASE_BRANCH``, then
+    ``PullRequestRef.base`` (which round-trips intact, since ``-`` is
+    unreserved), then a git argument. No exploit was demonstrated end to end,
+    because ``git checkout <base>`` dies on the unknown option first. It is
+    fixed on the same principle as ``repo_url``: three disagreeing copies of
+    one control means the weakest copy is the real one.
+    """
+    with pytest.raises(ValidationError):
+        DispatchRequest(
+            repo_url="https://github.com/u/r",
+            instructions="x",
+            model="m",
+            branch=branch,
+        )
+    with pytest.raises(ValidationError):
+        ExecutePlanRequest(
+            repo_url="https://github.com/u/r", plan="p", model="m", branch=branch
+        )
+
+
+@pytest.mark.unit
+def test_both_schemas_accept_an_ordinary_branch() -> None:
+    ordinary = "plan/2026-08-07-thing"
+    assert (
+        DispatchRequest(
+            repo_url="https://github.com/u/r",
+            instructions="x",
+            model="m",
+            branch=ordinary,
+        ).branch
+        == ordinary
+    )
+    assert (
+        ExecutePlanRequest(
+            repo_url="https://github.com/u/r", plan="p", model="m", branch=ordinary
+        ).branch
+        == ordinary
+    )
 
 
 @pytest.mark.unit

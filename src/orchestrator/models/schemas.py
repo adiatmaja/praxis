@@ -17,6 +17,46 @@ if version_info < (3, 12):
     from typing_extensions import TypedDict
 
 
+def sanitize_branch_ref(value: str | None) -> str | None:
+    """Sanitize a caller-supplied branch into a safe git ref.
+
+    Blocks path traversal, leading dashes, whitespace, and the dangerous
+    ``..``/``//`` ref sequences so a hostile branch cannot escape the
+    ``agent/``-style namespace or confuse git ref parsing.
+
+    Shared by ``DispatchRequest`` and ``ExecutePlanRequest``.  Only the first
+    used to have it, which is the same defect the ``repo_url`` policy had, on
+    a field that reaches git's argv more directly: a caller-supplied branch
+    becomes ``plans.plan_branch_name``, then ``BASE_BRANCH``, then
+    ``PullRequestRef.base``, then a git argument.
+
+    Args:
+        value: The caller-supplied branch, or None.
+
+    Returns:
+        The stripped branch, or None when none was given.
+
+    Raises:
+        ValueError: If the branch is empty or is not a safe ref.
+    """
+    if value is None:
+        return None
+    candidate = value.strip()
+    if not candidate:
+        msg = "branch must not be empty when provided"
+        raise ValueError(msg)
+    if (
+        not re.fullmatch(r"[A-Za-z0-9._/-]+", candidate)
+        or candidate.startswith(("-", "/"))
+        or candidate.endswith(("/", ".lock"))
+        or ".." in candidate
+        or "//" in candidate
+    ):
+        msg = "branch contains illegal characters or an unsafe ref pattern"
+        raise ValueError(msg)
+    return candidate
+
+
 class TaskStatus(StrEnum):
     """Task lifecycle status."""
 
@@ -538,28 +578,8 @@ class DispatchRequest(BaseModel):
     @field_validator("branch")
     @classmethod
     def validate_branch(cls, value: str | None) -> str | None:
-        """Sanitize a caller-supplied branch into a safe git ref.
-
-        Blocks path traversal, leading dashes, whitespace, and the dangerous
-        ``..``/``//`` ref sequences so a hostile branch can't escape the
-        ``agent/``-style namespace or confuse git ref parsing.
-        """
-        if value is None:
-            return None
-        candidate = value.strip()
-        if not candidate:
-            msg = "branch must not be empty when provided"
-            raise ValueError(msg)
-        if (
-            not re.fullmatch(r"[A-Za-z0-9._/-]+", candidate)
-            or candidate.startswith(("-", "/"))
-            or candidate.endswith(("/", ".lock"))
-            or ".." in candidate
-            or "//" in candidate
-        ):
-            msg = "branch contains illegal characters or an unsafe ref pattern"
-            raise ValueError(msg)
-        return candidate
+        """Apply the single shared branch policy (:func:`sanitize_branch_ref`)."""
+        return sanitize_branch_ref(value)
 
 
 class DispatchResponse(BaseModel):
@@ -601,6 +621,17 @@ class ExecutePlanRequest(BaseModel):
         ``git://`` and an embedded ``--upload-pack=``.
         """
         return _validate_repo_url(value)
+
+    @field_validator("branch")
+    @classmethod
+    def validate_branch(cls, value: str | None) -> str | None:
+        """Apply the single shared branch policy (:func:`sanitize_branch_ref`).
+
+        This schema had no branch validator either, so
+        ``branch="--upload-pack=/bin/sh"`` was accepted here and refused by
+        its sibling.
+        """
+        return sanitize_branch_ref(value)
 
 
 class ExecutePlanResponse(BaseModel):

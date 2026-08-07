@@ -87,17 +87,31 @@ async def test_the_opt_in_admits_a_prepared_bare_repo(
 
 
 @pytest.mark.integration
+@pytest.mark.parametrize("endpoint", ENDPOINTS)
 async def test_a_non_bare_local_repo_is_still_rejected_by_preflight(
-    client: AsyncClient, auth_headers: dict[str, str], db: Any, tmp_path: Path
+    client: AsyncClient,
+    auth_headers: dict[str, str],
+    db: Any,
+    tmp_path: Path,
+    endpoint: str,
 ) -> None:
-    """The opt-in admits the FORM; preflight still enforces the shape."""
+    """The opt-in admits the FORM; preflight still enforces the shape.
+
+    Parametrized over ALL THREE endpoints deliberately. This test used to run
+    against ``/api/projects`` alone while its two neighbours were parametrized,
+    and ``/api/execute-plan`` ran ``preflight_remote`` only when
+    ``expected_base_sha`` was supplied. So a plain ``{"repo_url": "/"}`` was
+    accepted there, a project row was written, and ``local_repo_volume``
+    would have bind-mounted the entire host filesystem read-write into an
+    agent container. Both sibling endpoints returned 422 for the same payload.
+    """
     await seed_user(db)
     client.app.state.settings.allow_local_repo_paths = True  # type: ignore[attr-defined]
     work = tmp_path / "notbare"
     work.mkdir()
     _git("init", "-b", "main", cwd=work)
     resp = await client.post(
-        "/api/projects", json=_payload("/api/projects", str(work)), headers=auth_headers
+        endpoint, json=_payload(endpoint, str(work)), headers=auth_headers
     )
     assert resp.status_code == 422, resp.text
     assert "BARE" in resp.text
@@ -105,13 +119,43 @@ async def test_a_non_bare_local_repo_is_still_rejected_by_preflight(
 
 @pytest.mark.integration
 @pytest.mark.parametrize("endpoint", ENDPOINTS)
+async def test_a_local_path_that_is_not_a_repo_at_all_is_rejected(
+    client: AsyncClient,
+    auth_headers: dict[str, str],
+    db: Any,
+    tmp_path: Path,
+    endpoint: str,
+) -> None:
+    """The worst case of the gap above: a plain directory, not a repo."""
+    await seed_user(db)
+    client.app.state.settings.allow_local_repo_paths = True  # type: ignore[attr-defined]
+    plain = tmp_path / "plain"
+    plain.mkdir()
+    resp = await client.post(
+        endpoint, json=_payload(endpoint, str(plain)), headers=auth_headers
+    )
+    assert resp.status_code == 422, resp.text
+    row = await db.fetch_one(
+        "SELECT COUNT(*) AS n FROM projects WHERE repo_url = ?", (str(plain),)
+    )
+    assert row["n"] == 0, "a refused repo_url must never reach the projects table"
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("endpoint", ENDPOINTS)
 async def test_a_blocked_transport_is_refused_even_with_the_opt_in_on(
     client: AsyncClient, auth_headers: dict[str, str], db: Any, endpoint: str
 ) -> None:
-    """The opt-in widens LOCAL paths only; it never relaxes a transport."""
+    """The opt-in widens LOCAL paths only; it never relaxes a transport.
+
+    Asserting the DETAIL, not just the status: ``preflight_remote`` also
+    answers 422 for a non-GitHub URL, so deleting the schema validator
+    entirely left a status-only assertion green on two of the three endpoints.
+    """
     await seed_user(db)
     client.app.state.settings.allow_local_repo_paths = True  # type: ignore[attr-defined]
     resp = await client.post(
         endpoint, json=_payload(endpoint, "ext::sh -c whoami"), headers=auth_headers
     )
     assert resp.status_code == 422, resp.text
+    assert "executes an arbitrary command" in resp.text, resp.text
