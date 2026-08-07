@@ -85,6 +85,27 @@ def _normalize_edit_locations(files: Any) -> str | None:
     return "\n".join(paths) or None
 
 
+def _normalize_verification(verification: Any) -> str | None:
+    """Return the leaf's acceptance check as a string, or None.
+
+    Same contract and the same reason as :func:`_normalize_edit_locations`, for
+    the other undroppable floor section fed from the same raw dict: an unusable
+    value must yield nothing rather than garbage, and this must never raise.
+    A non-string used to reach the acceptance floor as a Python repr, and a
+    ``{"cmd": "pytest -q"}`` repr even beat a configured project ``verify_cmd``.
+    Treating it as absent falls back to that command instead.
+
+    Args:
+        verification: The raw ``verification`` value from the plan task.
+
+    Returns:
+        The check, or None when the value is not a non-blank string.
+    """
+    if not isinstance(verification, str) or not verification.strip():
+        return None
+    return verification
+
+
 class DispatchMixin:
     """Task-dispatch half of the Orchestrator (see class Orchestrator)."""
 
@@ -406,23 +427,26 @@ class DispatchMixin:
         edit_locations = _normalize_edit_locations(plan_task.get("files"))
 
         # Rank 3 of the standard: the leaf's own acceptance check, falling back
-        # to the project-wide verify command when the leaf declares none. For a
-        # FLAGGED leaf the slot is mandatory, so when the project declares no
-        # verify command either, demand a check rather than ship a pack with an
-        # empty acceptance slot.
+        # to the project-wide verify command when the leaf declares none.
         #
         # ``plan_task`` is raw brain JSON on every path but decomposition:
         # ``validate_leaves`` is called only from ``execute_plan_decompose``, so
-        # the plan_spec path, the improvement path and a direct dispatch all
-        # arrive here unvalidated. A non-runnable ``"manual review"`` must not
-        # win this slot over the project command, because the mechanical gate
-        # runs the project command regardless: the worker would be told to
-        # satisfy prose and then failed on a check it was never shown. With no
-        # project command there is no such contradiction and the brain's stated
-        # intent is kept.
-        leaf_check = plan_task.get("verification")
+        # the plan_spec path, the improvement path, a direct dispatch and
+        # ``leaf_split``'s appended children all arrive here unvalidated. A
+        # non-runnable ``"manual review"`` must not win this slot over the
+        # project command, because the mechanical gate runs the project command
+        # regardless: the worker would be told to satisfy prose and then failed
+        # on a check it was never shown. With no project command there is no
+        # such contradiction and the brain's stated intent is kept.
+        #
+        # This demotion only catches prose the HARD rule recognizes as junk, and
+        # deliberately goes no further: a value ``validate_leaves`` accepts must
+        # never be demoted here. Prose it accepts is handled downstream instead,
+        # by ``build_bible`` stating the project command alongside whatever wins
+        # this slot, so the command is never invisible.
+        leaf_check = _normalize_verification(plan_task.get("verification"))
         project_check = project.get("verify_cmd")
-        if leaf_check and not is_runnable_verification(str(leaf_check)):
+        if leaf_check and not is_runnable_verification(leaf_check):
             if project_check:
                 logger.warning(
                     "Task %s declares a non-runnable verification (%r); using the "
@@ -433,7 +457,11 @@ class DispatchMixin:
             acceptance = project_check or leaf_check
         else:
             acceptance = leaf_check or project_check
-        if difficulty_flagged and not acceptance:
+        # For a FLAGGED leaf the slot is mandatory. Emptiness is not the test:
+        # the leaf the difficulty gate is warning about is exactly the one that
+        # must not ship with ``ok`` or a line of prose as its entire acceptance
+        # floor, so demand a real check whenever what we have is not one.
+        if difficulty_flagged and not is_runnable_verification(acceptance):
             acceptance = MANDATORY_ACCEPTANCE
 
         return build_bible(

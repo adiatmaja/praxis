@@ -142,6 +142,11 @@ def extract_features(
         files_touched=len(leaf.files),
         loc_ratio=estimated_loc / loc_limit,
         dep_depth=dep_depth,
+        # DELIBERATELY stricter than ``leaf_validator.is_runnable_verification``,
+        # which asks "is this bad enough to block" and so accepts prose carrying
+        # no runnable token. This asks "does the leaf carry a machine-checkable
+        # signal", and unifying the two would hand the +1.30 weight to prose and
+        # corrupt the calibration data. The two must not be merged.
         has_acceptance=bool(
             leaf.verification and _RUNNABLE_SIGNAL.search(leaf.verification)
         ),

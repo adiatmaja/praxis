@@ -15,6 +15,7 @@ from typing import Any
 
 import pytest
 
+from orchestrator.core.orchestrator_dispatch import MANDATORY_ACCEPTANCE
 from orchestrator.models.schemas import TaskStatus
 
 
@@ -189,6 +190,36 @@ async def test_a_flagged_leaf_keeps_the_declared_acceptance_check(
     bible = orch._agents.spawn_agent.await_args.kwargs["bible_text"]
     assert "uv run pytest tests/test_widget.py" in bible
     assert "high risk" not in bible
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "verification",
+    ["ok", "manual review of the widget", 42],
+    ids=["too-short", "prose", "non-string"],
+)
+async def test_a_flagged_leaf_does_not_accept_junk_as_its_mandatory_check(
+    orchestrator_fixture, verification
+):
+    """Mandatory means a real check, not merely a non-empty slot.
+
+    The guard used to be ``not acceptance``, which tests emptiness. ``ok`` is a
+    value ``validate_leaves`` REJECTS as too short, and it satisfied that guard,
+    so the ONE leaf the difficulty gate warned about was the one that shipped
+    with ``ok`` as its entire acceptance floor. The fixture project declares no
+    ``verify_cmd``, so nothing else fills the slot.
+    """
+    orch, _task_id, project = orchestrator_fixture
+    _configure(orch, flag_below=0.55)
+    assert not project.get("verify_cmd")
+    plan_id, _row = await _activate(
+        orch, "junk", difficulty_score=0.44, verification=verification
+    )
+    orch._agents.spawn_agent.return_value = "container-1"
+    await orch.dispatch_pending_tasks(plan_id, project)
+    bible = orch._agents.spawn_agent.await_args.kwargs["bible_text"]
+    assert MANDATORY_ACCEPTANCE in bible
+    assert f"# ACCEPTANCE (run this before you finish)\n{verification}" not in bible
 
 
 @pytest.mark.unit

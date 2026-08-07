@@ -48,7 +48,9 @@ _NON_RUNNABLE_PATTERNS = [
     r"\bmanually\b",
     r"\bvisually\b",
     r"\bby eye\b",
-    r"\b eyeball\b",
+    # The space used to sit INSIDE the pattern, after the \b, which requires a
+    # word character before it: "eyeball the output" was not matched at all.
+    r"\beyeball\b",
     r"\bread through\b",
     r"\binspect\b",
     r"\breview\b",

@@ -11,6 +11,7 @@ import pytest
 from httpx import AsyncClient
 
 from orchestrator.core.event_bus import EventBus
+from orchestrator.core.leaf_validator import is_runnable_verification
 from orchestrator.core.orchestrator import Orchestrator
 from orchestrator.core.task_queue import TaskQueue
 from orchestrator.database import Database
@@ -214,11 +215,17 @@ class TestDispatchMixinAcceptanceFloor:
 
     ``validate_leaves`` is called from exactly ONE place,
     ``core/execute_plan_decompose``. The ``plan_spec`` path, the improvement
-    path and a direct ``POST /api/dispatch`` never call it, so a
-    ``"verification": "manual review"`` reaches ``_build_worker_bible``
-    unchecked. It used to win the acceptance slot outright, telling the worker
-    to satisfy prose while the mechanical gate ran the project ``verify_cmd``
-    and failed it on a check it was never shown.
+    path, a direct ``POST /api/dispatch`` and ``leaf_split``'s appended children
+    never call it, so a ``"verification": "manual review"`` reaches
+    ``_build_worker_bible`` unchecked. It used to win the acceptance slot
+    outright, telling the worker to satisfy prose while the mechanical gate ran
+    the project ``verify_cmd`` and failed it on a check it was never shown.
+
+    Note on what these can and cannot distinguish: ``build_bible`` falls back to
+    ``verify_cmd`` on its own when the acceptance slot is empty, so at Bible
+    level "substituted the project command" and "discarded the leaf value" look
+    IDENTICAL whenever a project command exists. The discriminating cases are
+    the no-``verify_cmd`` test below and the log test.
     """
 
     async def test_non_runnable_verification_does_not_shadow_the_verify_cmd(
@@ -233,6 +240,71 @@ class TestDispatchMixinAcceptanceFloor:
         bible = await _dispatch_and_get_bible(db, task_queue, plan_id)
         assert "# ACCEPTANCE (run this before you finish)\nuv run pytest -q" in bible
         assert "manual review" not in bible
+        # The command took the slot, so there is nothing left to restate: the
+        # "Project verify command:" line appears only when the two differ.
+        assert "Project verify command:" not in bible
+
+    async def test_prose_the_hard_rule_accepts_never_hides_the_project_command(
+        self, db: Database
+    ) -> None:
+        """The general case, and the reason the demotion above is not enough.
+
+        The HARD rule is permissive: any 5+ character string without a runnable
+        token and without a blacklisted manual verb is accepted, and the
+        decompose prompt's OWN worked example ("Run the test suite and confirm
+        all tests pass") is exactly that. Such a value is correctly NOT demoted,
+        so it takes the acceptance slot, and the project command must still
+        reach the worker rather than being replaced by it.
+        """
+        task_queue, plan_id, _ = await _setup_with_plan_task(
+            db,
+            {"verification": "Run the test suite and confirm all tests pass"},
+            verify_cmd="uv run pytest -q",
+        )
+        bible = await _dispatch_and_get_bible(db, task_queue, plan_id)
+        assert "Run the test suite and confirm all tests pass" in bible
+        assert "Project verify command: uv run pytest -q" in bible
+
+    async def test_a_validator_accepted_check_is_never_demoted_at_dispatch(
+        self, db: Database
+    ) -> None:
+        """The dispatch site must use the predicate, not a stricter rule.
+
+        ``is_runnable_verification`` and the HARD rule are one decision so the
+        two cannot drift. Nothing else proves the dispatch site is the side that
+        calls it: substituting ``_RUNNABLE_SIGNAL`` here (which demands a
+        positive runnable token, as the difficulty scorer deliberately does)
+        left the whole suite green. This value carries no runnable token, and
+        ``validate_leaves`` accepts it, so it must keep the slot.
+        """
+        leaf_check = "the endpoint answers 422 for a bad payload"
+        assert is_runnable_verification(leaf_check)
+        task_queue, plan_id, _ = await _setup_with_plan_task(
+            db, {"verification": leaf_check}, verify_cmd="uv run pytest -q"
+        )
+        bible = await _dispatch_and_get_bible(db, task_queue, plan_id)
+        assert f"# ACCEPTANCE (run this before you finish)\n{leaf_check}" in bible
+
+    @pytest.mark.parametrize(
+        "verification",
+        [42, True, {"cmd": "pytest -q"}, ["manual review"], {"steps": [{"do": "x"}]}],
+        ids=["int", "bool", "mapping", "list", "nested"],
+    )
+    async def test_a_non_string_verification_never_renders_as_a_repr(
+        self, db: Database, verification: Any
+    ) -> None:
+        """Raw brain JSON is untyped, and this floor section cannot be dropped.
+
+        A ``{"cmd": "pytest -q"}`` repr used to beat a configured project
+        command outright. Same contract as ``_normalize_edit_locations`` on the
+        other floor section fed from the same dict: unusable means absent.
+        """
+        task_queue, plan_id, _ = await _setup_with_plan_task(
+            db, {"verification": verification}, verify_cmd="uv run pytest -q"
+        )
+        bible = await _dispatch_and_get_bible(db, task_queue, plan_id)
+        assert "# ACCEPTANCE (run this before you finish)\nuv run pytest -q" in bible
+        assert str(verification) not in bible
 
     async def test_the_override_is_logged_rather_than_silent(
         self, db: Database, caplog: pytest.LogCaptureFixture

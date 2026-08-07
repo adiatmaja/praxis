@@ -10,6 +10,7 @@ from orchestrator.core.leaf_validator import (
     format_violations_feedback,
     is_runnable_verification,
     validate_leaves,
+    verification_defect,
 )
 from orchestrator.models.schemas import CapabilityProfile, LeafTask
 
@@ -503,6 +504,11 @@ _VERIFICATION_CORPUS: list[tuple[str | None, bool]] = [
     ("   ", False),
     ("ok", False),
     ("manual review", False),
+    # Each blacklist word needs at least one entry where it is the ONLY reason
+    # the value is rejected, or deleting its pattern is invisible here. "review
+    # the diff by eye" covers neither "by eye" nor "eyeball" exclusively.
+    ("confirm the totals by eye", False),
+    ("eyeball the output", False),
     ("review the diff by eye", False),
     ("inspect the rendered output", False),
     ("check it visually", False),
@@ -531,6 +537,32 @@ _VERIFICATION_CORPUS: list[tuple[str | None, bool]] = [
 )
 def test_is_runnable_verification(value: str | None, expected: bool):
     assert is_runnable_verification(value) is expected
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("value", "expected_message"),
+    [
+        (None, "missing verification command"),
+        ("", "missing verification command"),
+        ("   ", "missing verification command"),
+        ("\t\n", "missing verification command"),
+        ("ok", "missing or too short verification command"),
+        ("four", "missing or too short verification command"),
+        ("manual review", "verification is not runnable: 'manual review'"),
+        ("pytest tests/test_foo.py", None),
+    ],
+    ids=["none", "empty", "spaces", "tab-newline", "two", "four", "prose", "ok"],
+)
+def test_verification_defect_reports_which_defect(
+    value: str | None, expected_message: str | None
+):
+    """The three messages are distinct diagnoses, not interchangeable text.
+
+    They are what the brain is re-asked with on an informed retry, so swapping
+    "missing" for "too short" sends it to fix the wrong thing.
+    """
+    assert verification_defect(value) == expected_message
 
 
 @pytest.mark.unit

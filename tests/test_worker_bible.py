@@ -91,6 +91,61 @@ def test_verify_cmd_renders_acceptance_section():
 
 
 @pytest.mark.unit
+def test_a_leaf_check_never_hides_the_project_verify_command():
+    """Both are stated whenever they differ, because both are real.
+
+    ``acceptance or verify_cmd`` made them alternatives, so a leaf carrying its
+    own check pushed the project command out of the Bible entirely. The worker
+    could then satisfy everything it was shown and still be failed by a command
+    that appeared nowhere in its pack. This is the general case: the dispatch
+    site only demotes prose the HARD rule recognizes as junk, and the rule is
+    permissive by design.
+    """
+    src = BibleSources(
+        goal="do it",
+        handover="# PROGRESS",
+        context_window=8192,
+        acceptance="the endpoint answers 422 for a bad payload",
+        verify_cmd="uv run pytest --tb=short",
+    )
+    out = build_bible(src)
+    assert "the endpoint answers 422 for a bad payload" in out
+    assert "Project verify command: uv run pytest --tb=short" in out
+
+
+@pytest.mark.unit
+def test_the_project_command_is_not_restated_when_it_is_the_acceptance():
+    """No duplicate line when the dispatch site already substituted it."""
+    src = BibleSources(
+        goal="do it",
+        handover="# PROGRESS",
+        context_window=8192,
+        acceptance="uv run pytest --tb=short",
+        verify_cmd="uv run pytest --tb=short",
+    )
+    out = build_bible(src)
+    assert "Project verify command:" not in out
+    assert out.count("uv run pytest --tb=short") == 1
+
+
+@pytest.mark.unit
+def test_no_project_command_means_no_restatement():
+    """A leaf check alone renders alone; nothing is invented."""
+    src = BibleSources(
+        goal="do it",
+        handover="# PROGRESS",
+        context_window=8192,
+        acceptance="manual review of the rendered docs",
+        verify_cmd=None,
+    )
+    out = build_bible(src)
+    assert (
+        "# ACCEPTANCE (run this before you finish)\nmanual review of the rendered docs"
+    ) in out
+    assert "Project verify command:" not in out
+
+
+@pytest.mark.unit
 def test_verify_cmd_absent_when_none():
     src = BibleSources(
         goal="do it",

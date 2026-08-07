@@ -116,10 +116,20 @@ def build_bible(src: BibleSources) -> str:
         )
     acceptance = src.acceptance or src.verify_cmd
     if acceptance:
+        body = str(acceptance)
+        # The project command must never be INVISIBLE to the worker. When a
+        # leaf declares its own check, that check used to take the slot alone
+        # and the project command was shown nowhere, so a worker could satisfy
+        # everything it was told and still be failed by a command it never saw.
+        # The two are additive, not alternatives; both are stated whenever they
+        # differ. Phrased as a fact rather than a promise about when it runs,
+        # because bench mode can disable the mechanical gate.
+        if src.verify_cmd and src.verify_cmd != acceptance:
+            body += f"\nProject verify command: {src.verify_cmd}"
         raw_sections.append(
             Section(
                 "acceptance",
-                f"# ACCEPTANCE (run this before you finish)\n{acceptance}",
+                f"# ACCEPTANCE (run this before you finish)\n{body}",
                 _P_ACCEPT,
                 floor=True,
             )
