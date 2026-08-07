@@ -27,6 +27,7 @@ from orchestrator.core.harnesses import default_harness_id
 from orchestrator.core.merge_policy import is_protected_branch
 from orchestrator.core.preflight import (
     PreflightError,
+    assert_repo_url_allowed,
     credential_configured,
     preflight_remote,
     status_and_detail,
@@ -59,6 +60,14 @@ async def _preflight(body: DispatchRequest, settings: Any) -> list[str]:
     Raises:
         HTTPException: On validation failure or upstream communication error.
     """
+    # Guard: a local filesystem repo_url needs the deployment opt-in. The
+    # schema admits the form; only here are runtime settings reachable.
+    try:
+        assert_repo_url_allowed(body.repo_url, settings)
+    except PreflightError as exc:
+        http_status, detail = status_and_detail(exc)
+        raise HTTPException(status_code=http_status, detail=detail) from exc
+
     # Guard: a protected branch (main/master/release*) must never be used as a
     # base branch. Workers only target feature branches; a re-dispatch always
     # creates a fresh PR off the base. This runs before any DB writes.

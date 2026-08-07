@@ -10,6 +10,7 @@ from typing import Literal, TypedDict
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from orchestrator.core.harnesses import REGISTRY, default_harness_id
+from orchestrator.core.repo_url_policy import validate_repo_url as _validate_repo_url
 
 
 if version_info < (3, 12):
@@ -209,40 +210,13 @@ class ProjectCreate(BaseModel):
     @field_validator("repo_url")
     @classmethod
     def validate_repo_url(cls, value: str) -> str:
-        """Reject dangerous git transports; allow only HTTPS or scp-style SSH.
+        """Apply the single shared policy (``core/repo_url_policy``).
 
-        Allowed forms:
-          - https://host/owner/repo[.git]
-          - git@host:owner/repo[.git]
-
-        Rejected (non-exhaustive):
-          - ext::, file://, ssh://, git:// schemes
-          - anything containing --upload-pack or --config (git option injection)
+        A local filesystem path passes here and is judged by
+        ``Settings.allow_local_repo_paths`` at the endpoint, which is the only
+        layer that can see runtime settings.
         """
-        stripped = value.strip()
-        dangerous_fragments = ("--upload-pack", "--config")
-        for fragment in dangerous_fragments:
-            if fragment in stripped:
-                msg = f"repo_url must not contain '{fragment}'"
-                raise ValueError(msg)
-        # scp-style SSH: git@host:path
-        if stripped.startswith("git@"):
-            if ":" not in stripped.split("@", 1)[1]:
-                msg = "invalid scp-style repo_url: expected git@host:path"
-                raise ValueError(msg)
-            return stripped
-        # HTTPS only
-        if stripped.startswith("https://"):
-            rest = stripped[len("https://") :]
-            if not rest or "/" not in rest:
-                msg = "repo_url must be a valid https:// URL with a path"
-                raise ValueError(msg)
-            return stripped
-        msg = (
-            "repo_url must start with 'https://' or 'git@host:path'; "
-            "other schemes (file://, ext::, ssh://, git://) are not allowed"
-        )
-        raise ValueError(msg)
+        return _validate_repo_url(value)
 
     @field_validator(
         "name",
@@ -545,19 +519,13 @@ class DispatchRequest(BaseModel):
     @field_validator("repo_url")
     @classmethod
     def validate_repo_url(cls, value: str) -> str:
-        """Reject anything that isn't an http(s) or SSH (git@) repo URL.
+        """Apply the single shared policy (``core/repo_url_policy``).
 
-        A bad ``repo_url`` would otherwise create a project row that only fails
-        later at container-spawn/clone time with an opaque git error.
+        This used to be a looser, prefix-only copy that accepted ``http://``,
+        ``ssh://`` and an embedded ``--upload-pack=``; it is now the same
+        policy ``ProjectCreate`` enforces.
         """
-        candidate = value.strip()
-        if not (
-            candidate.startswith(("http://", "https://", "git@", "ssh://"))
-            and len(candidate) > len("https://")
-        ):
-            msg = "repo_url must be an http(s) or git@/ssh:// repository URL"
-            raise ValueError(msg)
-        return candidate
+        return _validate_repo_url(value)
 
     @field_validator("instructions", "model")
     @classmethod
@@ -623,6 +591,16 @@ class ExecutePlanRequest(BaseModel):
     expected_base_sha: str | None = None
     """Optional origin base sha the caller believes it is dispatching against.
     Rejected server-side if it does not match ``origin/<branch>`` head."""
+
+    @field_validator("repo_url")
+    @classmethod
+    def validate_repo_url(cls, value: str) -> str:
+        """Apply the single shared policy (``core/repo_url_policy``).
+
+        This schema had NO validator at all and accepted ``ext::sh -c ...``,
+        ``git://`` and an embedded ``--upload-pack=``.
+        """
+        return _validate_repo_url(value)
 
 
 class ExecutePlanResponse(BaseModel):

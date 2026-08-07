@@ -7,6 +7,14 @@ callback_grace: 5      # seconds to wait before reconciling a missing callback
 # continuously; this only rate-limits the SSE event.
 approvals_digest_interval_h: 6
 
+# Admit a LOCAL filesystem path as a project's repo_url, enabling the local git
+# backend (a bind-mounted bare repo, no GitHub credential, no PR object). OFF by
+# default: it lets an authenticated caller point the orchestrator at any path
+# the container can reach. Turn it on to run bench/ or to evaluate Praxis with
+# no GitHub credential at all. This file is MOUNTED, so an edit takes effect on
+# `docker compose restart orchestrator`, never an image rebuild.
+allow_local_repo_paths: false
+
 capability:
   default:
     parameter_count_b: 30

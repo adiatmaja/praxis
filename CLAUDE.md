@@ -384,6 +384,15 @@ the relevant subsystem. Condensed index:
   otherwise; the merge gate, verify gates, and outcome recording are unchanged
   above the seam. A local "PR" is a `praxis-local://pr?branch=...&base=...`
   string in the existing `tasks.pr_url` column, parsed via `PullRequestRef.from_url`.
+- **One `repo_url` policy, shared by all three request schemas**: `core/repo_url_policy.py`
+  is the single implementation; `ProjectCreate`, `DispatchRequest` and `ExecutePlanRequest`
+  all call it (they used to carry three different policies, and `ExecutePlanRequest` had
+  none). The option-injection check is a CONTAINMENT check, never prefix-only, and it runs
+  BEFORE the local-path branch. A LOCAL filesystem path is syntactically valid there because
+  a pydantic validator cannot see runtime settings; whether one is admitted is decided by
+  `Settings.allow_local_repo_paths` (default OFF) via `core/preflight.assert_repo_url_allowed`,
+  called at all three endpoints and failing CLOSED. Turning it on is what makes the local git
+  backend and `bench/` reachable through REST. Never write the literal config path in `src/`.
 - **The local repo MUST be bare**: `core/preflight._preflight_local` checks
   `rev-parse --is-bare-repository` and 422s (`NOT_A_REPO`) before any container
   spawns; local mode needs no GitHub credential at all.

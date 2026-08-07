@@ -78,6 +78,14 @@ class Settings(BaseSettings):
     # volume this needs no interactive seeding; Docker creates it on first use.
     # Empty disables persistence: workers then always start cold, never error.
     opencode_sessions_volume: str = "praxis-opencode-sessions"
+    # Admit a LOCAL filesystem path as a project's repo_url (the local git
+    # backend: a bind-mounted bare repo, no GitHub credential, no PR object).
+    # OFF by default because it lets an authenticated caller point the
+    # orchestrator at any path the container can reach, which is the right
+    # trade for a single-operator box and the wrong one for a shared host.
+    # Turn it on in the mounted praxis.yaml (a restart, not a rebuild) to run
+    # the benchmark or to evaluate Praxis with zero GitHub credentials.
+    allow_local_repo_paths: bool = False
 
     def dashboard_url(self) -> str:
         """Return the human-reachable dashboard URL for use in API responses.

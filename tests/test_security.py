@@ -190,14 +190,24 @@ def test_repo_url_rejects_ext_injection() -> None:
 
 
 @pytest.mark.unit
-def test_repo_url_rejects_file_scheme() -> None:
-    """file:// URL is rejected."""
-    with pytest.raises(ValidationError):
+def test_repo_url_file_scheme_is_refused_by_the_settings_gate() -> None:
+    """file:// is a LOCAL form, so the refusal moved from the schema to the gate.
+
+    The schema cannot see runtime settings, so it classifies rather than
+    refuses; ``allow_local_repo_paths`` defaults to off and the endpoint still
+    answers 422.  See tests/test_repo_url_policy.py and
+    tests/test_api_local_repo_gate.py.
+    """
+    from orchestrator.core.preflight import PreflightError, assert_repo_url_allowed
+
+    assert (
         ProjectCreate(
-            name="test",
-            repo_url="file:///etc/passwd",
-            model_name="m",
-        )
+            name="test", repo_url="file:///etc/passwd", model_name="m"
+        ).repo_url
+        == "file:///etc/passwd"
+    )
+    with pytest.raises(PreflightError):
+        assert_repo_url_allowed("file:///etc/passwd", object())
 
 
 @pytest.mark.unit

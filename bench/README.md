@@ -115,6 +115,14 @@ the final branch (`git diff base...result`). Praxis never grades itself.
 
 ## Running it
 
+**Before anything else: turn the local git backend on.** The bench registers
+every instance as a project whose `repo_url` is a filesystem path to a prepared
+bare repo, and the REST API refuses a local path unless the deployment opts in.
+Set `allow_local_repo_paths: true` in `config/praxis.yaml` and restart the
+orchestrator (that file is mounted, so this is a restart, never an image
+rebuild). Without it `/api/projects`, `/api/dispatch` and `/api/execute-plan`
+all answer 422 with `allow_local_repo_paths` named in the detail.
+
 ```bash
 # One-time: prepare instances as local bare repos at the buggy base commit
 uv run python -m bench.prepare --sample bench/samples/lite-pilot-16.json

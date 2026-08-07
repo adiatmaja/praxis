@@ -50,6 +50,7 @@ class PreflightKind(Enum):
     BASE_SHA_MISMATCH = "base_sha_mismatch"
     MISSING_REPO = "missing_repo"
     NOT_A_REPO = "not_a_repo"
+    LOCAL_DISABLED = "local_disabled"
 
 
 class PreflightError(Exception):
@@ -72,6 +73,7 @@ _STATUS_FOR_KIND: dict[PreflightKind, int] = {
     PreflightKind.BASE_SHA_MISMATCH: 409,
     PreflightKind.MISSING_REPO: 422,
     PreflightKind.NOT_A_REPO: 422,
+    PreflightKind.LOCAL_DISABLED: 422,
 }
 
 
@@ -114,6 +116,38 @@ def credential_configured(settings: object) -> bool:
     )
     token = (getattr(settings, "github_token", "") or "").strip().lower()
     return has_app or token not in _PLACEHOLDER_TOKENS
+
+
+def assert_repo_url_allowed(repo_url: str, settings: object) -> None:
+    """Refuse a LOCAL repo path unless the deployment opted in.
+
+    The request schemas share one ``repo_url`` policy
+    (``core/repo_url_policy``), but a pydantic validator cannot see runtime
+    settings, so it admits a local filesystem path and defers the decision
+    here.  Every endpoint that takes a caller-supplied ``repo_url`` calls this
+    before it touches the database.
+
+    Fails CLOSED: a settings object without the field is treated as off.
+
+    Args:
+        repo_url: The caller-supplied repository URL or path, already through
+            the schema validator.
+        settings: Application settings exposing ``allow_local_repo_paths``.
+
+    Raises:
+        PreflightError: With kind :attr:`PreflightKind.LOCAL_DISABLED` (422)
+            when the path is local and the opt-in is off.
+    """
+    if not is_local_repo_url(repo_url):
+        return
+    if getattr(settings, "allow_local_repo_paths", False):
+        return
+    raise PreflightError(
+        PreflightKind.LOCAL_DISABLED,
+        "local repository paths are disabled; set allow_local_repo_paths in "
+        "the mounted praxis.yaml, then restart the orchestrator, to use the "
+        "local git backend",
+    )
 
 
 async def _preflight_local(repo_url: str, base: str, branch: str | None) -> list[str]:

@@ -521,6 +521,35 @@ keep the CLAUDE.md index in sync.
   so it never fires either. The only symptom is one log line per loop interval.
   `approve_task_merge` and `reject_task_merge` raise `ValueError` instead,
   because they are API-driven and an operator's click must not no-op.
+- **One `repo_url` policy, shared by all three request schemas**: before
+  `core/repo_url_policy.py` existed, `ProjectCreate` allowed https and
+  scp-style SSH only, `DispatchRequest` also allowed `http://` and `ssh://`
+  and checked the git option-injection fragments only as a PREFIX (so
+  `https://github.com/u/r --upload-pack=/bin/sh` was accepted), and
+  `ExecutePlanRequest` had no validator at all and accepted `ext::sh -c ...`
+  and `git://` too. None of that was a live RCE (git refuses `ext::` itself,
+  and the URL reaches git as a single argv element so an embedded option is
+  never re-split), but three disagreeing copies of one security control means
+  the weakest copy is the real one. There is now one implementation and every
+  schema calls it; the fragment check is a CONTAINMENT check and runs BEFORE
+  the local-path branch, or an opted-in deployment reintroduces the hole.
+- **A local `repo_url` is admitted by the schema and judged by the settings
+  gate**: a pydantic validator cannot see runtime settings, so
+  `classify_repo_url` returns `RepoUrlKind.LOCAL` rather than refusing, and
+  `core/preflight.assert_repo_url_allowed` decides. It reads
+  `Settings.allow_local_repo_paths` (default OFF) with a `getattr` default of
+  `False`, so an older or partial settings object fails CLOSED, and it is
+  called at `/api/projects`, `/api/dispatch` and `/api/execute-plan` before
+  any DB write. `execute_plan` calls it UNCONDITIONALLY, unlike its
+  `expected_base_sha` preflight, which only runs when that field is set.
+  With the default off the HTTP-visible behavior is unchanged: a local path
+  still gets a 422, just with a detail naming the setting. Turning it on is
+  what makes the local git backend, and therefore `bench/`, reachable through
+  the REST surface at all. The knob lives in the MOUNTED settings YAML, so it
+  is a `docker compose restart orchestrator`, never a rebuild. Do NOT write
+  the literal `config/` + `praxis.yaml` path anywhere under `src/`:
+  `tests/test_config_path.py` greps for it and a comment or an error message
+  is enough to break the full suite.
 - **The local repo MUST be bare**: workers push to it, and git refuses a push
   to a checked-out branch. `core/preflight._preflight_local` enforces this with
   a `rev-parse --is-bare-repository` check and returns 422 (`NOT_A_REPO`) so

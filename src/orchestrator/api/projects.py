@@ -13,6 +13,7 @@ from orchestrator.core.git_ops import GitOps
 from orchestrator.core.github_credentials import build_credential_provider
 from orchestrator.core.preflight import (
     PreflightError,
+    assert_repo_url_allowed,
     credential_configured,
     preflight_remote,
     status_and_detail,
@@ -52,6 +53,12 @@ async def create_project(request: Request, body: ProjectCreate) -> dict[str, Any
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="model_name is required and no default_worker_model is configured",
         )
+
+    try:
+        assert_repo_url_allowed(body.repo_url, settings)
+    except PreflightError as exc:
+        sc, detail = status_and_detail(exc)
+        raise HTTPException(status_code=sc, detail=detail) from exc
 
     provider = build_credential_provider(settings)
     git = GitOps(provider)
