@@ -5503,3 +5503,171 @@ Nothing. See "Still open" for engine item 3, which was NOT cleared.
    refused. Deliberate: a loud refusal beats a default that quietly runs one arm.
 5. Task 17 needs the pilot, the full matrix, and ten hand-classified failures.
    Human-gated and untouched.
+
+### Pre-pilot unblocking execution record (2026-08-08)
+
+**Status: the two agent-executable blockers on Task 12 are CLEARED. Task 12 and
+Task 17 remain HUMAN-GATED and were not attempted. One design decision is on the
+table with a recommendation and was NOT explicitly confirmed by the user; it must
+be confirmed before the pilot.**
+
+This work is not in any plan. It was written as a task and TDD'd because bench
+Phase A's local git backend was unreachable through the REST surface the runner
+uses, so Task 12 could not run at all.
+
+Committed on local `main`, NOT pushed. Commits in order: `94411b1` (the shared
+`repo_url` policy and the local opt-in), `f5a4918` (the strata re-cut, the
+re-draw, and `bench/enrich.py`), `90ead67` (four gaps the adversarial review of
+`94411b1` found).
+
+Gate at close: `ruff format --check` and `ruff check` clean across `src/`,
+`tests/`, `bench/`; `mypy src/ bench/` clean; **1941 tests passing, 92 percent
+coverage**.
+
+#### Blocker 1, cleared: the REST API rejected local repo paths
+
+`ProjectCreate` and `DispatchRequest` rejected every form
+`core/git_backend.is_local_repo_url` accepts, so `register_project` and
+`dispatch` both 422'd on a prepared bare repo. `core/repo_url_policy.py` is now
+the single implementation and all three sibling schemas call it. The policy is
+the STRICTEST of the three former ones, which TIGHTENS `DispatchRequest`:
+`http://` and `ssh://` are refused there now. Nothing in `src/`, `tests/`,
+`bench/`, `docs/`, `web/` or `config/` sends either form, but a pre-existing
+deployment can hold such a project row, and re-dispatching to it will now 422
+with no migration or doctor check to surface it. Recorded, not fixed.
+
+A local path is syntactically valid and the decision is deferred to
+`Settings.allow_local_repo_paths`, default OFF, enforced by
+`core/preflight.assert_repo_url_allowed` at all three endpoints. With the
+default the HTTP-visible behavior is unchanged: a local path still gets a 422.
+The bench operator turns it on in the mounted settings YAML and restarts.
+
+#### Blocker 3, cleared: the strata now span Lite
+
+Both LOWER cuts stay published. Only the two outer edges move: the patch cut
+from 100 lines to 15, and 500 files is promoted from the upper repo cut to the
+lower one with 2000 as the new upper. Measured over the full 300-instance pool:
+all 9 cells populate, thinnest 6, so the pilot draws 36 (was 16) and a full run
+would draw 123 (was 64). The draw was re-run, the sample re-committed as
+`bench/samples/lite-pilot-36.json`, and `lite-pilot-16.json` deleted.
+
+#### Defects found in this session's own work
+
+**A false provenance claim in the report template.** `bench/templates/report.md.tmpl`
+said flatly that the stratum boundaries come from arXiv 2505.23419. After the
+re-cut two of them do not. A published report would have made a false claim
+about its own design that no number in it could contradict. The section is one
+of the four structurally mandatory honesty headings, so the wrong version was
+guaranteed to ship. Corrected, and pinned against the template ON DISK.
+
+**Enrichment was an uncommitted one-off.** The instance pool carries patch
+metadata and a tracked-file count, not the upstream issue text, and the issue
+text IS the worker-facing prompt. The original sample was enriched by a step
+that exists nowhere in the repo, so a re-draw silently produces a sample that
+parses, validates, has the right entry count, and cannot be run. `bench/enrich.py`
+is that step as code, fetching from the public dataset viewer with no new
+dependency. Scope was widened deliberately: without it this task's own
+deliverable is inert.
+
+#### Vacuous tests exposed by mutation
+
+- **The template-disclosure test was measured GREEN under the mutation it
+  existed to catch.** `assert "re-cut" in text` is satisfied by any one of the
+  two occurrences, so reverting the load-bearing sentence to the old
+  unqualified provenance claim left it passing. Replaced with the full
+  sentences plus an assertion that the wrong sentence is ABSENT, and the
+  mutation re-run to RED by the orchestrator.
+- `test_a_blocked_transport_is_refused_even_with_the_opt_in_on` asserted only a
+  422. `preflight_remote` also answers 422 (`NOT_GITHUB`) for `ext::sh -c ...`,
+  so deleting `ProjectCreate`'s validator entirely left it green on two of the
+  three endpoints. It asserts the detail text now.
+- `test_local_repo_paths_default_to_off` passed an absent `yaml_path`, pinning
+  only the pydantic FIELD default. `Settings.__init__` overlays YAML above field
+  defaults, so flipping the committed YAML to `true` left it green while every
+  real deployment would ship opted in. A second test reads the committed file.
+- `test_a_non_bare_local_repo_is_still_rejected_by_preflight` was the only test
+  in its file not parametrized over the three endpoints, which is precisely how
+  the review's HIGH finding stayed invisible.
+
+#### Design defects the adversarial review found, all confirmed by execution
+
+1. **HIGH. `/api/execute-plan` never ran the local-repo shape check.**
+   `preflight_remote` sat inside `if body.expected_base_sha is not None:`. A
+   plain `{"repo_url": "/"}` returned 201, wrote a project row, and
+   `agent_manager.local_repo_volume` would have bind-mounted the entire host
+   filesystem read-write into an LLM-driven agent container. Both sibling
+   endpoints returned 422 for the identical payload, and there was no later
+   backstop. Bounded by the opt-in, unreachable with the shipped default.
+2. **MEDIUM. The option-injection check ran against the raw candidate while
+   `local_repo_path` percent-decodes.** `file://%2D%2Dupload-pack=/bin/sh` was
+   admitted and decodes to an argv element beginning with a dash. The "single
+   argv element" argument that protects the remote forms does NOT protect the
+   local backend: verified against real git that
+   `git clone --no-single-branch --upload-pack=/bin/sh dest` answers
+   `repository 'dest' does not exist`, i.e. the path was consumed as a flag.
+   Local paths are judged on their decoded form now.
+3. **LOW, and it bites the bench specifically.** `doctor._is_local_mode` used
+   `SELECT COUNT(*) ... WHERE repo_url NOT LIKE 'file://%'`, one of the five
+   local forms. `bench/runner.py` registers plain filesystem paths, so a full
+   benchmark deployment was the one `praxis doctor` reported a false credential
+   problem for. It asks `is_local_repo_url` now.
+4. **The identical defect one field over.** `ExecutePlanRequest.branch` had no
+   validator while `DispatchRequest.branch` did, on a field that reaches git's
+   argv more directly than `repo_url` does. No end-to-end exploit was
+   demonstrated. `sanitize_branch_ref` is shared now, on the principle.
+
+Also raised and NOT fixed: a NUL byte in a remote `repo_url` yields 500 rather
+than 422 (pre-existing, authenticated caller only); and the opt-in is admission
+control, not a kill switch, so turning it off does not stop an already
+registered local project from dispatching.
+
+#### Mutation checks
+
+Twenty-five run, md5 printed before / mutated / restored for every one, all
+RED after the one measured green was fixed. Nine on the `repo_url` policy
+(fragment list, prefix-only check, `git://`, ordering of the local branch, the
+gate as a no-op, the `getattr` fail-open, the setting default, the
+`ExecutePlanRequest` validator, the endpoint call site); nine on the re-cut
+(both boundary reversions, a stale committed label, a blanked issue text, the
+template disclosure, the LF newline, blank-statement acceptance,
+write-before-validate, early paging exit); seven on the review fixes.
+
+#### Cleared from the deferred backlog
+
+Bench Phase B still-open item 3 (the 4-of-9 strata finding) is CLEARED.
+Blocker 1 on Task 12 is CLEARED.
+
+#### Still open
+
+1. **The condition B decision was NOT confirmed.** A recommendation was given
+   and the user did not explicitly accept it. Confirm before acting. The
+   recommendation: run the pilot as **A and C only**. Rationale, all of it new
+   this session: `FAIL_TO_PASS` as condition B's gate is a CONFOUND, not the
+   gold standard, because those tests come from the gold `test_patch` and are
+   what the official grader runs, so B would be handed the answer key; a cheap
+   proxy produces a null that cannot distinguish "verification does not help"
+   from "the gate was too weak to tell"; and A-versus-C is the programme's
+   actual thesis, is a matched gateless pair, and runs in ONE invocation with
+   no mid-run restart, removing the single manual step nothing verifies.
+   Verified in code that this is sound: `verify_gate_disabled()` is consulted
+   at `orchestrator_dispatch.py:302` and `orchestrator_review.py:239` and
+   `:1082`, but NOT at `orchestrator_dispatch.py:412` (the leaf acceptance
+   floor) or `:433` (the worker's Bible), so in bench mode `verify_cmd` is
+   never executed and only has to be an honest string identical across arms.
+   The B-versus-C ablation becomes a scoped follow-up with a REGRESSION-ONLY
+   gate, which is a better experiment than the one currently specified.
+2. **The pilot size was NOT confirmed either.** Recommendation: 2 per cell, 18
+   instances, still spanning all 9 cells, with `FULL_PER_STRATUM` untouched.
+   The committed sample is currently at 4 per cell, 36 instances.
+3. Engine deferred item 3 is on its FOURTH carry and was not touched.
+4. Everything else on the standing backlog is unchanged: no `/api/status`
+   bench-mode field, `skipped` still indistinguishable from `passed`, no
+   per-instance recovery in `bench/prepare.py` `main()`, `_discard_failed`
+   swallowing `OSError`, partial/promisor clones untested,
+   `BenchClient.register_project` untested at the HTTP layer, the GitHub half
+   of the merge gate, the local `compare_url` nonsense, `Database` with no
+   transaction API, the superseded parent's container, the duplicated
+   `orchestrator_fixture`, and `record_outcome` reading the REVIEW model.
+5. **Nothing in engine Phase B or C, or bench Phase B or C, has ever run live.**
+   This session did not change that. Every result remains from unit and
+   integration tests.
