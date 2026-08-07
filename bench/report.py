@@ -203,6 +203,37 @@ def _render_plausible_table(rows: list[dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
+def _render_conditions_note(rows: list[dict[str, Any]]) -> str:
+    """State which arms actually ran, and what a gateless run cannot answer.
+
+    The Design table above it lists every condition the design DEFINES, which
+    for a two-arm run describes arms that never executed. Derived from the rows
+    so it cannot be forgotten, and so it cannot disagree with the tables below.
+
+    Args:
+        rows: Attempt rows, as read from the JSONL metrics file.
+
+    Returns:
+        Markdown prose naming the executed and unexecuted conditions.
+    """
+    order = [c.key for c in CONDITIONS]
+    ran = [k for k in order if any(r["condition"] == k for r in rows)]
+    absent = [k for k in order if k not in ran]
+
+    parts = [f"Conditions actually run: {', '.join(ran) or 'none'}."]
+    if absent:
+        parts.append(f"Not run: {', '.join(absent)}.")
+    # The gate is what condition B and D carry; with neither present, nothing in
+    # this run exercised it, so no reading of these numbers may be about it.
+    if not any(c.verify_gate for c in CONDITIONS if c.key in ran):
+        parts.append(
+            "The verify-gate ablation was NOT performed in this run: no gated "
+            "arm ran, so `verify_cmd` was registered identically across arms "
+            "and never executed."
+        )
+    return " ".join(parts)
+
+
 def build_report(rows: list[dict[str, Any]], run_id: str, model_cutoff: str) -> str:
     """Render the full report markdown.
 
@@ -223,6 +254,7 @@ def build_report(rows: list[dict[str, Any]], run_id: str, model_cutoff: str) -> 
     return template.substitute(
         run_id=run_id,
         rows=len(rows),
+        conditions_note=_render_conditions_note(rows),
         stratum_table=_render_stratum_table(rows),
         mcnemar_table=_render_mcnemar_table(rows),
         cost_table=_render_cost_table(rows),

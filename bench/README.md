@@ -120,9 +120,13 @@ cut to the lower one with 2000 as the new upper) are fitted to the corpus. The
 strata the published way.
 
 All 9 cells now populate, the thinnest holding 6 instances, so the pilot draws
-**36** and a full run would draw 123 (three cells hold fewer than
-`FULL_PER_STRATUM`). The repo-size names are ordinal: `tiny` means the smaller
-third of this corpus, not an absolute size.
+**18** at `PILOT_PER_STRATUM = 2` and a full run would draw 123 (three cells hold
+fewer than `FULL_PER_STRATUM`). The repo-size names are ordinal: `tiny` means the
+smaller third of this corpus, not an absolute size.
+
+The pilot was cut from 4 per cell to 2 on 2026-08-08, before any outcome was
+observed. It exists to prove the loop runs live and to produce cost numbers;
+statistical power is the full run's job and `FULL_PER_STRATUM` is unchanged.
 
 This re-cut is legitimate ONLY because no outcome had been observed when it was
 made. It is recorded here, in `bench/config.stratum_for`, and in the plan's
@@ -133,8 +137,8 @@ report must repeat it.
 
 ```bash
 uv run python -m bench.sample --pool bench/.work/pool-lite.json \
-    --out bench/samples/lite-pilot-36.json
-uv run python -m bench.enrich --sample bench/samples/lite-pilot-36.json
+    --out bench/samples/lite-pilot-18.json
+uv run python -m bench.enrich --sample bench/samples/lite-pilot-18.json
 ```
 
 The second command is not optional. The pool carries patch metadata and a
@@ -160,21 +164,12 @@ all answer 422 with `allow_local_repo_paths` named in the detail.
 
 ```bash
 # One-time: prepare instances as local bare repos at the buggy base commit
-uv run python -m bench.prepare --sample bench/samples/lite-pilot-36.json
+uv run python -m bench.prepare --sample bench/samples/lite-pilot-18.json
 
-# Pilot half 1: the GATED conditions. Start the orchestrator with NEITHER
-# PRAXIS_BENCH nor PRAXIS_BENCH_DISABLE_VERIFY set.
-uv run python -m bench.runner --sample bench/samples/lite-pilot-36.json \
-    --conditions B --worker local-openweight \
-    --run-id pilot-1 --verify-cmd "uv run pytest -q"
-
-# Now RESTART the orchestrator with PRAXIS_BENCH=1 and
-# PRAXIS_BENCH_DISABLE_VERIFY=1 in its environment.
-
-# Pilot half 2: the UNGATED conditions. Same --run-id, so both halves append to
-# bench/.work/runs/pilot-1/attempts.jsonl.
-uv run python -m bench.runner --sample bench/samples/lite-pilot-36.json \
-    --conditions A --worker local-openweight \
+# Start the orchestrator with BOTH PRAXIS_BENCH=1 and
+# PRAXIS_BENCH_DISABLE_VERIFY=1 in its environment, then:
+uv run python -m bench.runner --sample bench/samples/lite-pilot-18.json \
+    --conditions A,C --worker local-openweight \
     --run-id pilot-1 --verify-cmd "uv run pytest -q"
 
 # Grade and report
@@ -182,9 +177,40 @@ uv run python -m bench.grade --run bench/.work/runs/pilot-1
 uv run python -m bench.report --run bench/.work/runs/pilot-1
 ```
 
-`--conditions` defaults to `A,B`, which spans both groups and is **refused on
-purpose**: running the pilot has to be a deliberate choice of half, not a quiet
-gating of condition A. See "The restart requirement" above.
+`--conditions` defaults to `A,B`, which spans both gate settings and is
+**refused on purpose**: running the bench has to be a deliberate choice of arms,
+not a quiet gating of condition A.
+
+### Why the pilot is A and C, and what that costs
+
+Decided 2026-08-08, before any outcome was observed.
+
+**Condition B's gate would have been `FAIL_TO_PASS`, and that is a CONFOUND
+rather than a gold standard.** Those tests come from the gold `test_patch` and
+are exactly what the official grader runs, so a gate executing them hands B the
+answer key: its worker iterates until the graded tests pass while A and C do not.
+B-versus-C would then measure "does having the marking scheme help". The honest
+heavy alternative is a REGRESSION-ONLY gate (the repo's existing suite with the
+gold tests excluded), which needs the per-instance environment and is a genuine
+new subsystem. A cheap proxy gate fails asymmetrically instead: a null result
+cannot distinguish "verification does not help" from "this gate was too weak to
+tell", and null is both the likely outcome and the reading that gets quoted.
+
+**State the cost plainly wherever this run is reported: it answers LESS than the
+bench was designed to answer.** The verify-gate ablation is deferred to a scoped
+follow-up with a regression-only gate, which is a better experiment than the one
+originally specified, and it has not been run.
+
+A and C are a matched gateless pair, so they run in ONE invocation against one
+orchestrator started with both flags, and the mid-run restart below does not
+occur. The flags are still REQUIRED; what is removed is the restart, not the
+requirement.
+
+`verify_cmd` is consequently never executed under these arms. It must still be
+registered and identical across them (see "Unconfounding", above), because
+`orchestrator_dispatch.py` reads it as the leaf's acceptance floor and threads it
+into the worker's Bible at two sites that do NOT consult bench mode. Under A and
+C it is worker-briefing text only, and any report must say so.
 
 ## Cost
 

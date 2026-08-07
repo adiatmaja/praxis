@@ -75,11 +75,15 @@ SAMPLE_SEED = 20260806
 # Per-stratum sample sizes. These are the pre-registered knob; the resulting
 # TOTAL is a consequence of how many cells the corpus actually populates, and is
 # not itself a target. With the boundaries below, all 9 cells populate against
-# SWE-bench Lite (thinnest cell: 6 instances), so the pilot draws 36 and a full
+# SWE-bench Lite (thinnest cell: 6 instances), so the pilot draws 18 and a full
 # run would draw 123 rather than 9 times 16, because three cells hold fewer than
 # 16. Under the previously published boundaries only 4 cells populated and the
 # pilot drew 16. See bench/README.md, "Stratification".
-PILOT_PER_STRATUM = 4
+#
+# The pilot dropped from 4 per cell to 2 on 2026-08-08, before any outcome was
+# observed. Its job is to prove the loop runs live and to produce cost numbers;
+# statistical power is the FULL run's job, and FULL_PER_STRATUM is untouched.
+PILOT_PER_STRATUM = 2
 FULL_PER_STRATUM = 16
 
 

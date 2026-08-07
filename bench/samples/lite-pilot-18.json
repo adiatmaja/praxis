@@ -1,0 +1,216 @@
+{
+  "corpus": "swe-bench-lite",
+  "seed": 20260806,
+  "per_stratum": 2,
+  "per_cell_counts": {
+    "large/big": 2,
+    "large/mid": 2,
+    "large/tiny": 2,
+    "medium/big": 2,
+    "medium/mid": 2,
+    "medium/tiny": 2,
+    "small/big": 2,
+    "small/mid": 2,
+    "small/tiny": 2
+  },
+  "instances": [
+    {
+      "instance_id": "astropy__astropy-14995",
+      "upstream": "https://github.com/astropy/astropy.git",
+      "base_commit": "b16c7d12ccbc7b2d20364b89fb44285bcbfede54",
+      "patch_files": 1,
+      "patch_loc": 4,
+      "repo_files": 1777,
+      "stratum_patch": "small",
+      "stratum_repo": "mid",
+      "problem_statement": "In v5.3, NDDataRef mask propagation fails when one of the operand does not have a mask\n### Description\n\nThis applies to v5.3. \r\n\r\nIt looks like when one of the operand does not have a mask, the mask propagation when doing arithmetic, in particular with `handle_mask=np.bitwise_or` fails.  This is not a problem in v5.2.\r\n\r\nI don't know enough about how all that works, but it seems from the error that the operand without a mask is set as a mask of None's and then the bitwise_or tries to operate on an integer and a None and fails.\n\n### Expected behavior\n\nWhen one of the operand does not have mask, the mask that exists should just be copied over to the output.  Or whatever was done in that situation in v5.2 where there's no problem.\n\n### How to Reproduce\n\nThis is with v5.3.   With v5.2, there are no errors.\r\n\r\n```\r\n>>> import numpy as np\r\n>>> from astropy.nddata import NDDataRef\r\n\r\n>>> array = np.array([[0, 1, 0], [1, 0, 1], [0, 1, 0]])\r\n>>> mask = np.array([[0, 1, 64], [8, 0, 1], [2, 1, 0]])\r\n\r\n>>> nref_nomask = NDDataRef(array)\r\n>>> nref_mask = NDDataRef(array, mask=mask)\r\n\r\n# multiply no mask by constant (no mask * no mask)\r\n>>> nref_nomask.multiply(1., handle_mask=np.bitwise_or).mask   # returns nothing, no mask,  OK\r\n\r\n# multiply no mask by itself (no mask * no mask)\r\n>>> nref_nomask.multiply(nref_nomask, handle_mask=np.bitwise_or).mask # return nothing, no mask, OK\r\n\r\n# multiply mask by constant (mask * no mask)\r\n>>> nref_mask.multiply(1., handle_mask=np.bitwise_or).mask\r\n...\r\nTypeError: unsupported operand type(s) for |: 'int' and 'NoneType'\r\n\r\n# multiply mask by itself (mask * mask)\r\n>>> nref_mask.multiply(nref_mask, handle_mask=np.bitwise_or).mask\r\narray([[ 0,  1, 64],\r\n       [ 8,  0,  1],\r\n       [ 2,  1,  0]])\r\n\r\n# multiply mask by no mask (mask * no mask)\r\n>>> nref_mask.multiply(nref_nomask, handle_mask=np.bitwise_or).mask\r\n...\r\nTypeError: unsupported operand type(s) for |: 'int' and 'NoneType'\r\n```\r\n\n\n### Versions\n\n>>> import sys; print(\"Python\", sys.version)\r\nPython 3.10.11 | packaged by conda-forge | (main, May 10 2023, 19:07:22) [Clang 14.0.6 ]\r\n>>> import astropy; print(\"astropy\", astropy.__version__)\r\nastropy 5.3\r\n>>> import numpy; print(\"Numpy\", numpy.__version__)\r\nNumpy 1.24.3\r\n>>> import erfa; print(\"pyerfa\", erfa.__version__)\r\npyerfa 2.0.0.3\r\n>>> import scipy; print(\"Scipy\", scipy.__version__)\r\nScipy 1.10.1\r\n>>> import matplotlib; print(\"Matplotlib\", matplotlib.__version__)\r\nMatplotlib 3.7.1\r\n\n"
+    },
+    {
+      "instance_id": "django__django-11815",
+      "upstream": "https://github.com/django/django.git",
+      "base_commit": "e02f67ef2d03d48128e7a118bf75f0418e24e8ac",
+      "patch_files": 1,
+      "patch_loc": 7,
+      "repo_files": 6141,
+      "stratum_patch": "medium",
+      "stratum_repo": "big",
+      "problem_statement": "Migrations uses value of enum object instead of its name.\nDescription\n\t \n\t\t(last modified by oasl)\n\t \nWhen using Enum object as a default value for a CharField, the generated migration file uses the value of the Enum object instead of the its name. This causes a problem when using Django translation on the value of the Enum object. \nThe problem is that, when the Enum object value get translated to the users language, the old migration files raise an error stating that the Enum does not have the corresponding value. (because the Enum value is translated to another language)\nExample:\nLet say we have this code in models.py:\nfrom enum import Enum\nfrom django.utils.translation import gettext_lazy as _\nfrom django.db import models\nclass Status(Enum):\n\tGOOD = _('Good') # 'Good' will be translated\n\tBAD = _('Bad') # 'Bad' will be translated\n\tdef __str__(self):\n\t\treturn self.name\nclass Item(models.Model):\n\tstatus = models.CharField(default=Status.GOOD, max_length=128)\nIn the generated migration file, the code will be:\n...\n('status', models.CharField(default=Status('Good'), max_length=128))\n...\nAfter the translation, 'Good' will be translated to another word and it will not be part of the Status Enum class any more, so the migration file will raise the error on the previous line:\nValueError: 'Good' is not a valid Status\nShouldn't the code generated by the migration uses the name of the Status Enum 'GOOD', not the value of it, since it is changeable?\nIt should be:\n('status', models.CharField(default=Status['GOOD'], max_length=128))\nThis will be correct regardless of the translated word\n"
+    },
+    {
+      "instance_id": "django__django-13757",
+      "upstream": "https://github.com/django/django.git",
+      "base_commit": "3f140dde51c0fe6c350acb7727bbe489a99f0632",
+      "patch_files": 1,
+      "patch_loc": 19,
+      "repo_files": 6423,
+      "stratum_patch": "large",
+      "stratum_repo": "big",
+      "problem_statement": "Using __isnull=True on a KeyTransform should not match JSON null on SQLite and Oracle\nDescription\n\t\nThe KeyTransformIsNull lookup borrows the logic from HasKey for isnull=False, which is correct. If isnull=True, the query should only match objects that do not have the key. The query is correct for MariaDB, MySQL, and PostgreSQL. However, on SQLite and Oracle, the query also matches objects that have the key with the value null, which is incorrect.\nTo confirm, edit tests.model_fields.test_jsonfield.TestQuerying.test_isnull_key. For the first assertion, change\n\t\tself.assertSequenceEqual(\n\t\t\tNullableJSONModel.objects.filter(value__a__isnull=True),\n\t\t\tself.objs[:3] + self.objs[5:],\n\t\t)\nto\n\t\tself.assertSequenceEqual(\n\t\t\tNullableJSONModel.objects.filter(value__j__isnull=True),\n\t\t\tself.objs[:4] + self.objs[5:],\n\t\t)\nThe test previously only checks with value__a which could not catch this behavior because the value is not JSON null.\n"
+    },
+    {
+      "instance_id": "django__django-15061",
+      "upstream": "https://github.com/django/django.git",
+      "base_commit": "2c01ebb4be5d53cbf6450f356c10e436025d6d07",
+      "patch_files": 1,
+      "patch_loc": 4,
+      "repo_files": 6546,
+      "stratum_patch": "small",
+      "stratum_repo": "big",
+      "problem_statement": "Remove \"for = ...\" from MultiWidget's <label>.\nDescription\n\t\nThe instance from Raw MultiWidget class generate id_for_label like f'{id_}0'\nIt has not sense.\nFor example ChoiceWidget has self.add_id_index and I can decide it myself, how I will see label_id - with or without index.\nI think, it is better to remove completely id_for_label method from MultiWidget Class.\n"
+    },
+    {
+      "instance_id": "django__django-15498",
+      "upstream": "https://github.com/django/django.git",
+      "base_commit": "d90e34c61b27fba2527834806639eebbcfab9631",
+      "patch_files": 1,
+      "patch_loc": 4,
+      "repo_files": 6614,
+      "stratum_patch": "small",
+      "stratum_repo": "big",
+      "problem_statement": "Fix handling empty string for If-Modified-Since header\nDescription\n\t\nEmpty string used to be ignored for If-Modified-Since header, but now raises exception since d6aff369ad3.\nFix handling empty string for If-Modified-Since header\nDescription\n\t\nEmpty string used to be ignored for If-Modified-Since header, but now raises exception since d6aff369ad3.\n"
+    },
+    {
+      "instance_id": "matplotlib__matplotlib-18869",
+      "upstream": "https://github.com/matplotlib/matplotlib.git",
+      "base_commit": "b7d05919865fc0c37a0164cf467d5d5513bd0ede",
+      "patch_files": 1,
+      "patch_loc": 67,
+      "repo_files": 4366,
+      "stratum_patch": "large",
+      "stratum_repo": "big",
+      "problem_statement": "Add easily comparable version info to toplevel\n<!--\r\nWelcome! Thanks for thinking of a way to improve Matplotlib.\r\n\r\n\r\nBefore creating a new feature request please search the issues for relevant feature requests.\r\n-->\r\n\r\n### Problem\r\n\r\nCurrently matplotlib only exposes `__version__`.  For quick version checks, exposing either a `version_info` tuple (which can be compared with other tuples) or a `LooseVersion` instance (which can be properly compared with other strings) would be a small usability improvement.\r\n\r\n(In practice I guess boring string comparisons will work just fine until we hit mpl 3.10 or 4.10 which is unlikely to happen soon, but that feels quite dirty :))\r\n<!--\r\nProvide a clear and concise description of the problem this feature will solve. \r\n\r\nFor example:\r\n* I'm always frustrated when [...] because [...]\r\n* I would like it if [...] happened when I [...] because [...]\r\n* Here is a sample image of what I am asking for [...]\r\n-->\r\n\r\n### Proposed Solution\r\n\r\nI guess I slightly prefer `LooseVersion`, but exposing just a `version_info` tuple is much more common in other packages (and perhaps simpler to understand).  The hardest(?) part is probably just bikeshedding this point :-)\r\n<!-- Provide a clear and concise description of a way to accomplish what you want. For example:\r\n\r\n* Add an option so that when [...]  [...] will happen\r\n -->\r\n\r\n### Additional context and prior art\r\n\r\n`version_info` is a pretty common thing (citation needed).\r\n<!-- Add any other context or screenshots about the feature request here. You can also include links to examples of other programs that have something similar to your request. For example:\r\n\r\n* Another project [...] solved this by [...]\r\n-->\r\n\n"
+    },
+    {
+      "instance_id": "matplotlib__matplotlib-23299",
+      "upstream": "https://github.com/matplotlib/matplotlib.git",
+      "base_commit": "3eadeacc06c9f2ddcdac6ae39819faa9fbee9e39",
+      "patch_files": 1,
+      "patch_loc": 5,
+      "repo_files": 4451,
+      "stratum_patch": "medium",
+      "stratum_repo": "big",
+      "problem_statement": "[Bug]: get_backend() clears figures from Gcf.figs if they were created under rc_context\n### Bug summary\r\n\r\ncalling `matplotlib.get_backend()` removes all figures from `Gcf` if the *first* figure in `Gcf.figs` was created in an `rc_context`.\r\n\r\n### Code for reproduction\r\n\r\n```python\r\nimport matplotlib.pyplot as plt\r\nfrom matplotlib import get_backend, rc_context\r\n\r\n# fig1 = plt.figure()  # <- UNCOMMENT THIS LINE AND IT WILL WORK\r\n# plt.ion()            # <- ALTERNATIVELY, UNCOMMENT THIS LINE AND IT WILL ALSO WORK\r\nwith rc_context():\r\n    fig2 = plt.figure()\r\nbefore = f'{id(plt._pylab_helpers.Gcf)} {plt._pylab_helpers.Gcf.figs!r}'\r\nget_backend()\r\nafter = f'{id(plt._pylab_helpers.Gcf)} {plt._pylab_helpers.Gcf.figs!r}'\r\n\r\nassert before == after, '\\n' + before + '\\n' + after\r\n```\r\n\r\n\r\n### Actual outcome\r\n\r\n```\r\n---------------------------------------------------------------------------\r\nAssertionError                            Traceback (most recent call last)\r\n<ipython-input-1-fa4d099aa289> in <cell line: 11>()\r\n      9 after = f'{id(plt._pylab_helpers.Gcf)} {plt._pylab_helpers.Gcf.figs!r}'\r\n     10 \r\n---> 11 assert before == after, '\\n' + before + '\\n' + after\r\n     12 \r\n\r\nAssertionError: \r\n94453354309744 OrderedDict([(1, <matplotlib.backends.backend_qt.FigureManagerQT object at 0x7fb33e26c220>)])\r\n94453354309744 OrderedDict()\r\n```\r\n\r\n### Expected outcome\r\n\r\nThe figure should not be missing from `Gcf`.  Consequences of this are, e.g, `plt.close(fig2)` doesn't work because `Gcf.destroy_fig()` can't find it.\r\n\r\n### Additional information\r\n\r\n_No response_\r\n\r\n### Operating system\r\n\r\nXubuntu\r\n\r\n### Matplotlib Version\r\n\r\n3.5.2\r\n\r\n### Matplotlib Backend\r\n\r\nQtAgg\r\n\r\n### Python version\r\n\r\nPython 3.10.4\r\n\r\n### Jupyter version\r\n\r\nn/a\r\n\r\n### Installation\r\n\r\nconda\n"
+    },
+    {
+      "instance_id": "pallets__flask-4045",
+      "upstream": "https://github.com/pallets/flask.git",
+      "base_commit": "d8c37f43724cd9fb0870f77877b7c4c7e38a19e0",
+      "patch_files": 1,
+      "patch_loc": 16,
+      "repo_files": 235,
+      "stratum_patch": "large",
+      "stratum_repo": "tiny",
+      "problem_statement": "Raise error when blueprint name contains a dot\nThis is required since every dot is now significant since blueprints can be nested. An error was already added for endpoint names in 1.0, but should have been added for this as well.\n"
+    },
+    {
+      "instance_id": "psf__requests-2148",
+      "upstream": "https://github.com/psf/requests.git",
+      "base_commit": "fe693c492242ae532211e0c173324f09ca8cf227",
+      "patch_files": 1,
+      "patch_loc": 5,
+      "repo_files": 128,
+      "stratum_patch": "medium",
+      "stratum_repo": "tiny",
+      "problem_statement": "socket.error exception not caught/wrapped in a requests exception (ConnectionError perhaps?)\nI just noticed a case where I had a socket reset on me, and was raised to me as a raw socket error as opposed to something like a requests.exceptions.ConnectionError:\n\n```\n  File \"/home/rtdean/***/***/***/***/***/***.py\", line 67, in dir_parse\n    root = ElementTree.fromstring(response.text)\n  File \"/home/rtdean/.pyenv/versions/2.7.6/lib/python2.7/site-packages/requests-2.3.0-py2.7.egg/requests/models.py\", line 721, in text\n    if not self.content:\n  File \"/home/rtdean/.pyenv/versions/2.7.6/lib/python2.7/site-packages/requests-2.3.0-py2.7.egg/requests/models.py\", line 694, in content\n    self._content = bytes().join(self.iter_content(CONTENT_CHUNK_SIZE)) or bytes()\n  File \"/home/rtdean/.pyenv/versions/2.7.6/lib/python2.7/site-packages/requests-2.3.0-py2.7.egg/requests/models.py\", line 627, in generate\n    for chunk in self.raw.stream(chunk_size, decode_content=True):\n  File \"/home/rtdean/.pyenv/versions/2.7.6/lib/python2.7/site-packages/requests-2.3.0-py2.7.egg/requests/packages/urllib3/response.py\", line 240, in stream\n    data = self.read(amt=amt, decode_content=decode_content)\n  File \"/home/rtdean/.pyenv/versions/2.7.6/lib/python2.7/site-packages/requests-2.3.0-py2.7.egg/requests/packages/urllib3/response.py\", line 187, in read\n    data = self._fp.read(amt)\n  File \"/home/rtdean/.pyenv/versions/2.7.6/lib/python2.7/httplib.py\", line 543, in read\n    return self._read_chunked(amt)\n  File \"/home/rtdean/.pyenv/versions/2.7.6/lib/python2.7/httplib.py\", line 612, in _read_chunked\n    value.append(self._safe_read(chunk_left))\n  File \"/home/rtdean/.pyenv/versions/2.7.6/lib/python2.7/httplib.py\", line 658, in _safe_read\n    chunk = self.fp.read(min(amt, MAXAMOUNT))\n  File \"/home/rtdean/.pyenv/versions/2.7.6/lib/python2.7/socket.py\", line 380, in read\n    data = self._sock.recv(left)\n  File \"/home/rtdean/.pyenv/versions/2.7.6/lib/python2.7/site-packages/gevent-1.0.1-py2.7-linux-x86_64.egg/gevent/socket.py\", line 385, in recv\n    return sock.recv(*args)\nsocket.error: [Errno 104] Connection reset by peer\n```\n\nNot sure if this is by accident or design... in general, I guess I'd expect a requests exception when using requests, but I can start looking for socket errors and the like as well.\n\n"
+    },
+    {
+      "instance_id": "psf__requests-2317",
+      "upstream": "https://github.com/psf/requests.git",
+      "base_commit": "091991be0da19de9108dbe5e3752917fea3d7fdc",
+      "patch_files": 1,
+      "patch_loc": 4,
+      "repo_files": 128,
+      "stratum_patch": "small",
+      "stratum_repo": "tiny",
+      "problem_statement": "method = builtin_str(method) problem\nIn requests/sessions.py is a command:\n\nmethod = builtin_str(method)\nConverts method from\nb\u2019GET\u2019\nto\n\"b'GET\u2019\"\n\nWhich is the literal string, no longer a binary string.  When requests tries to use the method \"b'GET\u2019\u201d, it gets a 404 Not Found response.\n\nI am using python3.4 and python-neutronclient (2.3.9) with requests (2.4.3).  neutronclient is broken because it uses this \"args = utils.safe_encode_list(args)\" command which converts all the values to binary string, including method.\n\nI'm not sure if this is a bug with neutronclient or a bug with requests, but I'm starting here.  Seems if requests handled the method value being a binary string, we wouldn't have any problem.\n\nAlso, I tried in python2.6 and this bug doesn't exist there. Some difference between 2.6 and 3.4 makes this not work right.\n\n"
+    },
+    {
+      "instance_id": "pydata__xarray-3364",
+      "upstream": "https://github.com/pydata/xarray.git",
+      "base_commit": "863e49066ca4d61c9adfe62aca3bf21b90e1af8c",
+      "patch_files": 1,
+      "patch_loc": 10,
+      "repo_files": 234,
+      "stratum_patch": "medium",
+      "stratum_repo": "tiny",
+      "problem_statement": "Ignore missing variables when concatenating datasets?\nSeveral users (@raj-kesavan, @richardotis, now myself) have wondered about how to concatenate xray Datasets with different variables.\n\nWith the current `xray.concat`, you need to awkwardly create dummy variables filled with `NaN` in datasets that don't have them (or drop mismatched variables entirely). Neither of these are great options -- `concat` should have an option (the default?) to take care of this for the user.\n\nThis would also be more consistent with `pd.concat`, which takes a more relaxed approach to matching dataframes with different variables (it does an outer join).\n\n"
+    },
+    {
+      "instance_id": "pydata__xarray-4248",
+      "upstream": "https://github.com/pydata/xarray.git",
+      "base_commit": "98dc1f4ea18738492e074e9e51ddfed5cd30ab94",
+      "patch_files": 1,
+      "patch_loc": 2,
+      "repo_files": 260,
+      "stratum_patch": "small",
+      "stratum_repo": "tiny",
+      "problem_statement": "Feature request: show units in dataset overview\nHere's a hypothetical dataset:\r\n\r\n```\r\n<xarray.Dataset>\r\nDimensions:  (time: 3, x: 988, y: 822)\r\nCoordinates:\r\n  * x         (x) float64 ...\r\n  * y         (y) float64 ...\r\n  * time      (time) datetime64[ns] ...\r\nData variables:\r\n    rainfall  (time, y, x) float32 ...\r\n    max_temp  (time, y, x) float32 ...\r\n```\r\n\r\nIt would be really nice if the units of the coordinates and of the data variables were shown in the `Dataset` repr, for example as:\r\n\r\n```\r\n<xarray.Dataset>\r\nDimensions:  (time: 3, x: 988, y: 822)\r\nCoordinates:\r\n  * x, in metres         (x)            float64 ...\r\n  * y, in metres         (y)            float64 ...\r\n  * time                 (time)         datetime64[ns] ...\r\nData variables:\r\n    rainfall, in mm      (time, y, x)   float32 ...\r\n    max_temp, in deg C   (time, y, x)   float32 ...\r\n```\n"
+    },
+    {
+      "instance_id": "pytest-dev__pytest-5495",
+      "upstream": "https://github.com/pytest-dev/pytest.git",
+      "base_commit": "1aefb24b37c30fba8fd79a744829ca16e252f340",
+      "patch_files": 1,
+      "patch_loc": 25,
+      "repo_files": 446,
+      "stratum_patch": "large",
+      "stratum_repo": "tiny",
+      "problem_statement": "Confusing assertion rewriting message with byte strings\nThe comparison with assertion rewriting for byte strings is confusing: \r\n```\r\n    def test_b():\r\n>       assert b\"\" == b\"42\"\r\nE       AssertionError: assert b'' == b'42'\r\nE         Right contains more items, first extra item: 52\r\nE         Full diff:\r\nE         - b''\r\nE         + b'42'\r\nE         ?   ++\r\n```\r\n\r\n52 is the ASCII ordinal of \"4\" here.\r\n\r\nIt became clear to me when using another example:\r\n\r\n```\r\n    def test_b():\r\n>       assert b\"\" == b\"1\"\r\nE       AssertionError: assert b'' == b'1'\r\nE         Right contains more items, first extra item: 49\r\nE         Full diff:\r\nE         - b''\r\nE         + b'1'\r\nE         ?   +\r\n```\r\n\r\nNot sure what should/could be done here.\n"
+    },
+    {
+      "instance_id": "sympy__sympy-12454",
+      "upstream": "https://github.com/sympy/sympy.git",
+      "base_commit": "d3fcdb72bfcbb560eb45264ac1c03f359436edef",
+      "patch_files": 1,
+      "patch_loc": 4,
+      "repo_files": 1427,
+      "stratum_patch": "small",
+      "stratum_repo": "mid",
+      "problem_statement": "is_upper() raises IndexError for tall matrices\nThe function Matrix.is_upper raises an IndexError for a 4x2 matrix of zeros.\r\n```\r\n>>> sympy.zeros(4,2).is_upper\r\nTraceback (most recent call last):\r\n  File \"<stdin>\", line 1, in <module>\r\n  File \"sympy/matrices/matrices.py\", line 1112, in is_upper\r\n    for i in range(1, self.rows)\r\n  File \"sympy/matrices/matrices.py\", line 1113, in <genexpr>\r\n    for j in range(i))\r\n  File \"sympy/matrices/dense.py\", line 119, in __getitem__\r\n    return self.extract(i, j)\r\n  File \"sympy/matrices/matrices.py\", line 352, in extract\r\n    colsList = [a2idx(k, self.cols) for k in colsList]\r\n  File \"sympy/matrices/matrices.py\", line 5261, in a2idx\r\n    raise IndexError(\"Index out of range: a[%s]\" % (j,))\r\nIndexError: Index out of range: a[2]\r\n```\r\nThe code for is_upper() is\r\n```\r\n        return all(self[i, j].is_zero\r\n                   for i in range(1, self.rows)\r\n                   for j in range(i))\r\n```\r\nFor a 4x2 matrix, is_upper iterates over the indices:\r\n```\r\n>>> A = sympy.zeros(4, 2)\r\n>>> print tuple([i, j] for i in range(1, A.rows) for j in range(i))\r\n([1, 0], [2, 0], [2, 1], [3, 0], [3, 1], [3, 2])\r\n```\r\nThe attempt to index the (3,2) entry appears to be the source of the error. \n"
+    },
+    {
+      "instance_id": "sympy__sympy-14308",
+      "upstream": "https://github.com/sympy/sympy.git",
+      "base_commit": "fb536869fb7aa28b2695ad7a3b70949926b291c4",
+      "patch_files": 1,
+      "patch_loc": 39,
+      "repo_files": 1545,
+      "stratum_patch": "large",
+      "stratum_repo": "mid",
+      "problem_statement": "vectors break pretty printing\n```py\r\nIn [1]: from sympy.vector import *\r\n\r\nIn [2]: e = CoordSysCartesian('e')\r\n\r\nIn [3]: (x/y)**t*e.j\r\nOut[3]:\r\n\u239b   t\u239e e_j\r\n\u239c\u239bx\u239e e_j \u239f\r\n\u239c\u239c\u2500\u239f \u239f\r\n\u239d\u239dy\u23a0 \u23a0\r\n```\r\n\r\nAlso, when it does print correctly, the baseline is wrong (it should be centered). \n"
+    },
+    {
+      "instance_id": "sympy__sympy-16106",
+      "upstream": "https://github.com/sympy/sympy.git",
+      "base_commit": "0e987498b00167fdd4a08a41c852a97cb70ce8f2",
+      "patch_files": 1,
+      "patch_loc": 20,
+      "repo_files": 1659,
+      "stratum_patch": "large",
+      "stratum_repo": "mid",
+      "problem_statement": "mathml printer for IndexedBase required\nWriting an `Indexed` object to MathML fails with a `TypeError` exception: `TypeError: 'Indexed' object is not iterable`:\r\n\r\n```\r\nIn [340]: sympy.__version__\r\nOut[340]: '1.0.1.dev'\r\n\r\nIn [341]: from sympy.abc import (a, b)\r\n\r\nIn [342]: sympy.printing.mathml(sympy.IndexedBase(a)[b])\r\n---------------------------------------------------------------------------\r\nTypeError                                 Traceback (most recent call last)\r\n<ipython-input-342-b32e493b70d3> in <module>()\r\n----> 1 sympy.printing.mathml(sympy.IndexedBase(a)[b])\r\n\r\n/dev/shm/gerrit/venv/stable-3.5/lib/python3.5/site-packages/sympy/printing/mathml.py in mathml(expr, **settings)\r\n    442 def mathml(expr, **settings):\r\n    443     \"\"\"Returns the MathML representation of expr\"\"\"\r\n--> 444     return MathMLPrinter(settings).doprint(expr)\r\n    445 \r\n    446 \r\n\r\n/dev/shm/gerrit/venv/stable-3.5/lib/python3.5/site-packages/sympy/printing/mathml.py in doprint(self, expr)\r\n     36         Prints the expression as MathML.\r\n     37         \"\"\"\r\n---> 38         mathML = Printer._print(self, expr)\r\n     39         unistr = mathML.toxml()\r\n     40         xmlbstr = unistr.encode('ascii', 'xmlcharrefreplace')\r\n\r\n/dev/shm/gerrit/venv/stable-3.5/lib/python3.5/site-packages/sympy/printing/printer.py in _print(self, expr, *args, **kwargs)\r\n    255                 printmethod = '_print_' + cls.__name__\r\n    256                 if hasattr(self, printmethod):\r\n--> 257                     return getattr(self, printmethod)(expr, *args, **kwargs)\r\n    258             # Unknown object, fall back to the emptyPrinter.\r\n    259             return self.emptyPrinter(expr)\r\n\r\n/dev/shm/gerrit/venv/stable-3.5/lib/python3.5/site-packages/sympy/printing/mathml.py in _print_Basic(self, e)\r\n    356     def _print_Basic(self, e):\r\n    357         x = self.dom.createElement(self.mathml_tag(e))\r\n--> 358         for arg in e:\r\n    359             x.appendChild(self._print(arg))\r\n    360         return x\r\n\r\nTypeError: 'Indexed' object is not iterable\r\n```\r\n\r\nIt also fails for more complex expressions where at least one element is Indexed.\n"
+    },
+    {
+      "instance_id": "sympy__sympy-18532",
+      "upstream": "https://github.com/sympy/sympy.git",
+      "base_commit": "74227f900b05009d4eed62e34a166228788a32ca",
+      "patch_files": 1,
+      "patch_loc": 9,
+      "repo_files": 1742,
+      "stratum_patch": "medium",
+      "stratum_repo": "mid",
+      "problem_statement": "expr.atoms() should return objects with no args instead of subclasses of Atom\n`expr.atoms()` with no arguments returns subclasses of `Atom` in `expr`. But the correct definition of a leaf node should be that it has no `.args`. \n\nThis should be easy to fix, but one needs to check that this doesn't affect the performance. \n\n"
+    },
+    {
+      "instance_id": "sympy__sympy-21379",
+      "upstream": "https://github.com/sympy/sympy.git",
+      "base_commit": "624217179aaf8d094e6ff75b7493ad1ee47599b0",
+      "patch_files": 1,
+      "patch_loc": 12,
+      "repo_files": 1885,
+      "stratum_patch": "medium",
+      "stratum_repo": "mid",
+      "problem_statement": "Unexpected `PolynomialError` when using simple `subs()` for particular expressions\nI am seeing weird behavior with `subs` for particular expressions with hyperbolic sinusoids with piecewise arguments. When applying `subs`, I obtain an unexpected `PolynomialError`. For context, I was umbrella-applying a casting from int to float of all int atoms for a bunch of random expressions before using a tensorflow lambdify to avoid potential tensorflow type errors. You can pretend the expression below has a `+ 1` at the end, but below is the MWE that I could produce.\r\n\r\nSee the expression below, and the conditions in which the exception arises.\r\n\r\nSympy version: 1.8.dev\r\n\r\n```python\r\nfrom sympy import *\r\nfrom sympy.core.cache import clear_cache\r\n\r\nx, y, z = symbols('x y z')\r\n\r\nclear_cache()\r\nexpr = exp(sinh(Piecewise((x, y > x), (y, True)) / z))\r\n# This works fine\r\nexpr.subs({1: 1.0})\r\n\r\nclear_cache()\r\nx, y, z = symbols('x y z', real=True)\r\nexpr = exp(sinh(Piecewise((x, y > x), (y, True)) / z))\r\n# This fails with \"PolynomialError: Piecewise generators do not make sense\"\r\nexpr.subs({1: 1.0})  # error\r\n# Now run it again (isympy...) w/o clearing cache and everything works as expected without error\r\nexpr.subs({1: 1.0})\r\n```\r\n\r\nI am not really sure where the issue is, but I think it has something to do with the order of assumptions in this specific type of expression. Here is what I found-\r\n\r\n- The error only (AFAIK) happens with `cosh` or `tanh` in place of `sinh`, otherwise it succeeds\r\n- The error goes away if removing the division by `z`\r\n- The error goes away if removing `exp` (but stays for most unary functions, `sin`, `log`, etc.)\r\n- The error only happens with real symbols for `x` and `y` (`z` does not have to be real)\r\n\r\nNot too sure how to debug this one.\n"
+    }
+  ]
+}

@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from bench.config import PILOT_PER_STRATUM
 from bench.sample import draw_stratified, main
 
 
@@ -95,17 +96,20 @@ def test_the_committed_pilot_sample_is_valid():
     With the published full-SWE-bench boundaries only 4 of 9 cells populated
     and the pilot drew 16. The re-cut (patch loc under 5 / 5 to 15 / over 15,
     repo files under 500 / 500 to 2000 / 2000 and over) spans Lite's real
-    distribution, so per_stratum=4 draws 4 times 9, thirty-six.
+    distribution, so every cell contributes. The pilot was cut from 4 per cell
+    to 2 on 2026-08-08, before any outcome was observed: it exists to prove the
+    loop runs live and to produce cost numbers, and power is the full run's job.
     """
-    path = Path("bench/samples/lite-pilot-36.json")
+    path = Path("bench/samples/lite-pilot-18.json")
     data = json.loads(path.read_text(encoding="utf-8"))
     assert data["seed"] == 20260806
     assert data["corpus"] == "swe-bench-lite"
-    assert data["per_stratum"] == 4
-    assert len(data["instances"]) == 36
-    assert sum(data["per_cell_counts"].values()) == 36
+    assert data["per_stratum"] == PILOT_PER_STRATUM
+    assert PILOT_PER_STRATUM == 2
+    assert len(data["instances"]) == 18
+    assert sum(data["per_cell_counts"].values()) == 18
     assert len(data["per_cell_counts"]) == 9, data["per_cell_counts"]
-    assert set(data["per_cell_counts"].values()) == {4}
+    assert set(data["per_cell_counts"].values()) == {PILOT_PER_STRATUM}
     for entry in data["instances"]:
         assert entry["instance_id"]
         assert entry["upstream"]
@@ -120,14 +124,14 @@ def test_every_committed_entry_agrees_with_the_live_stratum_function():
 
     A boundary edit that is not followed by a re-draw leaves a committed
     sample whose labels describe the old cut. Nothing else notices: the file
-    still parses, still has 36 entries, and the report still groups by the
+    still parses, still has 18 entries, and the report still groups by the
     stored label, so every table would be captioned with boundaries that were
     never used.
     """
     from bench.config import stratum_for
 
     data = json.loads(
-        Path("bench/samples/lite-pilot-36.json").read_text(encoding="utf-8")
+        Path("bench/samples/lite-pilot-18.json").read_text(encoding="utf-8")
     )
     mismatches = [
         entry["instance_id"]
@@ -150,7 +154,7 @@ def test_every_committed_entry_carries_its_issue_text():
     reappears. See ``bench/enrich.py``.
     """
     data = json.loads(
-        Path("bench/samples/lite-pilot-36.json").read_text(encoding="utf-8")
+        Path("bench/samples/lite-pilot-18.json").read_text(encoding="utf-8")
     )
     empty = [
         entry["instance_id"]

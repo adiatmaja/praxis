@@ -103,6 +103,57 @@ def test_the_report_contains_every_mandatory_honesty_section(tmp_path: Any) -> N
         assert heading in report
 
 
+_ABLATION_NOT_RUN = (
+    "The verify-gate ablation was NOT performed in this run: no gated arm ran, "
+    "so `verify_cmd` was registered identically across arms and never executed."
+)
+
+
+@pytest.mark.unit
+def test_a_gateless_run_says_the_ablation_was_not_performed() -> None:
+    """The Design table lists four arms; a run of two must not imply four.
+
+    Derived from the rows rather than written by hand, because an operator who
+    forgets this sentence publishes a report whose design table is the only
+    statement about which arms exist, and it describes arms that never ran.
+    """
+    rows = [_row(condition="A"), _row(condition="C", instance_id="a__b-2")]
+    report = build_report(rows, run_id="pilot-1", model_cutoff="2026-03")
+    assert "Conditions actually run: A, C." in report
+    assert "Not run: B, D." in report
+    assert _ABLATION_NOT_RUN in report
+
+
+@pytest.mark.unit
+def test_a_gated_run_does_not_claim_the_ablation_was_skipped() -> None:
+    """The absence assertion: the wrong sentence must be provably gone.
+
+    A substring check alone would stay green if the sentence were emitted
+    unconditionally, which is exactly how a false claim ships inside a
+    mandatory honesty heading.
+    """
+    rows = [
+        _row(condition="A"),
+        _row(condition="B", instance_id="a__b-2"),
+        _row(condition="C", instance_id="a__b-3"),
+    ]
+    report = build_report(rows, run_id="full-01", model_cutoff="2026-03")
+    assert "Conditions actually run: A, B, C." in report
+    assert "Not run: D." in report
+    assert _ABLATION_NOT_RUN not in report
+
+
+@pytest.mark.unit
+def test_a_run_of_every_arm_claims_nothing_was_skipped() -> None:
+    rows = [
+        _row(condition=c.key, instance_id=f"a__b-{i}") for i, c in enumerate(CONDITIONS)
+    ]
+    report = build_report(rows, run_id="full-01", model_cutoff="2026-03")
+    assert "Conditions actually run: A, B, C, D." in report
+    assert "Not run:" not in report
+    assert _ABLATION_NOT_RUN not in report
+
+
 @pytest.mark.unit
 def test_the_report_names_the_model_cutoff_in_the_contamination_note() -> None:
     report = build_report([_row()], run_id="full-01", model_cutoff="2026-03")
@@ -228,6 +279,7 @@ def test_a_stray_brace_in_the_template_does_not_break_rendering() -> None:
     rendered = Template(text).substitute(
         run_id="x",
         rows=0,
+        conditions_note="",
         stratum_table="",
         mcnemar_table="",
         cost_table="",

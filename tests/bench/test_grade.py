@@ -183,8 +183,8 @@ def test_the_prediction_file_is_lf(tmp_path):
 
 @pytest.mark.unit
 def test_load_bases_reads_every_committed_sample_instance():
-    bases = load_bases(SAMPLES_DIR / "lite-pilot-36.json")
-    assert len(bases) == 36
+    bases = load_bases(SAMPLES_DIR / "lite-pilot-18.json")
+    assert len(bases) == 18
     assert all(len(sha) == 40 for sha in bases.values())
 
 
