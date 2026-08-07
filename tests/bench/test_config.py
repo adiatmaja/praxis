@@ -44,26 +44,51 @@ def test_only_condition_d_enables_adaptive_split():
 @pytest.mark.parametrize(
     ("files", "loc", "expected"),
     [
-        (1, 3, "small"),
+        (1, 1, "small"),
         (1, 4, "small"),
         (1, 5, "medium"),
-        (2, 10, "medium"),
-        (2, 100, "medium"),
-        (2, 101, "large"),
-        (3, 5, "large"),
+        (1, 15, "medium"),
+        (1, 16, "large"),
+        (2, 4, "medium"),
+        (2, 15, "medium"),
+        (2, 16, "large"),
+        (3, 1, "large"),
         (7, 400, "large"),
     ],
 )
 def test_patch_size_strata_partition_the_space(files, loc, expected):
-    assert stratum_for(files, loc, repo_files=50)[0] == expected
+    """The upper cut is 15 lines, not the published 100.
+
+    The published 100-line cliff (arXiv 2505.23419) describes full SWE-bench.
+    Against Lite, whose largest gold patch is 76 lines and whose median is 6,
+    a 100-line boundary leaves the ``large`` bucket structurally empty. The
+    lower cut stays at the published 5, which Lite does straddle. See
+    bench/README.md, "Stratification".
+    """
+    assert stratum_for(files, loc, repo_files=1000)[0] == expected
 
 
 @pytest.mark.unit
 @pytest.mark.parametrize(
     ("repo_files", "expected"),
-    [(1, "tiny"), (99, "tiny"), (100, "mid"), (500, "big"), (5000, "big")],
+    [
+        (1, "tiny"),
+        (121, "tiny"),
+        (499, "tiny"),
+        (500, "mid"),
+        (1999, "mid"),
+        (2000, "big"),
+        (6712, "big"),
+    ],
 )
 def test_repo_size_strata_partition_the_space(repo_files, expected):
+    """The published 500 boundary is kept; only the upper one is re-cut.
+
+    Lite's smallest repo is ``psf/requests`` at 121 tracked files, so the
+    published 100-file boundary leaves ``tiny`` structurally empty. 500 is a
+    published boundary and Lite does straddle it (27 instances below), so it
+    is promoted to the lower cut and 2000 becomes the new upper one.
+    """
     assert stratum_for(1, 3, repo_files=repo_files)[1] == expected
 
 

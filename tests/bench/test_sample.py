@@ -90,25 +90,74 @@ def test_a_shuffled_pool_order_draws_the_same_sample():
 
 @pytest.mark.unit
 def test_the_committed_pilot_sample_is_valid():
-    """SWE-bench Lite is single-file-patch only, so only 4 of the 9 stratum
-    cells (small/medium patch size crossed with mid/big repo size) are ever
-    populated: no gold patch in Lite touches 3+ files or exceeds 100 lines,
-    and no Lite repo has fewer than 100 tracked files. At per_stratum=4 the
-    honest draw is 4 cells times 4, sixteen instances, not thirty.
+    """All NINE cells are populated after the boundaries were re-cut for Lite.
+
+    With the published full-SWE-bench boundaries only 4 of 9 cells populated
+    and the pilot drew 16. The re-cut (patch loc under 5 / 5 to 15 / over 15,
+    repo files under 500 / 500 to 2000 / 2000 and over) spans Lite's real
+    distribution, so per_stratum=4 draws 4 times 9, thirty-six.
     """
-    path = Path("bench/samples/lite-pilot-16.json")
+    path = Path("bench/samples/lite-pilot-36.json")
     data = json.loads(path.read_text(encoding="utf-8"))
     assert data["seed"] == 20260806
     assert data["corpus"] == "swe-bench-lite"
     assert data["per_stratum"] == 4
-    assert len(data["instances"]) == 16
-    assert sum(data["per_cell_counts"].values()) == 16
+    assert len(data["instances"]) == 36
+    assert sum(data["per_cell_counts"].values()) == 36
+    assert len(data["per_cell_counts"]) == 9, data["per_cell_counts"]
+    assert set(data["per_cell_counts"].values()) == {4}
     for entry in data["instances"]:
         assert entry["instance_id"]
         assert entry["upstream"]
         assert len(entry["base_commit"]) >= 7
         assert entry["stratum_patch"] in {"small", "medium", "large"}
         assert entry["stratum_repo"] in {"tiny", "mid", "big"}
+
+
+@pytest.mark.unit
+def test_every_committed_entry_agrees_with_the_live_stratum_function():
+    """The stored labels must be what ``stratum_for`` computes TODAY.
+
+    A boundary edit that is not followed by a re-draw leaves a committed
+    sample whose labels describe the old cut. Nothing else notices: the file
+    still parses, still has 36 entries, and the report still groups by the
+    stored label, so every table would be captioned with boundaries that were
+    never used.
+    """
+    from bench.config import stratum_for
+
+    data = json.loads(
+        Path("bench/samples/lite-pilot-36.json").read_text(encoding="utf-8")
+    )
+    mismatches = [
+        entry["instance_id"]
+        for entry in data["instances"]
+        if stratum_for(
+            int(entry["patch_files"]), int(entry["patch_loc"]), int(entry["repo_files"])
+        )
+        != (entry["stratum_patch"], entry["stratum_repo"])
+    ]
+    assert mismatches == [], mismatches
+
+
+@pytest.mark.unit
+def test_every_committed_entry_carries_its_issue_text():
+    """A sample without ``problem_statement`` cannot be run.
+
+    ``bench.runner`` refuses such an entry, but only once a run is already
+    under way. The sample is a committed artifact, so the absence is a defect
+    that is visible now, and re-drawing without re-enriching is exactly how it
+    reappears. See ``bench/enrich.py``.
+    """
+    data = json.loads(
+        Path("bench/samples/lite-pilot-36.json").read_text(encoding="utf-8")
+    )
+    empty = [
+        entry["instance_id"]
+        for entry in data["instances"]
+        if not str(entry.get("problem_statement", "")).strip()
+    ]
+    assert empty == [], empty
 
 
 @pytest.mark.unit

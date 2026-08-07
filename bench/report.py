@@ -103,11 +103,14 @@ def _empty_cell() -> dict[str, Any]:
 def _stratum_grid(rows: list[dict[str, Any]]) -> dict[StratumKey, dict[str, Any]]:
     """The full (patch stratum x repo stratum x condition) grid.
 
-    Verified over the full SWE-bench Lite instance set: only 4 of the 9
-    (patch, repo) strata are ever populated (every Lite gold patch touches
-    exactly 1 file, and no Lite repo has under 100 tracked files), so most
-    cells here are empty by design in any report built from that corpus. An
-    empty cell renders via ``_empty_cell``, never as a bare 0 percent.
+    All 9 (patch, repo) strata are populated under the re-cut boundaries in
+    ``bench/config.stratum_for``; under the previously published ones only 4
+    were, because every SWE-bench Lite gold patch touches exactly 1 file and no
+    Lite repo has under 100 tracked files.  The grid is still rendered in full
+    rather than from the populated keys, because a cell can also be empty for
+    run-time reasons (an aborted half, a condition not run), and a silently
+    absent row reads as "not measured" exactly like a measured zero.  An empty
+    cell renders via ``_empty_cell``, never as a bare 0 percent.
     """
     populated = per_stratum_table(rows)
     grid: dict[StratumKey, dict[str, Any]] = {}

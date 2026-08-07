@@ -90,23 +90,58 @@ of scope here.
 
 ## Stratification
 
-Pre-stratified on published per-instance metadata: gold-patch size
-(1 file under 5 lines / 2 files or 5 to 100 lines / 3+ files or over 100 lines)
-crossed with repo size (under 100 / 100 to 500 / 500+ tracked files). Fixed
-sample per cell, published seed (`bench/config.SAMPLE_SEED`), and the drawn
-instance list committed under `bench/samples/`.
+Pre-stratified on published per-instance metadata: gold-patch size crossed with
+repo size, a fixed sample per cell, a published seed (`bench/config.SAMPLE_SEED`),
+and the drawn instance list committed under `bench/samples/`.
 
-**Measured against SWE-bench Lite, only 4 of those 9 cells are populated.**
-Verified over all 300 Lite instances on 2026-08-07: every gold patch touches
-exactly 1 file (so the `large` bucket, which needs 3+ files or over 100 lines,
-is empty), patch size runs 1 to 76 changed lines with a median of 6, and the
-smallest repo is `psf/requests` at 121 tracked files (so the `tiny` bucket,
-under 100, is empty). The boundaries above come from arXiv 2505.23419, which
-describes full SWE-bench; Lite is filtered to single-file patches and does not
-span them. The pilot therefore draws 16 instances across `small`/`medium`
-crossed with `mid`/`big`, not 30 across 9 cells. Re-cutting the boundaries for
-Lite's real distribution, or moving to a corpus that spans the published ones,
-is an open design decision recorded in the plan's execution record.
+**The upper boundaries are re-cut for SWE-bench Lite, deliberately and before
+any outcome was observed.** The published boundaries (arXiv 2505.23419: 1 file
+under 5 lines / 2 files or 5 to 100 lines / 3+ files or over 100 lines, crossed
+with under 100 / 100 to 500 / 500+ tracked files) describe FULL SWE-bench. Lite
+is filtered to single-file patches and does not span them. Measured over all 300
+Lite instances on 2026-08-07: every gold patch touches exactly 1 file, patch size
+runs 1 to 76 changed lines with a median of 6, and the smallest repo is
+`psf/requests` at 121 tracked files. Under the published cuts the `large` patch
+bucket and the `tiny` repo bucket are **structurally empty**, only 4 of 9 cells
+populate, and 5 of every table's rows carry no evidence at all.
+
+The cuts actually used are therefore:
+
+| dimension | small / tiny | medium / mid | large / big |
+|---|---|---|---|
+| gold-patch size | 1 file, under 5 lines | 1 to 2 files, 5 to 15 lines | 3+ files or over 15 lines |
+| repo size (tracked files) | under 500 | 500 to 1999 | 2000 and over |
+
+Both LOWER boundaries are the published ones and are unchanged; 500 is also a
+published boundary that Lite does straddle, with 27 instances below it. Only the
+two outer edges (100 lines becomes 15, and 500 files is promoted from the upper
+cut to the lower one with 2000 as the new upper) are fitted to the corpus. The
+`files >= 3` clause is kept so a corpus that does span multiple files still
+strata the published way.
+
+All 9 cells now populate, the thinnest holding 6 instances, so the pilot draws
+**36** and a full run would draw 123 (three cells hold fewer than
+`FULL_PER_STRATUM`). The repo-size names are ordinal: `tiny` means the smaller
+third of this corpus, not an absolute size.
+
+This re-cut is legitimate ONLY because no outcome had been observed when it was
+made. It is recorded here, in `bench/config.stratum_for`, and in the plan's
+execution record so it can never be mistaken for a post-hoc adjustment, and the
+report must repeat it.
+
+### Re-drawing
+
+```bash
+uv run python -m bench.sample --pool bench/.work/pool-lite.json \
+    --out bench/samples/lite-pilot-36.json
+uv run python -m bench.enrich --sample bench/samples/lite-pilot-36.json
+```
+
+The second command is not optional. The pool carries patch metadata and a
+tracked-file count, not the upstream issue text, and the issue text IS the
+worker-facing prompt. A drawn-but-unenriched sample parses, validates, and has
+the right entry count; `bench.runner` refuses it, but only once a run is already
+spawning containers.
 
 ## Grading
 
@@ -125,11 +160,11 @@ all answer 422 with `allow_local_repo_paths` named in the detail.
 
 ```bash
 # One-time: prepare instances as local bare repos at the buggy base commit
-uv run python -m bench.prepare --sample bench/samples/lite-pilot-16.json
+uv run python -m bench.prepare --sample bench/samples/lite-pilot-36.json
 
 # Pilot half 1: the GATED conditions. Start the orchestrator with NEITHER
 # PRAXIS_BENCH nor PRAXIS_BENCH_DISABLE_VERIFY set.
-uv run python -m bench.runner --sample bench/samples/lite-pilot-16.json \
+uv run python -m bench.runner --sample bench/samples/lite-pilot-36.json \
     --conditions B --worker local-openweight \
     --run-id pilot-1 --verify-cmd "uv run pytest -q"
 
@@ -138,7 +173,7 @@ uv run python -m bench.runner --sample bench/samples/lite-pilot-16.json \
 
 # Pilot half 2: the UNGATED conditions. Same --run-id, so both halves append to
 # bench/.work/runs/pilot-1/attempts.jsonl.
-uv run python -m bench.runner --sample bench/samples/lite-pilot-16.json \
+uv run python -m bench.runner --sample bench/samples/lite-pilot-36.json \
     --conditions A --worker local-openweight \
     --run-id pilot-1 --verify-cmd "uv run pytest -q"
 

@@ -15,10 +15,13 @@ from pathlib import Path
 # the PRAXIS_BENCH_ROOT environment variable, read in bench/prepare.py.
 DEFAULT_BENCH_ROOT = Path("bench/.work")
 
-# Gold-patch size buckets, per SWE-bench Goes Live! (arXiv 2505.23419).
+# Gold-patch size buckets. The lower boundary is the one published in
+# SWE-bench Goes Live! (arXiv 2505.23419); the upper one is re-cut for the
+# corpus actually being sampled. See ``stratum_for``.
 PATCH_SIZE_STRATA: tuple[str, ...] = ("small", "medium", "large")
 
-# Repository size buckets, by tracked file count.
+# Repository size buckets, by tracked file count. Ordinal names: they mean
+# "the smaller / middle / larger third of this corpus", not absolute sizes.
 REPO_SIZE_STRATA: tuple[str, ...] = ("tiny", "mid", "big")
 
 
@@ -71,11 +74,11 @@ SAMPLE_SEED = 20260806
 
 # Per-stratum sample sizes. These are the pre-registered knob; the resulting
 # TOTAL is a consequence of how many cells the corpus actually populates, and is
-# not itself a target. Measured 2026-08-07: SWE-bench Lite populates only 4 of
-# the 9 cells (every Lite gold patch touches exactly 1 file, and no Lite repo
-# has under 100 tracked files), so the pilot draws 16 and a full run would draw
-# 64, not the 30 and 144 an unfiltered 9-cell corpus would give. See
-# bench/README.md, "Stratification".
+# not itself a target. With the boundaries below, all 9 cells populate against
+# SWE-bench Lite (thinnest cell: 6 instances), so the pilot draws 36 and a full
+# run would draw 123 rather than 9 times 16, because three cells hold fewer than
+# 16. Under the previously published boundaries only 4 cells populated and the
+# pilot drew 16. See bench/README.md, "Stratification".
 PILOT_PER_STRATUM = 4
 FULL_PER_STRATUM = 16
 
@@ -83,21 +86,51 @@ FULL_PER_STRATUM = 16
 def stratum_for(files: int, loc: int, repo_files: int) -> tuple[str, str]:
     """Return ``(patch_size_stratum, repo_size_stratum)`` for one instance.
 
-    Boundaries follow arXiv 2505.23419: a single-file patch under 5 lines
-    resolves about 48 percent of the time; 3 or more files or 100 or more LOC
-    drops under 10 percent.  The buckets are chosen to straddle those cliffs so
-    the expected effect concentrates in the middle cell.
+    The lower boundaries are the published ones from arXiv 2505.23419: a
+    single-file patch under 5 lines resolves about 48 percent of the time, and
+    3 or more files or 100 or more LOC drops under 10 percent.  The buckets are
+    meant to straddle those cliffs so the expected effect concentrates in the
+    middle cell.
+
+    The two UPPER boundaries are re-cut for SWE-bench Lite, and this is a
+    deliberate, documented deviation.  arXiv 2505.23419 describes FULL
+    SWE-bench; Lite is filtered to single-file patches, so measured over all
+    300 Lite instances on 2026-08-07 every gold patch touches exactly 1 file,
+    the largest is 76 changed lines against a median of 6, and the smallest
+    repo is ``psf/requests`` at 121 tracked files.  Under the published
+    boundaries the ``large`` patch bucket and the ``tiny`` repo bucket are
+    therefore STRUCTURALLY EMPTY: only 4 of the 9 cells populate, and 5 of
+    every table's rows carry no evidence at all.
+
+    So the upper patch cut moves from 100 lines to 15 (Lite's 84th percentile),
+    and the repo cuts move from 100/500 to 500/2000.  Note 500 is itself a
+    published boundary that Lite does straddle, with 27 instances below it, so
+    only the outer edges are corpus-fitted.  The ``files >= 3`` and
+    ``files == 1`` clauses are kept unchanged so a corpus that does span
+    multiple files still strata the published way.
+
+    This re-cut was made BEFORE any outcome was observed, which is what makes
+    it legitimate; it is recorded here, in bench/README.md, and in the plan's
+    execution record so it can never be mistaken for a post-hoc adjustment.
+
+    Args:
+        files: Number of files the gold patch touches.
+        loc: Number of changed lines in the gold patch.
+        repo_files: Tracked file count in the repository at the base commit.
+
+    Returns:
+        The ``(patch_size, repo_size)`` bucket names.
     """
-    if files >= 3 or loc > 100:
+    if files >= 3 or loc > 15:
         size = "large"
     elif files == 1 and loc < 5:
         size = "small"
     else:
         size = "medium"
 
-    if repo_files < 100:
+    if repo_files < 500:
         repo = "tiny"
-    elif repo_files < 500:
+    elif repo_files < 2000:
         repo = "mid"
     else:
         repo = "big"

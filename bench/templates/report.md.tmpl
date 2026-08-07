@@ -62,10 +62,19 @@ has not been run here unless stated below.
 
 ## Correlational anchors
 
-The stratum boundaries come from SWE-bench Goes Live! (arXiv 2505.23419),
-which reports correlations between gold-patch shape and resolve rate. They
-are not causal claims and the strata inherit that limitation. The
-comparisons WITHIN a stratum are the causal part of this design; the
+The stratum boundaries take their LOWER cuts from SWE-bench Goes Live!
+(arXiv 2505.23419), which reports correlations between gold-patch shape and
+resolve rate. The two UPPER cuts are re-cut for this corpus: SWE-bench Lite
+is filtered to single-file patches, so the published 100-line patch boundary
+and 100-file repo boundary leave two buckets structurally empty and only 4
+of the 9 cells would ever populate. The cuts actually used are gold-patch
+size under 5 / 5 to 15 / over 15 changed lines, crossed with repo size under
+500 / 500 to 2000 / 2000 and over tracked files. That re-cut was made
+before any outcome was observed, and is recorded in bench/README.md and in
+bench/config.stratum_for: it is a fit to the corpus, not a fit to a result.
+
+Correlations are not causal claims and the strata inherit that limitation.
+The comparisons WITHIN a stratum are the causal part of this design; the
 boundaries themselves are not.
 
 ## Failure-class analysis

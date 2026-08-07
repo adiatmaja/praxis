@@ -152,6 +152,33 @@ def test_the_template_file_itself_contains_every_mandatory_heading() -> None:
 
 
 @pytest.mark.unit
+def test_the_template_discloses_that_the_upper_boundaries_were_re_cut() -> None:
+    """The provenance claim must match the boundaries actually used.
+
+    The template used to say flatly that the stratum boundaries come from
+    arXiv 2505.23419. Two of them no longer do: SWE-bench Lite is filtered to
+    single-file patches, so the published 100-line patch cut and 100-file repo
+    cut leave two buckets structurally empty and were re-cut to 15 and to
+    500/2000. A published report repeating the old sentence would be making a
+    false provenance claim about its own design, which no number in the report
+    could contradict. The disclosure is asserted against the template ON DISK,
+    for the same reason the honesty headings are.
+
+    A bare ``"re-cut" in text`` is NOT enough and was measured to be vacuous:
+    the word appears twice, so reverting the load-bearing sentence to the old
+    unqualified provenance claim left the check green. The full sentences are
+    asserted instead, plus the absence of the sentence that was wrong.
+    """
+    text = TEMPLATE_PATH.read_text(encoding="utf-8")
+    assert "take their LOWER cuts from SWE-bench Goes Live!" in text
+    assert "The two UPPER cuts are re-cut for this corpus" in text
+    assert "The stratum boundaries come from SWE-bench Goes Live!" not in text
+    for boundary in ("5 to 15", "500 to 2000"):
+        assert boundary in text, boundary
+    assert "before any outcome was observed" in text
+
+
+@pytest.mark.unit
 def test_the_template_is_located_relative_to_the_module_not_the_cwd(
     tmp_path: Any, monkeypatch: Any
 ) -> None:
