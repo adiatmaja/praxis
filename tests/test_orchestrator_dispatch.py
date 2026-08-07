@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -19,6 +20,8 @@ from tests.conftest import seed_user
 async def _setup_with_plan_task(
     db: Database,
     plan_task_extra: dict[str, Any],
+    *,
+    verify_cmd: str | None = None,
 ) -> tuple[TaskQueue, str, str]:
     """Create a project, active plan, and one task carrying ``plan_task_extra``."""
 
@@ -27,9 +30,10 @@ async def _setup_with_plan_task(
         ("u1", "User", "hash"),
     )
     await db.execute(
-        """INSERT INTO projects (id, user_id, name, repo_url, model_name, max_retries)
-           VALUES (?, ?, ?, ?, ?, ?)""",
-        ("p1", "u1", "App", "https://github.com/u/a", "deepseek", 3),
+        """INSERT INTO projects
+             (id, user_id, name, repo_url, model_name, max_retries, verify_cmd)
+           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+        ("p1", "u1", "App", "https://github.com/u/a", "deepseek", 3, verify_cmd),
     )
     task_queue = TaskQueue(db)
     plan_id = await task_queue.create_plan("p1", "Build auth")
@@ -202,6 +206,99 @@ class TestDispatchMixinEditLocations:
         assert "src/api/users.py" in bible
         assert "src/api/schemas.py" in bible
         assert "{'path'" not in bible
+
+
+@pytest.mark.integration
+class TestDispatchMixinAcceptanceFloor:
+    """``plan_task['verification']`` is unvalidated on most paths.
+
+    ``validate_leaves`` is called from exactly ONE place,
+    ``core/execute_plan_decompose``. The ``plan_spec`` path, the improvement
+    path and a direct ``POST /api/dispatch`` never call it, so a
+    ``"verification": "manual review"`` reaches ``_build_worker_bible``
+    unchecked. It used to win the acceptance slot outright, telling the worker
+    to satisfy prose while the mechanical gate ran the project ``verify_cmd``
+    and failed it on a check it was never shown.
+    """
+
+    async def test_non_runnable_verification_does_not_shadow_the_verify_cmd(
+        self, db: Database
+    ) -> None:
+        """The command the gate actually runs is what the worker is told."""
+        task_queue, plan_id, _ = await _setup_with_plan_task(
+            db,
+            {"verification": "manual review"},
+            verify_cmd="uv run pytest -q",
+        )
+        bible = await _dispatch_and_get_bible(db, task_queue, plan_id)
+        assert "# ACCEPTANCE (run this before you finish)\nuv run pytest -q" in bible
+        assert "manual review" not in bible
+
+    async def test_the_override_is_logged_rather_than_silent(
+        self, db: Database, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Substituting the project command for the leaf's own check must be visible.
+
+        Nothing else records it: the brain asked for one thing, the worker is
+        told another, and no event, column or diff carries the difference.
+        """
+        task_queue, plan_id, _ = await _setup_with_plan_task(
+            db,
+            {"verification": "manual review"},
+            verify_cmd="uv run pytest -q",
+        )
+        with caplog.at_level(
+            logging.WARNING, logger="orchestrator.core.orchestrator_dispatch"
+        ):
+            await _dispatch_and_get_bible(db, task_queue, plan_id)
+        assert any(
+            "non-runnable verification" in r.getMessage()
+            and "manual review" in r.getMessage()
+            for r in caplog.records
+        )
+
+    async def test_a_runnable_verification_still_wins(self, db: Database) -> None:
+        """Unchanged behavior: a real leaf check overrides the project default."""
+        task_queue, plan_id, _ = await _setup_with_plan_task(
+            db,
+            {"verification": "uv run pytest tests/test_login.py -q"},
+            verify_cmd="uv run pytest -q",
+        )
+        bible = await _dispatch_and_get_bible(db, task_queue, plan_id)
+        assert (
+            "# ACCEPTANCE (run this before you finish)\n"
+            "uv run pytest tests/test_login.py -q"
+        ) in bible
+
+    async def test_non_runnable_verification_is_kept_when_there_is_no_verify_cmd(
+        self, db: Database
+    ) -> None:
+        """No project command means no divergence, so the prose is not discarded.
+
+        The defect is a CONTRADICTION between what the worker is told and what
+        is run. With nothing to run, the brain's stated intent is the best
+        acceptance text available and dropping it would lose information.
+        """
+        task_queue, plan_id, _ = await _setup_with_plan_task(
+            db,
+            {"verification": "manual review of the rendered docs"},
+            verify_cmd=None,
+        )
+        bible = await _dispatch_and_get_bible(db, task_queue, plan_id)
+        assert (
+            "# ACCEPTANCE (run this before you finish)\n"
+            "manual review of the rendered docs"
+        ) in bible
+
+    async def test_an_absent_verification_falls_back_to_the_verify_cmd(
+        self, db: Database
+    ) -> None:
+        """Unchanged behavior: no leaf check at all means the project command."""
+        task_queue, plan_id, _ = await _setup_with_plan_task(
+            db, {}, verify_cmd="uv run pytest -q"
+        )
+        bible = await _dispatch_and_get_bible(db, task_queue, plan_id)
+        assert "# ACCEPTANCE (run this before you finish)\nuv run pytest -q" in bible
 
 
 @pytest.mark.integration

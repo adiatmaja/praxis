@@ -288,37 +288,62 @@ def _check_max_loc(
             )
 
 
+def verification_defect(value: str | None) -> str | None:
+    """Return why *value* is unusable as an acceptance check, or None if it is fine.
+
+    This is the single decision behind BOTH the HARD ``verification`` rule and
+    :func:`is_runnable_verification`, so the validator and the dispatch path can
+    never disagree about what counts as a real check.
+
+    Args:
+        value: A leaf's ``verification`` string, or None.
+
+    Returns:
+        A human-readable reason, or None when the value is acceptable.
+    """
+    if value is None or not value.strip():
+        return "missing verification command"
+    if len(value.strip()) < _DEFAULT_VERIFICATION_MIN_LEN:
+        return "missing or too short verification command"
+    if _RUNNABLE_SIGNAL.search(value):
+        # Carries a real command; manual-verb prose around it is fine.
+        return None
+    for pat in _NON_RUNNABLE_PATTERNS:
+        if re.search(pat, value, re.IGNORECASE):
+            return f"verification is not runnable: '{value}'"
+    return None
+
+
+def is_runnable_verification(value: str | None) -> bool:
+    """True when *value* is an acceptance check the HARD rule would accept.
+
+    Deliberately no stricter than the rule it mirrors: a value that passes
+    ``validate_leaves`` must also pass here, or a leaf that was validated would
+    be treated as junk at dispatch.
+
+    Args:
+        value: A leaf's ``verification`` string, or None.
+
+    Returns:
+        True when the value may be used as a worker's acceptance floor.
+    """
+    return verification_defect(value) is None
+
+
 def _check_verification(
     leaves: list[LeafTask],
     result: ValidationResult,
 ) -> None:
-    min_len = _DEFAULT_VERIFICATION_MIN_LEN
     for leaf in leaves:
-        v = leaf.verification
-        if v is None or len(v.strip()) < min_len:
+        defect = verification_defect(leaf.verification)
+        if defect is not None:
             result.add(
                 Violation(
                     rule="verification",
                     task_id=leaf.id,
-                    message="missing or too short verification command"
-                    if v and len(v.strip()) >= 1
-                    else "missing verification command",
+                    message=defect,
                 )
             )
-            continue
-        if _RUNNABLE_SIGNAL.search(v):
-            # Carries a real command; manual-verb prose around it is fine.
-            continue
-        for pat in _NON_RUNNABLE_PATTERNS:
-            if re.search(pat, v, re.IGNORECASE):
-                result.add(
-                    Violation(
-                        rule="verification",
-                        task_id=leaf.id,
-                        message=f"verification is not runnable: '{v}'",
-                    )
-                )
-                break
 
 
 def _check_escalate_mismatch(

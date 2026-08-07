@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Any, cast
 from orchestrator.core.agent_manager import detect_context_limit
 from orchestrator.core.bench_mode import verify_gate_disabled
 from orchestrator.core.harnesses import default_harness_id
+from orchestrator.core.leaf_validator import is_runnable_verification
 from orchestrator.core.progress_handover import ChecklistItem, render_handover
 from orchestrator.core.session_resume import resolve_resume_session
 from orchestrator.core.token_budget import ContextBudgetExceeded
@@ -409,7 +410,29 @@ class DispatchMixin:
         # FLAGGED leaf the slot is mandatory, so when the project declares no
         # verify command either, demand a check rather than ship a pack with an
         # empty acceptance slot.
-        acceptance = plan_task.get("verification") or project.get("verify_cmd")
+        #
+        # ``plan_task`` is raw brain JSON on every path but decomposition:
+        # ``validate_leaves`` is called only from ``execute_plan_decompose``, so
+        # the plan_spec path, the improvement path and a direct dispatch all
+        # arrive here unvalidated. A non-runnable ``"manual review"`` must not
+        # win this slot over the project command, because the mechanical gate
+        # runs the project command regardless: the worker would be told to
+        # satisfy prose and then failed on a check it was never shown. With no
+        # project command there is no such contradiction and the brain's stated
+        # intent is kept.
+        leaf_check = plan_task.get("verification")
+        project_check = project.get("verify_cmd")
+        if leaf_check and not is_runnable_verification(str(leaf_check)):
+            if project_check:
+                logger.warning(
+                    "Task %s declares a non-runnable verification (%r); using the "
+                    "project verify_cmd as the acceptance floor instead.",
+                    task["id"],
+                    leaf_check,
+                )
+            acceptance = project_check or leaf_check
+        else:
+            acceptance = leaf_check or project_check
         if difficulty_flagged and not acceptance:
             acceptance = MANDATORY_ACCEPTANCE
 

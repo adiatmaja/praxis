@@ -8,6 +8,7 @@ from orchestrator.core.leaf_validator import (
     ValidationResult,
     Violation,
     format_violations_feedback,
+    is_runnable_verification,
     validate_leaves,
 )
 from orchestrator.models.schemas import CapabilityProfile, LeafTask
@@ -488,6 +489,81 @@ def test_validate_leaves_verification_valid():
 
     result = validate_leaves(opus_plan, profile, source, leaves)
     assert not any(v.rule == "verification" for v in result.hard)
+
+
+# ---------------------------------------------------------------------------
+# is_runnable_verification: the public predicate the dispatch path reuses
+# ---------------------------------------------------------------------------
+
+# One corpus, used by BOTH the predicate test and the agreement test below, so
+# a value can never be exercised against one and not the other.
+_VERIFICATION_CORPUS: list[tuple[str | None, bool]] = [
+    (None, False),
+    ("", False),
+    ("   ", False),
+    ("ok", False),
+    ("manual review", False),
+    ("review the diff by eye", False),
+    ("inspect the rendered output", False),
+    ("check it visually", False),
+    ("read through the new module", False),
+    ("verify manually that the page loads", False),
+    ("pytest tests/test_foo.py", True),
+    ("uv run pytest tests/test_x.py passes and returns 0", True),
+    ("`make test`", True),
+    # No runnable token and no manual verb: the validator is deliberately
+    # permissive here, and the predicate must not be stricter than the rule it
+    # mirrors, or a leaf that PASSED validation would be demoted at dispatch.
+    ("the endpoint answers 422 for a bad payload", True),
+    (
+        "Run `uv run pytest tests/test_orchestrator_review.py -q`; "
+        "confirms no regression in existing review tests.",
+        True,
+    ),
+]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    _VERIFICATION_CORPUS,
+    ids=[str(v)[:40] for v, _ in _VERIFICATION_CORPUS],
+)
+def test_is_runnable_verification(value: str | None, expected: bool):
+    assert is_runnable_verification(value) is expected
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    _VERIFICATION_CORPUS,
+    ids=[str(v)[:40] for v, _ in _VERIFICATION_CORPUS],
+)
+def test_the_predicate_agrees_with_the_hard_verification_rule(
+    value: str | None, expected: bool
+):
+    """The predicate and the HARD rule must be the SAME decision.
+
+    ``orchestrator_dispatch`` uses the predicate to decide whether an
+    unvalidated ``verification`` may become a leaf's acceptance floor. If the
+    two ever diverge, either a leaf the validator accepted gets demoted at
+    dispatch, or one it rejected gets promoted.
+    """
+    leaves = [
+        LeafTask(
+            id="t1",
+            title="Task",
+            plan_text="do something",
+            verification=value,
+        ),
+    ]
+    profile = _profile()
+    source = _source_plan(leaves)
+    opus_plan = {"plan_summary": "x", "plan_slug": "x", "tasks": []}
+
+    result = validate_leaves(opus_plan, profile, source, leaves)
+    flagged = any(v.rule == "verification" for v in result.hard)
+    assert flagged is (not expected)
 
 
 # ---------------------------------------------------------------------------
