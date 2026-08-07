@@ -505,7 +505,13 @@ async def run_attempt(
     verify_cmd = resolve_verify_cmd(instance, attempt.condition, verify_cmd_default)
     prompt = _issue_prompt(instance)
 
-    bare = repo_root / f"{instance['instance_id']}.git"
+    # ABSOLUTE, always. A relative path is not a local repo url at all
+    # (``is_local_repo_url`` is False for it), so the shared policy treats it as
+    # a malformed REMOTE url and every register_project 422s with a message
+    # naming allow_local_repo_paths, which is not the problem. The orchestrator
+    # also runs `git -C <path>` against it and hands it to Docker as a
+    # bind-mount SOURCE, and neither resolves against the runner's cwd.
+    bare = (repo_root / f"{instance['instance_id']}.git").resolve()
     started = time.monotonic()
     error: str | None = None
     leaf_count = 0

@@ -303,6 +303,46 @@ async def test_a_gated_attempt_passes_the_resolved_verify_cmd_to_the_project(tmp
 
 
 @pytest.mark.unit
+async def test_the_registered_repo_url_is_absolute_so_the_api_accepts_it(
+    tmp_path, monkeypatch
+):
+    """A relative repo path is not a local repo at all, and 422s every instance.
+
+    ``is_local_repo_url`` returns False for ``bench/.work/repos/x.git``, so the
+    shared ``repo_url`` policy classifies it as a malformed REMOTE url and
+    ``/api/projects`` rejects it with a message naming ``allow_local_repo_paths``
+    -- sending the operator to flip a setting that would not have helped. The
+    runner's own ``--repos`` default was relative, so the default invocation
+    could not register a single instance.
+
+    The orchestrator also resolves the path itself (``git -C <path>`` in
+    ``_preflight_local``) and hands it to Docker as a bind-mount SOURCE, and
+    neither can act on a path relative to the runner's working directory.
+    """
+    from orchestrator.core.git_backend import is_local_repo_url
+    from orchestrator.core.repo_url_policy import validate_repo_url
+
+    monkeypatch.chdir(tmp_path)
+    attempt = plan_attempts(
+        [_instance(verify_cmd="pytest")], ["A"], ["local-openweight"], seeds=[1]
+    )[0]
+    client = RecordingClient()
+    await run_attempt(
+        attempt,
+        client,
+        run_id="run-1",
+        repo_root=Path("bench/.work/repos"),
+        out_path=tmp_path / "attempts.jsonl",
+        verify_cmd_default=None,
+    )
+    registered = next(kw for name, kw in client.calls if name == "register_project")
+    url = registered["repo_url"]
+    assert Path(url).is_absolute(), url
+    assert is_local_repo_url(url), url
+    assert validate_repo_url(url) == url
+
+
+@pytest.mark.unit
 async def test_an_ungated_attempt_registers_the_verify_cmd_as_well(tmp_path):
     """The ungated arms carry the command; only the orchestrator's gate moves."""
     attempt = plan_attempts(

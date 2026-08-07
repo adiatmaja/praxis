@@ -154,7 +154,39 @@ the final branch (`git diff base...result`). Praxis never grades itself.
 
 ## Running it
 
-**Before anything else: turn the local git backend on.** The bench registers
+### The orchestrator must share a filesystem with the prepared repos
+
+Local mode registers each instance's `repo_url` as a **filesystem path to a bare
+repo on this machine**, and that one string is consumed three times: the runner
+writes it, the orchestrator runs `git -C <path>` against it in
+`core/preflight._preflight_local`, and `agent_manager.local_repo_volume` hands it
+to Docker as a bind-mount SOURCE. The path must therefore be valid, and identical,
+in all three places.
+
+That rules out a CONTAINERIZED orchestrator on Windows: the repos live at
+`C:\...\bench\.work\repos`, and no Linux path inside the container can equal
+that. **Run the orchestrator as a host-side process for the bench**, with the
+bench flags in its environment:
+
+```bash
+PRAXIS_BENCH=1 PRAXIS_BENCH_DISABLE_VERIFY=1 ALLOW_LOCAL_REPO_PATHS=true \
+  uv run uvicorn orchestrator.main:app --host 127.0.0.1 --port 8080
+```
+
+`ALLOW_LOCAL_REPO_PATHS` as an environment variable is preferred over editing
+`config/praxis.yaml`: settings precedence is env > YAML > default, so the shipped
+default stays `false` in git and no test that reads the committed file breaks.
+
+On Linux, where a bind mount can make the host path exist unchanged inside the
+container, the containerized orchestrator does work; mount the repo root at the
+same absolute path.
+
+The paths the runner registers are ABSOLUTE (`bench/runner.py` resolves them).
+A relative one is not recognized as a local repo at all: the shared `repo_url`
+policy classifies it as a malformed remote url and `/api/projects` answers 422
+naming `allow_local_repo_paths`, which is not the problem.
+
+**Also: turn the local git backend on.** The bench registers
 every instance as a project whose `repo_url` is a filesystem path to a prepared
 bare repo, and the REST API refuses a local path unless the deployment opts in.
 Set `allow_local_repo_paths: true` in `config/praxis.yaml` and restart the
