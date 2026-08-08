@@ -465,6 +465,7 @@ the relevant subsystem. Condensed index:
 - **Workflow & orchestration cycle:** `docs/workflow.md`
 - **Deployment, Docker & API reference:** `docs/deployment.md`
 - **Decomposition standard (cited contract):** `docs/decomposition-standard.md`
+- **Configuration surface (seats, presets, arrangements):** `docs/configurations.md`
 - **Gotchas (full narrative):** `docs/gotchas.md`
 - **Design spec:** `docs/superpowers/specs/2026-06-01-ai-agent-orchestrator-design.md`
 - **Capability-engine roadmap (canonical, 2026-07-11):** `docs/superpowers/specs/2026-07-11-capability-engine-roadmap.md` — features F1-F15, standardization contracts S1-S11, 10-plan breakdown; next up = Plan 3 `outcome-recording`
