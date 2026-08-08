@@ -480,6 +480,30 @@ dependency" must never auto-merge.
 
 Auto-delegate mode provides a binary on/off switch for delegating implementation tasks. Future capability-aware delegation will evaluate `should_delegate()` as the decision seam, incorporating real-time capability calibration, context length estimates, and worker performance metrics (referencing CADMAS-CTX framework, arXiv:2604.17950) to dynamically route tasks between direct brain editing and worker delegation.
 
+### F17. Artifact review seat (non-text judgment), Tier 3
+
+Every seat consumes text, so judgment needing a rendered artifact has nowhere to
+sit. A per-project `artifact_cmd` (exact `verify_cmd` precedent: optional, absent
+means no-op) writes files; a new `review_artifact` call-site and role routes them
+through the existing `LLMRouter`, so it inherits fallback chains, per-project
+overrides, and the Settings, Models UI. A FAIL forces the human merge gate
+(`diff_guard` precedent), never an auto-reject, because the judgment is
+subjective. Verdicts must NOT feed `failure_taxonomy.counts_against_worker` or
+taste contaminates calibration. Open risk: the router's text-mode `build_argv`
+cannot carry a file, so the implementing spec must enumerate which providers can
+actually fill the seat rather than assume. Design:
+`docs/superpowers/specs/2026-08-08-aptitude-routing-and-artifact-review-design.md`.
+
+### F18. Arrangements: presets past the worker seat, Tier 3 (small)
+
+`worker_presets` already ships end to end (YAML, `EffectiveSettings`,
+`GET /api/settings/presets`, and a requirement-aware `praxis init` menu) but
+arranges the implement seat only. F18 extends the same declarative pattern to a
+named `arrangements` block carrying role chains, the merge-gate default, and
+`verify_cmd`, reusing `_default_preset_index` and `_confirm_unmet_requirements`
+rather than growing a parallel path. The arrangements documented in
+`docs/configurations.md` are the input. Design: same spec as F17.
+
 ### Deliberately NOT building
 
 - Richer dashboard / terminal multiplexing / live worker interaction
@@ -657,6 +681,8 @@ count does not grow materially.
 |---|---|
 | `README.md` | Tagline: "Capability-Aware AI Software Engineering Orchestrator". Add one sentence to the capability-aware key concept: the engine *learns* limits from outcomes (once F5 ships; until then phrase as roadmap-neutral "gates and escalates"). No new sections; no length growth. |
 | `docs/positioning.md` | Add the vs-agent-orchestrator comparison (cockpit vs engine); promote the Capability Calibration Loop to the named flagship; reorder "genuinely unique" list to lead with capability-awareness. |
+| New `docs/configurations.md` | The configuration surface in one place: every knob, the three levels of multi-model/multi-harness behavior, the shipped `worker_presets`, hand-assembled arrangements, and the honest ceilings. Named in the README and CLAUDE.md indexes. |
+| `README.md` (aptitude) | One sentence on choosing seats by aptitude rather than cost tier; demote the per-vendor paragraph from rule to field note; link the configuration doc. No new sections. |
 | `docs/architecture.md` | New "Capability engine" section documenting F1-F5 dataflow once built (per-plan, as features land). |
 | `docs/mcp.md` | Document `dry_run`/`commit_plan` (F8) and `calibrate` when they ship. |
 | `CLAUDE.md` | Gotchas index entries per feature as they land (validator fail-closed, superseded status, outcome attribution rules). |
