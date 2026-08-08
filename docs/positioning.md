@@ -52,6 +52,15 @@ preference:
 - **Review** rewards judgment again: inspect the diff against intent, gate the merge.
 - **Verification** is deterministic (a shell command).
 
+Seats also differ by **aptitude**, not only by how much capability they need.
+Capacity is how much a model can hold, and it is what decomposition sizes tasks
+against. Aptitude is what kind of judgment the seat wants: modality, domain
+strength, tool ecosystem, latency, privacy, availability, or plain preference. A
+bigger model of the same family does not necessarily fix an aptitude mismatch,
+which is why the seat is the unit of choice rather than the tier.
+[docs/configurations.md](configurations.md) is the reference for what can fill
+each seat and where that choice lives.
+
 **Cost efficiency is a consequence of this, not the motivation.** Because
 implementation is the token-heavy role, it can run on a free open-weight model while
 judgment-heavy roles run on a capable hosted one. The flagship deployment of that
@@ -93,9 +102,20 @@ capability-aware, and free to run" is the honest one-line comparison.
    implementer, but they assume a *metered API* for the planner. Praxis drives
    the flat-rate subscription CLI for planning/review. None of the off-the-shelf
    tools productize this.
-3. **Provider escape hatch via MCP.** Aider/Roo Code can use local models, but
-   neither lets a *Claude-locked assistant* delegate to a local worker from
-   inside that assistant. Praxis does, through MCP `dispatch_task`.
+3. **Cross-vendor seat routing, in every direction.** One session, many models,
+   many harnesses, arranged the way you work. Every vendor's assistant
+   is locked to that vendor's models. That is a design choice each of them
+   makes, not a defect in one of them, and it means the moment a different
+   kind of judgment is wanted the developer is moving work between IDEs by
+   hand. Praxis is the seam, and it holds at three levels, each shipping today:
+   a `harness` and `model` argument on `dispatch_task` and `execute_plan`, so
+   one assistant session dispatches to different harnesses per call; per
+   call-site routing, so a single plan run already spans several models with no
+   configuration; and a `(harness, model)` escalation ladder, so the engine
+   moves a failing leaf across harnesses on its own. Aider and Roo Code can use
+   open-weight models, but neither lets a vendor-locked assistant delegate out
+   of its own vendor from inside that assistant. Examples here are deliberately
+   plural: no pairing is the blessed one.
 4. **Functional fleet dashboard.** A working (not mockup) dashboard with live SSE
    logs showing N agents on N branches, plus a human window to unstick wedged
    tasks. MCP is request/response and blind to long-running async work; the
@@ -191,6 +211,11 @@ about the engine's economic foundation.
 4. **Operational constraints (by design, but real).** Worker reads only from
    GitHub (no local/iterative context; `context` field is the workaround).
    Retries open fresh PRs rather than pushing to an existing one.
+5. **No non-text seat.** Every seat consumes text: the reviewer reads a diff,
+   the verifier reads an exit code, the planner reads markdown. Judgment that
+   needs a rendered artifact has nowhere to sit, so Praxis cannot tell you the
+   layout it just shipped is broken. Designed as F17 in the capability-engine
+   roadmap; not built.
 
 ## Positioning guidance
 
@@ -205,3 +230,8 @@ split as the flagship *deployment* of that architecture (the most economically
 striking configuration), not as the identity. Praxis's defensible niche is exactly
 *any provider per role + open-weight worker + the resulting cost efficiency*. Keep cost
 framed as a consequence of separating the roles, never as the motivation.
+Route examples by **aptitude**, and keep them plural and multi-directional: a
+single worked vendor pairing reads as the blessed configuration and quietly
+discourages every other one, which is the opposite of the claim. The
+configuration surface itself lives in [docs/configurations.md](configurations.md);
+positioning links to it rather than restating it.
