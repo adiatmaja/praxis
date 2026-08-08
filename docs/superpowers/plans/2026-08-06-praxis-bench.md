@@ -5781,3 +5781,111 @@ picks the changes up; a production-compose run would need a rebuild.
    `orchestrator_fixture`, and `record_outcome` reading the REVIEW model.
 4. **Nothing in engine Phase B or C, or bench Phase B or C, has ever run live.**
    This session did not change that either.
+
+### First live run execution record (2026-08-08)
+
+**Status: the bench pipeline RUNS END TO END for the first time. One instance,
+condition A, `psf__requests-2148`, reached `merged`. The full matrix was NOT
+started and Task 12 is NOT complete.** The user enabled Docker and the VPN; every
+finding below came from executing, never from inspection.
+
+Commits: `efb02dd`, `1e3d536`, `02aa6fc`.
+
+#### What a single-instance smoke test bought
+
+**Three of the five defects below each independently guaranteed a 100 percent
+error matrix, and none was reachable by any unit test.** Launched blind, the 36
+attempts would have failed in about twenty seconds with three causes stacked
+behind one another. This is the strongest evidence yet for the standing rule that
+nothing counts until it has run live.
+
+#### Five defects, all found by execution
+
+1. `efb02dd` **a relative `--repos` path is not a local repo url at all.**
+   `is_local_repo_url` is False for it, so the shared policy classified it as a
+   malformed REMOTE url and every `register_project` 422'd with a message naming
+   `allow_local_repo_paths`, which was not the problem. The runner's OWN default
+   was relative, so the documented invocation could not register one instance.
+2. `1e3d536` **`branch: "main"` was sent to both endpoints**, which refuse a
+   protected branch as a plan base. A prepared bench repo has exactly one
+   branch, so ALL FOUR conditions were unrunnable, not just A.
+3. `1e3d536` **the bind-mounted bare repo failed git's dubious-ownership check.**
+   The mount carries the host's owner uid; git refused to read it and the clone
+   died with `fatal: detected dubious ownership`, exit 128, no callback.
+   **Bench Phase A's local git backend had never worked end to end.**
+4. `02aa6fc` **`/home/agent/.local/share/opencode` was missing from the image.**
+   Docker propagates ownership into an empty named volume only when the mount
+   point already exists, so the per-task sessions volume was created root-owned
+   against a uid-1001 container and OpenCode died on `EACCES` in about fifteen
+   seconds with `worker_tokens 0`. That volume arrived with `b75cef7`, the
+   session-resume work that was never run live, so **session resume had been
+   silently breaking EVERY opencode run since 2026-08-05**, not only the bench.
+5. **`--verify-cmd "uv run pytest -q"` does not work inside an instance
+   container.** Under A and C the gate never executes it, but it IS the leaf
+   acceptance floor and the worker's Bible text, so the worker acted on it and
+   burned turns. An honest string for the gate is not automatically an honest
+   string for the worker.
+
+Two further failures were the operator's, not the product's, and are recorded so
+they are not re-diagnosed as defects: binding uvicorn to `127.0.0.1` (every
+callback `HTTP 000000`, because `host.docker.internal` cannot reach a loopback
+listener), and running on port 8080 while `.env`'s `AGENT_CALLBACK_URL` pins
+12323 and WINS over a `PORT` override.
+
+#### The successful run
+
+`psf__requests-2148`, condition A, `local-openweight` (opencode, qwen3.6-27b),
+452 seconds, `error: None`, terminal status `merged`. Register, dispatch,
+container, clone from the bind-mounted bare repo, base and agent branches, Static
+Bible, OpenCode, commit, push, `praxis-local://pr?branch=...&base=...`, brain
+review, merge. Every link verified from the artifacts, not from a log claim: the
+agent branch exists in the bare repo and its diff is 7 files, 54 insertions.
+
+The worker's own work was sound. It localized the bug to `iter_content` in
+`requests/models.py`, which is where the real gold patch lives, wrote a test
+FIRST, confirmed a genuine RED for the stated reason, then implemented the wrap.
+
+#### The environment gap, which is a decision and not a bug
+
+**`bench/prepare.py` provisions no per-instance environment.** Official SWE-bench
+builds a per-instance image with the right Python and dependencies; this bench
+hands the worker a bare clone inside one generic agent image.
+
+Measured, not predicted. The worker paid turns on `uv run pytest` (no pytest),
+`uv run python -m pytest` (no venv), and a file-level collection error
+(`collections.Callable`, moved in Python 3.10), then recovered. It then saw
+73 failed / 60 passed where nearly every failure is pre-existing.
+
+**The cost is not only wasted turns: it CONTAMINATES the patch.** To make the
+suite runnable the worker also rewrote `collections.Callable` to
+`collections.abc.Callable` across `models.py`, `sessions.py`, `structures.py` and
+`utils.py`. That work is absent from the gold patch, off-task, and lands in the
+diff the official harness grades.
+
+What it does and does not invalidate:
+
+- Grading stays VALID: the official harness evaluates the extracted diff in its
+  own correct environment.
+- Absolute resolve rates will NOT be comparable to published SWE-bench numbers
+  and cost per task will read high. Only BETWEEN-ARM differences are
+  interpretable, and the report's Limitations must say so.
+- Do not overstate it: the worker recovered and produced a plausible fix. Some
+  instances will be genuinely unrunnable; this one was not.
+- It independently reinforces the A and C decision on grounds nobody had
+  identified when that decision was made: a verification arm is close to
+  meaningless when the worker cannot reliably run the tests.
+
+#### Still open
+
+1. **Cost accounting records zeros.** The completed attempt carries
+   `brain_tokens: 0` and `worker_tokens: 0` on a run that plainly spent both.
+   Producing cost numbers is half of the pilot's stated purpose, so this blocks
+   Task 12 as specified even though the loop now runs.
+2. **The per-instance environment decision above**, which is the user's.
+3. `resolved` and `plausible` are the pre-grade defaults; `bench.grade` was not
+   run, and no resolve claim of any kind should be read from this record.
+4. Everything on the standing backlog is unchanged, including the absent
+   `/api/status` bench-mode field, which is now the highest-value follow-up: this
+   run depended on an unverifiable manual claim about the orchestrator's mode.
+5. **Agent containers are REMOVED after a run**, so `docker logs` is useless
+   after the fact. Stream them live or the evidence is gone.
