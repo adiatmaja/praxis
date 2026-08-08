@@ -32,4 +32,14 @@ RUN chmod +x /home/agent/entrypoint.sh
 COPY --chown=agent:agent extract_session.py /usr/local/bin/extract_session.py
 ENV XDG_DATA_HOME=/home/agent/.local/share
 
+# Create the session directory HERE, as the agent user, because the orchestrator
+# mounts a fresh per-task named volume over it (OPENCODE_SESSIONS_VOLUME).
+# Docker only copies image content and OWNERSHIP into an empty volume when the
+# mount point already exists in the image; when it does not, Docker creates the
+# path root-owned and this container runs as uid 1001, so OpenCode dies on
+#   EACCES: permission denied, mkdir '/home/agent/.local/share/opencode/log'
+# before it does any work at all. Measured live on 2026-08-08: every run failed
+# in about 15 seconds with worker_tokens 0.
+RUN mkdir -p /home/agent/.local/share/opencode/log
+
 ENTRYPOINT ["/home/agent/entrypoint.sh"]
