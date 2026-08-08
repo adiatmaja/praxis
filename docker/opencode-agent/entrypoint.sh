@@ -147,17 +147,21 @@ echo "--- Configuring git auth ---"
 # configure (GH_TOKEN is a placeholder there, satisfying the guard above).
 if [ "${IS_LOCAL_BACKEND}" = "1" ]; then
     echo "Local backend: skipping credential helper"
-    # The bare repo reaches us as a BIND MOUNT, so its owner uid is the host's
-    # and not this container's agent user. Git's dubious-ownership check then
-    # refuses to read it and the clone dies with
-    #   fatal: detected dubious ownership in repository at '/srv/praxis-repo.git'
-    # before a single file is touched. The mount is placed by the orchestrator,
-    # not by anything the worker controls, so trusting it is safe. Measured
-    # live on 2026-08-08: without this, EVERY local-backend run exits 128.
-    git config --global --add safe.directory "${REPO_URL}"
-    git config --global --add safe.directory "${WORKSPACE}"
 else
     git config --global credential.helper '!f() { echo "username=x-access-token"; echo "password=${GH_TOKEN}"; }; f'
+fi
+
+# The local bare repo reaches us as a BIND MOUNT, so its owner uid is the host's
+# and not this container's agent user. Git's dubious-ownership check then refuses
+# to read it and the clone dies with "fatal: detected dubious ownership in
+# repository at '/srv/praxis-repo.git'" before a single file is touched. The
+# mount is placed by the orchestrator, not by anything the worker controls, so
+# trusting it is safe. Measured live 2026-08-08: without this every local run
+# exits 128. Kept HERE rather than in the credential-helper branch above so the
+# only REPO_URL reference stays beside the clone that needs it.
+if [ "${IS_LOCAL_BACKEND}" = "1" ]; then
+    git config --global --add safe.directory "${REPO_URL}"
+    git config --global --add safe.directory "${WORKSPACE}"
 fi
 
 echo "--- Cloning repository ---"

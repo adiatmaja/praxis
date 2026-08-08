@@ -155,6 +155,32 @@ def test_a_run_of_every_arm_claims_nothing_was_skipped() -> None:
 
 
 @pytest.mark.unit
+def test_uncollected_token_counts_are_not_rendered_as_a_cost_of_zero() -> None:
+    """Zero tokens means NOT MEASURED, and must never print as a cost.
+
+    ``bench/runner.py`` hardcodes ``brain_tokens=0`` and ``worker_tokens=0``:
+    the counters were never implemented. With one resolved task that divided to
+    "0" and the table published "0 tokens per resolved task", which reads as
+    FREE. The function's own docstring guards the mirror case (nothing resolved
+    must not read as free) and left this one fabricating a measurement.
+    """
+    rows = [_row(condition="A", resolved=True, brain_tokens=0, worker_tokens=0)]
+    report = build_report(rows, run_id="pilot-1", model_cutoff="2026-03")
+    assert "not measured" in report
+    # The wrong rendering, asserted ABSENT: a bare "| 0 |" cost cell.
+    assert "| 0 |\n" not in report.replace("| A | 0 | 1 |", "")
+
+
+@pytest.mark.unit
+def test_a_real_token_count_still_reports_a_cost() -> None:
+    """The guard must not swallow a genuine measurement."""
+    rows = [_row(condition="A", resolved=True, brain_tokens=1000, worker_tokens=3000)]
+    report = build_report(rows, run_id="pilot-1", model_cutoff="2026-03")
+    assert "4000" in report
+    assert "not measured" not in report
+
+
+@pytest.mark.unit
 def test_the_report_names_the_model_cutoff_in_the_contamination_note() -> None:
     report = build_report([_row()], run_id="full-01", model_cutoff="2026-03")
     assert "2026-03" in report

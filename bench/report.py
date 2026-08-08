@@ -182,7 +182,16 @@ def _by_condition(rows: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]
 
 
 def _render_cost_table(rows: list[dict[str, Any]]) -> str:
-    """Cost per resolved task. A condition that resolves nothing is infinite."""
+    """Cost per resolved task.
+
+    Two ways this can fail to be a number, and both must SAY so rather than
+    print one. A condition that resolves nothing is infinite, because zero
+    would read as free. A condition with no token data is "not measured", for
+    the same reason in the other direction: ``bench/runner.py`` hardcodes
+    ``brain_tokens=0`` and ``worker_tokens=0`` (the counters were never
+    implemented), and 0 divided by a real resolved count printed a confident
+    "0 tokens per resolved task".
+    """
     lines = [
         "| condition | tokens | resolved | tokens per resolved |",
         "|---|---|---|---|",
@@ -190,7 +199,12 @@ def _render_cost_table(rows: list[dict[str, Any]]) -> str:
     for condition, group in sorted(_by_condition(rows).items()):
         tokens = sum(r["brain_tokens"] + r["worker_tokens"] for r in group)
         resolved = sum(1 for r in group if r["resolved"])
-        per = f"{tokens / resolved:.0f}" if resolved else "infinite (nothing resolved)"
+        if not tokens:
+            per = "not measured (no token accounting)"
+        elif resolved:
+            per = f"{tokens / resolved:.0f}"
+        else:
+            per = "infinite (nothing resolved)"
         lines.append(f"| {condition} | {tokens} | {resolved} | {per} |")
     return "\n".join(lines)
 
