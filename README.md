@@ -102,7 +102,11 @@ seats. The engine coordinates them; it is not itself the intelligence.
 **Every seat is independently configurable.** Provider, model, execution environment, and
 harness are set per role (and per project) in **Settings → Models**. A typical arrangement:
 a hosted model plans, an open-weight model implements, a different hosted model reviews, a shell
-command verifies. Any of these can change without touching the others.
+command verifies. Any of these can change without touching the others. Choose each seat on what
+it is *good at*, not only on what it costs: modality, domain strength, tool ecosystem, latency,
+privacy, and availability are all legitimate reasons to fill one seat differently from its
+neighbor. See [docs/configurations.md](docs/configurations.md) for every knob, the shipped
+worker presets, and known-good whole-loop arrangements.
 
 **Providers are interchangeable examples, not the design.**
 
@@ -125,7 +129,9 @@ command verifies. Any of these can change without touching the others.
 
 **Open-weight is not the same as local:** GLM-5.2 and DeepSeek V4-Pro are Frontier-class open-weight models you can serve hosted (e.g. [z.ai](https://z.ai/)) or locally (LM Studio · Ollama); a small local model is the cost floor for the implement and review seats.
 
-**Where Gemini fits: worker seats, not the planner.** Claude, GPT/Codex, and Frontier-class open-weight models are the strong choices for planning and the autonomous improve loop. Gemini is the exception to reach for elsewhere: in practice it plans poorly, but its mid-tier models (Gemini 3.5 Flash) are moderately capable at scoped implementation, review, and everything that is not the plan itself, trading higher token usage for that reach. So point Gemini at Implement / Review / Verify and keep Plan and Improve on Claude, GPT, or a frontier model. Gemini runs as a brain through the `agy` (Antigravity) CLI, which emits capturable non-interactive output as of agy v1.1.0; as an implementer it drives the Antigravity coding agent as a harness. See [docs/gotchas.md](docs/gotchas.md).
+**Field notes on specific providers.** These are observations that churn with
+model releases, not architecture; the seats accept any provider. **Gemini:
+worker seats, not the planner.** Claude, GPT/Codex, and Frontier-class open-weight models are the strong choices for planning and the autonomous improve loop. Gemini is the exception to reach for elsewhere: in practice it plans poorly, but its mid-tier models (Gemini 3.5 Flash) are moderately capable at scoped implementation, review, and everything that is not the plan itself, trading higher token usage for that reach. So point Gemini at Implement / Review / Verify and keep Plan and Improve on Claude, GPT, or a frontier model. Gemini runs as a brain through the `agy` (Antigravity) CLI, which emits capturable non-interactive output as of agy v1.1.0; as an implementer it drives the Antigravity coding agent as a harness. See [docs/gotchas.md](docs/gotchas.md).
 
 **GitHub is the one platform contract.** Every unit of work becomes a real branch and a real
 pull request. Implementers push, the reviewer gates the PR, and you keep the merge button.
@@ -242,6 +248,7 @@ sequential in v1 (one delegate in flight at a time). Full detail: [docs/workflow
 |-------|-----|
 | Architecture & component design | [docs/architecture.md](docs/architecture.md) |
 | Decomposition standard (cited contract) | [docs/decomposition-standard.md](docs/decomposition-standard.md) |
+| Configuration surface (seats, presets, arrangements) | [docs/configurations.md](docs/configurations.md) |
 | Workflow & orchestration cycle | [docs/workflow.md](docs/workflow.md) |
 | MCP control surface (drive Praxis from an AI assistant) | [docs/mcp.md](docs/mcp.md) |
 | Deployment, Docker, config, troubleshooting & API reference | [docs/deployment.md](docs/deployment.md) |
