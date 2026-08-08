@@ -109,9 +109,11 @@ capability-aware, and free to run" is the honest one-line comparison.
    kind of judgment is wanted the developer is moving work between IDEs by
    hand. Praxis is the seam, and it holds at three levels, each shipping today:
    a `harness` and `model` argument on `dispatch_task` and `execute_plan`, so
-   one assistant session dispatches to different harnesses per call; per
-   call-site routing, so a single plan run already spans several models with no
-   configuration; and a `(harness, model)` escalation ladder, so the engine
+   one assistant session dispatches to different harnesses per call; role-chain
+   routing, so every brain call-site resolves through an ordered chain you
+   configure in `models.roles` (the shipped chains put planning and review on one
+   mid-tier model with a fallback behind it); and a `(harness, model)` escalation
+   ladder, so the engine
    moves a failing leaf across harnesses on its own. Aider and Roo Code can use
    open-weight models, but neither lets a vendor-locked assistant delegate out
    of its own vendor from inside that assistant. Examples here are deliberately

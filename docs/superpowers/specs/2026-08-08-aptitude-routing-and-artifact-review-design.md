@@ -94,19 +94,35 @@ exist is a tool argument.
 
 ### 3.2 Level 2: one plan run, many models, automatically
 
-`CALL_SITE_DEFAULTS` in `core/llm_router.py` already routes a single run across
-several models with no user configuration: planning and first-pass review on a
-mid-tier model, re-review dropping to a cheap one, task derivation on a local
-model, and the open-ended improvement loop on a frontier model. Per-call-site
-overrides live in `settings_overrides` under `models.<call_site>`, resolve
-through `EffectiveSettings.call_site_config`, and are managed through
-`GET/PUT /api/settings/models` and the dashboard **Settings → Models** tab.
+**CORRECTED after adversarial review.** The first draft of this section claimed
+`CALL_SITE_DEFAULTS` routes a single run across several models with no user
+configuration: mid-tier planning and first-pass review, a cheap re-review, local
+task derivation, a frontier improvement loop. **That is false in the shipped
+configuration, and the error propagated into three documents before review caught
+it.** `CLAUDE.md` already carried the gotcha that would have prevented it.
 
-Role fallback chains resolve ahead of those overrides:
-`EffectiveSettings.call_site_chain` maps a call-site to a role via
-`core/roles.ROLE_OF_CALL_SITE` (frozen and golden-tested), then to an ordered
-registry chain. `LLMRouter.run` falls back along that chain only on
-unavailability, per `core/provider_errors.is_unavailability`.
+What is actually true. `EffectiveSettings.call_site_chain` maps a call-site to a
+role via `core/roles.ROLE_OF_CALL_SITE` (frozen and golden-tested), then to the
+ordered chain in `models.roles`, and falls through to `call_site_config` (which
+is what reads `CALL_SITE_DEFAULTS`) **only when that chain is empty**.
+`config/praxis.yaml` ships non-empty chains, `plan: [sonnet, opus]` and
+`review: [sonnet, haiku]`, and `main.py` always wires the router to
+`call_site_chain`. So every routed call-site in a default install resolves to
+`claude-sonnet-4-6`, `CALL_SITE_DEFAULTS` is unreachable, and a saved
+`models.<call_site>` override is stored and ignored.
+
+The claim that survives, and the one the docs may make: role-chain routing is
+per call-site, configurable, and ordered, with fallback ONLY on unavailability
+per `core/provider_errors.is_unavailability` (a bad answer never triggers
+fallback; `ProviderOutputError` returns False explicitly). Multi-model behavior
+in one run is a capability of the mechanism that the shipped chains do not
+currently exercise, not an out-of-the-box behavior.
+
+Also noted: `derive_tasks`, `context_sync`, `brainstorm_run_turn`, and
+`brainstorm_generate_plan` are declared call-sites with no `router.run` caller.
+Task derivation reaches LM Studio through `plan_derive._derive_via_lm_studio`
+directly, so it does land on a local model, by a different mechanism than the
+call-site story implies.
 
 ### 3.3 Level 3: one plan run, many harnesses, automatically
 
@@ -131,9 +147,10 @@ root cause of the user's question:
 |---|---|---|
 | Harness | `projects.harness`, `ProjectCreate/Update.harness` | per project |
 | Harness | `DispatchRequest`/`ExecutePlanRequest.harness` | per call |
-| Worker model | `projects.model_name` / `agent_model` | per project |
+| Worker model | `projects.model_name` | per project |
+| Brain model (legacy) | `projects.agent_model` | per project, ignored while a role chain resolves the call-site |
 | Worker model | `DispatchRequest.model` (required) | per call |
-| Provider, model, effort | `settings_overrides` key `models.<call_site>` | per call-site, global or per project |
+| Provider, model, effort | `settings_overrides` key `models.<call_site>` | per call-site, global only (`call_site_config` ignores `project_id`); applies only when the role declares no chain |
 | Role fallback chain | `EffectiveSettings.call_site_chain`, `core/roles` | per role |
 | Implement escalation ladder | `implement_escalation` in `config/praxis.yaml` | global |
 | Default delegated worker | `default_worker_harness`, `default_worker_model` | global |
@@ -141,8 +158,8 @@ root cause of the user's question:
 | Verify command | `projects.verify_cmd` | per project |
 | Merge gate versus auto-merge | `projects.auto_merge`, `core/merge_policy` | per project, protected branches never auto-merge |
 | Git backend | `core/git_backend.resolve_backend`, `Settings.allow_local_repo_paths` | per project repo_url, admission gated globally |
-| Worker endpoint | `lm_studio_url` | global or per project |
-| Retry and loop bounds | `max_retries`, `max_improvement_cycles`, `max_leaves_per_plan` | per project or global |
+| Worker endpoint | `lm_studio_url` | global (`spawn_agent` reads the global one); also repoints every `local` router call-site |
+| Retry and leaf bounds | `max_retries` (per project), `max_leaves_per_plan` (global) | `max_improvement_cycles` is stored and never read |
 
 ### 3.5 Level 4: first-run setup already arranges the worker seat
 
@@ -408,7 +425,31 @@ Tracked, not resolved by this spec.
 3. **`docs/harness-contract.md` (roadmap S3) does not exist**, which caps what
    the pluggability claim may say. Writing it would let the docs claim "add your
    own harness," which they currently may not.
-4. **Shipped-but-undocumented features may not be limited to one.** The worker
+4. **Code defects surfaced by the adversarial review of Part A.** None are
+   documentation problems, so none were fixed in the docs pass. Each is real and
+   verified against source:
+   - `DispatchRequest.harness` and `ExecutePlanRequest.harness` carry NO
+     `REGISTRY` validator, unlike `ProjectCreate`/`ProjectUpdate`. A bogus value
+     is persisted to `projects.harness` and later reaches `REGISTRY[harness_id]`
+     in `agent_manager.spawn_agent` as a `KeyError`, which the dispatch loop does
+     not catch (it guards `RuntimeError` only). `implement_escalation` rungs have
+     the same hole: `next_escalation` checks truthiness, not membership.
+   - **The dashboard offers a control that does nothing.** Settings, Models
+     writes `models.<call_site>` overrides that `call_site_chain` shadows
+     whenever the role has a chain, which the shipped YAML always does.
+     `GET /api/settings/models` reads `call_site_config`, so the UI renders the
+     saved override while the router ignores it. Either the UI should warn, or
+     the resolution order should be revisited.
+   - `projects.agent_model` is inert: every `OpusBridge` method ignores its
+     `model=` argument when a router is present, and `main.py` always builds one.
+   - `max_improvement_cycles` is in the DDL, the schemas, the insert, and the
+     dashboard form, and is read by nothing in `src/`.
+   - The `hosted-openweight` preset endpoint already ends in `/v1`, and both
+     consumers append `/v1`, yielding `https://api.z.ai/v1/v1`. The first preset
+     `praxis init` offers is misconfigured.
+   - `_choose_preset` clamps an out-of-range menu answer instead of reprompting,
+     so typing `0` silently selects a different preset.
+5. **Shipped-but-undocumented features may not be limited to one.** The worker
    preset menu was built, wired through the API, and given requirement-aware
    defaults, and this spec's first draft still proposed building it, because no
    user-facing document mentions it. That is the same failure this spec exists

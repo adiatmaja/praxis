@@ -103,10 +103,11 @@ seats. The engine coordinates them; it is not itself the intelligence.
 harness are set per role (and per project) in **Settings → Models**. A typical arrangement:
 a hosted model plans, an open-weight model implements, a different hosted model reviews, a shell
 command verifies. Any of these can change without touching the others. Choose each seat on what
-it is *good at*, not only on what it costs: modality, domain strength, tool ecosystem, latency,
-privacy, and availability are all legitimate reasons to fill one seat differently from its
-neighbor. See [docs/configurations.md](docs/configurations.md) for every knob, the shipped
-worker presets, and known-good whole-loop arrangements.
+it is *good at*, not only on what it costs: domain strength, tool ecosystem, latency, privacy,
+and availability are all legitimate reasons to fill one seat differently from its neighbor.
+(Modality is not yet among them: every seat reads text, so a vision-capable model buys nothing
+here today.) See [docs/configurations.md](docs/configurations.md) for every knob, the shipped
+worker presets, and the whole-loop arrangements the pieces support.
 
 **Providers are interchangeable examples, not the design.**
 

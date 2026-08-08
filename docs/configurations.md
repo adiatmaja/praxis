@@ -4,8 +4,9 @@
 
 Praxis splits software engineering into four seats: **plan**, **implement**,
 **review**, and **verify**. This document is the reference for what can fill
-each seat, where that choice lives, and which whole-loop arrangements are known
-to work.
+each seat, where that choice lives, and which whole-loop arrangements the shipped
+pieces support. "Supported" is not "verified": the arrangements below are
+assembled by hand and none is a benchmarked configuration.
 
 Two different things decide a seat, and only one of them has ever had a name in
 these docs.
@@ -28,9 +29,10 @@ be a cost-tier example, which is why the second dimension was easy to miss.
 |---|---|---|
 | Harness | `projects.harness` | per project |
 | Harness | `harness` on `dispatch_task` / `execute_plan` | per call |
-| Worker model | `projects.model_name`, `agent_model` | per project |
+| Worker model | `projects.model_name` | per project |
 | Worker model | `model` on `dispatch_task` / `execute_plan` (required) | per call |
-| Provider, model, effort | `settings_overrides` key `models.<call_site>` | per call-site, global or per project |
+| Brain model (legacy) | `projects.agent_model` | per project, but ignored whenever a role chain resolves the call-site |
+| Provider, model, effort | `settings_overrides` key `models.<call_site>` | per call-site, global; applies only when the role declares no chain |
 | Model registry and role chains | `models.registry`, `models.roles` in `config/praxis.yaml` | per role |
 | Implement escalation ladder | `implement_escalation` in `config/praxis.yaml` | global |
 | Worker preset | `worker_presets` in `config/praxis.yaml` | chosen at `praxis init` |
@@ -39,8 +41,8 @@ be a cost-tier example, which is why the second dimension was easy to miss.
 | Verify command | `projects.verify_cmd` | per project |
 | Merge gate or auto-merge | `projects.auto_merge` | per project; protected branches never auto-merge |
 | Git backend | project `repo_url` plus `allow_local_repo_paths` | per project, admitted globally |
-| Worker endpoint | `LM_STUDIO_URL` | global or per project |
-| Retry and loop bounds | `max_retries`, `max_improvement_cycles`, `max_leaves_per_plan` | per project or global |
+| Worker endpoint | `LM_STUDIO_URL` | global; it also repoints every router call-site that resolves to the `local` provider |
+| Retry and leaf bounds | `max_retries` (per project), `max_leaves_per_plan` (global) | per project or global |
 
 `config/praxis.yaml` is **mounted, not baked**, so editing it takes effect on
 `docker compose restart orchestrator` and never needs an image rebuild.
@@ -59,18 +61,27 @@ that crosses it, and crossing it is a tool argument rather than a second IDE.
 
 ### Level 2: Praxis chooses, per call-site
 
-A single plan run already uses several models without anyone configuring
-anything. Planning and first-pass review resolve to a mid-tier model, re-review
-drops to a cheaper one, task derivation runs on a local model, and the
-open-ended improvement loop reaches for a frontier model.
+Every brain call in the loop is a named *call-site*: planning a spec, reviewing
+a diff, re-reviewing after fixes, deciding what to improve next. Call-sites map
+to roles (`plan`, `review`, `implement`), and roles map to ordered chains in
+`models.roles`.
 
-Each of those is a *call-site*. Call-sites map to roles, roles map to ordered
-chains in `models.roles`, and a chain falls through to the next entry only when
-a provider is unavailable (auth, rate limit, gateway). A model that answers
-badly is not a fallback trigger; a model that cannot answer at all is.
+A chain falls through to its next entry only when a provider is **unavailable**
+(auth failure, rate limit, gateway error). A model that answers badly is not a
+fallback trigger; a model that cannot answer at all is.
 
-Override any single call-site in **Settings, Models** in the dashboard, or over
-`GET`/`PUT /api/settings/models`.
+What the shipped chains actually do: `plan` is `[sonnet, opus]` and `review` is
+`[sonnet, haiku]`, so a **default install resolves every routed call-site to the
+same mid-tier model** and holds the second entry in reserve as a fallback.
+Per-call-site tiering, a cheaper model for re-review and a frontier model for the
+improvement loop, lives in `CALL_SITE_DEFAULTS` and applies **only when a role
+declares no chain**. Editing `models.roles` is how you change the routing.
+
+The same shadowing governs overrides. **Settings, Models** in the dashboard and
+`GET`/`PUT /api/settings/models` write a per-call-site override that takes effect
+only when that call-site's role has no chain in `models.roles`. With the shipped
+chains in place the override is stored and ignored, so clear the role chain
+first.
 
 ### Level 3: Praxis re-chooses, on failure
 
@@ -97,7 +108,9 @@ seat like any other.
 
 <!-- END harness-list -->
 
-Two harnesses ship. The seam is general and the population is small; see
+Two harnesses ship. Adding a third is not purely a registry entry: `spawn_agent`
+branches on harness id in three places (context detection, credential volume,
+session volume), and each harness carries its own Dockerfile and entrypoint. See
 [Ceilings](#ceilings).
 
 ## Worker presets
@@ -167,6 +180,12 @@ Every model-driven seat on one provider, usually for billing or policy reasons.
 - Worker preset: whichever preset drives a harness that vendor supports
 - Note: the implement seat is spawn-baked, so single-vendor means the *harness*
   too, not only the model name
+- **Not satisfiable today for most vendors.** The two shipped harnesses are
+  `opencode`, which drives an OpenAI-compatible endpoint, and `agy`, which is
+  Gemini-only. Neither drives Claude or GPT, so "every seat on one vendor" is
+  reachable only in the open-weight case. Listed because it is the arrangement
+  people ask for, and the honest answer is that a third harness is what would
+  unlock it.
 
 ### Fully local
 
@@ -185,7 +204,10 @@ involved at all.
 
 - Set `allow_local_repo_paths: true` in `config/praxis.yaml`
 - Give the project a filesystem path as its `repo_url`; the repo must be **bare**
-- Answer `skip` when `praxis init` asks for a GitHub token
+- Answer `skip` at the GitHub-token prompt on a fresh install. On a re-run where
+  `.env` already holds a `GITHUB_TOKEN`, that prompt does not offer `skip` and a
+  blank answer KEEPS the existing token; delete the `GITHUB_TOKEN` line from
+  `.env` instead
 - The git backend resolves to the local one, so there is no PR object and no
   credential setup; the merge gate and verify gates behave the same way
 
@@ -196,19 +218,25 @@ the orchestrator at any path the container can reach.
 
 Stated plainly rather than buried.
 
-1. **"Many harnesses" is two.** The seam is general; the population is not
-   large. Praxis does not compete on harness breadth.
+1. **"Many harnesses" is two.** Praxis does not compete on harness breadth, and
+   the seam is not as clean as a registry implies: `spawn_agent` carries three
+   literal harness-id branches, so a third harness means edits inside it.
 2. **The harness contract is not written down yet.** Two harnesses ship and the
    seam lives in code. "Add your own harness" is not yet a promise this project
    has earned.
-3. **Cross-harness escalation has not been observed live.** The mechanism takes
-   a `(harness, model)` pair and the shipped default ladder happens to use one
-   harness on both rungs. The capability is real; a verified run is not yet on
-   record.
+3. **Cross-harness escalation has not been observed live, though the default
+   configuration performs one.** The mechanism takes a `(harness, model)` pair.
+   The shipped ladder uses `opencode` on both rungs, but the shipped
+   `default_worker_harness` is `agy`, so the first escalation in a default
+   install is already an `agy` to `opencode` move. The capability is real and the
+   default exercises it; a verified run is not yet on record.
 4. **Every seat consumes text.** The reviewer reads a diff, the verifier reads
    an exit code, the planner reads markdown. Nothing here can look at a rendered
    artifact, so Praxis cannot tell you the layout it just shipped is broken.
-5. **Presets arrange one seat, not the arrangement.** `worker_presets` covers
-   the implement seat. Nothing in first-run setup asks about the brain seat, the
-   review seat, the merge gate, or `verify_cmd`; the arrangements above are
-   assembled by hand.
+5. **Presets arrange one seat, and leak into another.** `worker_presets` is
+   meant to cover the implement seat, and nothing in first-run setup asks about
+   the brain seat, the review seat, the merge gate, or `verify_cmd`; the
+   arrangements above are assembled by hand. But one of the three keys a preset
+   writes, `LM_STUDIO_URL`, is global, so choosing a preset also repoints every
+   router call-site that resolves to the `local` provider. A preset is not as
+   contained as its name suggests.
