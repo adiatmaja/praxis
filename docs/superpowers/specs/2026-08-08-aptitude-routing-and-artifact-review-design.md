@@ -144,7 +144,32 @@ root cause of the user's question:
 | Worker endpoint | `lm_studio_url` | global or per project |
 | Retry and loop bounds | `max_retries`, `max_improvement_cycles`, `max_leaves_per_plan` | per project or global |
 
-### 3.5 Honest ceilings on the claim
+### 3.5 Level 4: first-run setup already arranges the worker seat
+
+Discovered while planning this work, after the first draft of this spec was
+committed. The named-preset mechanism ships end to end:
+
+- `worker_presets` in `config/praxis.yaml` declares named
+  `(harness, model, endpoint, requires)` entries. Three ship today:
+  `hosted-openweight` (opencode / glm-4.7 / a hosted OpenAI-compatible
+  endpoint), `local-lmstudio` (opencode / qwen3.6-27b / LM Studio), and
+  `gemini-agy` (agy / Gemini 3.6 Flash (High) / interactive login).
+- `EffectiveSettings.worker_presets()` resolves them and
+  `GET /api/settings/presets` (`src/orchestrator/api/presets.py`) serves them.
+- `praxis init` prints the menu, defaults to the first preset whose `requires`
+  list is empty so the default is never a preset that cannot work
+  (`_default_preset_index`), forces an explicit confirmation for an
+  unsatisfiable choice (`_confirm_unmet_requirements`), and writes
+  `LM_STUDIO_URL`, `DEFAULT_WORKER_HARNESS`, and `DEFAULT_WORKER_MODEL`
+  together from the chosen preset (`_managed_values`).
+
+This is the strongest single piece of evidence for the spine sentence, because
+it means arranging a seat is already a first-run experience rather than a
+documentation exercise. It also means the documentation must describe
+`worker_presets` as a shipped mechanism and extend it, never invent a parallel
+preset vocabulary.
+
+### 3.6 Honest ceilings on the claim
 
 These constrain the wording and must appear in the docs, not only here.
 
@@ -165,6 +190,11 @@ These constrain the wording and must appear in the docs, not only here.
    an exit code, the planner reads markdown. Nothing in Praxis can look at a
    rendered artifact. This is the unaddressed half of the triggering problem and
    becomes a named tradeoff plus F17.
+5. **Presets arrange one seat, not the arrangement.** `worker_presets` covers
+   the implement seat only: harness, model, endpoint. Nothing in first-run setup
+   asks about the brain seat, the review seat, the merge gate, or `verify_cmd`.
+   The docs may say "choose how your worker runs," never "choose how your whole
+   loop runs." Closing that gap is F18.
 
 ---
 
@@ -189,7 +219,7 @@ comparison lives in `positioning.md` and is never named in the README.
    citations are what make the claim survive scrutiny. Rewriting rather than
    appending keeps the list at six items.
 3. Add a new entry to "Honest tradeoffs": **no non-text seat**, phrased as in
-   section 3.5 item 4, pointing at F17.
+   section 3.6 item 4, pointing at F17.
 4. Extend the "Positioning guidance" footer with the standing rule that examples
    are always plural and multi-directional, and that no vendor pairing is ever
    presented as the canonical one. A single worked example implies a blessed
@@ -216,20 +246,30 @@ Headline is the spine sentence. Structure:
 2. **The three levels** from sections 3.1 to 3.3, written for a user rather than
    as evidence: what happens by default, what you can choose per call, and what
    the engine will do on its own.
-3. **Named presets**, each with its exact `config/praxis.yaml` and `.env`
-   values, named by workflow rather than by vendor, and each listing two or more
-   possible vendor fillings so no pairing reads as blessed:
+3. **The shipped worker presets**, documented as the real mechanism they are:
+   the `worker_presets` block, its `(name, label, harness, model, endpoint,
+   requires)` fields, the three entries that ship, `GET /api/settings/presets`,
+   and what `praxis init` does with a choice. This section describes existing
+   behavior and invents nothing.
+4. **Arrangements**, which are whole-loop configurations layered on top of a
+   worker preset, named by workflow rather than by vendor, each stating which
+   worker preset it starts from and which additional `config/praxis.yaml` keys
+   (`models.registry`, `models.roles`, `implement_escalation`,
+   `allow_local_repo_paths`) it changes, and each listing two or more possible
+   vendor fillings so no pairing reads as blessed:
    - Subscription brain plus open-weight worker (the reference configuration)
    - Cross-vendor: brain on one vendor, implementation harness on another
    - Single-vendor: every seat on one provider's models
    - Fully local: open-weight models for every model-driven seat
    - Evaluate with no GitHub credential: local bare repo backend, which ships
      today behind `allow_local_repo_paths`
-4. **Ceilings**, from section 3.5, stated plainly rather than buried.
 
-The preset section is written knowing it becomes the specification for F18. Each
-preset must be expressible as a set of concrete key-value writes, because that
-is exactly what the F18 questionnaire will emit.
+   Each arrangement is stated as concrete key-value writes, because that is
+   exactly what F18 would later emit. The word "arrangement" is used rather than
+   "preset" so the doc never blurs a shipped `worker_presets` entry with a
+   whole-loop configuration that is currently assembled by hand.
+5. **Ceilings**, from section 3.6, stated plainly rather than buried, including
+   that arrangements are hand-assembled today while worker presets are not.
 
 ### A4. `docs/social-launch-drafts.md`
 
@@ -290,19 +330,40 @@ your command and routes the output to your model.
 
 ---
 
-## 6. Part C: F18, intent-driven `praxis init` (parked, spec only)
+## 6. Part C: F18, arrangements (parked, spec only)
 
-**Problem.** `praxis init` is already interactive, using rich `Prompt` and
-`Confirm`, and already manages `DEFAULT_WORKER_HARNESS` and
-`DEFAULT_WORKER_MODEL` among its six `MANAGED_KEYS`. So it already asks about the
-harness. What it asks about is *parts*: which harness, which model, which token.
-It never asks how the user works, so the user must already understand what the
-parts mean before the first prompt is useful.
+Extending the shipped preset mechanism past the one seat it covers.
 
-**Shape.** A short intent questionnaire (what fills the brain seat, what
-implements, do you want to approve every merge, do you have a verify command)
-that selects one of the presets documented in A3 and writes it. The existing
-per-key prompts remain as the override path for anyone who wants them.
+**Corrected scope.** The first draft of this spec proposed building a preset
+questionnaire. That was wrong: the mechanism ships (section 3.5). `praxis init`
+already presents a named worker-preset menu, defaults to one it can satisfy,
+confirms unsatisfiable choices, and writes harness, model, and endpoint
+together. F18 is therefore not "build presets." It is "extend the existing
+preset mechanism past the one seat it currently covers."
+
+**Problem.** `worker_presets` arranges the implement seat only. First-run setup
+never asks what fills the brain seat, what reviews, whether you want to approve
+every merge, or whether you have a verify command. A user finishes `praxis init`
+with a configured worker and an entirely default everything-else, which is
+exactly the arrangement they were never asked about.
+
+**Shape.** Extend the same declarative pattern outward rather than adding a
+parallel one:
+
+- A second YAML block declaring named **arrangements**, each naming a
+  `worker_preset` plus the `models.roles` chains, `auto_merge` default, and
+  `verify_cmd` that go with it. Same shape as `worker_presets`: a `requires`
+  list so an arrangement needing a credential `init` cannot collect is never the
+  default, reusing `_default_preset_index` and `_confirm_unmet_requirements`
+  rather than reimplementing that logic.
+- One additional `init` prompt offering the arrangement menu, with the existing
+  worker-preset menu remaining as the narrower choice.
+- A `GET /api/settings/arrangements` endpoint mirroring the existing presets
+  endpoint.
+
+The arrangements documented in A3 are the input to this feature. Writing them as
+prose first is deliberate: it validates that each one is expressible as concrete
+key-value writes before any code assumes it is.
 
 **Deterministic, never LLM-interpreted.** Free-text intent would need a model to
 interpret it, and `init` is the command that configures the model. Asking the
@@ -322,9 +383,11 @@ preset set.
   non-destructive. Both properties must hold for the questionnaire path too, so
   re-running to change presets is safe.
 
-**Why this belongs with the positioning work.** The questionnaire's job is
-"arrange your seats," which is the spine sentence expressed as first-run UX. The
-documentation makes the claim; `init` is where a user first experiences it.
+**Why this belongs with the positioning work.** Arranging seats is the spine
+sentence expressed as first-run UX. The documentation makes the claim; `init` is
+where a user first experiences it. The shipped worker-preset menu already proves
+the pattern works, which is the strongest possible argument for extending it and
+the reason F18 is low-risk rather than speculative.
 
 ---
 
@@ -345,6 +408,14 @@ Tracked, not resolved by this spec.
 3. **`docs/harness-contract.md` (roadmap S3) does not exist**, which caps what
    the pluggability claim may say. Writing it would let the docs claim "add your
    own harness," which they currently may not.
+4. **Shipped-but-undocumented features may not be limited to one.** The worker
+   preset menu was built, wired through the API, and given requirement-aware
+   defaults, and this spec's first draft still proposed building it, because no
+   user-facing document mentions it. That is the same failure this spec exists
+   to fix, found inside the spec itself. Before `docs/configurations.md` is
+   called finished, someone should sweep `config/praxis.yaml` and the `/api`
+   routers for other capabilities no document names. `models.registry` and
+   `models.roles` are the immediate suspects.
 
 ---
 
