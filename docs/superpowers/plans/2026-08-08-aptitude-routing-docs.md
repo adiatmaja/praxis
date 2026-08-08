@@ -745,3 +745,109 @@ configuration, so it is recorded here and deliberately not fixed by this plan.
 else. No code is written for either. The bench pilot and product Phase B keep
 the critical path.
 ````
+
+---
+
+## Execution record, 2026-08-08
+
+**Status: COMPLETE.** All 7 tasks executed. Gate green: `ruff format --check`
+253 files clean, `ruff check` clean, `mypy src/ bench/` clean on 105 files,
+`pytest --cov=orchestrator` 2014 passed at 92%.
+
+### Commits, in order
+
+| SHA | What |
+|---|---|
+| `9d797d5` | Task 1, guard test pinning the doc to the harness and preset registries |
+| `4201d30` | Task 2, `docs/configurations.md` |
+| `57c2219` | Task 3, `docs/positioning.md` aptitude paragraph, item 3 rewrite, tradeoff 5, guidance footer |
+| `161bf69` | Task 4, README seat sentence, vendor paragraph demoted, Documentation row |
+| `feb2d4e` | Task 5, `CLAUDE.md` index line |
+| `1ec5587` | Task 6, F17 and F18 in the roadmap |
+| `1a69111` | Adversarial review corrections across four files plus guard hardening |
+| `04f95f7` | Line-ending normalization, split out so the correction diff stayed reviewable |
+
+Task 7 (the launch draft) is deliberately uncommitted: `docs/social-launch-drafts.md`
+is gitignored and marked private. Verified still unstaged.
+
+### Execution deviations from the plan
+
+- **Waves were run sequentially, not in parallel.** The Parallel Execution Map
+  groups by file independence, which is not git independence: concurrent agents
+  in one tree race on the index lock, and one agent's `git commit` can sweep up
+  another's staged file. The tasks were small enough that serializing cost little.
+- Every dispatch was diffed independently rather than trusted from the agent's
+  own report. No scope creep was found in any of the six.
+
+### Defects in this plan's own text, found during execution
+
+1. **Task 1's adaptation note was wrong about the failure mode.** It predicted an
+   `ImportError` on `load_yaml_settings`. The real mismatch is a call-signature
+   error: the function exists but requires a `path`. The implementer resolved it
+   correctly using `config_file_path()`, which is better than the plan's text
+   because that helper is the single place the config path is decided.
+2. **Task 3's verification grep would have banned the spine sentence.** It
+   forbade "many harnesses" while Task 3 Step 2 adds exactly that phrase. Caught
+   in plan self-review before dispatch and narrowed to the unearned claim
+   ("add your own harness") only.
+3. **Task 5's expected grep count was wrong.** It predicted one hit per file
+   across three files; `positioning.md` and `README.md` each carry two. Harmless,
+   but the implementer had to reason past it.
+
+### Vacuous-guard findings, exposed by mutation
+
+The Task 1 guard passed for weaker reasons than its own docstring claimed. Adversarial
+review demonstrated it would stay green when: the delimited region held pure prose
+rather than a table; a row carried the wrong display name; a preset's `requires`
+list flipped (which changes the `praxis init` default); a duplicate marker shadowed
+a corrected region; and, most importantly, a third harness shipped while the
+Ceilings section still said "is two", which is the exact drift the docstring
+promised to catch.
+
+Hardened to five tests. All four new guards were mutation-checked by breaking the
+doc, confirming the specific test fails, and restoring; the restore was verified
+byte-identical by hash.
+
+### The serious finding: a false claim in three documents
+
+`CALL_SITE_DEFAULTS` is unreachable in the shipped configuration.
+`EffectiveSettings.call_site_chain` falls through to it ONLY when the role chain
+is empty, and `config/praxis.yaml` ships `plan: [sonnet, opus]` and
+`review: [sonnet, haiku]`, so every routed call-site resolves to
+`claude-sonnet-4-6`. The written claim, "a single plan run already uses several
+models without anyone configuring anything," was false: a default install uses
+one. Three of its four specifics were false.
+
+`CLAUDE.md` already carried the gotcha that states this resolution order. The
+governing spec's section 3.2 was written contradicting it, and both documents
+copied the spec. Fixed at the source and in both copies.
+
+Same shadowing has a live product consequence, recorded but not fixed: the
+dashboard's Settings, Models tab writes per-call-site overrides that the router
+ignores, and `GET /api/settings/models` reads them back so the UI renders a saved
+value that has no effect.
+
+### Other corrections the review forced
+
+`agent_model` is the brain model and is inert under the router, not the worker
+model; there is no per-project call-site override (`call_site_config` ignores
+`project_id`) nor per-project worker endpoint (`spawn_agent` reads the global);
+`max_improvement_cycles` is stored and never read; the `skip` answer at the
+GitHub-token prompt is only offered on a fresh `.env`; `LM_STUDIO_URL` is global
+so a worker preset leaks into the brain seats; the default configuration already
+crosses harnesses on its first escalation (`agy` worker, `opencode` ladder);
+Single-vendor is not satisfiable with the two shipped harnesses; "known to work"
+overclaimed the evidence base; "the seam is general" ignored three literal
+harness-id branches in `spawn_agent`.
+
+### Still open
+
+Six code defects are recorded as open item 4 in the design spec and were NOT
+fixed, because this was a documentation pass. Highest value first: unvalidated
+`harness` on `DispatchRequest`/`ExecutePlanRequest` reaching `REGISTRY[...]` as a
+`KeyError` the dispatch loop does not catch; the dead Settings, Models control;
+the `hosted-openweight` preset whose endpoint yields `https://api.z.ai/v1/v1`,
+which is the first preset `praxis init` offers.
+
+F17 (artifact review seat) and F18 (arrangements) remain specs with no plan and
+no code. The bench pilot keeps the critical path; this phase did not displace it.
