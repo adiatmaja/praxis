@@ -419,7 +419,15 @@ class BenchClient:
         return str(response.json()["id"])
 
     async def dispatch(self, repo_url: str, instructions: str, worker: Worker) -> str:
-        """Monolithic condition A. DispatchRequest is keyed on repo_url."""
+        """Monolithic condition A. DispatchRequest is keyed on repo_url.
+
+        ``branch`` is deliberately OMITTED. It is a plan BASE, never a target,
+        and both endpoints refuse a protected one outright; a prepared bench
+        repo has exactly one branch, ``main``, so sending it 422'd every attempt
+        before a container ever spawned. Omitting it auto-creates
+        ``plan/mcp-<slug>`` off the repo's default, which is the buggy base the
+        instance was pinned to.
+        """
         response = await self._client.post(
             "/api/dispatch",
             json={
@@ -427,14 +435,16 @@ class BenchClient:
                 "instructions": instructions,
                 "model": worker.model,
                 "harness": worker.harness,
-                "branch": "main",
             },
         )
         response.raise_for_status()
         return str(response.json()["task_id"])
 
     async def execute_plan(self, repo_url: str, plan: str, worker: Worker) -> str:
-        """Decomposed conditions B, C, D. ExecutePlanRequest is keyed on repo_url."""
+        """Decomposed conditions B, C, D. ExecutePlanRequest is keyed on repo_url.
+
+        ``branch`` is OMITTED for the same reason as in :meth:`dispatch`.
+        """
         response = await self._client.post(
             "/api/execute-plan",
             json={
@@ -442,7 +452,6 @@ class BenchClient:
                 "plan": plan,
                 "model": worker.model,
                 "harness": worker.harness,
-                "branch": "main",
             },
         )
         response.raise_for_status()

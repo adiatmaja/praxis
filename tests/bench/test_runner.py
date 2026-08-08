@@ -24,12 +24,14 @@ import json
 from pathlib import Path
 from typing import Any
 
+import httpx
 import pytest
 
-from bench.config import CONDITIONS
+from bench.config import CONDITIONS, Worker
 from bench.runner import (
     TERMINAL_PLAN_STATUSES,
     TERMINAL_TASK_STATUSES,
+    BenchClient,
     ConfoundedDesignError,
     MissingProblemStatementError,
     MissingVerifyCommandError,
@@ -582,3 +584,59 @@ def test_the_committed_sample_is_lf_and_carries_a_base_commit():
         sample = json.loads(path.read_text(encoding="utf-8"))
         for entry in sample["instances"]:
             assert len(entry["base_commit"]) == 40
+
+
+# ---------------------------------------------------------------------------
+# HTTP-layer tests: what BenchClient actually PUTS ON THE WIRE
+# ---------------------------------------------------------------------------
+
+
+def _capturing_client(captured: list[tuple[str, dict[str, Any]]]) -> BenchClient:
+    """A BenchClient whose transport records (path, json body) and 201s."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.append((request.url.path, json.loads(request.content)))
+        return httpx.Response(
+            201, json={"project_id": "p1", "task_id": "t1", "plan_id": "pl1"}
+        )
+
+    client = BenchClient(base_url="http://bench.invalid", token="tok")
+    client._client = httpx.AsyncClient(  # noqa: SLF001 - swapping the transport
+        base_url="http://bench.invalid",
+        headers={"Authorization": "Bearer tok"},
+        transport=httpx.MockTransport(handler),
+    )
+    return client
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("call", ["dispatch", "execute_plan"], ids=["A", "BCD"])
+async def test_no_bench_request_names_a_protected_branch_as_its_base(call: str) -> None:
+    """The runner sent ``"branch": "main"`` and BOTH endpoints 422 on it.
+
+    ``DispatchRequest.branch`` and ``ExecutePlanRequest.branch`` are a plan
+    BASE, never a target, and `api/dispatch` plus `api/execute_plan` both refuse
+    a protected one outright: "omit branch to auto-create plan/mcp-<slug>". The
+    prepared bench repos have exactly one branch, `main`, so every condition
+    422'd before a single container spawned. Measured live on 2026-08-08.
+
+    Asserted against ``is_protected_branch`` rather than the literal "main", so
+    a future edit to "master" or "release/x" fails here too.
+    """
+    from orchestrator.core.merge_policy import is_protected_branch
+
+    captured: list[tuple[str, dict[str, Any]]] = []
+    client = _capturing_client(captured)
+    worker = Worker("local-openweight", "opencode", "qwen3.6-27b")
+    try:
+        if call == "dispatch":
+            await client.dispatch("C:/repos/x.git", "do the thing", worker)
+        else:
+            await client.execute_plan("C:/repos/x.git", "# Plan", worker)
+    finally:
+        await client.close()
+
+    assert len(captured) == 1
+    _path, body = captured[0]
+    branch = body.get("branch")
+    assert branch is None or not is_protected_branch(str(branch), "main"), body
