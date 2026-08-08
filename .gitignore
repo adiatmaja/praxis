@@ -44,6 +44,7 @@ docs/social-launch*
 
 # Session handoff prompt (local working note, regenerated each phase close)
 HANDOFF.md
+TODO.md
 
 # Bench working directory: fetched pools and prepared bare repos (hundreds of
 # MB). bench/samples/ is NOT covered by this and stays committed.
