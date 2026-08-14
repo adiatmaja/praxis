@@ -156,6 +156,71 @@ live. Each names the file that actually decides the behavior.
     masks the documented troubleshooting symptom at `docs/deployment.md:579`
     ("No models in the New Project dropdown"), so that row can never fire.
 
+## Amendment, 2026-08-14: the decision for finding 6
+
+Finding 6 was the one item in this spec that needed a design decision rather
+than a patch, because the reviewer is not wrong and the worker is not wrong.
+The mode accumulates every task on one branch by design, and the per-task
+reviewer judges the whole accumulated diff against one task's scope. Two
+correct designs contradict, so one of them has to change.
+
+### The decision
+
+**Scope the review to the task's own commits.** The reviewer must see the diff
+this task produced, not the diff the branch has accumulated.
+
+**Implement it with a base SHA recorded at dispatch time, NOT by deriving a
+commit range from `tasks.branch_name`.** This is the part that differs from the
+plan's own recommendation, and the reason is concrete: the `tasks` table records
+`branch_name` and no SHA of any kind, so a branch name alone cannot say where
+one task's work starts on a branch that several tasks share. Fixing
+`branch_name` to name the branch that was really pushed to (finding 8) is
+correct and still worth doing, but it does not yield a commit range and
+therefore does not unblock this on its own.
+
+The shape:
+
+1. At dispatch, resolve the head SHA of the branch the worker will push to and
+   store it on the task row.
+2. Re-record it on every re-dispatch, so a retry is reviewed on the retry's own
+   commits and never on the abandoned attempt's.
+3. At review, diff that SHA against the branch head instead of taking the whole
+   pull request diff.
+
+### Why not the other two shapes
+
+**Review once per branch rather than once per task** removes the contradiction
+outright and matches what a human driving a daily-dev session actually reads.
+It was rejected because `core/outcome_recorder` writes one row per terminal
+per-task verdict, and `core/failure_taxonomy` decides attribution from it. That
+per-task record is the input the capability calibration work is built on, and a
+per-branch verdict cannot be attributed to a task, a model, or a leaf. Giving up
+per-task attribution to fix a review-scoping bug would cost more than the bug.
+
+**Tell the reviewer which paths are in scope** is the cheapest shape and was
+rejected as a permanent answer, though it is a reasonable stopgap. It leaves the
+reviewer reading a diff full of other tasks' files while being told to ignore
+them, and it weakens the out-of-scope check that correctly catches a worker that
+wandered. A weakened check that ships as a stopgap tends not to get replaced.
+
+### Constraint this decision depends on
+
+Auto-delegate mode is sequential, one delegate in flight at a time. The recorded
+base SHA is only a correct task boundary while that holds. If the mode ever
+dispatches concurrently onto one branch, the ranges interleave and this design
+fails. Anything that makes the mode concurrent must revisit this decision, and
+that should be stated wherever the concurrency limit is enforced.
+
+### Status
+
+Decided, not implemented. It needs a schema migration, a change to the dispatch
+path, and a diff-by-range capability on the git backend seam, which is more than
+this plan's remaining phases carry. The implementation is specified in
+`docs/superpowers/plans/2026-08-14-review-scope-single-branch.md`. Until that
+lands, per-task review in auto-delegate mode is known to fail every task after
+the first whenever the prompt constrains scope, and that is a documented
+limitation of the mode rather than an open bug of unknown cause.
+
 ## Non-goals
 
 - Rewriting the review prompt or the decomposition contract.
