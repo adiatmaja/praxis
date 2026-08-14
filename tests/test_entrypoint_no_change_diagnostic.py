@@ -13,9 +13,36 @@ It fails SILENTLY. The container is destroyed seconds after this line runs, so
 anything not printed here is gone for good: observed live 2026-08-14, three
 consecutive attempts each printed ``[PRAXIS PHASE] understanding`` and then one
 bare sentence, and nothing anywhere recorded which of the three shapes it was.
-The run still looks like an ordinary failure, and
-``core.failure_taxonomy.counts_against_worker`` charges it to the worker either
-way.
+
+This evidence does NOT currently reach the orchestrator's data model. A
+no-change run reports ``STATUS=failed`` to ``/api/internal/agent-done``, which
+routes any non-``completed`` status straight to the retry/fail branch
+(``api/internal.py``) without ever moving the task to ``REVIEWING``. That means
+``orchestrator_review.review_task`` -- the only place a ``FailureClass`` is
+assigned and the only caller of ``record_outcome`` -- never runs for this run,
+so no ``task_outcomes`` row and no ``failure_class`` is ever produced for it
+either way. The container's stdout is the only place this evidence exists at
+all (it reaches ``agent_runs.logs``); printing it here is worth doing for that
+reason alone, not because ``core.failure_taxonomy`` consumes it -- it does not,
+yet.
+
+A `rev-list` failure while counting commits ahead of ``BASE_BRANCH`` must not
+make this silent failure worse: a bare assignment there aborts the whole
+script under ``set -euo pipefail`` before a single diagnostic line prints, so
+the guard around it is exercised here too.
+
+That guard captures ``rev-list``'s stdout AND stderr together (``2>&1``), so a
+successful exit alone does not prove the captured value is a clean count: a
+stray advisory line on stderr lands in the same string. Trusting that blindly
+with ``-gt`` is not a numeric comparison at all -- bash exits 2 ("integer
+expression expected"), the surrounding ``if`` reads that as FALSE, and a
+worker's real commits get reported as no changes, which is the exact
+misclassification this diagnostic exists to prevent. The entrypoint therefore
+validates the captured value is PURELY numeric before trusting it as a count;
+this module treats "any stderr on an otherwise-successful rev-list makes the
+count untrustworthy" as correct rather than attempting to strip and parse it,
+and pins that choice: a successful rev-list with a stray stderr line must
+still land on the diagnostic path, with the raw captured text visible.
 
 Greps cannot pin this. Asserting the diagnostic strings appear in the file, or
 appear near the guard, measures PRESENCE, not EXECUTION: the block sits behind
@@ -75,13 +102,28 @@ _BAD_ENVELOPE = "not json at all\n[PRAXIS PHASE] understanding\n"
 
 # `git diff --cached --quiet` exits 0 when the index is CLEAN, which is the
 # no-change path; `rev-list --count` decides whether the worker committed its
-# own work. Both are knobs so the two non-diagnostic outcomes can be pinned too.
+# own work, and can itself be made to fail (PRAXIS_GIT_REV_LIST_EXIT) to prove
+# the guard around it does not trip `set -e` and vanish. PRAXIS_GIT_REV_LIST_WARN
+# makes an otherwise-SUCCESSFUL rev-list also emit a stray stderr line, which
+# is the shape that would corrupt the merged `2>&1` capture with a real count
+# still present. All are knobs so the non-diagnostic outcomes, the outright
+# rev-list failure, and the successful-but-untrustworthy-output outcome can
+# each be pinned.
 _SPY_GIT = """\
 #!/usr/bin/env bash
 printf '%s\\n' "git $*" >> "$PRAXIS_SPY_LOG"
 case "${1:-}" in
     diff) exit "${PRAXIS_GIT_DIFF_EXIT:-0}" ;;
-    rev-list) printf '%s\\n' "${PRAXIS_GIT_AHEAD:-0}" ;;
+    rev-list)
+        if [ "${PRAXIS_GIT_REV_LIST_EXIT:-0}" != "0" ]; then
+            printf '%s\\n' "${PRAXIS_GIT_REV_LIST_STDERR:-fatal: bad revision}" >&2
+            exit "${PRAXIS_GIT_REV_LIST_EXIT}"
+        fi
+        if [ -n "${PRAXIS_GIT_REV_LIST_WARN:-}" ]; then
+            printf '%s\\n' "${PRAXIS_GIT_REV_LIST_WARN}" >&2
+        fi
+        printf '%s\\n' "${PRAXIS_GIT_AHEAD:-0}"
+        ;;
 esac
 exit 0
 """
@@ -143,6 +185,9 @@ def _run_no_change(
     log_text: str = _LOG_TEXT,
     diff_exit: str = "0",
     ahead: str = "0",
+    rev_list_exit: str = "0",
+    rev_list_stderr: str = "fatal: bad revision",
+    rev_list_warn: str = "",
 ):
     """Execute the sliced region with git spied; return the CompletedProcess."""
     bash = shutil.which("bash")
@@ -181,6 +226,9 @@ def _run_no_change(
     env["PRAXIS_SPY_LOG"] = _to_posix(tmp_path / "spy.log")
     env["PRAXIS_GIT_DIFF_EXIT"] = diff_exit
     env["PRAXIS_GIT_AHEAD"] = ahead
+    env["PRAXIS_GIT_REV_LIST_EXIT"] = rev_list_exit
+    env["PRAXIS_GIT_REV_LIST_STDERR"] = rev_list_stderr
+    env["PRAXIS_GIT_REV_LIST_WARN"] = rev_list_warn
     return subprocess.run([bash, "-c", script], capture_output=True, text=True, env=env)
 
 
@@ -209,6 +257,9 @@ def test_no_change_path_reports_rc_size_status_and_a_tail(harness, tmp_path):
     )
     assert "report_status=none" in result.stdout, (
         f"an unparsed status must be reported as an explicit none: {result.stdout!r}"
+    )
+    assert "rev_list_failed" not in result.stdout, (
+        f"rev-list succeeded here; the failure line must not appear: {result.stdout!r}"
     )
 
     assert "line-040" in result.stdout, (
@@ -252,6 +303,141 @@ def test_the_reported_rc_is_read_not_hardcoded(harness, tmp_path):
     assert result.returncode == 1, result.stdout
     assert "harness_rc=7" in result.stdout, (
         f"the rc must be read from the harness variable: {result.stdout!r}"
+    )
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("harness", list(HARNESSES))
+def test_rev_list_failure_still_explains_itself(harness, tmp_path):
+    """A `git rev-list` failure must not silently abort the script.
+
+    Proved by execution, not asserted: reverting the guard around
+    ``ahead=$(git rev-list ...)`` to a bare assignment makes the sliced region
+    abort AT THAT LINE under ``set -e`` with rc 128 and prints nothing at all,
+    not the sentence, not the rc, not the tail -- the exact silent-abort shape
+    the no-change diagnostic exists to eliminate. An undeterminable count is
+    treated as "no commits ahead" so the run still falls into the diagnostic
+    path, and the rev-list failure itself (rc + stderr) must be reported, not
+    merely swallowed into ``ahead=0``.
+    """
+    result = _run_no_change(
+        harness,
+        tmp_path,
+        rev_list_exit="128",
+        rev_list_stderr="fatal: bad revision 'plan/2026-08-14-diagnostics..HEAD'",
+    )
+
+    assert "unbound variable" not in result.stderr, result.stderr
+    assert result.returncode == 1, (
+        f"a rev-list failure must still exit non-zero and explain why: "
+        f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    )
+    assert "__PRAXIS_STATUS__=failed" in result.stdout, result.stdout
+    assert HARNESSES[harness]["sentence"] in result.stdout, (
+        f"the diagnostic sentence must still print when rev-list itself "
+        f"fails: {result.stdout!r}"
+    )
+    assert "harness_rc=0" in result.stdout, result.stdout
+    assert "output_log_bytes=" in result.stdout, result.stdout
+    assert "line-040" in result.stdout, "the transcript tail must still print"
+
+    assert "rev_list_failed=true" in result.stdout, (
+        f"the rev-list failure must be reported, not swallowed: {result.stdout!r}"
+    )
+    # Anchored to the diagnostic's OWN rc field, not just the substring "rc=128"
+    # anywhere in stdout: the WARNING line printed above the diagnostic also
+    # carries the real rc, so a bare substring check would stay green even if
+    # the diagnostic's own field were hardcoded to something else.
+    assert "rev_list_failed=true rc=128" in result.stdout, (
+        f"rev-list's own rc must be surfaced in the diagnostic line itself, "
+        f"not hardcoded: {result.stdout!r}"
+    )
+    assert "fatal: bad revision" in result.stdout, (
+        f"rev-list's own stderr must be surfaced: {result.stdout!r}"
+    )
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("harness", list(HARNESSES))
+def test_rev_list_success_with_stray_stderr_is_not_trusted_as_a_count(
+    harness, tmp_path
+):
+    """A rev-list that exits 0 but ALSO writes to stderr is not a clean count.
+
+    The capture is ``2>&1``, so a real count (``3``) plus an advisory stderr
+    line merge into one string. Blindly trusting that with ``-gt`` is not a
+    numeric comparison at all: bash reports "integer expression expected" and
+    the ``if`` reads the error as FALSE, so a worker's real commits would be
+    reported as no changes -- the exact misclassification this diagnostic
+    exists to prevent, reintroduced by the guard meant to fix it.
+
+    This module's choice (documented at module level): any stderr on an
+    otherwise-successful rev-list makes the output untrustworthy, full stop,
+    rather than attempting to strip and re-parse it. So this must land on the
+    diagnostic path, not the "worker committed its own work" path, AND the
+    raw captured text (both the real count and the stray warning) must be
+    visible to the operator, not silently discarded.
+    """
+    result = _run_no_change(
+        harness,
+        tmp_path,
+        ahead="3",
+        rev_list_warn="warning: unable to access some ref, ignoring",
+    )
+
+    assert "unbound variable" not in result.stderr, result.stderr
+    assert result.returncode == 1, (
+        f"a stray stderr line must not be trusted as a clean count: "
+        f"stdout={result.stdout!r}"
+    )
+    assert "__PRAXIS_STATUS__=failed" in result.stdout, result.stdout
+    assert HARNESSES[harness]["sentence"] in result.stdout, (
+        f"the diagnostic path must be taken, not the committed-work path: "
+        f"{result.stdout!r}"
+    )
+    assert "Worker committed its own work" not in result.stdout, result.stdout
+
+    assert "rev_list_failed=true" in result.stdout, (
+        f"the untrustworthy output must be reported, not silently trusted: "
+        f"{result.stdout!r}"
+    )
+    assert "3" in result.stdout, (
+        f"the raw captured text (including the real count) must stay "
+        f"visible: {result.stdout!r}"
+    )
+    assert "warning: unable to access some ref" in result.stdout, (
+        f"the raw captured text (including the stray warning) must stay "
+        f"visible: {result.stdout!r}"
+    )
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("harness", list(HARNESSES))
+def test_rev_list_success_with_non_numeric_output_does_not_abort(harness, tmp_path):
+    """A rev-list that exits 0 but prints garbage must not crash the script.
+
+    ``[ "not-a-number" -gt 0 ]`` is not a syntax error, but it is not silent
+    either: this pins that the script survives it (no ``set -u`` blowup, no
+    unhandled non-zero from the comparison escaping the ``if``), still exits
+    non-zero, and reports the anomaly with the raw text rather than treating
+    the garbage as a valid count or swallowing the whole thing quietly.
+    """
+    result = _run_no_change(harness, tmp_path, ahead="not-a-number")
+
+    assert "unbound variable" not in result.stderr, result.stderr
+    assert result.returncode == 1, (
+        f"non-numeric rev-list output must not crash or be trusted: "
+        f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    )
+    assert "__PRAXIS_STATUS__=failed" in result.stdout, result.stdout
+    assert HARNESSES[harness]["sentence"] in result.stdout, result.stdout
+
+    assert "rev_list_failed=true" in result.stdout, (
+        f"non-numeric output must be reported as an anomaly, not silently "
+        f"zeroed: {result.stdout!r}"
+    )
+    assert "not-a-number" in result.stdout, (
+        f"the raw non-numeric text must be visible to the operator: {result.stdout!r}"
     )
 
 

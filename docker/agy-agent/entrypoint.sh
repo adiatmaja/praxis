@@ -414,17 +414,63 @@ echo "--- Committing changes (agy does not auto-commit) ---"
 git add -A
 if git diff --cached --quiet; then
     # The worker may have committed its own work; a clean tree is only a
-    # failure when the branch also has no commits beyond the base.
-    ahead=$(git rev-list --count "${BASE_BRANCH}..HEAD")
+    # failure when the branch also has no commits beyond the base. Guarded
+    # (never a bare assignment) so a `rev-list` failure cannot trip `set -e`
+    # and abort the script before a single diagnostic line prints -- proved
+    # by execution: the bare form exits 128 here with nothing printed at all.
+    # An undeterminable count is treated as "no commits ahead" so the run
+    # still falls into the diagnostic path below instead of vanishing, and
+    # the rev-list failure itself (rc + stderr) is folded into that diagnostic.
+    #
+    # `2>&1` merges stderr into the captured value, so exit 0 alone does not
+    # prove `rev_list_out` is a clean count: a stray advisory line on stderr
+    # would land right here too. Trusting that blindly with `-gt` would not
+    # merely misreport -- `[ "3\nwarning: ..." -gt 0 ]` is not a numeric
+    # comparison at all, bash exits 2 ("integer expression expected"), the
+    # `if` reads that as FALSE, and a worker's real commits get reported as
+    # no changes: the exact misclassification this diagnostic exists to
+    # prevent, reintroduced by the guard meant to fix it. So the captured
+    # value is validated as PURELY numeric before it is trusted as a count;
+    # anything else (empty, or containing so much as one non-digit anywhere,
+    # newline included) is treated exactly like a rev-list failure rather
+    # than parsed or stripped, on the same "explain, don't guess" principle
+    # as the rest of this block.
+    ahead=0
+    rev_list_error=""
+    rev_list_rc=""
+    if rev_list_out=$(git rev-list --count "${BASE_BRANCH}..HEAD" 2>&1); then
+        case "${rev_list_out}" in
+            ""|*[!0-9]*)
+                rev_list_error="rev-list exited 0 but returned non-numeric output: ${rev_list_out}"
+                echo "WARNING: git rev-list returned non-numeric output; treating as 0 commits ahead of ${BASE_BRANCH}"
+                ;;
+            *)
+                ahead="${rev_list_out}"
+                ;;
+        esac
+    else
+        rev_list_rc=$?
+        rev_list_error="${rev_list_out}"
+        echo "WARNING: git rev-list failed (rc=${rev_list_rc}) counting commits ahead of ${BASE_BRANCH}; treating as 0"
+    fi
     if [ "${ahead}" -gt 0 ]; then
         echo "Worker committed its own work (${ahead} commit(s) ahead of ${BASE_BRANCH})"
     else
         # Explain the run instead of merely asserting it. This container is
-        # destroyed seconds from now, so anything not printed here is gone for
-        # good, including whether the harness said something, said nothing, or
-        # refused. core/failure_taxonomy attributes the outcome from exactly
-        # this evidence, and "the harness emitted nothing" must not be recorded
-        # as the same shape as "the worker shipped a bad patch".
+        # destroyed seconds from now, so anything not printed here is gone
+        # for good, including whether the harness said something, said
+        # nothing, or refused. This evidence does NOT currently reach the
+        # orchestrator's data model: a no-change run reports STATUS=failed to
+        # /api/internal/agent-done, which routes a non-"completed" status
+        # straight to the retry/fail branch (api/internal.py) without ever
+        # moving the task to REVIEWING, so orchestrator_review.review_task --
+        # the only place a FailureClass is assigned and the only caller of
+        # record_outcome -- never runs for this run, and no task_outcomes row
+        # or failure_class is ever produced for it. Printing this here is
+        # still worth doing: it is the only place this evidence exists at
+        # all, the container log that reaches agent_runs.logs. Nobody should
+        # build on the claim that it reaches failure_taxonomy; it does not,
+        # yet.
         #
         # harness_rc is ALWAYS 0 here: a non-zero harness rc exits far above,
         # long before the commit block. Printing it is still correct and
@@ -467,6 +513,10 @@ print("  envelope_num_turns=%s" % nt)
         echo "  harness_rc=${agy_rc}"
         echo "  output_log_bytes=${output_bytes}"
         echo "  report_status=${report_status:-none}"
+        if [ -n "${rev_list_error}" ]; then
+            echo "  rev_list_failed=true rc=${rev_list_rc:-n/a}"
+            echo "  rev_list_stderr: ${rev_list_error}"
+        fi
         echo "${envelope_info}"
         echo "--- last 30 lines of harness output ---"
         tail -n 30 "${OUTPUT_LOG}" 2>/dev/null || echo "  (no harness output captured)"
