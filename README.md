@@ -159,20 +159,44 @@ delegated. It is the "use Praxis to build software all day" mode. See the sectio
 git clone https://github.com/adiatmaja/praxis.git
 cd praxis
 
-cp .env.example .env
-# Edit .env: set AUTH_TOKEN (any secret) and GitHub credentials.
-# A GitHub App is recommended (short-lived, repo-scoped tokens);
-# a GITHUB_TOKEN PAT works as a fallback. See docs/deployment.md.
+# Install the CLI and dependencies
+uv venv && uv sync --extra dev
 
-# Start the orchestrator (restart: unless-stopped keeps it alive across
-# terminal exits and reboots).
-docker compose up --build -d
-# Dashboard: http://localhost:12323   ·   API docs: http://localhost:12323/docs
-
-# Build the coding-agent image for the harness you'll use (NOT built by compose;
-# new projects default to OpenCode).
-docker build -t opencode-agent:latest -f docker/opencode-agent/Dockerfile docker/opencode-agent/
+# Run the setup wizard. It is idempotent and can be re-run at any time.
+uv run praxis init
 ```
+
+The `uv run` prefix is what puts the `praxis` command on your path. `uv sync` installs the
+console script into `.venv`, but it is not on your `PATH` until that environment is active,
+so a bare `praxis init` in a fresh clone reports "command not found". Either keep the
+`uv run` prefix, as every example below does, or activate the environment once
+(`.venv\Scripts\activate` on Windows, `source .venv/bin/activate` elsewhere) and then drop it.
+
+`uv run praxis init` will prompt you for an auth token (generated for you by default), a dashboard
+port, GitHub credentials (or 'skip' for local-only mode), and a worker preset. It then
+builds the agent images, starts the orchestrator in Docker, and verifies the installation
+by running the doctor automatically. The entire setup is idempotent: if you re-run it,
+it preserves your existing .env settings and updates only the keys it manages.
+
+After setup is complete, the output will show you how to set CLI environment variables so
+that the CLI reaches your installation. Then verify everything is working:
+
+```bash
+uv run praxis doctor
+```
+
+`uv run praxis doctor` is a read-only diagnostic that connects to the orchestrator API and checks
+about a dozen things (connectivity, Docker, credentials, configuration). It exits 0 when
+healthy and non-zero on any red; reds are expected in fresh installs without all credentials
+configured, so failures just point you at what to fix next.
+
+With the orchestrator running, you can:
+
+- **Dashboard:** http://localhost:12323 (or your configured port)
+- **API docs:** http://localhost:12323/docs
+- **CLI:** `uv run praxis projects`, `uv run praxis add-project`, `uv run praxis submit`, etc.
+- **Auto-delegate mode:** `uv run praxis mode on|off|status` to toggle delegation to a single
+  global worker. See [auto-delegate mode](#daily-dev-auto-delegate-mode) below.
 
 Point at least one planner CLI (`claude`, `codex`, or `agy`) at your subscription by logging
 in, and serve a coding-capable open-weight model over an OpenAI-compatible endpoint for the
