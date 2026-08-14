@@ -24,14 +24,47 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# Small cap on consecutive per-branch delete failures. The delete itself is
+# known-safe by hand (see the module docstring in git_ops.py), so a repeated
+# failure here is specific to the inline credential-helper invocation and is
+# typically persistent for the rest of the process's life, not a one-off
+# blip. The sweeper runs every reconcile pass (~6s); without a cap it retries
+# forever and dumps a fresh traceback each time, which is exactly the noise
+# this cap exists to remove. Kept fail-safe: reaching the cap only stops
+# further ATTEMPTS for that branch, it never raises or wedges the loop.
+BRANCH_DELETE_FAILURE_CAP: int = 3
+
 
 async def sweep_dead_branches(
     repo_url: str,
     list_remote_branches: Callable[[str], Awaitable[list[str]]],
     delete_remote_branch: Callable[[str, str], Awaitable[None]],
     ledger: dict[str, set[str]],
+    failure_counts: dict[tuple[str, str], int] | None = None,
 ) -> None:
-    """Sweep dead branches on repo_url using ledger sets best-effort."""
+    """Sweep dead branches on repo_url using ledger sets best-effort.
+
+    Args:
+        repo_url: Remote repository URL whose branches are being swept.
+        list_remote_branches: Awaitable returning every branch on the remote.
+        delete_remote_branch: Awaitable that deletes one remote branch.
+        ledger: ``open_pr_branches`` / ``terminal_failed`` / ``merged_plan``
+            branch-name sets used by ``branch_sweeper.dead_branches`` to
+            decide reclaimability.
+        failure_counts: Mutable ``(repo_url, branch) -> consecutive failure
+            count`` map, shared by the caller across sweep passes (the
+            caller, e.g. ``ReconcileMixin.reconcile_runs``, owns an
+            in-memory dict that lives for the process's lifetime; a restart
+            clears it, which is correct here since a restart may itself
+            have fixed the credential-helper problem). Once a branch's count
+            reaches ``BRANCH_DELETE_FAILURE_CAP`` it is skipped silently on
+            every later pass: no further delete attempt and no repeat log,
+            until either the branch disappears out-of-band or the process
+            restarts. Pass ``None`` (the default) for a call with no
+            cross-pass memory.
+    """
+    if failure_counts is None:
+        failure_counts = {}
     try:
         remote_branches = await list_remote_branches(repo_url)
     except Exception:
@@ -46,10 +79,35 @@ async def sweep_dead_branches(
     )
 
     for branch in dead:
+        key = (repo_url, branch)
+        if failure_counts.get(key, 0) >= BRANCH_DELETE_FAILURE_CAP:
+            continue
         try:
             await delete_remote_branch(repo_url, branch)
-        except Exception:
-            logger.exception("Failed to delete dead branch %s on %s", branch, repo_url)
+        except Exception as exc:  # noqa: BLE001 - best-effort per branch
+            count = failure_counts.get(key, 0) + 1
+            failure_counts[key] = count
+            if count >= BRANCH_DELETE_FAILURE_CAP:
+                logger.warning(
+                    "Giving up deleting dead branch %s on %s after %d "
+                    "consecutive failed attempts; not retrying until the "
+                    "orchestrator restarts. Last error: %s",
+                    branch,
+                    repo_url,
+                    count,
+                    exc,
+                )
+            else:
+                logger.warning(
+                    "Failed to delete dead branch %s on %s (attempt %d/%d): %s",
+                    branch,
+                    repo_url,
+                    count,
+                    BRANCH_DELETE_FAILURE_CAP,
+                    exc,
+                )
+        else:
+            failure_counts.pop(key, None)
 
 
 class ReconcileMixin:
@@ -65,6 +123,7 @@ class ReconcileMixin:
         _monitor_poll_interval: float
         _effective_settings: Any
         _git: Any
+        _branch_delete_failures: dict[tuple[str, str], int]
 
     def _safe_logs(self, container_id: str) -> str:
         """Fetch full container logs, swallowing any backend errors."""
@@ -163,6 +222,20 @@ class ReconcileMixin:
                     "merged_plan": merged_plan,
                 }
 
+                # Per-branch delete-failure streaks, kept for the process's
+                # lifetime (an in-memory dict on the instance, lazily
+                # initialized -- Orchestrator.__init__ lives outside this
+                # file). A restart clears it and gives every branch a fresh
+                # set of attempts, which is correct: a restart may itself
+                # have fixed the credential-helper problem the failures were
+                # caused by. Bounded in practice: an entry is popped on the
+                # first successful delete, so only branches that are STILL
+                # failing accumulate keys, and each is a single int.
+                branch_delete_failures = getattr(self, "_branch_delete_failures", None)
+                if branch_delete_failures is None:
+                    branch_delete_failures = {}
+                    self._branch_delete_failures = branch_delete_failures
+
                 for proj in projects:
                     repo_url = proj.get("repo_url")
                     if repo_url:
@@ -171,6 +244,7 @@ class ReconcileMixin:
                             list_remote_branches=git_ops.list_remote_branches,
                             delete_remote_branch=git_ops.delete_remote_branch,
                             ledger=ledger,
+                            failure_counts=branch_delete_failures,
                         )
         except Exception:  # noqa: BLE001 - sweeper call is best-effort
             logger.exception("Failed to sweep dead branches during reconcile pass")
