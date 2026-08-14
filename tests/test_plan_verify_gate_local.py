@@ -23,6 +23,7 @@ passing them by accident.
 
 from __future__ import annotations
 
+import logging
 import sys
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
@@ -45,6 +46,9 @@ from orchestrator.database import Database
 # ``return 1`` and the pushed worker branch holds ``return 2``.  Reused rather
 # than rebuilt so there is one definition of "a real local repo" in the suite.
 from tests.test_local_mode_e2e import seeded as _seeded_bare_repo
+
+
+_REVIEW_LOGGER = "orchestrator.core.orchestrator_review"
 
 
 # Re-exported under a local name so pytest registers the fixture in this
@@ -352,3 +356,141 @@ async def test_on_plan_completed_publishes_a_real_local_verdict(
     assert ready["verify_status"] == "failed"
     failed = next(e for e in published if e["type"] == "plan_verify_failed")
     assert "CROSS-LEAF REGRESSION" in failed["output"]
+
+
+# ---------------------------------------------------------------------------
+# Logging: the whole-plan / per-wave gate (the OTHER verify-gate call site;
+# the per-task gate lives in test_verify_gate.py).  Before this task
+# ``_verify_plan_branch`` logged nothing for a pass, a fail, or the
+# genuinely-nothing-to-run skip; the two credential-related skips logged at
+# WARNING with no distinguishing "skipped" wording either.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.integration
+async def test_a_passing_local_verify_logs_passed_at_info(
+    db: Database, bare_repo: Any, caplog: pytest.LogCaptureFixture
+) -> None:
+    orch = _orchestrator(db)
+
+    with caplog.at_level(logging.INFO, logger=_REVIEW_LOGGER):
+        result = await orch._verify_plan_branch(
+            str(bare_repo), _PLAN_BRANCH, _VERIFY_SEES_PLAN_BRANCH
+        )
+
+    assert result.status == "passed"
+    assert any(
+        "verify gate passed" in m and _PLAN_BRANCH in m for m in caplog.messages
+    ), caplog.messages
+    assert not any("verify gate failed" in m for m in caplog.messages)
+    assert not any("verify gate skipped" in m for m in caplog.messages)
+
+
+@pytest.mark.integration
+async def test_a_failing_local_verify_logs_failed_at_warning(
+    db: Database, bare_repo: Any, caplog: pytest.LogCaptureFixture
+) -> None:
+    orch = _orchestrator(db)
+
+    with caplog.at_level(logging.INFO, logger=_REVIEW_LOGGER):
+        result = await orch._verify_plan_branch(
+            str(bare_repo), _PLAN_BRANCH, _VERIFY_FAILS
+        )
+
+    assert result.status == "failed"
+    warnings = [
+        m
+        for r, m in zip(caplog.records, caplog.messages, strict=True)
+        if r.levelno >= logging.WARNING
+    ]
+    assert any(
+        "verify gate failed" in m and "CROSS-LEAF REGRESSION" in m for m in warnings
+    ), warnings
+    assert not any("verify gate passed" in m for m in caplog.messages)
+    assert not any("verify gate skipped" in m for m in caplog.messages)
+
+
+@pytest.mark.integration
+async def test_an_unusable_branch_logs_error_at_warning(
+    db: Database, bare_repo: Any, caplog: pytest.LogCaptureFixture
+) -> None:
+    orch = _orchestrator(db)
+
+    with caplog.at_level(logging.INFO, logger=_REVIEW_LOGGER):
+        result = await orch._verify_plan_branch(
+            str(bare_repo), "plan/never-pushed", _VERIFY_SEES_PLAN_BRANCH
+        )
+
+    assert result.status == "error"
+    warnings = [
+        m
+        for r, m in zip(caplog.records, caplog.messages, strict=True)
+        if r.levelno >= logging.WARNING
+    ]
+    assert any(
+        "verify gate error" in m and "plan/never-pushed" in m for m in warnings
+    ), warnings
+    assert not any("verify gate passed" in m for m in caplog.messages)
+    assert not any("verify gate skipped" in m for m in caplog.messages)
+
+
+@pytest.mark.integration
+async def test_no_verify_cmd_skip_logs_its_reason_at_info(
+    db: Database, bare_repo: Any, caplog: pytest.LogCaptureFixture
+) -> None:
+    orch = _orchestrator(db)
+
+    with caplog.at_level(logging.INFO, logger=_REVIEW_LOGGER):
+        result = await orch._verify_plan_branch(str(bare_repo), _PLAN_BRANCH, None)
+
+    assert result.status == "skipped"
+    assert any(
+        "verify gate skipped" in m and _SKIP_NO_VERIFY_CMD in m for m in caplog.messages
+    ), caplog.messages
+    assert not any("verify gate passed" in m for m in caplog.messages)
+
+
+@pytest.mark.integration
+async def test_github_no_token_skip_logs_its_reason_at_warning(
+    db: Database, caplog: pytest.LogCaptureFixture
+) -> None:
+    orch = _orchestrator(db)
+
+    with caplog.at_level(logging.INFO, logger=_REVIEW_LOGGER):
+        result = await orch._verify_plan_branch(
+            "https://github.com/u/a", "plan/x", _VERIFY_SEES_PLAN_BRANCH
+        )
+
+    assert result.status == "skipped"
+    # WARNING, not INFO: no token is a broken deployment, and a gate that did
+    # not run must not be as quiet as one the operator chose not to configure.
+    assert any(
+        "verify gate skipped" in r.message
+        and _SKIP_NO_TOKEN in r.message
+        and r.levelno == logging.WARNING
+        for r in caplog.records
+    ), [(r.levelname, r.message) for r in caplog.records]
+
+
+@pytest.mark.integration
+async def test_github_no_credential_provider_skip_logs_a_different_reason(
+    db: Database, caplog: pytest.LogCaptureFixture
+) -> None:
+    orch = _orchestrator(db, git=None)
+    orch._git = None
+
+    with caplog.at_level(logging.INFO, logger=_REVIEW_LOGGER):
+        result = await orch._verify_plan_branch(
+            "https://github.com/u/a", "plan/x", _VERIFY_SEES_PLAN_BRANCH
+        )
+
+    assert result.status == "skipped"
+    assert any(
+        "verify gate skipped" in r.message
+        and _SKIP_NO_CREDENTIAL_PROVIDER in r.message
+        and r.levelno == logging.WARNING
+        for r in caplog.records
+    ), [(r.levelname, r.message) for r in caplog.records]
+    # Must not collapse into the SAME reason text as the no-token skip: two
+    # different skip causes, two different greppable reasons.
+    assert not any(_SKIP_NO_TOKEN in m for m in caplog.messages)

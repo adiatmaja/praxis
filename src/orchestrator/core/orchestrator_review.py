@@ -63,6 +63,27 @@ _VERIFY_OUTPUT_MAX = 4000
 _SKIP_NO_VERIFY_CMD = "no verify_cmd configured"
 _SKIP_NO_CREDENTIAL_PROVIDER = "no GitHub credential provider"
 _SKIP_NO_TOKEN = "no GitHub token for repo"
+# The per-task gate's two extra skip reasons.  Bench-mode-disabled and
+# no-verify_cmd both leave the task's ``verify_cmd`` local variable falsy, so
+# without a distinct reason string they would read as the SAME skip in the
+# log -- exactly the confusion this logging exists to remove.
+_SKIP_BENCH_MODE_DISABLED = "bench mode disabled the gate"
+_SKIP_CHECKOUT_UNAVAILABLE = "PR checkout unavailable"
+
+# How much of a failed/errored verify command's output rides in the log line
+# itself.  The full output already reaches the operator via the PR review
+# feedback or the ``plan_verify_failed`` event payload; the log line only
+# needs enough to identify the failure at a glance without flooding the
+# orchestrator log with an up-to-8000-char command dump.
+_LOG_EXCERPT_CHARS = 200
+
+
+def _log_excerpt(output: str) -> str:
+    """Collapse whitespace and cap ``output`` for a single log line."""
+    flat = " ".join(output.split())
+    if len(flat) <= _LOG_EXCERPT_CHARS:
+        return flat
+    return f"{flat[:_LOG_EXCERPT_CHARS]}..."
 
 
 @dataclass(frozen=True)
@@ -82,21 +103,37 @@ class _PlanVerifyResult:
     reason: str = ""
 
 
-def _verify_outcome(passed: bool, output: str) -> _PlanVerifyResult:
-    """Turn a ``run_verify`` result into a gate verdict.
+def _verify_outcome(
+    passed: bool, output: str, plan_branch: str, verify_cmd: str
+) -> _PlanVerifyResult:
+    """Turn a ``run_verify`` result into a gate verdict, and log it.
 
     Shared by both backend paths deliberately: the only thing that legitimately
     differs between local and GitHub is how the plan branch reaches a working
-    directory.  Once it is there, the verdict is computed in exactly one place,
-    so one path cannot drift into always reporting a pass.
+    directory.  Once it is there, the verdict is computed AND LOGGED in
+    exactly one place, so one path cannot drift into always reporting a pass
+    -- or into reporting a real pass/fail with no trace in the log.
 
     Args:
         passed: The exit-status verdict from ``run_verify``.
         output: The command's combined output.
+        plan_branch: The accumulated plan branch that was verified.  This
+            gate has no task id, only a branch, so the branch is what makes
+            the log line greppable against a live run.
+        verify_cmd: The project's configured verification command.
 
     Returns:
         A ``passed`` or ``failed`` result carrying truncated output.
     """
+    if passed:
+        logger.info("verify gate passed (branch=%s, cmd=`%s`)", plan_branch, verify_cmd)
+    else:
+        logger.warning(
+            "verify gate failed (branch=%s, cmd=`%s`): %s",
+            plan_branch,
+            verify_cmd,
+            _log_excerpt(output),
+        )
     return _PlanVerifyResult(
         "passed" if passed else "failed", output[:_VERIFY_OUTPUT_MAX]
     )
@@ -236,11 +273,19 @@ class ReviewMixin:
             # Bench condition C runs decomposition WITHOUT the verify gate, to
             # isolate whether the measured effect is decomposition or
             # verification. Double-gated; see core/bench_mode.py.
-            verify_cmd = None if verify_gate_disabled() else project.get("verify_cmd")
+            bench_disabled = verify_gate_disabled()
+            verify_cmd = None if bench_disabled else project.get("verify_cmd")
             review: dict[str, Any] | None = None
             if verify_cmd and checkout is not None:
                 passed, gate_output = await run_verify(checkout, verify_cmd)
-                if not passed:
+                if passed:
+                    log.info("verify gate passed (`%s`)", verify_cmd)
+                else:
+                    log.warning(
+                        "verify gate failed (`%s`): %s",
+                        verify_cmd,
+                        _log_excerpt(gate_output),
+                    )
                     review = {
                         "verdict": "fail",
                         "feedback": (
@@ -248,6 +293,16 @@ class ReviewMixin:
                             f"(`{verify_cmd}`):\n\n{gate_output}"
                         ),
                     }
+            elif verify_cmd and checkout is None:
+                log.info(
+                    "verify gate skipped: %s (`%s`)",
+                    _SKIP_CHECKOUT_UNAVAILABLE,
+                    verify_cmd,
+                )
+            elif bench_disabled:
+                log.info("verify gate skipped: %s", _SKIP_BENCH_MODE_DISABLED)
+            else:
+                log.info("verify gate skipped: %s", _SKIP_NO_VERIFY_CMD)
 
             # Only fetch the diff / call the brain if the gate did not already
             # fail the task; on gate failure the diff is unused (verdict is fail).
@@ -965,6 +1020,9 @@ class ReviewMixin:
             The gate verdict.
         """
         if not verify_cmd:
+            logger.info(
+                "verify gate skipped: %s (branch=%s)", _SKIP_NO_VERIFY_CMD, plan_branch
+            )
             return _PlanVerifyResult("skipped", reason=_SKIP_NO_VERIFY_CMD)
 
         backend = self._resolve_backend(repo_url)
@@ -975,7 +1033,16 @@ class ReviewMixin:
 
         provider = getattr(self._git, "_provider", None)
         if provider is None:
-            logger.warning("plan verify gate: credential provider unavailable, skipped")
+            # WARNING, not INFO, and deliberately unlike the no-verify_cmd skip
+            # above.  Having no verify_cmd is an operator choice; having no way
+            # to reach the repository is a broken deployment, and the gate that
+            # was supposed to judge this branch did not run.  Logging that at
+            # INFO is how a skip comes to read like a pass.
+            logger.warning(
+                "verify gate skipped: %s (branch=%s)",
+                _SKIP_NO_CREDENTIAL_PROVIDER,
+                plan_branch,
+            )
             return _PlanVerifyResult("skipped", reason=_SKIP_NO_CREDENTIAL_PROVIDER)
 
         try:
@@ -986,8 +1053,14 @@ class ReviewMixin:
                 # credential-less carve-out that also skips remote preflight;
                 # it is NOT reachable for a local project any more, which is
                 # the whole point of the branch above.
+                # WARNING for the same reason as the credential-provider skip
+                # above: a repository we cannot get a token for is a fault, not
+                # a configuration choice.
                 logger.warning(
-                    "plan verify gate: no token resolved for %s, skipped", repo_url
+                    "verify gate skipped: %s (repo=%s, branch=%s)",
+                    _SKIP_NO_TOKEN,
+                    repo_url,
+                    plan_branch,
                 )
                 return _PlanVerifyResult("skipped", reason=_SKIP_NO_TOKEN)
 
@@ -997,14 +1070,14 @@ class ReviewMixin:
                 passed, output = await run_verify(checkout_dir, verify_cmd)
         except Exception as exc:  # noqa: BLE001 - degrade, never wedge the loop
             logger.warning(
-                "plan verify gate errored for %s (%s): %s",
-                repo_url,
+                "verify gate error (branch=%s, cmd=`%s`): %s",
                 plan_branch,
+                verify_cmd,
                 exc,
             )
             return _PlanVerifyResult("error")
 
-        return _verify_outcome(passed, output)
+        return _verify_outcome(passed, output, plan_branch, verify_cmd)
 
     async def _verify_local_plan_branch(
         self,
@@ -1043,14 +1116,15 @@ class ReviewMixin:
                 passed, output = await run_verify(checkout_dir, verify_cmd)
         except Exception as exc:  # noqa: BLE001 - degrade, never wedge the loop
             logger.warning(
-                "plan verify gate errored for %s (%s): %s",
+                "verify gate error (repo=%s, branch=%s, cmd=`%s`): %s",
                 repo_url,
                 plan_branch,
+                verify_cmd,
                 exc,
             )
             return _PlanVerifyResult("error")
 
-        return _verify_outcome(passed, output)
+        return _verify_outcome(passed, output, plan_branch, verify_cmd)
 
     async def on_plan_completed(self, plan_id: str) -> None:
         """Open a best-effort integration PR and signal readiness, then draft a context sync."""

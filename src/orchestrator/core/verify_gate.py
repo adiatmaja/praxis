@@ -9,8 +9,11 @@ misses. The command is trusted operator config, never taken from a PR.
 from __future__ import annotations
 
 import asyncio
+import logging
 import re
 
+
+logger = logging.getLogger(__name__)
 
 _MAX_OUTPUT = 8000
 
@@ -54,11 +57,16 @@ async def run_verify(
     except TimeoutError:
         proc.kill()
         await proc.wait()
+        logger.warning("verify command timed out after %.0fs: %s", timeout, verify_cmd)
         return False, f"verify command timed out after {timeout:.0f}s"
     raw = out.decode(errors="replace")
     text = _truncate(raw)
     if proc.returncode == 0:
         return True, text
     if proc.returncode == _PYTEST_NO_TESTS_EXIT and _PYTEST_NO_TESTS_SIGNAL.search(raw):
+        logger.info(
+            "verify command exited 5 with no tests collected; treating as a pass: %s",
+            verify_cmd,
+        )
         return True, text
     return False, text
