@@ -32,6 +32,7 @@ from orchestrator.core.escalation import next_escalation
 from orchestrator.core.failure_taxonomy import FailureClass
 from orchestrator.core.git_backend import GitBackend, PullRequestRef
 from orchestrator.core.git_ops import (
+    GitOps,
     checkout_branch,
     clone_with_token,
     commit_and_push,
@@ -1139,6 +1140,79 @@ class ReviewMixin:
 
         return _verify_outcome(passed, output, plan_branch, verify_cmd)
 
+    async def _existing_integration_pr(
+        self, repo_url: str, base: str, head: str
+    ) -> str | None:
+        """Positively check whether ``head`` already has an open PR against ``base``.
+
+        Single-branch (auto-delegate) mode reuses one caller-named work
+        branch for every task, so the plan's work branch (``head``) IS the
+        worker's own PR head. By the time the plan completes, that PR already
+        exists, and ``gh pr create --base <base> --head <head>`` fails
+        outright (GitHub refuses a second open PR for the same
+        base/head pair).
+
+        This is detected BEFORE attempting creation, via ``gh pr list --head
+        --base --state open`` (the same positive lookup the harness
+        entrypoints already use to reuse a PR across worker retries -- see
+        ``docker/opencode-agent/entrypoint.sh``), never by interpreting a
+        creation failure afterwards: a caught failure there could just as
+        easily be a real, different ``gh`` error (bad credentials, rate
+        limit, network), and treating every failure as "already open" would
+        hide it forever instead of surfacing it.
+
+        Uses ``GitOps.repo_slug`` directly (a pure static method) rather than
+        going through ``self._git.repo_slug`` so slug resolution never
+        depends on how a test double happens to wire that attribute.
+
+        Args:
+            repo_url: The project's GitHub repository URL.
+            base: The integration PR's base branch.
+            head: The plan's work branch (the would-be PR head).
+
+        Returns:
+            The existing open PR's URL, or None when none exists OR the
+            check itself could not be run (non-GitHub repo, no credential,
+            ``gh`` failure). Either "None" case falls through to the normal
+            best-effort creation attempt below, so a broken check never
+            blocks it -- only a POSITIVE hit skips creation.
+        """
+        slug = GitOps.repo_slug(repo_url)
+        if not slug:
+            return None
+        try:
+            token = await self._git._token_for_repo(slug)
+            code, stdout, _stderr = await self._git._run_command(
+                [
+                    "gh",
+                    "pr",
+                    "list",
+                    "--repo",
+                    slug,
+                    "--head",
+                    head,
+                    "--base",
+                    base,
+                    "--state",
+                    "open",
+                    "--json",
+                    "url",
+                ],
+                token=token,
+            )
+        except Exception:  # noqa: BLE001 - a broken check must not block creation
+            return None
+        if code != 0:
+            return None
+        results: list[Any] = []
+        with contextlib.suppress(json.JSONDecodeError, TypeError):
+            results = json.loads(stdout)
+        if isinstance(results, list) and results and isinstance(results[0], dict):
+            url = results[0].get("url")
+            if isinstance(url, str):
+                return url
+        return None
+
     async def on_plan_completed(self, plan_id: str) -> None:
         """Open a best-effort integration PR and signal readiness, then draft a context sync."""
         plan = await self._tq.get_plan(plan_id)
@@ -1147,6 +1221,8 @@ class ReviewMixin:
         project = await self._tq.get_project(plan["project_id"])
         if project is None:
             return
+
+        log = task_logger(logger, plan_id=plan_id)
 
         plan_branch = plan.get("plan_branch_name")
         repo_url = project.get("repo_url")
@@ -1170,19 +1246,37 @@ class ReviewMixin:
             )
 
             pr_url: str | None = None
-            try:
-                pr_url = await self._git.open_integration_pr(
-                    repo_url=repo_url,
-                    base=base,
-                    head=plan_branch,
-                    title=f"Integrate {plan_branch}",
-                    body=(
-                        "Auto-opened by Praxis: every task in this plan merged to "
-                        f"`{plan_branch}`. Review and merge to `{base}` to integrate."
-                    ),
+            existing_pr = await self._existing_integration_pr(
+                repo_url, base, plan_branch
+            )
+            if existing_pr:
+                # Single-branch mode: the worker's own PR already IS the
+                # integration PR. Reuse it rather than fail a second
+                # `gh pr create` against the same (base, head) pair.
+                pr_url = existing_pr
+                log.info(
+                    "integration PR skipped: branch=%s already has an open "
+                    "PR against base=%s, reusing %s",
+                    plan_branch,
+                    base,
+                    existing_pr,
                 )
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("Integration PR open failed for %s: %s", plan_id, exc)
+            else:
+                try:
+                    pr_url = await self._git.open_integration_pr(
+                        repo_url=repo_url,
+                        base=base,
+                        head=plan_branch,
+                        title=f"Integrate {plan_branch}",
+                        body=(
+                            "Auto-opened by Praxis: every task in this plan merged to "
+                            f"`{plan_branch}`. Review and merge to `{base}` to integrate."
+                        ),
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning(
+                        "Integration PR open failed for %s: %s", plan_id, exc
+                    )
 
             if verify_status.status in ("failed", "error"):
                 # Fail closed: surface both a real verify failure AND an

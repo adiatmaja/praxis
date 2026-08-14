@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
@@ -14,6 +15,9 @@ from orchestrator.core.orchestrator import Orchestrator
 from orchestrator.core.task_queue import TaskQueue
 from orchestrator.database import Database
 from orchestrator.models.schemas import PlanStatus, TaskStatus
+
+
+_REVIEW_LOGGER = "orchestrator.core.orchestrator_review"
 
 
 async def _setup(db: Database) -> tuple[TaskQueue, str, str]:
@@ -1225,6 +1229,122 @@ class TestContextSyncOnPlanCompletion:
         failed = next(e for e in published if e["type"] == "plan_verify_failed")
         assert "1 failed test" in failed["output"]
         assert failed["pr_url"] == "https://github.com/u/a/pull/9"
+
+    async def test_on_plan_completed_skips_pr_when_branch_already_has_one(
+        self, db: Database, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """The work branch already has an open PR: reuse it, no second create."""
+        task_queue, plan_id, task_id = await _setup(db)
+        await task_queue.update_task_status(task_id, TaskStatus.MERGED)
+
+        published: list[dict] = []
+        bus = EventBus()
+        _orig = bus.publish
+        bus.publish = lambda e: (published.append(e), _orig(e))
+
+        mock_git = AsyncMock()
+        mock_git.repo_slug = MagicMock(return_value="u/a")
+        mock_git._token_for_repo = AsyncMock(return_value="tok")
+        mock_git._run_command = AsyncMock(
+            return_value=(0, '[{"url": "https://github.com/u/a/pull/7"}]', "")
+        )
+        mock_git.open_integration_pr = AsyncMock(
+            return_value="https://github.com/u/a/pull/999"
+        )
+
+        orch = Orchestrator(
+            task_queue=task_queue,
+            agent_manager=MagicMock(),
+            opus_bridge=AsyncMock(),
+            git_ops=mock_git,
+            event_bus=bus,
+            context_sync=None,
+        )
+
+        with caplog.at_level(logging.INFO, logger=_REVIEW_LOGGER):
+            await orch.on_plan_completed(plan_id=plan_id)
+
+        mock_git.open_integration_pr.assert_not_called()
+        evt = next(e for e in published if e["type"] == "plan_integration_ready")
+        assert evt["pr_url"] == "https://github.com/u/a/pull/7"
+        assert any("already" in m and "pull/7" in m for m in caplog.messages), (
+            caplog.messages
+        )
+
+    async def test_on_plan_completed_opens_pr_when_branch_has_no_open_pr(
+        self, db: Database
+    ) -> None:
+        """The work branch has no open PR yet: the normal create path still runs."""
+        task_queue, plan_id, task_id = await _setup(db)
+        await task_queue.update_task_status(task_id, TaskStatus.MERGED)
+
+        published: list[dict] = []
+        bus = EventBus()
+        _orig = bus.publish
+        bus.publish = lambda e: (published.append(e), _orig(e))
+
+        mock_git = AsyncMock()
+        mock_git.repo_slug = MagicMock(return_value="u/a")
+        mock_git._token_for_repo = AsyncMock(return_value="tok")
+        mock_git._run_command = AsyncMock(return_value=(0, "[]", ""))
+        mock_git.open_integration_pr = AsyncMock(
+            return_value="https://github.com/u/a/pull/5"
+        )
+
+        orch = Orchestrator(
+            task_queue=task_queue,
+            agent_manager=MagicMock(),
+            opus_bridge=AsyncMock(),
+            git_ops=mock_git,
+            event_bus=bus,
+            context_sync=None,
+        )
+
+        await orch.on_plan_completed(plan_id=plan_id)
+
+        mock_git.open_integration_pr.assert_awaited_once()
+        evt = next(e for e in published if e["type"] == "plan_integration_ready")
+        assert evt["pr_url"] == "https://github.com/u/a/pull/5"
+
+    async def test_on_plan_completed_surfaces_unrelated_gh_failure(
+        self, db: Database, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A DIFFERENT gh failure (no existing PR found) must not read as a skip."""
+        task_queue, plan_id, task_id = await _setup(db)
+        await task_queue.update_task_status(task_id, TaskStatus.MERGED)
+
+        published: list[dict] = []
+        bus = EventBus()
+        _orig = bus.publish
+        bus.publish = lambda e: (published.append(e), _orig(e))
+
+        mock_git = AsyncMock()
+        mock_git.repo_slug = MagicMock(return_value="u/a")
+        mock_git._token_for_repo = AsyncMock(return_value="tok")
+        mock_git._run_command = AsyncMock(return_value=(0, "[]", ""))
+        mock_git.open_integration_pr = AsyncMock(
+            side_effect=RuntimeError("gh: rate limit exceeded")
+        )
+
+        orch = Orchestrator(
+            task_queue=task_queue,
+            agent_manager=MagicMock(),
+            opus_bridge=AsyncMock(),
+            git_ops=mock_git,
+            event_bus=bus,
+            context_sync=None,
+        )
+
+        with caplog.at_level(logging.INFO, logger=_REVIEW_LOGGER):
+            await orch.on_plan_completed(plan_id=plan_id)
+
+        mock_git.open_integration_pr.assert_awaited_once()
+        evt = next(e for e in published if e["type"] == "plan_integration_ready")
+        assert evt["pr_url"] is None
+        assert not any("already" in m for m in caplog.messages), caplog.messages
+        assert any("gh: rate limit exceeded" in m for m in caplog.messages), (
+            caplog.messages
+        )
 
 
 def test_flip_checkbox_marks_task_done():
