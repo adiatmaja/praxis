@@ -266,3 +266,144 @@ async def test_status_includes_build(
     response = await client.get("/api/status", headers=auth_headers)
     assert response.status_code == 200
     assert "build" in response.json()
+
+
+# ---------------------------------------------------------------------------
+# Bench mode: the orchestrator's ACTUAL arm, reported so the bench can check it
+# ---------------------------------------------------------------------------
+#
+# core/bench_mode.py reads PRAXIS_BENCH and PRAXIS_BENCH_DISABLE_VERIFY with
+# os.environ INSIDE this process.  bench/runner.py is a SEPARATE process talking
+# REST, so nothing it sets reaches here.  Without these two fields an A,C
+# invocation aimed at an orchestrator started without the flags produces rows
+# carrying the right condition label and the wrong arm, and no number anywhere
+# says so.  Everything below therefore pins that the reported booleans track the
+# real environment rather than a constant or a cached first reading.
+
+
+def _stub_probes(mocker: pytest.MonkeyPatch) -> None:
+    """Make the CLI probes hermetic so a status call cannot touch the machine."""
+    import orchestrator.api.system as sys_mod
+
+    sys_mod._provider_probe_cache.clear()
+    mocker.patch(
+        "asyncio.create_subprocess_exec",
+        new=mocker.AsyncMock(side_effect=OSError("not found")),
+    )
+
+
+def _clear_bench_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("PRAXIS_BENCH", raising=False)
+    monkeypatch.delenv("PRAXIS_BENCH_DISABLE_VERIFY", raising=False)
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize(
+    ("bench_env", "expected_bench_mode", "expected_gate_disabled"),
+    [
+        ({}, False, False),
+        ({"PRAXIS_BENCH": "1"}, True, False),
+        ({"PRAXIS_BENCH_DISABLE_VERIFY": "1"}, False, False),
+        ({"PRAXIS_BENCH": "1", "PRAXIS_BENCH_DISABLE_VERIFY": "1"}, True, True),
+        ({"PRAXIS_BENCH": "true", "PRAXIS_BENCH_DISABLE_VERIFY": "true"}, False, False),
+        ({"PRAXIS_BENCH": "0", "PRAXIS_BENCH_DISABLE_VERIFY": "0"}, False, False),
+    ],
+    ids=[
+        "neither-flag",
+        "bench-flag-only",
+        "disable-flag-only",
+        "both-flags",
+        "truthy-but-not-the-literal-1",
+        "explicitly-zero",
+    ],
+)
+async def test_status_reports_the_orchestrators_real_bench_mode(
+    client: AsyncClient,
+    db: Database,
+    auth_headers: dict[str, str],
+    mocker: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch,
+    bench_env: dict[str, str],
+    expected_bench_mode: bool,
+    expected_gate_disabled: bool,
+) -> None:
+    """Both booleans must equal what core/bench_mode.py says, for every combo.
+
+    The ``neither-flag`` case is the one that matters most: it is the shape of a
+    normal deployment, and it is exactly what an endpoint hardcoded to report a
+    bench mode would get wrong.  ``truthy-but-not-the-literal-1`` pins that the
+    endpoint inherits the double-gated literal check rather than reimplementing
+    a loose truthiness test on its own.
+    """
+    _stub_probes(mocker)
+    await seed_user(db)
+    _clear_bench_env(monkeypatch)
+    for key, value in bench_env.items():
+        monkeypatch.setenv(key, value)
+
+    response = await client.get("/api/status", headers=auth_headers)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["bench_mode"] is expected_bench_mode
+    assert body["verify_gate_disabled"] is expected_gate_disabled
+
+
+@pytest.mark.integration
+async def test_status_reads_bench_mode_live_instead_of_caching_it(
+    client: AsyncClient,
+    db: Database,
+    auth_headers: dict[str, str],
+    mocker: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A second call must see a changed environment, not the first reading.
+
+    ``system.py`` caches the claude CLI probe for 60 seconds because it spawns a
+    subprocess.  Copying that pattern here would be actively harmful: the whole
+    point of the field is to tell an operator whether the RESTART they just did
+    took effect, and a cached value would answer with the mode from before it.
+    """
+    _stub_probes(mocker)
+    await seed_user(db)
+    _clear_bench_env(monkeypatch)
+
+    before = await client.get("/api/status", headers=auth_headers)
+
+    monkeypatch.setenv("PRAXIS_BENCH", "1")
+    monkeypatch.setenv("PRAXIS_BENCH_DISABLE_VERIFY", "1")
+    after = await client.get("/api/status", headers=auth_headers)
+
+    assert before.json()["bench_mode"] is False
+    assert before.json()["verify_gate_disabled"] is False
+    assert after.json()["bench_mode"] is True
+    assert after.json()["verify_gate_disabled"] is True
+
+
+@pytest.mark.integration
+async def test_status_bench_fields_delegate_to_core_bench_mode(
+    client: AsyncClient,
+    db: Database,
+    auth_headers: dict[str, str],
+    mocker: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The endpoint must call the two functions, not re-derive the rule.
+
+    The environment is CLEARED here, so ``(True, True)`` cannot come from it:
+    both fields have to be the patched functions' return values.  And a handler
+    that inlined ``os.environ.get("PRAXIS_BENCH") == "1"`` instead of importing
+    would have no such attributes to patch, so ``mocker.patch`` raises and this
+    still fails.  The rule stays in one place either way.
+    """
+    _stub_probes(mocker)
+    await seed_user(db)
+    _clear_bench_env(monkeypatch)
+    mocker.patch("orchestrator.api.system.bench_mode", return_value=True)
+    mocker.patch("orchestrator.api.system.verify_gate_disabled", return_value=True)
+
+    response = await client.get("/api/status", headers=auth_headers)
+
+    assert response.status_code == 200
+    assert response.json()["bench_mode"] is True
+    assert response.json()["verify_gate_disabled"] is True

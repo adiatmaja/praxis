@@ -272,7 +272,7 @@ Interactive docs available at `/docs` (Swagger UI) when the server is running.
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `GET` | `/api/status` | Orchestrator status (Opus state + agent counts; Planner `available` is gated on a real `claude --version` probe; returns `agent_model.cli_available`, effective `lm_studio_url`, and a `providers` list — per brain provider `{cli_available, authenticated, login_hint}`) |
+| `GET` | `/api/status` | Orchestrator status (Opus state + agent counts; Planner `available` is gated on a real `claude --version` probe; returns `agent_model.cli_available`, effective `lm_studio_url`, a `providers` list carrying `{cli_available, authenticated, login_hint}` per brain provider, and `bench_mode` / `verify_gate_disabled`, the two booleans from `core/bench_mode.py` read live on every request so `bench/runner.py` can refuse a run against an orchestrator in the wrong arm) |
 | `GET` | `/api/lm-models` | List models loaded in LM Studio (`/v1/models` proxy) for the New-Project model dropdown |
 | `GET` | `/api/opus/state` | Opus availability and queue |
 | `GET` | `/api/events` | SSE event stream (long-lived) |

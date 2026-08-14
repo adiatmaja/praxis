@@ -16,24 +16,38 @@ their own file rather than being left to review.
    the ORCHESTRATOR process.  The runner is a separate process talking REST, so
    it cannot set them.  One invocation cannot hold both polarities, and an
    invocation that mixes gated and ungated conditions has to be refused before
-   any container spawns.  Nothing can verify the orchestrator is actually in the
-   mode the condition needs: there is no endpoint for it.
+   any container spawns.
+3. Which arm the orchestrator is ACTUALLY in is a fact about a different
+   process, and ``GET /api/status`` is where it comes from.  An ``A,C``
+   invocation aimed at an orchestrator started without the flags would otherwise
+   write rows carrying the right condition label and the wrong arm; nothing
+   downstream recomputes the gate, so no number in the report could contradict
+   them.  The comparison therefore has to happen before the first spawn, and a
+   mismatch has to abort rather than warn.
 """
 
+import argparse
+import json
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+import httpx
 import pytest
 
 from bench.config import CONDITIONS, Condition
 from bench.runner import (
+    BenchClient,
     MissingVerifyCommandError,
     MixedBenchModeError,
+    OrchestratorBenchModeError,
+    _main_async,
     assert_matched_pair,
     assert_runnable,
     assert_uniform_bench_mode,
     condition_env,
     condition_project_overrides,
+    main,
     plan_attempts,
     resolve_verify_cmd,
     run_attempt,
@@ -311,3 +325,454 @@ def test_design_validity_and_runnability_are_separate_checks():
     assert_matched_pair(["A", "B", "C"])  # must not raise
     with pytest.raises(MixedBenchModeError):
         assert_uniform_bench_mode(["A", "B", "C"])
+
+
+# --------------------------------------------------------------------------
+# The orchestrator's REAL mode, compared before the first container spawns
+# --------------------------------------------------------------------------
+#
+# The invocation being self-consistent was never the hard part.  The hard part
+# is that the orchestrator is a different process, and an ``A,C`` invocation
+# aimed at one started WITHOUT the flags produces rows carrying the right
+# condition label and the wrong arm.  Nothing downstream recomputes the gate, so
+# no number in the report can contradict them.  ``/api/status`` now reports the
+# orchestrator's real mode and the runner refuses a mismatch before it spawns.
+
+# What GET /api/status reports for the two arms an invocation can require.
+GATELESS_ORCHESTRATOR: dict[str, Any] = {
+    "bench_mode": True,
+    "verify_gate_disabled": True,
+}
+GATED_ORCHESTRATOR: dict[str, Any] = {
+    "bench_mode": False,
+    "verify_gate_disabled": False,
+}
+
+# Every REST call that mutates the orchestrator or leads to a container. The
+# refusal must happen with NONE of these recorded.
+SPAWNING_CALLS = frozenset({"register_project", "dispatch", "execute_plan"})
+
+
+class ModeReportingClient(RecordingClient):
+    """A RecordingClient that also answers the bench-mode probe."""
+
+    def __init__(self, reported: dict[str, Any]) -> None:
+        super().__init__()
+        self._reported = reported
+
+    async def orchestrator_bench_mode(self) -> dict[str, Any]:
+        self.calls.append(("orchestrator_bench_mode", None))
+        return dict(self._reported)
+
+    async def close(self) -> None:
+        self.calls.append(("close", None))
+
+
+def _write_sample(tmp_path: Path) -> Path:
+    sample = tmp_path / "sample.json"
+    sample.write_text(
+        json.dumps({"instances": [_instance(verify_cmd="pytest -q")]}),
+        encoding="utf-8",
+    )
+    return sample
+
+
+def _args(tmp_path: Path, conditions: str) -> argparse.Namespace:
+    return argparse.Namespace(
+        sample=str(_write_sample(tmp_path)),
+        conditions=conditions,
+        worker="local-openweight",
+        seeds="1",
+        run_id="run-1",
+        out=str(tmp_path / "attempts.jsonl"),
+        repos=str(tmp_path),
+        verify_cmd="pytest -q",
+        api="http://bench.invalid",
+        token="tok",
+    )
+
+
+def _always(client: RecordingClient) -> Callable[..., RecordingClient]:
+    """A ``BenchClient`` factory that hands ``_main_async`` this exact client."""
+
+    def factory(*_args: Any, **_kwargs: Any) -> RecordingClient:
+        return client
+
+    return factory
+
+
+def _spawning(client: RecordingClient) -> list[str]:
+    return [name for name, _ in client.calls if name in SPAWNING_CALLS]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("condition_key", ["A", "B", "C", "D"])
+@pytest.mark.parametrize(
+    "orchestrator_is_gateless",
+    [True, False],
+    ids=["gateless-orchestrator", "gated-orchestrator"],
+)
+def test_every_condition_is_checked_against_the_orchestrators_real_mode(
+    condition_key: str, orchestrator_is_gateless: bool
+):
+    """All eight cells, with the requirement taken from ``Condition`` itself.
+
+    Deriving the expectation from ``verify_gate`` rather than restating it means
+    a future condition added to ``CONDITIONS`` with the wrong polarity cannot
+    make this test agree with the bug.
+    """
+    reported = GATELESS_ORCHESTRATOR if orchestrator_is_gateless else GATED_ORCHESTRATOR
+    condition_needs_gateless = not _condition(condition_key).verify_gate
+    if condition_needs_gateless == orchestrator_is_gateless:
+        assert_uniform_bench_mode([condition_key], reported=reported)  # must not raise
+    else:
+        with pytest.raises(OrchestratorBenchModeError):
+            assert_uniform_bench_mode([condition_key], reported=reported)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "reported",
+    [
+        {"bench_mode": True, "verify_gate_disabled": False},
+        {"bench_mode": False, "verify_gate_disabled": True},
+    ],
+    ids=["bench-flag-only", "disable-flag-only"],
+)
+def test_a_half_set_orchestrator_environment_is_refused_for_the_gateless_pair(
+    reported: dict[str, Any],
+):
+    """A half-set environment is the silent-gating case this exists to catch.
+
+    ``verify_gate_disabled()`` refuses either flag alone, so an operator who set
+    one gets a GATED orchestrator wearing condition C's label.  Reporting the
+    two booleans separately is what makes that state nameable.
+    """
+    with pytest.raises(OrchestratorBenchModeError):
+        assert_uniform_bench_mode(["A", "C"], reported=reported)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "reported",
+    [
+        {},
+        {"bench_mode": True},
+        {"verify_gate_disabled": True},
+        {"bench_mode": None, "verify_gate_disabled": None},
+        {"bench_mode": "1", "verify_gate_disabled": "1"},
+        {"bench_mode": 1, "verify_gate_disabled": 1},
+    ],
+    ids=[
+        "no-fields-at-all",
+        "only-bench-mode",
+        "only-verify-gate-disabled",
+        "both-null",
+        "strings-not-booleans",
+        "ints-not-booleans",
+    ],
+)
+def test_an_orchestrator_that_does_not_report_booleans_is_refused(
+    reported: dict[str, Any],
+):
+    """An orchestrator too old to report its mode must REFUSE, never pass.
+
+    A missing key read with ``.get`` is ``None``, and ``None`` is falsy: a
+    comparison written the obvious way would silently classify an unknown mode
+    as "gate is on" and wave condition B straight through.  Non-boolean values
+    are refused for the same reason ``core/bench_mode`` refuses a truthiness
+    check: ``"0"`` and ``0`` are not the same thing to ``bool()``.
+    """
+    with pytest.raises(OrchestratorBenchModeError):
+        assert_uniform_bench_mode(["A", "C"], reported=reported)
+
+
+@pytest.mark.unit
+def test_the_orchestrator_mode_refusal_names_both_flags_and_the_restart():
+    """The operator cannot act on the refusal without the exact instruction."""
+    with pytest.raises(OrchestratorBenchModeError) as excinfo:
+        assert_uniform_bench_mode(["A", "C"], reported=GATED_ORCHESTRATOR)
+    message = str(excinfo.value)
+    assert "PRAXIS_BENCH=1" in message
+    assert "PRAXIS_BENCH_DISABLE_VERIFY=1" in message
+    assert "restart" in message.lower()
+
+
+@pytest.mark.unit
+def test_a_gated_invocation_refusal_says_to_start_with_neither_flag():
+    """The mirror instruction: B and D need the flags UNSET, not set."""
+    with pytest.raises(OrchestratorBenchModeError) as excinfo:
+        assert_uniform_bench_mode(["B"], reported=GATELESS_ORCHESTRATOR)
+    message = str(excinfo.value)
+    assert "PRAXIS_BENCH" in message
+    assert "PRAXIS_BENCH_DISABLE_VERIFY" in message
+    assert "restart" in message.lower()
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "keys", [["A", "B"], ["B", "C", "A"]], ids=["A-and-B", "B-C-and-A"]
+)
+def test_a_mixed_invocation_is_still_refused_as_mixed(keys: list[str]):
+    """The self-contradiction check must win: there is no mode that fits both."""
+    with pytest.raises(MixedBenchModeError):
+        assert_uniform_bench_mode(keys, reported=GATELESS_ORCHESTRATOR)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("keys", [["A"], ["B"], ["A", "C"], ["B", "D"], []])
+def test_omitting_the_reported_mode_keeps_the_old_behavior(keys: list[str]):
+    """The existing call sites pass no report and must keep working."""
+    assert_uniform_bench_mode(keys)  # must not raise
+
+
+@pytest.mark.unit
+def test_an_empty_condition_set_needs_no_orchestrator_mode():
+    assert_uniform_bench_mode([], reported=GATED_ORCHESTRATOR)  # must not raise
+
+
+# --------------------------------------------------------------------------
+# Ordering: the refusal happens BEFORE anything is registered or dispatched
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+async def test_a_mismatched_orchestrator_spawns_nothing_at_all(
+    tmp_path: Path, monkeypatch
+):
+    """The whole point: refuse before the run mutates anything.
+
+    A check that ran after the first attempt would leave a project registered, a
+    container spawned and one row already on disk under a label describing an
+    arm that never ran.  Asserting the recorded call list is empty is what makes
+    "spawns nothing" a fact rather than a reading of the source.
+    """
+    client = ModeReportingClient(GATED_ORCHESTRATOR)
+    monkeypatch.setattr("bench.runner.BenchClient", _always(client))
+
+    with pytest.raises(OrchestratorBenchModeError):
+        await _main_async(_args(tmp_path, "A,C"))
+
+    assert _spawning(client) == []
+    assert not (tmp_path / "attempts.jsonl").exists()
+
+
+@pytest.mark.unit
+async def test_a_matching_orchestrator_runs_the_whole_matrix(
+    tmp_path: Path, monkeypatch
+):
+    """The counterweight, without which the refusal test above is vacuous.
+
+    If this harness could never spawn anything, ``_spawning(client) == []``
+    would pass for the wrong reason.  Same client, same arguments, only the
+    reported mode differs, and here every call must happen.
+    """
+    client = ModeReportingClient(GATELESS_ORCHESTRATOR)
+    monkeypatch.setattr("bench.runner.BenchClient", _always(client))
+
+    result = await _main_async(_args(tmp_path, "A,C"))
+
+    assert result == 0
+    spawned = _spawning(client)
+    assert "register_project" in spawned
+    assert "dispatch" in spawned
+    assert "execute_plan" in spawned
+    assert (tmp_path / "attempts.jsonl").exists()
+
+
+@pytest.mark.unit
+async def test_the_mode_probe_precedes_every_spawning_call(tmp_path: Path, monkeypatch):
+    """Ordering asserted positionally, not just by absence.
+
+    On the HAPPY path nothing is refused, so an assertion counting calls cannot
+    see a check that moved after the first spawn.  The probe's index must be
+    lower than every spawning call's index.
+    """
+    client = ModeReportingClient(GATELESS_ORCHESTRATOR)
+    monkeypatch.setattr("bench.runner.BenchClient", _always(client))
+
+    await _main_async(_args(tmp_path, "A,C"))
+
+    names = [name for name, _ in client.calls]
+    assert "orchestrator_bench_mode" in names
+    probe_at = names.index("orchestrator_bench_mode")
+    spawn_indexes = [i for i, name in enumerate(names) if name in SPAWNING_CALLS]
+    assert spawn_indexes, names
+    assert probe_at < min(spawn_indexes), names
+
+
+@pytest.mark.unit
+def test_the_refusal_never_returns_a_success_code(tmp_path: Path, monkeypatch):
+    """``main`` must not hand ``sys.exit`` a zero for a run that never ran.
+
+    The refusal propagates out of ``main`` exactly as the other refusals in this
+    module do, so ``sys.exit(main())`` is never reached and the process exits
+    non-zero with the message on stderr.
+    """
+    client = ModeReportingClient(GATED_ORCHESTRATOR)
+    monkeypatch.setattr("bench.runner.BenchClient", _always(client))
+    sample = _write_sample(tmp_path)
+
+    with pytest.raises(OrchestratorBenchModeError):
+        main(
+            [
+                "--sample",
+                str(sample),
+                "--conditions",
+                "A,C",
+                "--verify-cmd",
+                "pytest -q",
+                "--repos",
+                str(tmp_path),
+                "--out",
+                str(tmp_path / "attempts.jsonl"),
+                "--api",
+                "http://bench.invalid",
+            ]
+        )
+
+    assert _spawning(client) == []
+
+
+# --------------------------------------------------------------------------
+# The wire: where the reported mode actually comes from
+# --------------------------------------------------------------------------
+
+
+def _status_client(body: dict[str, Any], seen: list[str]) -> BenchClient:
+    """A BenchClient whose transport answers /api/status with ``body``."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request.url.path)
+        return httpx.Response(200, json=body)
+
+    client = BenchClient(base_url="http://bench.invalid", token="tok")
+    client._client = httpx.AsyncClient(  # noqa: SLF001 - swapping the transport
+        base_url="http://bench.invalid",
+        headers={"Authorization": "Bearer tok"},
+        transport=httpx.MockTransport(handler),
+    )
+    return client
+
+
+@pytest.mark.unit
+async def test_the_client_reads_the_two_booleans_from_the_status_endpoint():
+    seen: list[str] = []
+    client = _status_client(
+        {"bench_mode": True, "verify_gate_disabled": True, "opus_state": {}}, seen
+    )
+    try:
+        reported = await client.orchestrator_bench_mode()
+    finally:
+        await client.close()
+
+    assert seen == ["/api/status"]
+    assert reported["bench_mode"] is True
+    assert reported["verify_gate_disabled"] is True
+    # And the gateless pair is satisfied by exactly this report.
+    assert_uniform_bench_mode(["A", "C"], reported=reported)  # must not raise
+
+
+@pytest.mark.unit
+async def test_an_orchestrator_without_the_fields_is_refused_end_to_end():
+    """The upgrade case, from the wire through to the refusal.
+
+    An orchestrator predating this endpoint answers 200 with no such keys. That
+    must reach the check as something it refuses, not as a pair of falsy values
+    that happen to look like a gated orchestrator.
+    """
+    seen: list[str] = []
+    client = _status_client({"opus_state": {}, "active_agents": 0}, seen)
+    try:
+        reported = await client.orchestrator_bench_mode()
+    finally:
+        await client.close()
+
+    with pytest.raises(OrchestratorBenchModeError):
+        assert_uniform_bench_mode(["A", "C"], reported=reported)
+    with pytest.raises(OrchestratorBenchModeError):
+        assert_uniform_bench_mode(["B"], reported=reported)
+
+
+# --------------------------------------------------------------------------
+# The protocol document must not still say this step is unverified
+# --------------------------------------------------------------------------
+
+
+BENCH_README = Path(__file__).resolve().parents[2] / "bench" / "README.md"
+
+
+def _readme_prose() -> str:
+    """bench/README.md as one line of prose, with markdown emphasis removed.
+
+    The file hard-wraps, so a sentence spans lines and a naive substring test
+    would miss it wherever the wrap happens to fall.  Collapsing whitespace and
+    dropping ``*`` and backticks lets whole SENTENCES be asserted, which a bare
+    keyword check cannot do: "bench mode" appears either way, before and after
+    the correction, so it proves nothing.
+    """
+    text = BENCH_README.read_text(encoding="utf-8")
+    return " ".join(text.replace("*", "").replace("`", "").split())
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "stale_sentence",
+    [
+        (
+            "There is no API exposing the orchestrator's bench mode, so the "
+            "runner cannot check that the restart actually happened."
+        ),
+        (
+            "This is the one manual step in the protocol, and it is unverified "
+            "by design rather than by oversight; adding an endpoint for it is "
+            "out of scope here."
+        ),
+        "The restart requirement, which nothing verifies for you",
+        "a half-set environment yields a silently gated condition C",
+    ],
+    ids=[
+        "no-such-api",
+        "unverified-by-design",
+        "nothing-verifies-heading",
+        "silently-gated",
+    ],
+)
+def test_the_bench_readme_no_longer_claims_the_restart_is_unverified(
+    stale_sentence: str,
+):
+    """Each of these was TRUE before the endpoint existed and is false now.
+
+    Asserted as absence of the exact stale sentence rather than presence of a
+    keyword, because a document keeps reading fluently while contradicting the
+    code, and a reader who believes it will skip the check that now exists.
+    """
+    assert stale_sentence not in _readme_prose()
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "current_sentence",
+    [
+        (
+            "GET /api/status exposes the orchestrator's bench mode, so the "
+            "runner does check that the restart actually happened."
+        ),
+        (
+            "The comparison runs before the first project is registered, so a "
+            "mismatch aborts with a non-zero exit having spawned nothing."
+        ),
+        ("Performing the restart is still the operator's job; confirming it is not."),
+    ],
+    ids=["endpoint-exists", "refused-before-any-spawn", "who-does-what"],
+)
+def test_the_bench_readme_states_what_is_now_checked(current_sentence: str):
+    """The replacement has to say the three things an operator acts on."""
+    assert current_sentence in _readme_prose()
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("field", ["bench_mode", "verify_gate_disabled"])
+def test_the_bench_readme_names_both_reported_fields(field: str):
+    """Naming them is what lets an operator check by hand with curl."""
+    assert field in _readme_prose()

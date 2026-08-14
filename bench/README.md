@@ -35,8 +35,8 @@ confounded by verification.
 The table above says what each arm *isolates*. This says how each arm is
 *built*, so the mechanism is inspectable rather than taken on trust.
 
-| Condition | Project `verify_cmd` | Orchestrator bench mode | `max_retries` | Decomposition |
-|-----------|----------------------|-------------------------|---------------|---------------|
+| Condition | Project `verify_cmd` | Orchestrator bench mode (checked, see below) | `max_retries` | Decomposition |
+|-----------|----------------------|----------------------------------------------|---------------|---------------|
 | A | registered, same as B | **required**: started with both flags | 1 | no, `dispatch_task` |
 | B | registered | must be OFF: started with neither flag | 1 | yes, `execute_plan` |
 | C | registered, same as B | **required**: started with both flags | 1 | yes, `execute_plan` |
@@ -58,8 +58,11 @@ not, that resolves no `verify_cmd`.
 **The gate difference comes entirely from the orchestrator's bench mode.**
 `core/bench_mode.py` disables the three mechanical gate sites when both
 `PRAXIS_BENCH=1` and `PRAXIS_BENCH_DISABLE_VERIFY=1` are set. Either flag alone
-is refused, which means a half-set environment yields a silently **gated**
-condition C wearing C's label.
+is refused, which means a half-set environment yields a **gated** condition C
+wearing C's label. That case is caught rather than silent: `/api/status` reports
+the two flags as two separate booleans, so a half-set environment is
+distinguishable from both a properly gateless and a properly gated one, and the
+runner refuses it.
 
 **Adaptive split is disabled per project, not per process.** The engine's triage
 path is always on once merged, so A, B, and C cap the project at
@@ -67,7 +70,7 @@ path is always on once merged, so A, B, and C cap the project at
 that triggers triage. Only D gets `max_retries=3`. `BenchClient.
 register_project` derives this from the condition's `adaptive_split` flag.
 
-### The restart requirement, which nothing verifies for you
+### The restart requirement, which the runner verifies for you
 
 `core/bench_mode.py` reads its two flags with `os.environ` **inside the
 orchestrator process**. The runner is a separate process talking to it over
@@ -81,12 +84,27 @@ that disagrees on the gate before any container spawns. `A,B,C` is a valid
 reverse, restarting the orchestrator in between and passing the same `--run-id`
 so both halves append to one attempts file.
 
-**There is no API exposing the orchestrator's bench mode, so the runner cannot
-check that the restart actually happened.** An operator who forgets it gets rows
-carrying the right condition label and the wrong arm, and no number in the
-report will say so. This is the one manual step in the protocol, and it is
-unverified by design rather than by oversight; adding an endpoint for it is out
-of scope here.
+**`GET /api/status` exposes the orchestrator's bench mode, so the runner does
+check that the restart actually happened.** The endpoint reports `bench_mode`
+and `verify_gate_disabled` as two separate booleans, delegated live to
+`core/bench_mode.py` on every request and deliberately not cached, and
+`bench.runner.assert_uniform_bench_mode` compares them against what every
+condition in the invocation requires. The comparison runs before the first
+project is registered, so a mismatch aborts with a non-zero exit having spawned
+nothing. Performing the restart is still the operator's job; confirming it is
+not.
+
+Two booleans rather than one, because a half-set environment is its own failure
+mode: `PRAXIS_BENCH=1` alone reports `bench_mode` true and
+`verify_gate_disabled` false, and one collapsed field would make that
+indistinguishable from an ordinary gated orchestrator. An orchestrator too old
+to report either field is refused as well, rather than read as gated, because a
+missing key is not evidence of anything.
+
+Without this check an operator who forgot the restart would get rows carrying
+the right condition label and the wrong arm, and since nothing downstream
+recomputes the gate, no number in the report could contradict them. That is why
+it is a refusal and not a warning.
 
 ## Stratification
 

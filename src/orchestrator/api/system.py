@@ -13,6 +13,7 @@ import httpx
 from fastapi import APIRouter, Depends, Request
 
 from orchestrator.api.auth import verify_token
+from orchestrator.core.bench_mode import bench_mode, verify_gate_disabled
 from orchestrator.core.build_info import build_stamp
 from orchestrator.core.llm_router import LOGIN_HINTS
 from orchestrator.models.schemas import OpusStateResponse
@@ -208,6 +209,28 @@ async def system_status(request: Request) -> dict[str, Any]:
         "lm_studio_url": effective_lm_studio_url,
         "providers": providers,
         "build": build_stamp(),
+        # The orchestrator's ACTUAL bench arm, read live on every request.
+        #
+        # core/bench_mode.py reads PRAXIS_BENCH and PRAXIS_BENCH_DISABLE_VERIFY
+        # from THIS process's environment, and bench/runner.py is a separate
+        # process talking REST, so nothing the runner sets reaches here. Without
+        # these two fields the runner cannot tell whether the orchestrator was
+        # restarted into the arm its conditions require, and an A,C invocation
+        # against a gated orchestrator writes rows with the right condition
+        # label and the wrong arm. Nothing downstream recomputes the gate, so no
+        # number in the report can contradict them.
+        #
+        # Deliberately NOT cached, unlike _probe_claude_cli above. That cache
+        # exists to avoid spawning a subprocess every 5 s; these are two dict
+        # lookups. More importantly, the field's job is to confirm that a
+        # restart took effect, and a cached value would answer with the mode
+        # from before it, which is the exact failure it is meant to catch.
+        #
+        # Two separate booleans, not one: PRAXIS_BENCH alone is a half-set
+        # environment that yields a silently GATED run, and collapsing them
+        # would hide precisely that case.
+        "bench_mode": bench_mode(),
+        "verify_gate_disabled": verify_gate_disabled(),
     }
 
 

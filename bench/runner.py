@@ -21,10 +21,14 @@ numbers rather than loud:
   Withholding it would change what the worker is TOLD, and B versus C would then
   compare verification plus a different prompt while reporting verification
   alone.  The gate difference comes from the orchestrator's bench mode instead;
-- one invocation may not mix gated and ungated conditions.  ``core/bench_mode``
-  reads its two flags from the ORCHESTRATOR process environment, and the runner
-  is a separate process talking REST, so a single invocation cannot hold both
-  polarities.  The mixed set is refused before the first container spawns;
+- one invocation may not mix gated and ungated conditions, and the orchestrator
+  it is pointed at must already be in the mode those conditions need.
+  ``core/bench_mode`` reads its two flags from the ORCHESTRATOR process
+  environment, and the runner is a separate process talking REST, so a single
+  invocation cannot hold both polarities and cannot set either one.  The mixed
+  set is refused outright, and the orchestrator's ACTUAL mode is read from
+  ``GET /api/status`` and compared against what the conditions require.  Both
+  refusals happen before the first container spawns;
 - the poll's terminal set is imported from the frozen status vocabulary rather
   than retyped.  ``superseded`` is terminal here (a split parent ends there), so
   a retyped ``("merged", "failed", "passed")`` tuple would leave a finished
@@ -41,6 +45,7 @@ import os
 import sys
 import time
 import uuid
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -102,6 +107,16 @@ class MixedBenchModeError(Exception):
     """Raised when one invocation mixes gated and ungated conditions."""
 
 
+class OrchestratorBenchModeError(Exception):
+    """Raised when the live orchestrator is in the wrong arm for the conditions.
+
+    Distinct from :class:`MixedBenchModeError`, which is about the invocation
+    contradicting itself.  This one is about the invocation contradicting the
+    process it is pointed at, which is a fact no amount of reading argv can
+    establish.
+    """
+
+
 class MissingProblemStatementError(Exception):
     """Raised when a sample entry carries no issue text to hand the worker."""
 
@@ -135,54 +150,118 @@ def assert_matched_pair(condition_keys: list[str]) -> None:
         raise ConfoundedDesignError(message)
 
 
-def assert_uniform_bench_mode(condition_keys: list[str]) -> None:
-    """Refuse ONE INVOCATION that cannot execute every condition it lists.
+def assert_uniform_bench_mode(
+    condition_keys: list[str],
+    reported: Mapping[str, Any] | None = None,
+) -> None:
+    """Refuse an invocation that cannot execute every condition it lists.
 
-    This is a different question from ``assert_matched_pair``, which asks
-    whether the requested arms can be COMPARED.  ``A,B,C`` is a valid design and
-    an impossible invocation, and both statements are true at once.
+    Two refusals, because there are two ways to get this wrong.
 
-    ``core/bench_mode`` reads its two flags with ``os.environ`` inside the
-    ORCHESTRATOR process.  The runner is a separate process talking REST, so
-    setting anything in its own environment reaches nothing.  A gateless arm
-    therefore needs an orchestrator that was STARTED with both flags, and a
-    gated arm needs one started without them.  One process cannot be both.
+    The first is the invocation contradicting ITSELF.  This is a different
+    question from ``assert_matched_pair``, which asks whether the requested arms
+    can be COMPARED.  ``A,B,C`` is a valid design and an impossible invocation,
+    and both statements are true at once.
 
-    NOTHING VERIFIES THE ORCHESTRATOR IS IN THE MODE THE CONDITION NEEDS.  There
-    is no bench-mode endpoint, so an invocation aimed at an orchestrator in the
-    wrong mode produces correctly labelled rows describing the other arm, and no
-    number in the report shows it.  This check catches only the case the runner
-    can see: a single invocation that is self-contradictory.
+    The second is the invocation contradicting the ORCHESTRATOR.
+    ``core/bench_mode`` reads its two flags with ``os.environ`` inside that
+    process.  The runner is a separate process talking REST, so setting anything
+    in its own environment reaches nothing: a gateless arm needs an orchestrator
+    that was STARTED with both flags, a gated arm needs one started without
+    them, and one process cannot be both.  ``GET /api/status`` reports which it
+    is, so when ``reported`` is supplied that claim is CHECKED rather than
+    assumed.  Without the check an invocation aimed at the wrong process
+    produces correctly labelled rows describing the other arm, and since nothing
+    downstream recomputes the gate, no number in the report can contradict them.
+
+    A ``reported`` mapping missing either boolean is REFUSED, not treated as
+    ``False``.  That is the orchestrator-is-too-old case, and reading a missing
+    key with ``.get`` yields ``None``, which is falsy, which would silently
+    classify an unknown mode as "the gate is on" and wave condition B through.
 
     Args:
         condition_keys: The condition keys requested for this run.  Unknown keys
             are ignored here; ``assert_matched_pair`` refuses them.
+        reported: What ``GET /api/status`` says about the orchestrator, as
+            ``{"bench_mode": bool, "verify_gate_disabled": bool}``.  ``None``
+            skips the live check, which is what the pure-argv call sites want.
 
     Raises:
         MixedBenchModeError: If the requested set disagrees on ``verify_gate``.
+        OrchestratorBenchModeError: If the orchestrator's reported mode is not
+            the one the requested conditions need, or is not reported at all.
     """
     by_key = {c.key: c for c in CONDITIONS}
     requested = [by_key[k] for k in dict.fromkeys(condition_keys) if k in by_key]
     gated = sorted(c.key for c in requested if c.verify_gate)
     ungated = sorted(c.key for c in requested if not c.verify_gate)
-    if not gated or not ungated:
+    if gated and ungated:
+        message = (
+            f"conditions {gated} run WITH the mechanical verify gate and "
+            f"conditions {ungated} run WITHOUT it, so this invocation cannot "
+            f"execute both. The orchestrator reads {_BENCH_MODE_FLAG} and "
+            f"{_DISABLE_VERIFY_FLAG} from its OWN process environment, not from "
+            "this runner, so the two groups are two invocations with an "
+            "orchestrator RESTART between them: start it with "
+            f"{_BENCH_MODE_FLAG}={_FLAG_ON} and "
+            f"{_DISABLE_VERIFY_FLAG}={_FLAG_ON} for {ungated}, and with both "
+            f"UNSET for {gated}. Run --conditions {','.join(gated)} then "
+            f"--conditions {','.join(ungated)} (or the reverse), passing the "
+            "same --run-id so both halves append to one file. Each half's "
+            "restart IS checked against GET /api/status before it spawns "
+            "anything, so a skipped restart is refused rather than recorded "
+            "under the wrong arm."
+        )
+        raise MixedBenchModeError(message)
+
+    if reported is None or not requested:
         return
-    message = (
-        f"conditions {gated} run WITH the mechanical verify gate and conditions "
-        f"{ungated} run WITHOUT it, so this invocation cannot execute both. The "
-        f"orchestrator reads {_BENCH_MODE_FLAG} and {_DISABLE_VERIFY_FLAG} from "
-        "its OWN process environment, not from this runner, so the two groups "
-        "are two invocations with an orchestrator RESTART between them: start "
-        f"it with {_BENCH_MODE_FLAG}={_FLAG_ON} and "
-        f"{_DISABLE_VERIFY_FLAG}={_FLAG_ON} for {ungated}, and with both UNSET "
-        f"for {gated}. Run --conditions {','.join(gated)} then --conditions "
-        f"{','.join(ungated)} (or the reverse), passing the same --run-id so "
-        "both halves append to one file. WARNING: nothing here can check which "
-        "mode the orchestrator is actually in. There is no endpoint for it. If "
-        "the restart is skipped, the rows carry the right label and the wrong "
-        "arm, silently."
+
+    # Uniformity is established above, so the first condition speaks for all.
+    keys = sorted(c.key for c in requested)
+    needs_gateless = bool(condition_env(requested[0]))
+    wanted = (
+        f"{_BENCH_MODE_FLAG}={_FLAG_ON} and {_DISABLE_VERIFY_FLAG}={_FLAG_ON}"
+        if needs_gateless
+        else f"NEITHER {_BENCH_MODE_FLAG} NOR {_DISABLE_VERIFY_FLAG} set"
     )
-    raise MixedBenchModeError(message)
+    actual_bench = reported.get("bench_mode")
+    actual_disabled = reported.get("verify_gate_disabled")
+
+    # isinstance, not truthiness: a JSON "0" or a 0 is not a boolean, and
+    # core/bench_mode refuses a loose check for exactly this reason.
+    if not isinstance(actual_bench, bool) or not isinstance(actual_disabled, bool):
+        message = (
+            "the orchestrator this run is pointed at did not report its bench "
+            f"mode: GET /api/status returned bench_mode={actual_bench!r} and "
+            f"verify_gate_disabled={actual_disabled!r}, and both must be "
+            f"booleans. Conditions {keys} need it STARTED with {wanted}, and "
+            "that cannot be confirmed against this response. An orchestrator "
+            "predating those two fields answers 200 without them, so upgrade "
+            "and RESTART it before running the bench. Nothing was dispatched."
+        )
+        raise OrchestratorBenchModeError(message)
+
+    is_gateless = actual_bench and actual_disabled
+    is_gated = not actual_bench and not actual_disabled
+    matches = is_gateless if needs_gateless else is_gated
+    if matches:
+        return
+
+    message = (
+        f"BENCH MODE MISMATCH: conditions {keys} need an orchestrator STARTED "
+        f"with {wanted}, but the one this run is pointed at reports "
+        f"bench_mode={actual_bench} and verify_gate_disabled={actual_disabled} "
+        "on GET /api/status. Note that setting only one of the two flags lands "
+        "here as well: core/bench_mode refuses either alone, which yields a "
+        "GATED orchestrator wearing a gateless label. Set the environment as "
+        "above and RESTART the orchestrator, then run this invocation again; "
+        "the flags are read with os.environ inside that process, so changing "
+        "them in a live one reaches nothing. Nothing was dispatched. Running "
+        f"anyway would write rows labelled {keys} describing the other arm, "
+        "and no number in the report would show it."
+    )
+    raise OrchestratorBenchModeError(message)
 
 
 def condition_env(condition: Condition) -> dict[str, str]:
@@ -195,7 +274,9 @@ def condition_env(condition: Condition) -> dict[str, str]:
 
     These belong to the orchestrator process, not this one.  The runner returns
     them as the instruction an operator must apply by hand before starting the
-    orchestrator; it cannot apply them itself and cannot confirm they were.
+    orchestrator.  It still cannot apply them itself, but it can now CONFIRM
+    they were applied: ``assert_uniform_bench_mode`` compares this requirement
+    against what ``GET /api/status`` reports, before the first spawn.
     """
     if condition.verify_gate:
         return {}
@@ -381,6 +462,24 @@ class BenchClient:
 
     async def close(self) -> None:
         await self._client.aclose()
+
+    async def orchestrator_bench_mode(self) -> dict[str, Any]:
+        """Read the orchestrator's ACTUAL arm from ``GET /api/status``.
+
+        The two booleans are returned VERBATIM, including as ``None`` when the
+        response does not carry them.  An orchestrator predating those fields
+        must reach ``assert_uniform_bench_mode`` as something it REFUSES, so
+        defaulting a missing key to ``False`` here would be exactly wrong: that
+        is indistinguishable from a correctly gated orchestrator and would wave
+        conditions B and D straight through.
+        """
+        response = await self._client.get("/api/status")
+        response.raise_for_status()
+        body = dict(response.json())
+        return {
+            "bench_mode": body.get("bench_mode"),
+            "verify_gate_disabled": body.get("verify_gate_disabled"),
+        }
 
     async def register_project(
         self,
@@ -606,9 +705,12 @@ async def run_attempt(
 def _warn_required_orchestrator_mode(attempts: list[Attempt], api: str) -> None:
     """Say out loud which mode the orchestrator has to already be in.
 
-    Unconditional, and a warning even on the happy path, because this is the
-    one thing in the run that no code checks.  ``assert_uniform_bench_mode``
-    guarantees every attempt agrees, so the first one speaks for all of them.
+    Unconditional, and a warning even on the happy path, because it is the one
+    step in the protocol a human still has to perform: the runner can now VERIFY
+    the restart happened, but it still cannot do it.  Naming the required
+    setting before the check runs is also what makes the check's refusal
+    readable when it fires.  ``assert_uniform_bench_mode`` guarantees every
+    attempt agrees, so the first one speaks for all of them.
     """
     if not attempts:
         return
@@ -620,8 +722,8 @@ def _warn_required_orchestrator_mode(attempts: list[Attempt], api: str) -> None:
     )
     logger.warning(
         "BENCH: conditions %s need the orchestrator at %s to have been STARTED "
-        "with %s. This is NOT checked: there is no bench-mode endpoint, so a "
-        "wrong mode here produces rows with the right label and the wrong arm.",
+        "with %s. Its actual mode is read from GET /api/status and a mismatch "
+        "aborts this run before anything is registered or dispatched.",
         sorted({a.condition.key for a in attempts}),
         api,
         setting,
@@ -643,10 +745,21 @@ async def _main_async(args: argparse.Namespace) -> int:
 
     run_id = args.run_id or f"run-{uuid.uuid4().hex[:8]}"
     out_path = Path(args.out or f"bench/.work/runs/{run_id}/attempts.jsonl")
-    logger.info("run %s: %d attempts to %s", run_id, len(attempts), out_path)
 
     client = BenchClient(args.api, args.token)
     try:
+        # BEFORE the first container spawns, and before the first project row
+        # exists. The orchestrator is a separate process whose bench flags come
+        # from its own environment, so this REST read is the only way to know
+        # the required restart actually happened. A mismatch raises out of here
+        # with nothing registered, nothing dispatched and no row written, which
+        # is the point: a run that continued would produce correctly labelled
+        # rows describing the other arm.
+        assert_uniform_bench_mode(
+            [a.condition.key for a in attempts],
+            reported=await client.orchestrator_bench_mode(),
+        )
+        logger.info("run %s: %d attempts to %s", run_id, len(attempts), out_path)
         for index, attempt in enumerate(attempts, start=1):
             logger.info(
                 "[%d/%d] %s condition %s worker %s seed %d",
