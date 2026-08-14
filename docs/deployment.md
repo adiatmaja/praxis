@@ -337,6 +337,11 @@ including the auto-delegate global default worker:
 > inherits that through the compose environment merge). Editing `config/praxis.yaml`
 > therefore takes effect on `docker compose restart orchestrator`, with no image rebuild.
 > This reverses the pre-2026-08-06 behavior, where the YAML was baked in at build time.
+>
+> **Important:** `.env` is read at *container-creation time*, not when restarting an
+> existing container. Edits to `.env` require `docker compose up -d` to recreate the
+> container and apply them. Use `docker compose restart orchestrator` only for
+> `config/praxis.yaml` changes.
 
 The auto-delegate toggle itself is runtime state (`auto_delegate.enabled` in `settings_overrides`),
 set via `praxis mode on|off` or `PUT /api/settings/auto-delegate`, not a config file.
@@ -347,7 +352,10 @@ set via `praxis mode on|off` or `PUT /api/settings/auto-delegate`, not a config 
 
 ### Per-project `verify_cmd`
 
-Each project can set a `verify_cmd` string (via the API or dashboard project settings).
+Each project can set a `verify_cmd` string via the REST API. Supported endpoints:
+- `POST /api/projects`: set at project creation (via the `verify_cmd` field in the request body)
+- `PATCH /api/projects/{id}`: update an existing project (via the `verify_cmd` field in the request body)
+
 When set, `review_task` runs this command against the cloned PR head **before** the brain
 review step.
 
@@ -577,3 +585,4 @@ Praxis supports a named model registry and per-role ordered fallback chains (`pl
 | Planner shows unavailable | `claude` CLI not installed or not logged in on the orchestrator host (`claude --version`, then log in). |
 | Dispatch fails with a Docker image error | The harness image for the project isn't built. Build it per [Docker Images](#docker-images). |
 | No models in the New Project dropdown | LM Studio isn't running or isn't reachable at `LM_STUDIO_URL`. |
+| `.env` changes have no effect after `docker compose restart orchestrator` | `.env` is read at container-creation time only. Use `docker compose up -d` to recreate the container and apply `.env` changes. Use `docker compose restart` only for `config/praxis.yaml` changes (which are bind-mounted). |
