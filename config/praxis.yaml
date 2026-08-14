@@ -37,7 +37,7 @@ escalation:
 # the leaf then parks for a human.
 #
 # Every rung must name an implementer STRONGER than default_worker_model
-# (currently agy / "Gemini 3.6 Flash (High)"), or the escalation is a no-op.
+# (currently agy / "Gemini 3.7 Flash (High)"), or the escalation is a no-op.
 # Rung availability is deployment-specific: glm-4.7 needs an API key for the
 # hosted endpoint, and qwen3.6-27b needs LM Studio reachable.
 implement_escalation:
@@ -82,7 +82,7 @@ models:
     implement: [local]
 
 default_worker_harness: agy
-default_worker_model: "Gemini 3.6 Flash (High)"
+default_worker_model: "Gemini 3.7 Flash (High)"
 
 # Named worker configurations. Choosing one sets harness, model, and endpoint
 # together; there is no new resolution logic, only fewer fields to get right.
@@ -103,7 +103,7 @@ worker_presets:
   - name: gemini-agy
     label: "Gemini via the agy harness"
     harness: agy
-    model: "Gemini 3.6 Flash (High)"
+    model: "Gemini 3.7 Flash (High)"
     endpoint: ""
     requires: [interactive_login]
 

@@ -330,7 +330,7 @@ including the auto-delegate global default worker:
 | YAML key | Default | Description |
 |----------|---------|-------------|
 | `default_worker_harness` | `opencode` | Harness for the global default worker used in auto-delegate mode and as a project fallback. Reference config sets `agy` |
-| `default_worker_model` | `""` | Model for the global default worker. Reference config sets `Gemini 3.6 Flash (High)` |
+| `default_worker_model` | `""` | Model for the global default worker. Reference config sets `Gemini 3.7 Flash (High)` |
 
 > **Mounted, not baked:** both compose files bind-mount `./config` read-only at
 > `/app/config`, and the base file points `PRAXIS_CONFIG_PATH` at it (the dev overlay

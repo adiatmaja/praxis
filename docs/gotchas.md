@@ -296,7 +296,7 @@ keep the CLAUDE.md index in sync.
   `PUT /api/settings/auto-delegate` / MCP `get_mode`. When ON, the brain plans and reviews
   only and delegates every implementation task to the global default worker,
   `default_worker_harness` / `default_worker_model` in `config/praxis.yaml` (reference:
-  `agy` / `Gemini 3.6 Flash (High)`; the product default outside the mode stays
+  `agy` / `Gemini 3.7 Flash (High)`; the product default outside the mode stays
   `opencode`). A project registered without a `model_name` falls back to that worker.
   `dispatch_pending_tasks` then reuses one caller-named work branch and threads
   `single_branch=True` → `SINGLE_BRANCH=1` into the container, so both harness entrypoints
