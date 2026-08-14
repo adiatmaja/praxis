@@ -257,6 +257,41 @@ def _render_conditions_note(rows: list[dict[str, Any]]) -> str:
     return " ".join(parts)
 
 
+def _render_token_note(rows: list[dict[str, Any]]) -> str:
+    """Say whether tokens were measured, derived from the rows themselves.
+
+    Cost moved to wall clock on 2026-08-14 and token accounting was deferred
+    until a metered provider is actually in play, so today every row carries
+    zero and this renders the disclaimer. It is NOT hardwired into the
+    template, for the same reason ``_render_conditions_note`` is not: a fixed
+    claim would keep asserting the counters are missing after somebody wires
+    them up, and nothing would catch it. A report that ALWAYS says a thing was
+    not measured is exactly as false as one that never says it.
+
+    Args:
+        rows: Attempt rows, as read from the JSONL metrics file.
+
+    Returns:
+        Markdown prose either disclaiming token accounting or reporting it.
+    """
+    brain = sum(r["brain_tokens"] for r in rows)
+    worker = sum(r["worker_tokens"] for r in rows)
+    if brain or worker:
+        return (
+            f"Token counts: {brain} brain, {worker} worker, "
+            f"{brain + worker} total. Wall clock remains the primary cost "
+            "axis; these are reported because the rows carry them."
+        )
+    return (
+        "Token counts are UNMEASURED. `brain_tokens` and `worker_tokens` are "
+        "stubs hardcoded to 0 in `bench/runner.py`: OpenCode talks to LM Studio "
+        "directly from inside the agent container, so the orchestrator never "
+        "observes those calls, and the agent-done callback carries no usage "
+        "field. Token accounting is deferred until a metered provider is "
+        "actually in play."
+    )
+
+
 def build_report(rows: list[dict[str, Any]], run_id: str, model_cutoff: str) -> str:
     """Render the full report markdown.
 
@@ -281,6 +316,7 @@ def build_report(rows: list[dict[str, Any]], run_id: str, model_cutoff: str) -> 
         stratum_table=_render_stratum_table(rows),
         mcnemar_table=_render_mcnemar_table(rows),
         cost_table=_render_cost_table(rows),
+        token_note=_render_token_note(rows),
         plausible_table=_render_plausible_table(rows),
         workers=workers,
         model_cutoff=model_cutoff,

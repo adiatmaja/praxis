@@ -179,25 +179,41 @@ _TOKENS_UNMEASURED = (
 
 
 @pytest.mark.unit
-def test_the_report_labels_token_counts_unmeasured_and_says_why() -> None:
-    """Cost moved to wall clock (confirmed 2026-08-14); tokens are no longer
-    a computed cell at all, only a fixed disclaimer. Silently dropping that
-    disclaimer is exactly as misleading as printing a false zero, so it must
-    render regardless of what token fields the rows happen to carry.
+def test_a_run_with_no_token_data_says_tokens_are_unmeasured() -> None:
+    """Cost moved to wall clock (confirmed 2026-08-14). Silently dropping the
+    disclaimer is exactly as misleading as printing a false zero, so a run
+    carrying no token data must say so in full.
     """
-    rows = [_row(condition="A", resolved=True, brain_tokens=9999, worker_tokens=9999)]
+    rows = [_row(condition="A", resolved=True, brain_tokens=0, worker_tokens=0)]
     report = build_report(rows, run_id="pilot-1", model_cutoff="2026-03")
     assert _TOKENS_UNMEASURED in _norm(report)
 
 
 @pytest.mark.unit
-def test_the_template_structurally_carries_the_tokens_unmeasured_sentence() -> None:
-    """Structural, not incidental: present on disk in the template, the same
-    guarantee the mandatory honesty headings rely on (see
-    ``test_the_template_file_itself_contains_every_mandatory_heading``).
+def test_a_run_with_real_token_counts_does_not_claim_they_are_unmeasured() -> None:
+    """Derived from the rows, exactly like the ablation note above it.
+
+    A disclaimer hardwired into the template would keep claiming tokens were
+    unmeasured after the counters are implemented, and nothing would catch it.
+    That is the same failure as a report that ALWAYS says the ablation was
+    skipped: see ``test_a_gated_run_does_not_claim_the_ablation_was_skipped``.
+    Asserting only the presence of the sentence cannot tell those apart, so
+    this asserts its ABSENCE on the other branch.
+    """
+    rows = [_row(condition="A", resolved=True, brain_tokens=1200, worker_tokens=8800)]
+    report = build_report(rows, run_id="pilot-1", model_cutoff="2026-03")
+    assert _TOKENS_UNMEASURED not in _norm(report)
+    assert "Token counts: 1200 brain, 8800 worker, 10000 total" in _norm(report)
+
+
+@pytest.mark.unit
+def test_the_token_note_is_substituted_into_the_template() -> None:
+    """Structural: the template delegates the claim rather than baking it, so
+    the note cannot disagree with the rows the tables were built from.
     """
     text = TEMPLATE_PATH.read_text(encoding="utf-8")
-    assert _TOKENS_UNMEASURED in _norm(text)
+    assert "$token_note" in text
+    assert _TOKENS_UNMEASURED not in _norm(text)
 
 
 @pytest.mark.unit
@@ -329,6 +345,7 @@ def test_a_stray_brace_in_the_template_does_not_break_rendering() -> None:
         stratum_table="",
         mcnemar_table="",
         cost_table="",
+        token_note="",
         plausible_table="",
         workers="w",
         model_cutoff="2026-01",

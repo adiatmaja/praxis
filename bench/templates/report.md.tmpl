@@ -49,11 +49,7 @@ RESOLVED task are reported per condition. A condition that resolves nothing
 shows an infinite wall clock per resolved task, because zero or any finite
 number would read as free.
 
-Token counts are UNMEASURED. `brain_tokens` and `worker_tokens` are stubs
-hardcoded to 0 in `bench/runner.py`: OpenCode talks to LM Studio directly
-from inside the agent container, so the orchestrator never observes those
-calls, and the agent-done callback carries no usage field. Token accounting
-is deferred until a metered provider is actually in play.
+$token_note
 
 ## Plausible but wrong
 
