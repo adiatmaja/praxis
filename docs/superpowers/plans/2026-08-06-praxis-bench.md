@@ -5889,3 +5889,118 @@ What it does and does not invalidate:
    run depended on an unverifiable manual claim about the orchestrator's mode.
 5. **Agent containers are REMOVED after a run**, so `docker logs` is useless
    after the fact. Stream them live or the evidence is gone.
+
+### Pilot blocker closeout execution record (2026-08-14)
+
+The three decisions that blocked Task 12 were put to the user with a
+recommendation and all three were CONFIRMED, before any pilot outcome was
+observed. They are recorded in full in `TODO.md` section 1 and summarized here
+so this plan carries them:
+
+1. **Cost is measured as WALL CLOCK, not tokens.** `AttemptRecord.wall_clock_s`
+   is already a genuine measurement, as are `leaf_count`, retries and
+   clarifications. In this configuration tokens are not the billing currency:
+   the worker is a local open-weight model on the operator's own GPU, and the
+   brain is a rate-limited subscription CLI. Counting worker tokens is also not
+   a small job, because OpenCode talks to LM Studio DIRECTLY from inside the
+   container, so the orchestrator never observes those calls and the agent-done
+   callback carries no usage field. Deferred to a METERED provider.
+2. **No per-instance provisioning; cheap mitigation plus Limitations.**
+3. **`--verify-cmd` is `python -m pytest -q`**, identical across A and C, never
+   derived from `FAIL_TO_PASS`.
+
+Those decisions turned into four agent-executable items, all of which shipped
+the same day. Built by three parallel agents in isolated git worktrees, because
+the three file sets were disjoint but each agent runs `ruff format` and the full
+suite across its tree, which is the clobber case this project has already paid
+for.
+
+**Commits, in order:**
+
+- `ff70a56` `/api/status` reports `bench_mode` and `verify_gate_disabled` as two
+  separate booleans, read LIVE per request. Deliberately NOT cached like the
+  neighbouring claude CLI probe: the field exists to confirm a RESTART took
+  effect, and a cached value would answer with the mode from before it. Two
+  booleans rather than one because a half-set environment is its own failure
+  mode. `assert_uniform_bench_mode` compares the live reading against what every
+  condition requires, called inside `_main_async`'s `try` BEFORE the first
+  `register_project`, so a mismatch aborts having registered nothing,
+  dispatched nothing and written no row.
+- `4a3da46` the cost table becomes `n | resolved | total wall clock | wall clock
+  per resolved`; a condition resolving nothing still renders infinite. The
+  Limitations paragraph on non-comparable absolute rates is now structural.
+- `7069d85` the tokens-UNMEASURED claim is DERIVED from the rows.
+- `77f0ece` pytest pre-installed in BOTH agent images, and the do-not-repair
+  briefing added to the Bible as a FLOOR section.
+
+**Gate at the join point: 2076 passed** (2014 + 49 + 4 + 9, exactly as
+predicted, so the three file sets really were disjoint), `ruff format --check`,
+`ruff check` and `mypy` all clean over `src/ tests/ bench/`.
+
+**Defects found in the agents' own work, by the orchestrator, not by their
+reports:**
+
+1. **A test that enforced a lie.** The wall-clock agent hardwired the
+   tokens-UNMEASURED sentence into `report.md.tmpl` and pinned it with
+   `test_the_report_labels_token_counts_unmeasured_and_says_why`, built on rows
+   carrying `brain_tokens=9999, worker_tokens=9999`, whose docstring said the
+   sentence must render "regardless of what token fields the rows happen to
+   carry". That guarantees the report keeps claiming the counters are missing
+   after somebody implements them, and nothing catches it. It also contradicted
+   its own sibling twenty lines above,
+   `test_a_gated_run_does_not_claim_the_ablation_was_skipped`, which exists
+   precisely because a fixed claim outlives the fact. `bench/README.md` does say
+   caveats are carried "by template and not by choice", so hardwiring was
+   checked against the house style before being overruled; the ablation note is
+   the closer precedent for a claim whose truth depends on the data. Fixed in
+   `7069d85` as a separate commit so it stays reviewable apart from the agent's
+   work.
+
+**Verified by the orchestrator rather than accepted from the reports.** Every
+branch's parent was confirmed to be `1977349` and every diff confirmed in scope.
+Re-run independently, each failing and each restored to its exact original md5:
+hardcoding `bench_mode=True` (fails the `neither-flag` case an ordinary
+deployment hits); relocating the runner's assertion after the attempt loop
+(fails `test_the_mode_probe_precedes_every_spawning_call`, so "spawns nothing"
+is a pinned fact rather than a code-reading); dividing wall clock by trials
+instead of resolved; deleting the UNMEASURED sentence; printing a finite number
+when nothing resolved; gating the briefing on a field falsy on the bare dispatch
+path (fails exactly the six briefing tests); de-flooring the briefing. pytest
+was also run inside the built `opencode-agent:latest` by the orchestrator, not
+read from the Dockerfile.
+
+**A design call that is stricter than specified, on purpose.** Conditions B and
+D are refused when `bench_mode` is true even though the gate itself would still
+be on. `bench_mode()` is used nowhere except inside `verify_gate_disabled()`, so
+this refuses a run that would functionally have been correct. Kept because a
+half-set environment means the operator was mid-restart, which is the exact
+error the feature exists to catch, and a false refusal costs a clear message
+while a false accept costs an unusable run.
+
+**Still open, and it is the pilot's real precondition.** NOTHING here ran
+against a live orchestrator or a real worker. Every test uses a mock transport
+or a recording stand-in. Both agents flagged this themselves rather than letting
+it pass. The `/api/status` refusal is the single link certifying that the
+pilot's arm labels describe the arm that actually ran, so taking it on trust is
+the exact failure it was built to prevent.
+
+**Known and accepted, and it belongs in the report.** pytest now runs, but it is
+system Python 3.11.2 with pytest 7.2.1, so the `collections.Callable` collection
+error on `psf__requests-2148` will STILL occur: that is a Python-version
+mismatch, not a missing tool. The briefing converts what used to be a
+contaminated "success" into an honest failure. It does not make the instance
+resolvable. This is decision 2's limitation working as designed.
+
+**Traps this session paid for, or nearly did:**
+
+- **A worktree can be created from a STALE base.** All three came up rooted at
+  `dac8e22`, 149 commits behind, with no `bench/` directory at all; each agent
+  detected it and fast-forwarded before starting. An agent that had not checked
+  would have produced work against a tree where `worker_bible.py` had no
+  `acceptance` field and `e5f07ff` did not exist. Check the base commit of any
+  isolated workspace before trusting work done in it.
+- **`git checkout --` to restore a mutation destroys uncommitted work**, which
+  is already in the trap list and bit an agent anyway. Snapshot the bytes.
+- **A subagent's mutation battery can be a false green in either direction**, so
+  require it to print `module.__file__` and include one deliberate sabotage that
+  must fail.
