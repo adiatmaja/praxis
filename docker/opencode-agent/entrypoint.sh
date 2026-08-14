@@ -383,7 +383,28 @@ if git diff --cached --quiet; then
     if [ "${ahead}" -gt 0 ]; then
         echo "Worker committed its own work (${ahead} commit(s) ahead of ${BASE_BRANCH})"
     else
+        # Explain the run instead of merely asserting it. This container is
+        # destroyed seconds from now, so anything not printed here is gone for
+        # good, including whether the harness said something, said nothing, or
+        # refused. core/failure_taxonomy attributes the outcome from exactly
+        # this evidence, and "the harness emitted nothing" must not be recorded
+        # as the same shape as "the worker shipped a bad patch".
+        #
+        # harness_rc is ALWAYS 0 here: a non-zero harness rc exits far above,
+        # long before the commit block. Printing it is still correct and
+        # deliberate. It is what separates "exited cleanly and produced
+        # nothing" from every other shape, and it stops a future reader from
+        # assuming the code was swallowed by the tee. Do NOT delete it as dead
+        # output.
+        output_bytes="$(wc -c < "${OUTPUT_LOG}" 2>/dev/null | tr -d '[:space:]')" || output_bytes=""
+        [ -n "${output_bytes}" ] || output_bytes=0
         echo "No changes produced by OpenCode"
+        echo "  harness_rc=${opencode_rc}"
+        echo "  output_log_bytes=${output_bytes}"
+        echo "  report_status=${report_status:-none}"
+        echo "--- last 30 lines of harness output ---"
+        tail -n 30 "${OUTPUT_LOG}" 2>/dev/null || echo "  (no harness output captured)"
+        echo "--- end of harness output ---"
         STATUS="failed"
         exit 1
     fi

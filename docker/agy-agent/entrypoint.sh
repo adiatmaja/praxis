@@ -419,7 +419,58 @@ if git diff --cached --quiet; then
     if [ "${ahead}" -gt 0 ]; then
         echo "Worker committed its own work (${ahead} commit(s) ahead of ${BASE_BRANCH})"
     else
+        # Explain the run instead of merely asserting it. This container is
+        # destroyed seconds from now, so anything not printed here is gone for
+        # good, including whether the harness said something, said nothing, or
+        # refused. core/failure_taxonomy attributes the outcome from exactly
+        # this evidence, and "the harness emitted nothing" must not be recorded
+        # as the same shape as "the worker shipped a bad patch".
+        #
+        # harness_rc is ALWAYS 0 here: a non-zero harness rc exits far above,
+        # long before the commit block. Printing it is still correct and
+        # deliberate. It is what separates "exited cleanly and produced
+        # nothing" from every other shape, and it stops a future reader from
+        # assuming the code was swallowed by the tee. Do NOT delete it as dead
+        # output.
+        output_bytes="$(wc -c < "${OUTPUT_LOG}" 2>/dev/null | tr -d '[:space:]')" || output_bytes=""
+        [ -n "${output_bytes}" ] || output_bytes=0
+        # agy alone has a JSON envelope: {conversation_id, status, response,
+        # duration_seconds, num_turns, usage}. status and num_turns are the two
+        # fields that say whether the model actually took any turns, which is
+        # the difference between "refused immediately" and "worked and produced
+        # nothing". Read from RAW_LOG, not OUTPUT_LOG: the split above strips
+        # the envelope. Read on STDIN so no path is ever passed as an argument.
+        # The whole thing is guarded twice -- python never raises, and the
+        # substitution falls back -- because the fallback path above copies
+        # RAW_LOG over verbatim and there may be no JSON here at all; tripping
+        # set -e would skip the tail below AND the exit 1.
+        envelope_info="$(python3 -c '
+import json, sys
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    d = None
+if isinstance(d, dict):
+    st = d.get("status") or "none"
+    nt = d.get("num_turns")
+    nt = "unknown" if nt is None else nt
+else:
+    st, nt = "unparseable", "unknown"
+print("  envelope_status=%s" % st)
+print("  envelope_num_turns=%s" % nt)
+' < "${RAW_LOG}" 2>/dev/null)" || envelope_info=""
+        if [ -z "${envelope_info}" ]; then
+            envelope_info="  envelope_status=unavailable
+  envelope_num_turns=unknown"
+        fi
         echo "No changes produced by agy"
+        echo "  harness_rc=${agy_rc}"
+        echo "  output_log_bytes=${output_bytes}"
+        echo "  report_status=${report_status:-none}"
+        echo "${envelope_info}"
+        echo "--- last 30 lines of harness output ---"
+        tail -n 30 "${OUTPUT_LOG}" 2>/dev/null || echo "  (no harness output captured)"
+        echo "--- end of harness output ---"
         STATUS="failed"
         exit 1
     fi
