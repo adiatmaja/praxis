@@ -426,7 +426,8 @@
           '<div class="formrow"><label>Repository URL</label><input id="pf-repo" required autocomplete="off" placeholder="https://github.com/user/repo"></div>' +
           '<div class="formrow"><label>Model (implementer)</label>' +
             '<select id="pf-model-select" onchange="onModelPreset(this)"><option value="">Loading models…</option></select>' +
-            '<input id="pf-model" required autocomplete="off" placeholder="model id" style="margin-top:6px;display:none;"></div>' +
+            '<input id="pf-model" required autocomplete="off" placeholder="model id" style="margin-top:6px;display:none;">' +
+            '<div id="pf-model-note" class="settings-note" style="display:none;"></div></div>' +
           '<div class="formrow"><label>Agent model (reasoning)</label>' +
             '<select id="pf-agent-model-preset" onchange="onAgentModelPreset(this.value)">' +
               '<option value="">Global default</option>' +
@@ -488,6 +489,23 @@
       if (harness) harnessSel.value = harness;
     }
 
+    // Show/clear the reachability note under the model dropdown. Presets are
+    // legitimate configuration and are never removed just because the
+    // endpoint is currently down: this note is what makes that state
+    // OBVIOUS instead of silently offering models that are not served.
+    function setModelAvailabilityNote(text) {
+      const note = document.getElementById("pf-model-note");
+      if (!note) return;
+      if (text) {
+        note.textContent = text;
+        note.style.display = "block";
+        note.style.color = "#ef4444";
+      } else {
+        note.textContent = "";
+        note.style.display = "none";
+      }
+    }
+
     async function loadLmModels() {
       const select = document.getElementById("pf-model-select");
       const custom = document.getElementById("pf-model");
@@ -498,19 +516,62 @@
         presets = data.presets || [];
       } catch (e) { /* presets unavailable, fall through to the LM Studio list */ }
       let models = [];
+      let connected = false;
+      let lmStudioUrl = "";
+      let embeddingIds = [];
       try {
         const data = await api("GET", "/api/lm-models");
         models = data.models || [];
+        connected = !!data.connected;
+        lmStudioUrl = data.lm_studio_url || "";
+        embeddingIds = data.embedding_model_ids || [];
       } catch (e) { /* fall through to manual entry */ }
-      if (presets.length || models.length) {
-        const presetGroups = presets.map(p =>
-          '<optgroup label="' + esc(p.label) + '">' +
-            '<option value="' + esc(p.model) + '" data-harness="' + esc(p.harness) + '">' + esc(p.model) + '</option>' +
-          '</optgroup>'
-        ).join("");
-        const lmGroup = models.length
+      // Never offer an embedding model as an implementer, it generates
+      // vectors, not code. embeddingIds is populated only when LM Studio's
+      // richer /api/v0/models endpoint confirmed the "type"; when that
+      // enrichment wasn't available it comes back empty and nothing here is
+      // filtered out (silence, not a false "this one is safe" claim).
+      const embeddingSet = new Set(embeddingIds);
+      const implementerModels = models.filter(m => !embeddingSet.has(m));
+      const liveModelSet = new Set(implementerModels);
+      if (presets.length || implementerModels.length) {
+        // A preset with no external requirement (no api_key, no interactive
+        // login) is understood to run through this same LM Studio endpoint,
+        // so whether it is CURRENTLY being served is knowable and worth
+        // saying. A preset that requires something else talks to a
+        // different endpoint or process this check never touched, so it is
+        // left unannotated rather than guessed at.
+        const presetGroups = presets.map(p => {
+          const locallyChecked = !(p.requires && p.requires.length);
+          let suffix = "";
+          if (locallyChecked) {
+            if (!connected) {
+              suffix = " (endpoint unreachable)";
+            } else if (liveModelSet.has(p.model)) {
+              suffix = " (live)";
+            } else {
+              suffix = " (not currently loaded)";
+            }
+          }
+          return '<optgroup label="' + esc(p.label) + '">' +
+            '<option value="' + esc(p.model) + '" data-harness="' + esc(p.harness) + '">' +
+              esc(p.model + suffix) +
+            '</option>' +
+          '</optgroup>';
+        }).join("");
+        // De-duplicate: a preset whose model is also a live LM Studio model
+        // is dropped from the "Other" group so it appears once: as the
+        // preset entry, which carries the harness metadata the bare live
+        // entry does not.
+        const presetModelNames = new Set(
+          presets
+            .filter(p => !(p.requires && p.requires.length))
+            .map(p => p.model)
+        );
+        const otherModels = implementerModels.filter(m => !presetModelNames.has(m));
+        const lmGroup = otherModels.length
           ? '<optgroup label="Other (from LM Studio)">' +
-              models.map(m => '<option value="' + esc(m) + '">' + esc(m) + '</option>').join("") +
+              otherModels.map(m => '<option value="' + esc(m) + '">' + esc(m) + '</option>').join("") +
             '</optgroup>'
           : "";
         select.innerHTML = presetGroups + lmGroup + '<option value="__custom__">Custom…</option>';
@@ -520,10 +581,15 @@
         // change; sync the harness to it or Create submits a harness that
         // matches the selected model only by coincidence.
         syncHarnessToSelectedModel();
+        setModelAvailabilityNote(connected ? "" :
+          "No model server reachable" + (lmStudioUrl ? " at " + lmStudioUrl : "") +
+          ". Presets below are configured but not confirmed live, pick one only if you know it will be running, or enter a model id manually.");
       } else {
         // Neither presets nor LM Studio are reachable, fall back to a free-text field
         select.style.display = "none";
         if (custom) { custom.style.display = "block"; custom.placeholder = "model id (LM Studio unreachable)"; }
+        setModelAvailabilityNote(connected ? "" :
+          "No model server reachable" + (lmStudioUrl ? " at " + lmStudioUrl : "") + ".");
       }
     }
 
@@ -1772,7 +1838,7 @@
           if (_opusTxt) _opusTxt.textContent = "Opus " + _s.replace("_", " ");
         }
         setConnection("agent", status.agent_model, status.opus_state.status);
-        setConnection("subagent", status.subagent_model, status.subagent_model.connected ? "connected" : "disconnected");
+        setConnection("subagent", status.subagent_model, status.subagent_model.connected ? "connected" : "disconnected", status.lm_studio_url);
         updateProviderLoginBanner(status.providers);
       } catch (error) {
         setConnection("agent", { name: "offline", connected: false }, "disconnected");
@@ -1866,12 +1932,22 @@
         .replace(/"/g, "&quot;");
     }
 
-    function setConnection(prefix, info, status) {
+    // endpointUrl is optional: when the connection is DOWN and a URL is
+    // known (e.g. the LM Studio endpoint behind the Implementer slot), show
+    // it instead of a bare "unknown": the dashboard previously named no
+    // target at all, so there was nothing to go check.
+    function setConnection(prefix, info, status, endpointUrl) {
       const dot = document.getElementById(prefix + "-dot");
       const model = document.getElementById(prefix + "-model");
       const connected = info && info.connected;
       dot.className = "conn-dot " + (status === "rate_limited" ? "rate_limited" : connected ? "connected" : "disconnected");
-      model.textContent = info && info.name ? info.name : "unknown";
+      if (!connected && endpointUrl) {
+        model.textContent = "unreachable (" + endpointUrl + ")";
+        model.title = endpointUrl;
+      } else {
+        model.textContent = info && info.name ? info.name : "unknown";
+        model.removeAttribute("title");
+      }
     }
 
     // ── Create-Spec chat panel ───────────────────────────────────────────────

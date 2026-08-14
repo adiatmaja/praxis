@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import httpx
 import pytest
 from httpx import AsyncClient
 
@@ -407,3 +408,111 @@ async def test_status_bench_fields_delegate_to_core_bench_mode(
     assert response.status_code == 200
     assert response.json()["bench_mode"] is True
     assert response.json()["verify_gate_disabled"] is True
+
+
+# ---------------------------------------------------------------------------
+# /api/lm-models: embedding-model identification (Task 13)
+#
+# The OpenAI-compatible /v1/models endpoint (the primary connectivity+list
+# check) carries no field distinguishing an embedding model from an
+# implementer model. LM Studio's own /api/v0/models does, via "type". These
+# tests pin that the endpoint enriches from /api/v0/models on a best-effort
+# basis rather than guessing from the model id string, and that a failure of
+# that SECOND call never disturbs the primary connectivity result.
+# ---------------------------------------------------------------------------
+
+
+def _lm_response(url: str, data: dict[str, object]) -> httpx.Response:
+    return httpx.Response(200, json=data, request=httpx.Request("GET", url))
+
+
+# The FastAPI TestClient's own ASGI transport is ALSO an httpx.AsyncClient
+# under the hood (see conftest.py's `client` fixture), so patching
+# httpx.AsyncClient.get globally intercepts the test's own
+# `client.get("/api/lm-models", ...)` call too, not just the endpoint's
+# outbound calls to the fake LM Studio URL. Every fake `_fake_get` below
+# falls through to the real implementation for anything it doesn't
+# recognize, so the test client's own traffic is unaffected.
+_real_async_client_get = httpx.AsyncClient.get
+
+
+@pytest.mark.integration
+async def test_lm_models_identifies_embedding_models_via_v0_endpoint(
+    client: AsyncClient,
+    db: Database,
+    auth_headers: dict[str, str],
+    mocker: pytest.MonkeyPatch,
+) -> None:
+    """embedding_model_ids reflects the real "type" field from /api/v0/models."""
+    await seed_user(db)
+
+    async def _fake_get(
+        self: httpx.AsyncClient, url: str, *a: object, **kw: object
+    ) -> httpx.Response:
+        url = str(url)
+        if url.endswith("/v1/models"):
+            return _lm_response(
+                url,
+                {
+                    "data": [
+                        {"id": "qwen3.6-27b"},
+                        {"id": "text-embedding-nomic-embed-text-v1.5"},
+                    ]
+                },
+            )
+        if url.endswith("/api/v0/models"):
+            return _lm_response(
+                url,
+                {
+                    "data": [
+                        {"id": "qwen3.6-27b", "type": "llm"},
+                        {
+                            "id": "text-embedding-nomic-embed-text-v1.5",
+                            "type": "embeddings",
+                        },
+                    ]
+                },
+            )
+        return await _real_async_client_get(self, url, *a, **kw)
+
+    mocker.patch("httpx.AsyncClient.get", new=_fake_get)
+
+    response = await client.get("/api/lm-models", headers=auth_headers)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["connected"] is True
+    assert body["models"] == ["qwen3.6-27b", "text-embedding-nomic-embed-text-v1.5"]
+    assert body["embedding_model_ids"] == ["text-embedding-nomic-embed-text-v1.5"]
+
+
+@pytest.mark.integration
+async def test_lm_models_embedding_ids_empty_when_v0_endpoint_unavailable(
+    client: AsyncClient,
+    db: Database,
+    auth_headers: dict[str, str],
+    mocker: pytest.MonkeyPatch,
+) -> None:
+    """A v0-enrichment failure must not disturb the primary /v1/models result
+    and must degrade to an empty list, never a name-substring guess."""
+    await seed_user(db)
+
+    async def _fake_get(
+        self: httpx.AsyncClient, url: str, *a: object, **kw: object
+    ) -> httpx.Response:
+        url = str(url)
+        if url.endswith("/v1/models"):
+            return _lm_response(url, {"data": [{"id": "qwen3.6-27b"}]})
+        if url.endswith("/api/v0/models"):
+            return httpx.Response(404, request=httpx.Request("GET", url))
+        return await _real_async_client_get(self, url, *a, **kw)
+
+    mocker.patch("httpx.AsyncClient.get", new=_fake_get)
+
+    response = await client.get("/api/lm-models", headers=auth_headers)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["connected"] is True
+    assert body["models"] == ["qwen3.6-27b"]
+    assert body["embedding_model_ids"] == []

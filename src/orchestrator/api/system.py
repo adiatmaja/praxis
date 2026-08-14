@@ -238,15 +238,26 @@ async def system_status(request: Request) -> dict[str, Any]:
 async def lm_models(request: Request) -> dict[str, Any]:
     """List model ids currently loaded in LM Studio (for the New-Project form).
 
-    Returns ``{"models": [...], "lm_studio_url": ..., "connected": bool}`` so the
-    UI can offer a dropdown of reachable models instead of a free-text field that
-    silently fails when the name is wrong.
+    Returns ``{"models": [...], "lm_studio_url": ..., "connected": bool,
+    "embedding_model_ids": [...]}`` so the UI can offer a dropdown of reachable
+    models instead of a free-text field that silently fails when the name is
+    wrong, and can exclude embedding models from the implementer choices.
+
+    ``embedding_model_ids`` is filled in on a best-effort basis from LM
+    Studio's own (non-OpenAI-compatible) ``/api/v0/models`` endpoint, the only
+    place a model's ``type`` (``llm`` / ``vlm`` / ``embeddings``) is reported;
+    the OpenAI-compatible ``/v1/models`` used for the primary list and the
+    connectivity check carries no such field. When that enrichment call fails
+    (an older LM Studio, a non-LM-Studio OpenAI-compatible backend, or a
+    transient error) the list comes back empty rather than guessed at from the
+    model id string, and the primary connectivity result is unaffected.
     """
     settings = request.app.state.settings
     es = getattr(request.app.state, "effective_settings", None)
     url = await es.lm_studio_url() if es is not None else settings.lm_studio_url
     models: list[str] = []
     connected = False
+    embedding_model_ids: list[str] = []
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
             response = await client.get(f"{url}/v1/models")
@@ -254,9 +265,25 @@ async def lm_models(request: Request) -> dict[str, Any]:
             data = response.json()
             models = [m["id"] for m in data.get("data", []) if m.get("id")]
             connected = True
+            try:
+                v0_response = await client.get(f"{url}/api/v0/models")
+                v0_response.raise_for_status()
+                v0_data = v0_response.json()
+                embedding_model_ids = [
+                    m["id"]
+                    for m in v0_data.get("data", [])
+                    if m.get("id") and m.get("type") == "embeddings"
+                ]
+            except (httpx.HTTPError, ValueError, KeyError) as exc:
+                logger.debug("LM Studio v0 model-type enrichment failed: %s", exc)
     except (httpx.HTTPError, ValueError, KeyError) as exc:
         logger.debug("LM Studio model listing failed: %s", exc)
-    return {"models": models, "lm_studio_url": url, "connected": connected}
+    return {
+        "models": models,
+        "lm_studio_url": url,
+        "connected": connected,
+        "embedding_model_ids": embedding_model_ids,
+    }
 
 
 @router.get("/opus/state", response_model=OpusStateResponse)
