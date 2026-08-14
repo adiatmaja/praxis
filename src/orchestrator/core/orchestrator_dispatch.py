@@ -7,16 +7,21 @@ mixin: it is only ever mixed into ``Orchestrator`` and reads attributes set in
 
 from __future__ import annotations
 
-import contextlib
-import json
 import logging
 from collections.abc import Mapping
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, cast
 
 from orchestrator.core.agent_manager import detect_context_limit
 from orchestrator.core.bench_mode import verify_gate_disabled
 from orchestrator.core.harnesses import default_harness_id
 from orchestrator.core.leaf_validator import is_runnable_verification
+from orchestrator.core.plan_graph import (
+    build_graph_index,
+    parse_graph_tasks,
+    resolve_task_slug,
+    slug_to_graph_task,
+)
 from orchestrator.core.progress_handover import ChecklistItem, render_handover
 from orchestrator.core.session_resume import resolve_resume_session
 from orchestrator.core.token_budget import ContextBudgetExceeded
@@ -143,14 +148,11 @@ class DispatchMixin:
         # Build a slug -> plan-task lookup so we can read per-task plan hints
         # (plan_path, plan_text, context_text, repo_memory) stored in the
         # opus_plan by the dispatch endpoint.
-        slug_to_plan_task: dict[str, dict[str, Any]] = {}
-        with contextlib.suppress(json.JSONDecodeError, TypeError):
-            opus_plan_raw = plan.get("opus_plan")
-            if opus_plan_raw:
-                parsed = json.loads(opus_plan_raw)
-                for pt in parsed.get("tasks", []):
-                    if isinstance(pt, dict) and "slug" in pt:
-                        slug_to_plan_task[pt["slug"]] = pt
+        # ``graph_tasks`` is kept in list order too: that is the positional side
+        # of the graph, and ``resolve_task_slug`` reads a row's slug out of it
+        # by index.
+        graph_tasks = parse_graph_tasks(plan)
+        slug_to_plan_task = slug_to_graph_task(graph_tasks)
 
         dispatchable = await self._tq.get_dispatchable_tasks(plan_id)
 
@@ -161,6 +163,7 @@ class DispatchMixin:
         # never exercise). Before dispatching a wave built on already-merged
         # leaves, run the accumulated plan-branch verify so a regression is
         # caught before dependent leaves are built on top of it.
+        all_tasks: list[dict[str, Any]] = []
         if dispatchable:
             all_tasks = await self._tq.get_tasks_for_plan(plan_id)
             merged_count = sum(1 for t in all_tasks if t["status"] == TaskStatus.MERGED)
@@ -168,6 +171,13 @@ class DispatchMixin:
                 plan_id, plan, project, merged_count
             ):
                 return
+
+        # Row id -> its index in ``get_tasks_for_plan`` order, which is the
+        # index of its plan-graph entry. Built from the SAME query the wave gate
+        # above already ran, so no extra round trip and no chance of the two
+        # disagreeing. Empty when nothing is dispatchable, in which case the
+        # loop below never runs.
+        graph_index = build_graph_index(all_tasks)
 
         single_branch = False
         flag_below = DEFAULT_FLAG_BELOW
@@ -191,12 +201,7 @@ class DispatchMixin:
             score = task.get("difficulty_score")
             flagged = score is not None and float(score) < flag_below
 
-            # Derive the task slug from its branch name (agent/{slug}).
-            branch_name: str = task["branch_name"]
-            if branch_name.startswith("agent/"):
-                task_slug = branch_name[len("agent/") :]
-            else:
-                task_slug = branch_name
+            task_slug = resolve_task_slug(task, graph_index, graph_tasks)
             plan_task = slug_to_plan_task.get(task_slug, {})
             plan_path: str | None = plan_task.get("plan_path")
             plan_text: str | None = plan_task.get("plan_text")
@@ -206,7 +211,17 @@ class DispatchMixin:
                 branch = plan.get("plan_branch_name") or project["default_branch"]
                 base_branch = project["default_branch"]
             else:
-                branch = task["branch_name"]
+                # Built from the resolved slug, not read back out of
+                # ``branch_name``: that column is now an OUTPUT (the branch the
+                # last dispatch used), so a task dispatched once under
+                # single-branch mode holds the shared work branch. Reading it
+                # back after ``praxis mode off`` would push the retry to the
+                # shared branch AND take it as the base, leaving an empty review
+                # diff and a merge gate judging the branch against itself. Every
+                # row created by ``activate_plan``/``split_task`` stores exactly
+                # ``agent/{slug}``, so for a task that has never been dispatched
+                # under single-branch mode this is byte-identical.
+                branch = f"agent/{task_slug}"
                 base_branch = plan.get("plan_branch_name") or project["default_branch"]
 
             # Build the Static Bible (goal + git-spine progress handover +
@@ -281,6 +296,21 @@ class DispatchMixin:
                     }
                 )
                 continue
+
+            # Record the branch this task was ACTUALLY dispatched against. The
+            # row is created holding ``agent/{slug}``, but single-branch
+            # (auto-delegate) mode pushes to the shared caller-named work branch
+            # instead, so that per-task branch is never created and anything
+            # reasoning about the task's commits from the DB was reading a
+            # branch that does not exist. Written only after the container
+            # started, and only when it changed, so a spawn that was rejected by
+            # preflight leaves the row describing the last real dispatch.
+            if branch != task["branch_name"]:
+                await self._tq._db.execute(
+                    "UPDATE tasks SET branch_name = ?, updated_at = ? WHERE id = ?",
+                    (branch, datetime.now(UTC).isoformat(), task["id"]),
+                )
+
             run_id = await self._tq.create_agent_run(task["id"], container_id)
             await self._tq.update_task_status(task["id"], TaskStatus.IN_PROGRESS)
             cast(Any, self)._start_monitor(run_id, task["id"], container_id)

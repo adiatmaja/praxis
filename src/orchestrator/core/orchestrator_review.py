@@ -43,6 +43,12 @@ from orchestrator.core.leaf_triage import TriageEvidence, triage_leaf
 from orchestrator.core.log_context import task_logger
 from orchestrator.core.merge_policy import auto_merge_eligible
 from orchestrator.core.outcome_recorder import record_outcome
+from orchestrator.core.plan_graph import (
+    build_graph_index,
+    parse_graph_tasks,
+    resolve_task_slug,
+    slug_to_graph_task,
+)
 from orchestrator.core.verify_gate import run_verify
 from orchestrator.models.schemas import TaskStatus, TriageDecision
 
@@ -242,21 +248,18 @@ class ReviewMixin:
         task_type_for_outcome: str | None = None
         plan = await self._tq.get_plan(task["plan_id"])
         if plan is not None:
-            slug_to_plan_task: dict[str, dict[str, Any]] = {}
-            with contextlib.suppress(json.JSONDecodeError, TypeError):
-                opus_plan_raw = plan.get("opus_plan")
-                if opus_plan_raw:
-                    parsed = json.loads(opus_plan_raw)
-                    for pt in parsed.get("tasks", []):
-                        if isinstance(pt, dict) and "slug" in pt:
-                            slug_to_plan_task[pt["slug"]] = pt
-            branch_name: str = task["branch_name"]
-            task_slug = (
-                branch_name[len("agent/") :]
-                if branch_name.startswith("agent/")
-                else branch_name
+            graph_tasks = parse_graph_tasks(plan)
+            # One extra query per review, to get the rows in the order the plan
+            # graph is aligned to. Acceptable: a review already clones the PR
+            # head and calls the brain, so a single indexed SELECT is noise
+            # beside it, and the alternative (deriving the slug from
+            # ``branch_name``) resolves nothing in single-branch mode and
+            # silently reviews the diff against no plan contract.
+            ordered_rows = await self._tq.get_tasks_for_plan(task["plan_id"])
+            task_slug = resolve_task_slug(
+                task, build_graph_index(ordered_rows), graph_tasks
             )
-            plan_task = slug_to_plan_task.get(task_slug, {})
+            plan_task = slug_to_graph_task(graph_tasks).get(task_slug, {})
             plan_text_for_review = plan_task.get("plan_text")
             task_type_for_outcome = plan_task.get("task_type")
 
@@ -518,23 +521,18 @@ class ReviewMixin:
             return False
 
         task_id = task["id"]
-        branch_name: str = task["branch_name"]
-        task_slug = (
-            branch_name[len("agent/") :]
-            if branch_name.startswith("agent/")
-            else branch_name
-        )
 
-        plan_task: dict[str, Any] = {}
-        graph_task_count = 0
-        with contextlib.suppress(json.JSONDecodeError, TypeError):
-            parsed = json.loads(plan.get("opus_plan") or "{}")
-            graph_tasks = parsed.get("tasks", [])
-            graph_task_count = len(graph_tasks)
-            for candidate in graph_tasks:
-                if candidate.get("slug") == task_slug:
-                    plan_task = candidate
-                    break
+        graph_tasks = parse_graph_tasks(plan)
+        graph_task_count = len(graph_tasks)
+        # One extra query per triage, for the rows in the order the plan graph
+        # is aligned to. Triage runs at most once per leaf and is about to make
+        # a brain call, so the cost is irrelevant next to deciding a split from
+        # the task description because the slug resolved nothing.
+        ordered_rows = await self._tq.get_tasks_for_plan(task["plan_id"])
+        task_slug = resolve_task_slug(
+            task, build_graph_index(ordered_rows), graph_tasks
+        )
+        plan_task: dict[str, Any] = slug_to_graph_task(graph_tasks).get(task_slug, {})
 
         profile = await settings.capability_profile(
             project_id=None, model=project.get("model_name")
@@ -697,20 +695,18 @@ class ReviewMixin:
         plan_text: str | None = None
         plan = await self._tq.get_plan(task["plan_id"])
         if plan is not None:
-            slug_to_plan_task: dict[str, dict[str, Any]] = {}
-            with contextlib.suppress(json.JSONDecodeError, TypeError):
-                opus_plan_raw = plan.get("opus_plan")
-                if opus_plan_raw:
-                    for pt in json.loads(opus_plan_raw).get("tasks", []):
-                        if isinstance(pt, dict) and "slug" in pt:
-                            slug_to_plan_task[pt["slug"]] = pt
-            branch_name: str = task["branch_name"]
-            task_slug = (
-                branch_name[len("agent/") :]
-                if branch_name.startswith("agent/")
-                else branch_name
+            graph_tasks = parse_graph_tasks(plan)
+            # One extra query per clarification, for the rows in the order the
+            # plan graph is aligned to. A clarification is already a brain
+            # round trip; answering a blocked worker without the plan in front
+            # of the brain is the expensive outcome, not this SELECT.
+            ordered_rows = await self._tq.get_tasks_for_plan(task["plan_id"])
+            task_slug = resolve_task_slug(
+                task, build_graph_index(ordered_rows), graph_tasks
             )
-            plan_text = slug_to_plan_task.get(task_slug, {}).get("plan_text")
+            plan_text = (
+                slug_to_graph_task(graph_tasks).get(task_slug, {}).get("plan_text")
+            )
 
         # Fix 1: cap clarification rounds to avoid an unbounded brain/worker loop.
         max_retries: int = int(project.get("max_retries") or 3)
