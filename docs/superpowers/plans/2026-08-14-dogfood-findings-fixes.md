@@ -724,3 +724,159 @@ gate rather than absorbed:
   cost decision was justified partly on the orchestrator never seeing worker
   tokens, which is true for OpenCode and false for agy. Worth revisiting for the
   `hosted-flash` bench arm specifically.
+
+---
+
+## Execution record, 2026-08-14
+
+Executed with `superpowers:subagent-driven-development` at Opus HIGH. All
+fourteen tasks reached, thirteen shipped, one closed as not reproducible.
+Seventeen commits, `d2fdb14` through `58d9b8f`. Final gate: **2175 tests**,
+`ruff format --check`, `ruff check` and `mypy` clean over `src/ tests/ bench/`.
+
+### Commits in order
+
+| Commit | Task | What |
+|---|---|---|
+| `d2fdb14` | 1 | parse the dependencies a plan.md states |
+| `4bcddd4` | 3 | explain a no-change run instead of asserting one |
+| `7a336e5` | 2 | do not complete a plan that still has a failed task |
+| `6574434` | 4 | log the verify-gate outcome and why it skipped |
+| `ece7614` | 5 | log the review verdict and the merge-gate park |
+| `62812d7` | 6 | the review-scope DECISION, spec amendment plus follow-up plan |
+| `ce7ddd8` | 1 | stop the parser inventing and deadlocking edges (review fixes) |
+| `984ae1b` | 3 | correct a false rationale and a silent abort (review fixes) |
+| `5c533ea` | 7 | skip the integration PR when the work branch already has one |
+| `534b6d3` | 9 | cap and quiet a repeatedly failing branch delete |
+| `094b184` | 10 | README: installing the CLI, praxis init, praxis doctor |
+| `a7fea1f` | 11 | correct the verify_cmd claim and the .env reload path |
+| `98dbac9` + `7a3ade2` | 12 | report the port a user can actually reach |
+| `49ab779` | 13 | show model availability instead of implying it |
+| `445e856` | 8 | record the branch single-branch mode actually pushes to |
+| `58d9b8f` | 8 | never reclaim a branch something is still using |
+
+### Phase A live gate: PASSED
+
+Run against a live orchestrator on `adiatmaja/playground`, not merely a green
+suite. A two-task plan whose document states a dependency on Task 1:
+
+````
+Spawned opencode container ... on branch agent/add-the-initials-helper
+[plan=... task=...] verify gate passed (`python -m pytest -q`)
+[plan=... task=...] review verdict: pass (pr=.../pull/29)
+[plan=... task=...] parked at merge gate awaiting approval (pr=.../pull/29)
+Merged PR #29
+verify gate passed (branch=plan/2026-08-14-initials-and-badge-..., cmd=`python -m pytest -q`)
+Spawned opencode container ... on branch agent/add-the-badge-helper
+[plan=... task=...] review verdict: pass (pr=.../pull/30)
+````
+
+1. **Sequence:** task 2 stayed PENDING for the six minutes task 1 ran, then
+   dispatched 15 s after task 1 merged. Previously both spawned one second apart.
+2. **A verify line appears:** three, two per-task and one per-wave plan-branch.
+   The plan-branch gate had been completely silent before.
+3. **A verdict line appears:** two, plus two merge-gate park lines.
+
+Both PRs merged green. Both agent images were rebuilt after each entrypoint
+change and the baked files verified byte-identical to the repo.
+
+### Defects found in this plan's own code, by review
+
+The adversarial pass on Tasks 1 and 3 earned its keep; the first-pass review
+returned SATISFIED on all five tasks and missed every item below.
+
+1. **Task 1 introduced a silent hang.** A dependency cycle became reachable for
+   the first time, because `depends_on` used to be unconditionally empty.
+   `get_dispatchable_tasks` filters rather than validates so nothing raises;
+   `plan_stalled` needs a FAILED task and a cycle has none; so the plan sat
+   `active` with pending tasks forever, emitting no log line and no event. The
+   operator saw nothing at all. Fixed by breaking cycles in document order, so
+   failure is toward an ORDER rather than a hang.
+2. **Task 1 inverted the meaning of a line.** A dependency line reading
+   "None (independent of Task 1)" produced a dependency on task 1. The corpus
+   was one word away from being hit, escaping only because the plural form did
+   not match. Prose such as "the outcome of Task 1 being wrong" also produced
+   an edge.
+3. **Task 1 under-read the plural and range form.** A range like Tasks 1-5
+   parsed to empty in six committed plans and in a plan authored this session.
+4. **Task 3 shipped a FALSE rationale** into both entrypoints and a test
+   docstring, claiming `failure_taxonomy` attributes the outcome from that
+   evidence. It does not: a no-change run never becomes REVIEWING, so no
+   outcome row is written at all. Phase C of this same plan is about false
+   documentation claims; this would have been a third.
+5. **Task 3 left a silent abort** in the path whose purpose is to explain
+   itself: a bare `rev-list` assignment under `set -euo pipefail` aborted with
+   rc 128 printing nothing. Its own fix then reintroduced the same class,
+   capturing stderr into the count so a stray warning would make it non-numeric
+   and report a worker that DID commit as producing nothing.
+6. **Task 8's first attempt was rejected.** It guarded the re-dispatch trap with
+   a process-lifetime in-memory cache that does not survive a restart, and its
+   own re-dispatch test failed in the tree. Redone with stateless positional
+   resolution after a user decision.
+7. **Task 8 broke three more sites.** The same branch-name-derived-slug pattern
+   existed in `orchestrator_review` (review, triage, clarification), so the
+   change would have silently passed a null plan contract to the reviewer and
+   poisoned the calibration rows. Found by the implementer, confirmed by the
+   orchestrator, fixed in the same commit.
+8. **Task 8 opened a data-loss hazard**, closed by `58d9b8f` before shipping.
+
+### Vacuous tests and over-claiming comments exposed by mutation
+
+- **A "must not be swapped" claim that was not load-bearing.** Task 1's fix
+  documented that the order of its two classification tests was "the whole
+  safety of this design". Mutation proved reordering them fails no test: both
+  anchor at the same offset against disjoint tokens and are mutually exclusive.
+  The comment now says what actually carries the safety, the ANCHORING, and a
+  new test pins that the none-marker is honoured only at the leading token,
+  which no existing test covered.
+- **A guard that went unpinned when a rule loosened.** Adopting the looser
+  leading-token rule made the parenthetical-stripping mutation vacuous, because
+  the prose guard had been covering it as a side effect. Caught by re-running
+  the whole mutation set after the change, and re-pinned.
+- **A checkbox-branch test that discriminated nothing.** It survived all nine
+  mutations including total sabotage, because its fixture contained no
+  dependency text at all.
+- **Task 3's two plan-named mutations were insufficient on their own.** Neither
+  touched containment, so a diagnostic block hoisted out of its branch would
+  have passed both while firing on every successful task.
+
+### Backlog cleared
+
+- `skipped` is no longer indistinguishable from `passed` to the verify-gate
+  callers (Task 4). Six distinct skip reasons are now named.
+- The merge-gate park and the review verdict are now log lines, not inferences.
+
+### Still open, raised not fixed
+
+- **Task 14 does not reproduce.** No bare list-all-tasks request occurs on the
+  current code. A browser session driven for five minutes across every view
+  produced none, and that literal has never existed in `web/app.js` in the
+  file's entire history. Recorded as not reproducible rather than fixed by
+  guesswork.
+- `Orchestrator.run_once` has no per-plan try/except, so any `ValueError` from
+  one plan aborts the pass for every plan and logs a traceback every interval.
+  The promote path can no longer cause it; `execute_plan`'s decomposed graphs
+  are a second graph source with the same cycle exposure and are unguarded.
+- Duplicate task titles still produce duplicate slugs, and
+  `get_dispatchable_tasks` builds its slug map as a dict comprehension, so the
+  later row wins and the earlier becomes unreachable.
+- `on_plan_completed` still runs the GitHub integration-PR path for local
+  projects.
+- The clarification park (`_park_awaiting_human`) is still silent; only the
+  merge-gate park is logged.
+- The sweeper ledger is global rather than per-project, which matters more now
+  that branch names can be human-chosen and collide across projects.
+- `docs/superpowers/plans/2026-07-01-worker-quality-gates.md` repeats the false
+  dashboard-sets-verify_cmd claim.
+- Task 6 is decided but NOT implemented: see
+  `docs/superpowers/plans/2026-08-14-review-scope-single-branch.md`.
+
+### Two items deliberately not absorbed, as the plan asked
+
+- The `implement_escalation` ladder is still hard to defend: the rungs are
+  `glm-4.7` and `qwen3.6-27b` while the default worker is now Gemini 3.7 Flash
+  (High), and the config states every rung must be STRONGER than the default.
+  An operator judgment call.
+- agy reports token usage in its envelope and OpenCode does not. The wall-clock
+  cost decision was justified partly on the orchestrator never seeing worker
+  tokens, which is true for OpenCode and false for agy.
