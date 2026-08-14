@@ -41,6 +41,36 @@ async def test_dispatch_creates_project_plan_and_task(
     assert task_resp.json()["task"]["status"] == "pending"
 
 
+async def test_dispatch_dashboard_url_uses_settings_dashboard_url(
+    client: AsyncClient, auth_headers: dict[str, str], seeded_user: str
+) -> None:
+    """dashboard_url must come from settings.dashboard_url() (the same helper
+    execute_plan.py already uses), not a hand-rolled http://localhost:{port}
+    string built from settings.port. Inside a container settings.port is the
+    INTERNAL bind port (8080), never the host-published port, so a caller
+    that configured a host-facing PUBLIC_URL must see it reflected here.
+    A hand-rolled string that ignores public_url hands back a dead link."""
+    from orchestrator.main import app as _app
+
+    _app.state.settings.public_url = "https://praxis.example.com"
+    try:
+        with patch("orchestrator.api.dispatch.GitOps") as mock_git:
+            mock_git.return_value.remote_head_sha = AsyncMock(return_value="abcdef")
+            resp = await client.post(
+                "/api/dispatch",
+                json={
+                    "repo_url": "https://github.com/u/repo-public-url",
+                    "instructions": "do it",
+                    "model": "qwen3-32b",
+                },
+                headers=auth_headers,
+            )
+    finally:
+        _app.state.settings.public_url = None
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["dashboard_url"] == "https://praxis.example.com/"
+
+
 @pytest.mark.parametrize("branch", ["main", "master", "Release-1.2"])
 async def test_dispatch_rejects_protected_base_branch(
     client: AsyncClient,

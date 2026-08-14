@@ -21,13 +21,17 @@ app.command("init")(_init)
 
 
 def _api_url() -> str:
-    return os.environ.get("ORCHESTRATOR_URL", "http://localhost:8080")
+    return os.environ.get("ORCHESTRATOR_URL", "http://localhost:12323")
 
 
 def _auth_token() -> str:
-    token = os.environ.get("ORCHESTRATOR_TOKEN", "")
+    # AUTH_TOKEN is the name .env / .env.example / the dashboard document;
+    # ORCHESTRATOR_TOKEN is kept as a fallback so an existing user who only
+    # set the CLI's original var name (including praxis init's own printed
+    # cli_env_exports) is not broken.
+    token = os.environ.get("AUTH_TOKEN") or os.environ.get("ORCHESTRATOR_TOKEN", "")
     if not token:
-        console.print("[red]Set ORCHESTRATOR_TOKEN env var[/red]")
+        console.print("[red]Set AUTH_TOKEN (or ORCHESTRATOR_TOKEN) env var[/red]")
         raise typer.Exit(1)
     return token
 

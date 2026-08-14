@@ -222,12 +222,11 @@ async def dispatch_task(request: Request, body: DispatchRequest) -> dict[str, An
             detail="Task activation produced no task",
         )
 
-    base_url = f"http://localhost:{getattr(settings, 'port', 8080)}/"
     return {
         "task_id": tasks[0]["id"],
         "plan_id": plan_id,
         "project_id": project_id,
         "status": "queued",
-        "dashboard_url": base_url,
+        "dashboard_url": settings.dashboard_url(),
         "warnings": warnings,
     }
