@@ -21,13 +21,17 @@ def test_goal_is_first_and_scrubbed():
 
 @pytest.mark.unit
 def test_low_priority_repo_memory_dropped_when_tight():
+    # 1358 tok window -> 543 tok budget, 83 tok left after the 460 tok of
+    # floors. Was 1000 before the scope briefing joined the floors; the window
+    # is shifted by the briefing's 143 tok / 0.4 so the 83 tok of slack this
+    # test trims against is unchanged.
     src = BibleSources(
         goal="g" * 400,
         handover="h" * 400,
         plan_slice="p" * 400,
         caller_context="c" * 400,
         repo_memory="d" * 40000,
-        context_window=1000,
+        context_window=1358,
     )
     bible = build_bible(src)
     assert "# GOAL" in bible
@@ -194,3 +198,115 @@ def test_repo_memory_section_present_when_provided():
     out = build_bible(src)
     assert "# REPO MEMORY" in out
     assert "some repo memory content" in out
+
+
+# Spelled out here rather than imported from ``worker_bible``: importing the
+# constant would assert the module equals itself, which any rewording passes.
+_BRIEFING = (
+    "# SCOPE DISCIPLINE (your diff is judged as a whole; keep it minimal)\n"
+    "- Narrow your work to what the task names. When it names a failing test, "
+    "make that test pass and stop there.\n"
+    "- Do NOT repair the environment. A missing tool or a broken import is not "
+    "yours to fix.\n"
+    "- Do NOT try to make the wider test suite run. If the acceptance command "
+    "fails to collect, say so; do not edit files to make collection succeed.\n"
+    "- Do NOT modernize, reformat, or fix unrelated files, even ones that look "
+    "broken.\n"
+    "- Any change outside the files the task names must be justified in the PR "
+    "body.\n"
+)
+
+
+def _bare(context_window: int = 8192) -> BibleSources:
+    """The default dispatch shape: every optional source unset."""
+    return BibleSources(
+        goal="do it", handover="# PROGRESS", context_window=context_window
+    )
+
+
+@pytest.mark.unit
+def test_the_scope_briefing_renders_with_every_optional_source_unset():
+    """The briefing must reach a worker that carries no optional context at all.
+
+    Every other section here is gated on a source field, so the tempting shape
+    is to gate this one too. Anything it could be gated on is falsy on the
+    plainest dispatch there is, and a briefing that renders only for decomposed
+    leaves is worse than none: the plan_spec path, the improvement path and a
+    direct POST /api/dispatch all arrive with these fields empty, and nothing
+    downstream would report the omission.
+    """
+    out = build_bible(_bare())
+    assert _BRIEFING in out
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("topic", "sentence"),
+    [
+        (
+            "repair the environment",
+            "- Do NOT repair the environment. A missing tool or a broken import "
+            "is not yours to fix.",
+        ),
+        (
+            "wider test suite",
+            "- Do NOT try to make the wider test suite run. If the acceptance "
+            "command fails to collect, say so; do not edit files to make "
+            "collection succeed.",
+        ),
+        (
+            "outside the files the task names",
+            "- Any change outside the files the task names must be justified in "
+            "the PR body.",
+        ),
+    ],
+    ids=["environment", "wider-suite", "outside-files"],
+)
+def test_each_prohibition_is_the_only_line_on_its_topic(topic: str, sentence: str):
+    """Present AND unaccompanied: a softened second line would be obeyed instead.
+
+    ``sentence in out`` alone cannot see a permissive line added next to it
+    ("repair the environment only if the suite will not collect"), and that is
+    the realistic regression: the prohibition is uncomfortable, so it gets
+    qualified rather than deleted. Requiring the topic to appear on exactly one
+    line, and that line to be the prohibition verbatim, catches both.
+    """
+    out = build_bible(_bare())
+    assert [line for line in out.splitlines() if topic in line] == [sentence]
+
+
+@pytest.mark.unit
+def test_the_scope_briefing_is_a_floor_not_a_droppable_section():
+    """Presence cannot tell a floor from a droppable; only an impossible pack can.
+
+    The briefing outranks every droppable section, so a de-floored copy is
+    still kept at every budget that fits it at all, and the two shapes differ
+    only where the pack cannot be assembled: as a floor ``build_bible`` raises
+    and ``dispatch_pending_tasks`` fails the task with a message a human sees;
+    as a droppable the Bible is assembled SILENTLY without the briefing and the
+    worker is simply never told to stay in scope. That silent shape is what
+    this pins, and the sibling below pins that the raise is about the briefing
+    rather than about the pack being hopeless in general.
+
+    The floors are the goal (7 tok), the handover (2) and the briefing (143),
+    so 152 tok. A 370 tok window gives a 148 tok budget: impossible by 4 tok as
+    a floor, while a droppable briefing would be dropped into the same 148 and
+    return normally.
+    """
+    from orchestrator.core.token_budget import ContextBudgetExceeded
+
+    with pytest.raises(ContextBudgetExceeded):
+        build_bible(_bare(context_window=370))
+
+
+@pytest.mark.unit
+def test_the_briefing_is_kept_where_the_working_agreement_is_cut():
+    """A 380 tok window budgets 152: exactly the floors, and nothing else.
+
+    Pairs with the raise above. The working agreement carries the same kind of
+    advice one rank lower and is droppable, so seeing it cut while the briefing
+    survives shows the briefing is not merely early in the fit order.
+    """
+    out = build_bible(_bare(context_window=380))
+    assert _BRIEFING in out
+    assert "# WORKING AGREEMENT" not in out

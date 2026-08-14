@@ -5,11 +5,19 @@ narrative contributes least (ORACLE-SWE arXiv 2604.07789).  See
 docs/decomposition-standard.md section 4.
 
 Every budget number below is arithmetic over the real section costs of
-``_sources``: floors 114 tok (goal 10, leaf contract 29, edit locations 14,
-acceptance 25, review feedback 30, handover 6), droppables neighbors 70,
-working agreement 71, caller narrative 59, repo memory 61.  The budget is
-``int(context_window * 0.4)``; ``r`` below is what is left of it after the
-floors.
+``_sources``: floors 266 tok (goal 10, leaf contract 29, edit locations 14,
+acceptance 34, scope briefing 143, review feedback 30, handover 6), droppables
+neighbors 70, working agreement 71, caller narrative 59, repo memory 61.  The
+budget is ``int(context_window * 0.4)``; ``r`` below is what is left of it
+after the floors.
+
+The acceptance section costs 34 rather than the 25 of its own text because
+``_sources`` gives a leaf check that differs from ``verify_cmd``, so
+``build_bible`` restates the project command alongside it (9 tok).
+
+Every window here was shifted by the scope briefing's 143 tok / 0.4 when that
+briefing joined the floors, so each ``r`` below, and therefore each boundary
+these tests actually turn on, is unchanged from before it existed.
 """
 
 import pytest
@@ -46,10 +54,10 @@ def test_a_roomy_budget_keeps_every_section():
 
 @pytest.mark.unit
 def test_repo_memory_is_cut_before_narrative_context():
-    # 900 tok window -> 360 tok budget, r = 246 after the 114 tok of floors.
+    # 1258 tok window -> 503 tok budget, r = 237 after the 266 tok of floors.
     # Neighbors (70), the working agreement (71) and the caller narrative (59)
-    # take 200 of that, leaving 46: too little for the 61 tok of repo memory.
-    bible = build_bible(_sources(context_window=900))
+    # take 200 of that, leaving 37: too little for the 61 tok of repo memory.
+    bible = build_bible(_sources(context_window=1258))
     assert "chromadb 0.5.0" not in bible
     assert "The user asked for a widget." in bible
 
@@ -61,32 +69,33 @@ def test_narrative_context_is_cut_before_the_working_agreement():
     The standard puts the working agreement and environment manifest above repo
     memory and narrative context, so the caller narrative must be cut first.
     That boundary is only observable when what is left after the neighbors
-    fits the agreement but not both it and the narrative: with 700 tok the
-    budget is 280, r = 166 after the floors, and neighbors take 70 of it,
-    leaving 96.  The agreement (71) fits and the narrative (59) then does not.
+    fits the agreement but not both it and the narrative: with 1058 tok the
+    budget is 423, r = 157 after the floors, and neighbors take 70 of it,
+    leaving 87.  The agreement (71) fits and the narrative (59) then does not.
     Swap the two ranks and the pack keeps the narrative instead: outside the
-    96 tok in [71, 71 + 59) window the two orders keep exactly the same
+    87 tok in [71, 71 + 59) window the two orders keep exactly the same
     sections, which is why every other budget here is blind to the swap.
     """
-    bible = build_bible(_sources(context_window=700))
+    bible = build_bible(_sources(context_window=1058))
     assert "# WORKING AGREEMENT" in bible
     assert "The user asked for a widget." not in bible
 
 
 @pytest.mark.unit
 def test_narrative_context_is_cut_before_neighbor_contracts():
-    # 500 tok window -> 200 tok budget, r = 86 after floors: only the 70 tok of
+    # 858 tok window -> 343 tok budget, r = 77 after floors: only the 70 tok of
     # neighbor contracts fit, so the narrative context is cut above them.
-    bible = build_bible(_sources(context_window=500))
+    bible = build_bible(_sources(context_window=858))
     assert "The user asked for a widget." not in bible
     assert "def make_widget" in bible
 
 
 @pytest.mark.unit
 def test_plan_text_edit_locations_and_acceptance_survive_the_tightest_budget():
-    # 350 tok window -> 140 tok budget: the 114 tok of floors fit and nothing
-    # else does (the cheapest droppable, the caller narrative, costs 59).
-    bible = build_bible(_sources(context_window=350))
+    # 708 tok window -> 283 tok budget: the 266 tok of floors fit and nothing
+    # else does (the cheapest droppable, the caller narrative, costs 59, and
+    # only 17 tok are left).
+    bible = build_bible(_sources(context_window=708))
     # Rank 1: the leaf contract, verbatim.
     assert "## Steps" in bible
     # Rank 2: edit locations.
@@ -104,15 +113,15 @@ def test_the_progress_handover_is_a_floor_section():
 
     Presence cannot prove floor-ness here: the handover outranks every
     droppable section, so a de-floored copy is still kept whenever any budget
-    is left over.  Only an impossible pack can tell the two apart.  A 375 tok
-    window gives a 150 tok budget; the other floors cost 108, so a 60 tok
-    handover overflows by 18.  As a floor that raises; as a droppable it would
-    be silently cut (60 > the 42 tok left) and a re-dispatched worker would
+    is left over.  Only an impossible pack can tell the two apart.  A 733 tok
+    window gives a 293 tok budget; the other floors cost 260, so a 60 tok
+    handover overflows by 27.  As a floor that raises; as a droppable it would
+    be silently cut (60 > the 33 tok left) and a re-dispatched worker would
     redo work it had already committed.
     """
     from orchestrator.core.token_budget import ContextBudgetExceeded
 
-    src = _sources(context_window=375)
+    src = _sources(context_window=733)
     src.handover = src.handover + "\n" + "p" * 212  # 240 chars -> 60 tok
 
     with pytest.raises(ContextBudgetExceeded):
@@ -123,20 +132,20 @@ def test_the_progress_handover_is_a_floor_section():
 def test_edit_locations_and_acceptance_are_floors_not_cheap_optionals():
     """Floors that do not fit must raise, never silently degrade the pack.
 
-    The floors cost 114 tok together; a 283 tok window leaves a 113 tok budget,
+    The floors cost 266 tok together; a 664 tok window leaves a 265 tok budget,
     so the assembled pack is impossible by exactly one token and ``build_bible``
     must say so.  One token of slack makes every floor load-bearing: demote any
-    one of them (the edit locations at 14 tok, the acceptance check at 25,
-    the review feedback at 30, the goal at 10, the leaf contract at 29, the
-    handover at 6) and the rest fit, so the worker would silently receive a
-    pack missing the rank that matters most.  Presence assertions cannot catch
-    that: every floor outranks every droppable section, so a de-floored copy is
-    still kept whenever any budget is left over.
+    one of them (the handover at 6 tok, the goal at 10, the edit locations at
+    14, the leaf contract at 29, the review feedback at 30, the acceptance
+    check at 34, the scope briefing at 143) and the rest fit, so the worker
+    would silently receive a pack missing the rank that matters most.  Presence
+    assertions cannot catch that: every floor outranks every droppable section,
+    so a de-floored copy is still kept whenever any budget is left over.
     """
     from orchestrator.core.token_budget import ContextBudgetExceeded
 
     with pytest.raises(ContextBudgetExceeded):
-        build_bible(_sources(context_window=283))
+        build_bible(_sources(context_window=664))
 
 
 @pytest.mark.unit
@@ -146,10 +155,10 @@ def test_a_large_high_priority_section_can_lose_to_a_smaller_low_priority_one():
     ``fit_sections`` keeps the floors, then fills what is left greedily in
     ascending priority, skipping any section that does not fit and continuing
     to the next.  So a large high-priority section can be dropped while a
-    smaller lower-priority one survives.  Here the floors cost 57 tok of the
-    600 tok budget, the neighbors take 270 and the working agreement 71,
-    leaving 202: the caller narrative (rank 8, 234 tok) does not fit and is
-    skipped, and the repo memory (rank 9, 183 tok) then does fit and is kept.
+    smaller lower-priority one survives.  Here the floors cost 200 tok of the
+    743 tok budget, the neighbors take 270 and the working agreement 71,
+    leaving 202: the caller narrative (rank 9, 234 tok) does not fit and is
+    skipped, and the repo memory (rank 10, 183 tok) then does fit and is kept.
 
     This documents the behavior the code has, it does not endorse it.  The
     greedy-skip semantics of ``fit_sections`` are deliberate and out of scope
@@ -159,7 +168,7 @@ def test_a_large_high_priority_section_can_lose_to_a_smaller_low_priority_one():
     src = BibleSources(
         goal="Ship it.",
         handover="PROGRESS: none.",
-        context_window=1500,
+        context_window=1858,
         plan_slice="## Goal\nShip.\n## Steps\n1. go",
         edit_locations="src/a.py::make_widget",
         acceptance="uv run pytest tests/test_widget.py",

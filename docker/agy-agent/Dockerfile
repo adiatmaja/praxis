@@ -2,9 +2,17 @@ FROM debian:bookworm-slim
 
 # git, gh, curl, ca-certificates, python3 for entrypoint helpers.
 # gnupg needed to verify the GitHub CLI apt key.
+#
+# python3-pytest and python-is-python3 match the opencode image package for
+# package, and must keep matching. The Bible tells the worker to run the
+# acceptance command whatever harness it is driving, and the harness is a
+# per-project setting, so an agy worker on the same repo would hit exactly the
+# turn-burning hunt measured on the opencode side. See the longer note in
+# docker/opencode-agent/Dockerfile for why this is the system interpreter and
+# not a uv tool install.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
-        git curl ca-certificates gnupg python3 \
+        git curl ca-certificates gnupg python3 python-is-python3 python3-pytest \
     && mkdir -p /etc/apt/keyrings \
     && curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
         | dd of=/etc/apt/keyrings/githubcli-archive-keyring.gpg \

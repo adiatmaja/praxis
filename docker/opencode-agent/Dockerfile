@@ -1,9 +1,20 @@
 FROM node:20-bookworm-slim
 
-# git, gh, curl, python3 for the entrypoint helpers
+# git, gh, curl, python3 for the entrypoint helpers.
+#
+# python3-pytest and python-is-python3 go into the SYSTEM interpreter on
+# purpose. The verify command a worker is handed is `python -m pytest -q`, and
+# it is also what a worker types by reflex, so pytest has to be importable by
+# whatever `python` resolves to. Debian provides no `python` name at all
+# without python-is-python3, and neither uv path gives one: `uv tool install
+# pytest` hides it in an isolated venv `python -m pytest` cannot see, and
+# `uv run pytest` needs a project venv a freshly cloned repo does not have.
+# Measured live 2026-08-14 on psf__requests-2148: the worker spent turns on
+# `uv run pytest`, then `uv run python -m pytest`, then gave up and edited
+# source files instead of running tests.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
-        git curl ca-certificates gnupg python3 \
+        git curl ca-certificates gnupg python3 python-is-python3 python3-pytest \
     && mkdir -p /etc/apt/keyrings \
     && curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
         | dd of=/etc/apt/keyrings/githubcli-archive-keyring.gpg \
