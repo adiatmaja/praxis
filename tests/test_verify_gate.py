@@ -251,3 +251,66 @@ async def test_review_task_logs_skip_reason_when_checkout_fails(
         "verify gate skipped" in m and _SKIP_CHECKOUT_UNAVAILABLE in m
         for m in caplog.messages
     ), caplog.messages
+
+
+# ---------------------------------------------------------------------------
+# The REVIEW VERDICT itself (not the verify gate): before this task, a PASS
+# was discoverable only via GET /api/approvals/pending or the dashboard, and
+# a review that parked at the merge gate for human approval said nothing at
+# all -- a terminal-only operator could not tell "parked, awaiting approval"
+# from "hung".  ``orchestrator_fixture``'s default project has ``auto_merge``
+# unset (DB default 0), so a PASS verdict always takes the park branch here,
+# never the auto-merge branch; that is what makes it usable to assert both
+# the verdict line and the park line off of one PASS run.
+# ---------------------------------------------------------------------------
+
+_FIXTURE_PR_URL = "https://github.com/o/r/pull/1"
+
+
+@pytest.mark.unit
+async def test_review_task_logs_pass_verdict_and_the_merge_gate_park(
+    orchestrator_fixture: tuple[Orchestrator, str, dict[str, Any]],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    orch, task_id, project = orchestrator_fixture
+    orch._opus.review_diff.return_value = {"verdict": "pass", "feedback": "lgtm"}
+
+    with caplog.at_level(logging.INFO, logger="orchestrator.core.orchestrator_review"):
+        await orch.review_task(task_id, project)
+
+    assert any(
+        "review verdict: pass" in m and f"task={task_id}" in m and _FIXTURE_PR_URL in m
+        for m in caplog.messages
+    ), caplog.messages
+    assert any(
+        "parked at merge gate" in m and f"task={task_id}" in m and _FIXTURE_PR_URL in m
+        for m in caplog.messages
+    ), caplog.messages
+    # The wrong verdict word must not appear anywhere in this run's log.
+    assert not any("review verdict: fail" in m for m in caplog.messages)
+
+
+@pytest.mark.unit
+async def test_review_task_logs_fail_verdict_at_warning(
+    orchestrator_fixture: tuple[Orchestrator, str, dict[str, Any]],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # orchestrator_fixture's default opus stub returns {"verdict": "fail", ...}.
+    orch, task_id, project = orchestrator_fixture
+
+    with caplog.at_level(logging.INFO, logger="orchestrator.core.orchestrator_review"):
+        await orch.review_task(task_id, project)
+
+    warnings = [
+        m
+        for r, m in zip(caplog.records, caplog.messages, strict=True)
+        if r.levelno >= logging.WARNING
+    ]
+    assert any(
+        "review verdict: fail" in m and f"task={task_id}" in m and _FIXTURE_PR_URL in m
+        for m in warnings
+    ), warnings
+    # A fail verdict must never take the park branch, and the wrong verdict
+    # word must not appear.
+    assert not any("review verdict: pass" in m for m in caplog.messages)
+    assert not any("parked at merge gate" in m for m in caplog.messages)

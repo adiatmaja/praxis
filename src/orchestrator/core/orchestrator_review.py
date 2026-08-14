@@ -320,6 +320,18 @@ class ReviewMixin:
         verdict = str(review["verdict"]).lower()
         feedback = str(review.get("feedback", ""))
 
+        # The verdict itself, not just the verify gate that may precede it.
+        # Before this, a PASS was discoverable only through
+        # GET /api/approvals/pending or the dashboard, and a FAIL was silent
+        # too; a terminal-only operator had no way to tell a passing review
+        # from a hung one.  Deliberately excludes the feedback body (model
+        # prose, can be long); the verdict word and the PR url are enough to
+        # make the line greppable against a run.
+        if verdict == "pass":
+            log.info("review verdict: pass (pr=%s)", task["pr_url"])
+        else:
+            log.warning("review verdict: %s (pr=%s)", verdict, task["pr_url"])
+
         # Outcome recording: compute diff stats once, define helper.
         files_touched, loc_delta = diff_stats(diff)
 
@@ -421,6 +433,7 @@ class ReviewMixin:
             # Default: park the reviewed PR for explicit human approval.
             await _record("pass", None)
             await self._tq.mark_passed(task_id, feedback)
+            log.info("parked at merge gate awaiting approval (pr=%s)", task["pr_url"])
             self._bus.publish(
                 {
                     "type": "task_awaiting_merge",
