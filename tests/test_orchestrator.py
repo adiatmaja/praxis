@@ -1883,3 +1883,138 @@ class TestProcessPlanOnceEvents:
         row = await db.fetch_one("SELECT status FROM plans WHERE id = ?", (plan_id,))
         assert row is not None
         assert row["status"] != PlanStatus.COMPLETED
+
+    async def test_failed_task_blocks_completed_and_integration_pr(
+        self, db: Database
+    ) -> None:
+        """A plan with one MERGED task and one FAILED task (retries exhausted)
+        must not reach COMPLETED and must not open the integration PR."""
+        await db.execute(
+            "INSERT INTO users (id, name, token_hash) VALUES (?, ?, ?)",
+            ("u5", "User5", "hash5"),
+        )
+        await db.execute(
+            """INSERT INTO projects (id, user_id, name, repo_url, model_name, max_retries)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            ("p5", "u5", "App5", "https://github.com/u/e", "deepseek", 3),
+        )
+        task_queue = TaskQueue(db)
+        plan_id = await task_queue.create_plan("p5", "Partial success plan")
+        await task_queue.activate_plan(
+            plan_id,
+            {
+                "plan_summary": "PartialSuccess",
+                "plan_slug": "partial-success",
+                "tasks": [
+                    {
+                        "title": "Task Merged",
+                        "slug": "task-merged",
+                        "description": "Merged task",
+                        "depends_on": [],
+                    },
+                    {
+                        "title": "Task Failed",
+                        "slug": "task-failed",
+                        "description": "Retries exhausted",
+                        "depends_on": [],
+                    },
+                ],
+            },
+            "plan/2026-07-02-partial-success",
+        )
+        tasks = await task_queue.get_tasks_for_plan(plan_id)
+        task_merged_id = str(tasks[0]["id"])
+        task_failed_id = str(tasks[1]["id"])
+        await task_queue.update_task_status(task_merged_id, TaskStatus.MERGED)
+        await task_queue.update_task_status(task_failed_id, TaskStatus.FAILED)
+
+        mock_git = AsyncMock()
+        orch = Orchestrator(
+            task_queue=task_queue,
+            agent_manager=MagicMock(),
+            opus_bridge=AsyncMock(),
+            git_ops=mock_git,
+            event_bus=EventBus(),
+        )
+        orch.dispatch_pending_tasks = AsyncMock()
+
+        project = await db.fetch_one("SELECT * FROM projects WHERE id = 'p5'")
+        assert project is not None
+        await orch.process_plan_once(plan_id, dict(project))
+
+        row = await db.fetch_one("SELECT status FROM plans WHERE id = ?", (plan_id,))
+        assert row is not None
+        assert row["status"] != PlanStatus.COMPLETED
+        # The integration-PR path must never run for a plan with an
+        # unrecovered FAILED task, not just the status string.
+        mock_git.open_integration_pr.assert_not_called()
+
+    async def test_superseded_task_allows_completion(self, db: Database) -> None:
+        """A SUPERSEDED task (replaced by split children) must not block
+        completion; only a terminal FAILED task should."""
+        await db.execute(
+            "INSERT INTO users (id, name, token_hash) VALUES (?, ?, ?)",
+            ("u6", "User6", "hash6"),
+        )
+        await db.execute(
+            """INSERT INTO projects (id, user_id, name, repo_url, model_name, max_retries)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            ("p6", "u6", "App6", "https://github.com/u/f", "deepseek", 3),
+        )
+        task_queue = TaskQueue(db)
+        plan_id = await task_queue.create_plan("p6", "Split plan")
+        await task_queue.activate_plan(
+            plan_id,
+            {
+                "plan_summary": "Split",
+                "plan_slug": "split",
+                "tasks": [
+                    {
+                        "title": "Task Merged",
+                        "slug": "task-merged",
+                        "description": "Merged task",
+                        "depends_on": [],
+                    },
+                    {
+                        "title": "Task Superseded",
+                        "slug": "task-superseded",
+                        "description": "Replaced by split children",
+                        "depends_on": [],
+                    },
+                ],
+            },
+            "plan/2026-07-02-split",
+        )
+        tasks = await task_queue.get_tasks_for_plan(plan_id)
+        task_merged_id = str(tasks[0]["id"])
+        task_superseded_id = str(tasks[1]["id"])
+        await task_queue.update_task_status(task_merged_id, TaskStatus.MERGED)
+        await task_queue.update_task_status(task_superseded_id, TaskStatus.SUPERSEDED)
+
+        mock_git = AsyncMock()
+        mock_opus = AsyncMock()
+        mock_opus.is_available.return_value = True
+        # Below the default confidence_threshold so check_improvements
+        # returns None without touching create_improvement_plan; this test
+        # is about the completion/PR guard, not the improvement pipeline.
+        mock_opus.analyze_improvements.return_value = {
+            "confidence": 0.0,
+            "reason": "no-op",
+        }
+        orch = Orchestrator(
+            task_queue=task_queue,
+            agent_manager=MagicMock(),
+            opus_bridge=mock_opus,
+            git_ops=mock_git,
+            event_bus=EventBus(),
+        )
+        orch.dispatch_pending_tasks = AsyncMock()
+
+        project = await db.fetch_one("SELECT * FROM projects WHERE id = 'p6'")
+        assert project is not None
+        await orch.process_plan_once(plan_id, dict(project))
+
+        row = await db.fetch_one("SELECT status FROM plans WHERE id = ?", (plan_id,))
+        assert row is not None
+        assert row["status"] == PlanStatus.COMPLETED
+        mock_git.open_integration_pr.assert_called_once()

@@ -254,7 +254,18 @@ class Orchestrator(DispatchMixin, ReviewMixin, ReconcileMixin, ImprovementMixin)
         terminal_with_failures = not active and not pending and not passed and failed
 
         if all_done or terminal_with_failures:
-            await self._tq.update_plan_status(plan_id, PlanStatus.COMPLETED)
+            # A plan with a task that exhausted its retries (terminal FAILED,
+            # not merely awaiting merge or superseded by a split) must reach a
+            # terminal status distinct from COMPLETED and must never open the
+            # integration PR: opening a PR reports the plan as ready to merge
+            # when part of it never landed. SUPERSEDED tasks are not failures
+            # (a split parent is expected to sit there forever) and do not
+            # reach this branch as a failure, so they still complete normally
+            # via all_done.
+            if terminal_with_failures:
+                await self._tq.update_plan_status(plan_id, PlanStatus.FAILED)
+            else:
+                await self._tq.update_plan_status(plan_id, PlanStatus.COMPLETED)
             failed_ids = [t["id"] for t in failed]
             if failed_ids:
                 self._bus.publish(
@@ -264,10 +275,13 @@ class Orchestrator(DispatchMixin, ReviewMixin, ReconcileMixin, ImprovementMixin)
                         "failed_task_ids": failed_ids,
                     }
                 )
-            try:
-                await self.on_plan_completed(plan_id)
-            except Exception as exc:  # noqa: BLE001 - non-fatal
-                logger.warning("on_plan_completed failed for plan %s: %s", plan_id, exc)
+            if not terminal_with_failures:
+                try:
+                    await self.on_plan_completed(plan_id)
+                except Exception as exc:  # noqa: BLE001 - non-fatal
+                    logger.warning(
+                        "on_plan_completed failed for plan %s: %s", plan_id, exc
+                    )
             analysis = await self.check_improvements(plan_id, project)
             if analysis is not None:
                 await self.create_improvement_plan(
