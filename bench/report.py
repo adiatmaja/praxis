@@ -182,30 +182,39 @@ def _by_condition(rows: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]
 
 
 def _render_cost_table(rows: list[dict[str, Any]]) -> str:
-    """Cost per resolved task.
+    """Cost per condition, on a WALL CLOCK basis (confirmed 2026-08-14).
 
-    Two ways this can fail to be a number, and both must SAY so rather than
-    print one. A condition that resolves nothing is infinite, because zero
-    would read as free. A condition with no token data is "not measured", for
-    the same reason in the other direction: ``bench/runner.py`` hardcodes
-    ``brain_tokens=0`` and ``worker_tokens=0`` (the counters were never
-    implemented), and 0 divided by a real resolved count printed a confident
-    "0 tokens per resolved task".
+    Wall clock, not tokens, is the real cost axis in this configuration.
+    ``AttemptRecord.wall_clock_s`` is a genuine per-attempt measurement; the
+    worker is a local open-weight model on the operator's own GPU, so tokens
+    cost no money and GPU hours do, and the brain is a rate-limited
+    subscription CLI, not metered per token. ``brain_tokens`` and
+    ``worker_tokens`` stay hardcoded to 0 in ``bench/runner.py`` (never
+    wired up) and are reported as a fixed disclaimer in the template, never
+    as a computed cell here: see ``report.md.tmpl``'s Cost section.
+
+    A condition that resolves nothing must not print a finite per-resolved
+    wall clock: zero, or any finite number, would read as "this arm is
+    cheap" rather than "this arm never finished anything".
     """
     lines = [
-        "| condition | tokens | resolved | tokens per resolved |",
-        "|---|---|---|---|",
+        "| condition | n | resolved | total wall clock (s) | "
+        "wall clock per resolved (s) |",
+        "|---|---|---|---|---|",
     ]
     for condition, group in sorted(_by_condition(rows).items()):
-        tokens = sum(r["brain_tokens"] + r["worker_tokens"] for r in group)
+        trials = len(group)
         resolved = sum(1 for r in group if r["resolved"])
-        if not tokens:
-            per = "not measured (no token accounting)"
-        elif resolved:
-            per = f"{tokens / resolved:.0f}"
-        else:
-            per = "infinite (nothing resolved)"
-        lines.append(f"| {condition} | {tokens} | {resolved} | {per} |")
+        wall_clock = sum(r["wall_clock_s"] for r in group)
+        per_resolved = (
+            f"{wall_clock / resolved:.1f}"
+            if resolved
+            else "infinite (nothing resolved)"
+        )
+        lines.append(
+            f"| {condition} | {trials} | {resolved} | {wall_clock:.1f} | "
+            f"{per_resolved} |"
+        )
     return "\n".join(lines)
 
 

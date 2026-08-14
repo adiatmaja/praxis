@@ -41,9 +41,19 @@ so the unpaired chi-square would be the wrong test.
 
 $cost_table
 
-Cost is reported per RESOLVED task, not per attempt. A condition that
-resolves nothing shows an infinite cost, because reporting zero there would
-read as free.
+Cost is reported as WALL CLOCK, the real cost axis in this configuration: the
+worker is a local open-weight model running on the operator's own GPU, so
+tokens cost no money and GPU hours do, and the brain is a rate-limited
+subscription CLI, not metered per token. Total wall clock and wall clock per
+RESOLVED task are reported per condition. A condition that resolves nothing
+shows an infinite wall clock per resolved task, because zero or any finite
+number would read as free.
+
+Token counts are UNMEASURED. `brain_tokens` and `worker_tokens` are stubs
+hardcoded to 0 in `bench/runner.py`: OpenCode talks to LM Studio directly
+from inside the agent container, so the orchestrator never observes those
+calls, and the agent-done callback carries no usage field. Token accounting
+is deferred until a metered provider is actually in play.
 
 ## Plausible but wrong
 
@@ -91,5 +101,12 @@ classification, not the headline number, is what says whether more
 decomposition work is worth doing.
 
 ## Limitations
+
+Absolute resolve rates in this report are NOT comparable to published
+SWE-bench numbers. `bench/prepare.py` provisions no per-instance environment,
+so the worker spends turns on the environment itself, discovering and fixing
+missing test runners and dependency mismatches, before it can address the
+issue. Only BETWEEN-ARM deltas, comparisons among conditions run in the same
+invocation, are interpretable from this report.
 
 $limitations

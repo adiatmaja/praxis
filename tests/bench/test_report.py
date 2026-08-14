@@ -38,6 +38,20 @@ def _row(**overrides: Any) -> dict[str, Any]:
     return base
 
 
+def _norm(text: str) -> str:
+    """Collapse whitespace so a hard-wrapped template line matches a sentence
+    asserted as one contiguous string.
+
+    The template's prose is hard-wrapped across source lines like every other
+    doc in this repo; markdown renders a single ``\\n`` inside a paragraph as
+    a space, but the raw string still carries the newline. Normalizing here,
+    rather than reflowing the template to keep sentences on one line, keeps
+    the check meaningful (still the full sentence, not a short vacuous
+    fragment) without making the template's line width a test dependency.
+    """
+    return re.sub(r"\s+", " ", text)
+
+
 MANDATORY_HEADINGS = (
     "Contamination",
     "Correlational anchors",
@@ -154,30 +168,36 @@ def test_a_run_of_every_arm_claims_nothing_was_skipped() -> None:
     assert _ABLATION_NOT_RUN not in report
 
 
-@pytest.mark.unit
-def test_uncollected_token_counts_are_not_rendered_as_a_cost_of_zero() -> None:
-    """Zero tokens means NOT MEASURED, and must never print as a cost.
+_TOKENS_UNMEASURED = (
+    "Token counts are UNMEASURED. `brain_tokens` and `worker_tokens` are "
+    "stubs hardcoded to 0 in `bench/runner.py`: OpenCode talks to LM Studio "
+    "directly from inside the agent container, so the orchestrator never "
+    "observes those calls, and the agent-done callback carries no usage "
+    "field. Token accounting is deferred until a metered provider is "
+    "actually in play."
+)
 
-    ``bench/runner.py`` hardcodes ``brain_tokens=0`` and ``worker_tokens=0``:
-    the counters were never implemented. With one resolved task that divided to
-    "0" and the table published "0 tokens per resolved task", which reads as
-    FREE. The function's own docstring guards the mirror case (nothing resolved
-    must not read as free) and left this one fabricating a measurement.
+
+@pytest.mark.unit
+def test_the_report_labels_token_counts_unmeasured_and_says_why() -> None:
+    """Cost moved to wall clock (confirmed 2026-08-14); tokens are no longer
+    a computed cell at all, only a fixed disclaimer. Silently dropping that
+    disclaimer is exactly as misleading as printing a false zero, so it must
+    render regardless of what token fields the rows happen to carry.
     """
-    rows = [_row(condition="A", resolved=True, brain_tokens=0, worker_tokens=0)]
+    rows = [_row(condition="A", resolved=True, brain_tokens=9999, worker_tokens=9999)]
     report = build_report(rows, run_id="pilot-1", model_cutoff="2026-03")
-    assert "not measured" in report
-    # The wrong rendering, asserted ABSENT: a bare "| 0 |" cost cell.
-    assert "| 0 |\n" not in report.replace("| A | 0 | 1 |", "")
+    assert _TOKENS_UNMEASURED in _norm(report)
 
 
 @pytest.mark.unit
-def test_a_real_token_count_still_reports_a_cost() -> None:
-    """The guard must not swallow a genuine measurement."""
-    rows = [_row(condition="A", resolved=True, brain_tokens=1000, worker_tokens=3000)]
-    report = build_report(rows, run_id="pilot-1", model_cutoff="2026-03")
-    assert "4000" in report
-    assert "not measured" not in report
+def test_the_template_structurally_carries_the_tokens_unmeasured_sentence() -> None:
+    """Structural, not incidental: present on disk in the template, the same
+    guarantee the mandatory honesty headings rely on (see
+    ``test_the_template_file_itself_contains_every_mandatory_heading``).
+    """
+    text = TEMPLATE_PATH.read_text(encoding="utf-8")
+    assert _TOKENS_UNMEASURED in _norm(text)
 
 
 @pytest.mark.unit
@@ -356,7 +376,65 @@ def test_every_stratum_row_carries_its_trial_count_beside_the_rate() -> None:
 
 
 @pytest.mark.unit
-def test_the_cost_table_renders_infinite_not_zero_when_nothing_resolved() -> None:
-    rows = [_row(condition="A", resolved=False, brain_tokens=500, worker_tokens=500)]
+def test_cost_table_reports_wall_clock_total_and_per_resolved() -> None:
+    """Wall clock, not tokens, is the primary cost axis (confirmed 2026-08-14):
+    ``AttemptRecord.wall_clock_s`` is a real per-attempt measurement, unlike
+    ``brain_tokens``/``worker_tokens`` which ``bench/runner.py`` hardcodes to 0.
+
+    Pinned to exact numbers so a mutation that divides by trial count instead
+    of resolved count is caught: 360.0s total over 3 trials, 2 resolved,
+    divides to 180.0 (correct) rather than 120.0 (the trials-divisor bug).
+    """
+    rows = [
+        _row(condition="A", resolved=True, wall_clock_s=100.0),
+        _row(condition="A", instance_id="a__b-2", resolved=True, wall_clock_s=200.0),
+        _row(condition="A", instance_id="a__b-3", resolved=False, wall_clock_s=60.0),
+    ]
     report = build_report(rows, run_id="full-01", model_cutoff="2026-03")
-    assert "infinite (nothing resolved)" in report
+    assert "| A | 3 | 2 | 360.0 | 180.0 |" in report
+    assert "120.0" not in report
+
+
+@pytest.mark.unit
+def test_cost_table_wall_clock_per_resolved_is_infinite_when_nothing_resolved() -> None:
+    """A condition that resolved nothing must not print a finite per-resolved
+    wall clock: zero, or any other finite number, would read as cheap or free.
+    """
+    rows = [_row(condition="A", resolved=False, wall_clock_s=500.0)]
+    report = build_report(rows, run_id="full-01", model_cutoff="2026-03")
+    assert "| A | 1 | 0 | 500.0 | infinite (nothing resolved) |" in report
+    assert "| A | 1 | 0 | 500.0 | 0.0 |" not in report
+    assert "| A | 1 | 0 | 500.0 | 500.0 |" not in report
+
+
+_ABSOLUTE_RATES_NOT_COMPARABLE = (
+    "Absolute resolve rates in this report are NOT comparable to published "
+    "SWE-bench numbers."
+)
+_ONLY_BETWEEN_ARM_DELTAS = (
+    "Only BETWEEN-ARM deltas, comparisons among conditions run in the same "
+    "invocation, are interpretable from this report."
+)
+
+
+@pytest.mark.unit
+def test_the_limitations_section_states_resolve_rates_are_not_comparable() -> None:
+    """Confirmed 2026-08-14, a separate decision from the wall-clock one: no
+    per-instance environment is provisioned, so absolute numbers here do not
+    mean what a published SWE-bench number means; only within-run deltas do.
+    """
+    report = build_report([_row()], run_id="full-01", model_cutoff="2026-03")
+    normalized = _norm(report)
+    assert _ABSOLUTE_RATES_NOT_COMPARABLE in normalized
+    assert "no per-instance environment" in normalized
+    assert _ONLY_BETWEEN_ARM_DELTAS in normalized
+
+
+@pytest.mark.unit
+def test_the_template_structurally_carries_the_non_comparability_sentence() -> None:
+    """Structural, not incidental: present on disk in the template, the same
+    guarantee the other mandatory honesty caveats rely on.
+    """
+    text = _norm(TEMPLATE_PATH.read_text(encoding="utf-8"))
+    assert _ABSOLUTE_RATES_NOT_COMPARABLE in text
+    assert _ONLY_BETWEEN_ARM_DELTAS in text
