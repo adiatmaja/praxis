@@ -14,7 +14,8 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, cast
 
 from orchestrator.core import branch_sweeper
-from orchestrator.models.schemas import TaskStatus
+from orchestrator.core.status_vocab import TERMINAL_STATUSES
+from orchestrator.models.schemas import PlanStatus, TaskStatus
 
 
 if TYPE_CHECKING:
@@ -34,6 +35,26 @@ logger = logging.getLogger(__name__)
 # further ATTEMPTS for that branch, it never raises or wedges the loop.
 BRANCH_DELETE_FAILURE_CAP: int = 3
 
+# Plan statuses past which nothing more will ever be dispatched onto the plan's
+# branch. Deliberately expressed as the TERMINAL set and complemented at the
+# call site, so a plan status added later reads as LIVE (keep the branch)
+# rather than as dead (delete it). It covers the 'merged' value the merged-plan
+# query also tolerates even though PlanStatus has no such member. The task-side
+# equivalent is status_vocab.TERMINAL_STATUSES, which is already frozen.
+TERMINAL_PLAN_STATUSES: frozenset[str] = frozenset(
+    {
+        PlanStatus.COMPLETED.value,
+        PlanStatus.REJECTED.value,
+        PlanStatus.FAILED.value,
+        "merged",
+    }
+)
+
+# Ledger keys carrying the two "do not delete this" signals. Their absence is
+# treated as an inability to establish that anything is dead, not as an empty
+# veto set: see the refusal in sweep_dead_branches.
+_REQUIRED_LEDGER_KEYS: tuple[str, ...] = ("live_branches", "protected_branches")
+
 
 async def sweep_dead_branches(
     repo_url: str,
@@ -48,9 +69,12 @@ async def sweep_dead_branches(
         repo_url: Remote repository URL whose branches are being swept.
         list_remote_branches: Awaitable returning every branch on the remote.
         delete_remote_branch: Awaitable that deletes one remote branch.
-        ledger: ``open_pr_branches`` / ``terminal_failed`` / ``merged_plan``
-            branch-name sets used by ``branch_sweeper.dead_branches`` to
-            decide reclaimability.
+        ledger: ``open_pr_branches`` / ``terminal_failed`` / ``merged_plan`` /
+            ``live_branches`` / ``protected_branches`` branch-name sets used by
+            ``branch_sweeper.dead_branches`` to decide reclaimability. The two
+            veto sets are mandatory: a ledger missing either is refused
+            outright (logged, nothing deleted) rather than swept as though
+            nothing were live, because that reading deletes work.
         failure_counts: Mutable ``(repo_url, branch) -> consecutive failure
             count`` map, shared by the caller across sweep passes (the
             caller, e.g. ``ReconcileMixin.reconcile_runs``, owns an
@@ -65,6 +89,20 @@ async def sweep_dead_branches(
     """
     if failure_counts is None:
         failure_counts = {}
+
+    # Refuse to sweep at all rather than sweep half-informed. A missing veto
+    # set means the caller could not establish what is live or protected, and
+    # the only safe reading of that is "delete nothing this pass".
+    missing = [key for key in _REQUIRED_LEDGER_KEYS if key not in ledger]
+    if missing:
+        logger.error(
+            "Refusing to sweep branches on %s: ledger is missing %s, so no "
+            "branch can be shown to be unused. Nothing was deleted.",
+            repo_url,
+            ", ".join(missing),
+        )
+        return
+
     try:
         remote_branches = await list_remote_branches(repo_url)
     except Exception:
@@ -76,6 +114,8 @@ async def sweep_dead_branches(
         open_pr_branches=ledger.get("open_pr_branches", set()),
         terminal_failed=ledger.get("terminal_failed", set()),
         merged_plan=ledger.get("merged_plan", set()),
+        live_branches=ledger["live_branches"],
+        protected_branches=ledger["protected_branches"],
     )
 
     for branch in dead:
@@ -181,11 +221,27 @@ class ReconcileMixin:
                     self._start_monitor(run["id"], run["task_id"], run["container_id"])
 
         try:
-            projects = await self._tq._db.fetch_all(
-                "SELECT DISTINCT repo_url FROM projects"
+            # Default branches are read alongside repo_url in one query and
+            # folded into a repo_url -> {default branches} map, which keeps the
+            # DISTINCT-repo iteration below (dict keys are unique) while
+            # carrying the per-repo protection facts. Two project rows sharing
+            # a remote but disagreeing on the default branch protect both,
+            # which is the fail-safe direction.
+            project_rows = await self._tq._db.fetch_all(
+                "SELECT repo_url, default_branch FROM projects"
             )
+            default_branch_by_repo: dict[str, set[str]] = {}
+            for row in project_rows:
+                row_repo = row.get("repo_url")
+                if not row_repo:
+                    continue
+                bucket = default_branch_by_repo.setdefault(row_repo, set())
+                row_default = (row.get("default_branch") or "").strip()
+                if row_default:
+                    bucket.add(row_default)
+
             git_ops = getattr(self, "_git", None)
-            if projects and git_ops is not None:
+            if default_branch_by_repo and git_ops is not None:
                 open_pr_rows = await self._tq._db.fetch_all(
                     "SELECT branch_name FROM tasks WHERE pr_url IS NOT NULL AND pr_url != '' AND status NOT IN ('failed', 'merged')"
                 )
@@ -216,10 +272,42 @@ class ReconcileMixin:
                     if row.get("plan_branch_name")
                 }
 
+                # Branches something unfinished is still using. Since Task 8,
+                # tasks.branch_name records the branch actually pushed to, so
+                # in single-branch (auto-delegate) mode many rows share one
+                # work branch and ONE of them failing is enough to put that
+                # shared branch into terminal_failed while siblings are still
+                # running on it. open_pr_branches cannot cover this: a task
+                # still in progress has not opened a PR yet.
+                #
+                # Both halves are computed by complementing the terminal sets
+                # rather than by listing the live statuses, so a status added
+                # later counts as LIVE. That polarity is the whole point: a
+                # false "live" leaves a stale ref lying around, a false "dead"
+                # deletes a container's uncommitted work irreversibly.
+                live_task_rows = await self._tq._db.fetch_all(
+                    "SELECT branch_name, status FROM tasks"
+                )
+                live_plan_rows = await self._tq._db.fetch_all(
+                    "SELECT plan_branch_name, status FROM plans"
+                )
+                live_branches = {
+                    row["branch_name"]
+                    for row in live_task_rows
+                    if row.get("branch_name")
+                    and row.get("status") not in TERMINAL_STATUSES
+                } | {
+                    row["plan_branch_name"]
+                    for row in live_plan_rows
+                    if row.get("plan_branch_name")
+                    and row.get("status") not in TERMINAL_PLAN_STATUSES
+                }
+
                 ledger = {
                     "open_pr_branches": open_pr_branches,
                     "terminal_failed": terminal_failed,
                     "merged_plan": merged_plan,
+                    "live_branches": live_branches,
                 }
 
                 # Per-branch delete-failure streaks, kept for the process's
@@ -236,16 +324,20 @@ class ReconcileMixin:
                     branch_delete_failures = {}
                     self._branch_delete_failures = branch_delete_failures
 
-                for proj in projects:
-                    repo_url = proj.get("repo_url")
-                    if repo_url:
-                        await sweep_dead_branches(
-                            repo_url=repo_url,
-                            list_remote_branches=git_ops.list_remote_branches,
-                            delete_remote_branch=git_ops.delete_remote_branch,
-                            ledger=ledger,
-                            failure_counts=branch_delete_failures,
-                        )
+                for repo_url, repo_defaults in default_branch_by_repo.items():
+                    # A plan with no plan_branch_name dispatches straight onto
+                    # project["default_branch"], so that branch reaches
+                    # terminal_failed like any other. branch_sweeper's
+                    # main/master/release* prefixes are a guess about naming
+                    # and miss a repo whose trunk is 'develop' or 'trunk'; the
+                    # project row knows the real answer, so pass it in.
+                    await sweep_dead_branches(
+                        repo_url=repo_url,
+                        list_remote_branches=git_ops.list_remote_branches,
+                        delete_remote_branch=git_ops.delete_remote_branch,
+                        ledger={**ledger, "protected_branches": repo_defaults},
+                        failure_counts=branch_delete_failures,
+                    )
         except Exception:  # noqa: BLE001 - sweeper call is best-effort
             logger.exception("Failed to sweep dead branches during reconcile pass")
 

@@ -1,10 +1,84 @@
 from __future__ import annotations
 
 import logging
+from typing import Any
 
 import pytest
 
 import orchestrator.core.orchestrator_reconcile as rec
+from orchestrator.core.task_queue import TaskQueue
+from orchestrator.database import Database
+
+
+REPO_URL = "https://github.com/example/repo"
+
+
+class _FakeGit:
+    """Minimal stand-in for ``git_ops`` recording what the sweeper deleted."""
+
+    def __init__(self, branches: list[str]) -> None:
+        self.branches = branches
+        self.deleted: list[str] = []
+
+    async def list_remote_branches(self, repo_url: str) -> list[str]:
+        return list(self.branches)
+
+    async def delete_remote_branch(self, repo_url: str, branch: str) -> None:
+        self.deleted.append(branch)
+
+
+class _ReconcileHarness(rec.ReconcileMixin):
+    """The real ReconcileMixin over a real DB, with only the remote faked.
+
+    These tests exercise the LEDGER SQL, which is where a branch is decided to
+    be dead. A pure ``dead_branches`` test cannot see a wrong ledger.
+    """
+
+    def __init__(self, tq: TaskQueue, git: _FakeGit) -> None:
+        self._tq = tq
+        self._git = git
+        self._agents = None
+        self._monitors: dict[str, Any] = {}
+        self._effective_settings = None
+
+
+async def _seed_project(db: Database, *, default_branch: str) -> None:
+    await db.execute(
+        "INSERT INTO users (id, name, token_hash) VALUES (?, ?, ?)",
+        ("u1", "u", "h"),
+    )
+    await db.execute(
+        "INSERT INTO projects (id, user_id, name, repo_url, default_branch) "
+        "VALUES (?, ?, ?, ?, ?)",
+        ("p1", "u1", "proj", REPO_URL, default_branch),
+    )
+
+
+async def _seed_plan(
+    db: Database, plan_id: str, *, branch: str | None, status: str
+) -> None:
+    await db.execute(
+        "INSERT INTO plans (id, project_id, plan_branch_name, status) "
+        "VALUES (?, ?, ?, ?)",
+        (plan_id, "p1", branch, status),
+    )
+
+
+async def _seed_task(
+    db: Database,
+    task_id: str,
+    plan_id: str,
+    *,
+    branch: str,
+    status: str,
+    pr_url: str | None = None,
+) -> None:
+    await db.execute(
+        "INSERT INTO tasks "
+        "(id, plan_id, title, description, branch_name, status, pr_url) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (task_id, plan_id, task_id, "d", branch, status, pr_url),
+    )
 
 
 @pytest.mark.asyncio
@@ -21,6 +95,8 @@ async def test_sweep_deletes_only_dead() -> None:
         "open_pr_branches": {"agent/live"},
         "terminal_failed": {"agent/failed"},
         "merged_plan": {"plan/merged"},
+        "live_branches": set(),
+        "protected_branches": set(),
     }
 
     await rec.sweep_dead_branches(
@@ -50,6 +126,8 @@ async def test_sweep_swallows_per_branch_errors() -> None:
         "open_pr_branches": set(),
         "terminal_failed": {"agent/failed1", "agent/failed2"},
         "merged_plan": set(),
+        "live_branches": set(),
+        "protected_branches": set(),
     }
 
     await rec.sweep_dead_branches(
@@ -71,7 +149,13 @@ async def test_sweep_handles_list_failure() -> None:
     async def fake_delete_remote_branch(repo_url: str, branch: str) -> None:
         pass
 
-    ledger = {"open_pr_branches": set(), "terminal_failed": set(), "merged_plan": set()}
+    ledger = {
+        "open_pr_branches": set(),
+        "terminal_failed": set(),
+        "merged_plan": set(),
+        "live_branches": set(),
+        "protected_branches": set(),
+    }
 
     # Should not raise exception
     await rec.sweep_dead_branches(
@@ -106,6 +190,8 @@ async def test_sweep_caps_repeated_branch_failures_and_gives_up_once(
         "open_pr_branches": set(),
         "terminal_failed": {"agent/stuck"},
         "merged_plan": set(),
+        "live_branches": set(),
+        "protected_branches": set(),
     }
     failure_counts: dict[tuple[str, str], int] = {}
     cap = rec.BRANCH_DELETE_FAILURE_CAP
@@ -153,6 +239,8 @@ async def test_sweep_resets_failure_count_after_a_successful_delete() -> None:
         "open_pr_branches": set(),
         "terminal_failed": {"agent/flaky"},
         "merged_plan": set(),
+        "live_branches": set(),
+        "protected_branches": set(),
     }
     failure_counts: dict[tuple[str, str], int] = {}
 
@@ -186,3 +274,106 @@ async def test_sweep_resets_failure_count_after_a_successful_delete() -> None:
         failure_counts=failure_counts,
     )
     assert failure_counts[key] == 1
+
+
+@pytest.mark.asyncio
+async def test_sweep_refuses_a_ledger_with_no_liveness_signal(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A ledger missing a veto set means the caller could not establish what is
+    live, and the only safe reading of that is to delete nothing."""
+    listed = False
+    deleted: list[str] = []
+
+    async def fake_list_remote_branches(url: str) -> list[str]:
+        nonlocal listed
+        listed = True
+        return ["main", "agent/failed"]
+
+    async def fake_delete_remote_branch(url: str, branch: str) -> None:
+        deleted.append(branch)
+
+    ledger = {
+        "open_pr_branches": set(),
+        "terminal_failed": {"agent/failed"},
+        "merged_plan": set(),
+        "protected_branches": set(),
+    }
+
+    with caplog.at_level(logging.ERROR, logger=rec.__name__):
+        await rec.sweep_dead_branches(
+            repo_url=REPO_URL,
+            list_remote_branches=fake_list_remote_branches,
+            delete_remote_branch=fake_delete_remote_branch,
+            ledger=ledger,
+        )
+
+    assert deleted == []
+    # It bails before even asking the remote, and says why.
+    assert listed is False
+    assert any("live_branches" in r.message for r in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_ledger_spares_a_shared_branch_a_live_task_is_using(
+    db: Database,
+) -> None:
+    """Scenario A: one task on the shared work branch failed terminally while a
+    sibling is still IN_PROGRESS on the SAME branch, with no PR opened yet.
+
+    ``branch_name`` now records the branch actually pushed to, so in
+    single-branch (auto-delegate) mode the failed task contributes the SHARED
+    branch to ``terminal_failed``. ``open_pr_branches`` cannot save it: a task
+    that is still running has not opened a PR. Deleting it destroys the work of
+    a container that is still writing to it.
+    """
+    await _seed_project(db, default_branch="main")
+    await _seed_plan(db, "pl1", branch="daily/dev-session", status="active")
+    await _seed_task(db, "t1", "pl1", branch="daily/dev-session", status="failed")
+    await _seed_task(db, "t2", "pl1", branch="daily/dev-session", status="in_progress")
+
+    git = _FakeGit(["main", "daily/dev-session"])
+    await _ReconcileHarness(TaskQueue(db), git).reconcile_runs()
+
+    assert git.deleted == []
+
+
+@pytest.mark.asyncio
+async def test_ledger_protects_the_project_default_branch(db: Database) -> None:
+    """Scenario B: a plan with no ``plan_branch_name`` runs on the project's
+    default branch, so a single terminally failed task nominates that default
+    branch for deletion.
+
+    ``_is_protected`` only knows main/master/release*, which is a guess about
+    naming, not a fact about the repository. Nothing else here is live, so only
+    knowing the project's real default branch can save it.
+    """
+    await _seed_project(db, default_branch="develop")
+    await _seed_plan(db, "pl1", branch=None, status="failed")
+    await _seed_task(db, "t1", "pl1", branch="develop", status="failed")
+
+    git = _FakeGit(["main", "develop"])
+    await _ReconcileHarness(TaskQueue(db), git).reconcile_runs()
+
+    assert git.deleted == []
+
+
+@pytest.mark.asyncio
+async def test_ledger_still_reclaims_a_genuinely_dead_agent_branch(
+    db: Database,
+) -> None:
+    """The guards must not be bought by disabling the sweeper.
+
+    A per-task ``agent/<slug>`` branch whose only task failed terminally, on a
+    plan that is itself finished, with no open PR and no live sibling, is
+    exactly what the sweeper exists to reclaim. This test fails if the guard is
+    widened into a blanket refusal to delete.
+    """
+    await _seed_project(db, default_branch="main")
+    await _seed_plan(db, "pl0", branch="plan/2026-01-01-old", status="failed")
+    await _seed_task(db, "t0", "pl0", branch="agent/genuinely-dead", status="failed")
+
+    git = _FakeGit(["main", "agent/genuinely-dead", "plan/2026-01-01-old"])
+    await _ReconcileHarness(TaskQueue(db), git).reconcile_runs()
+
+    assert sorted(git.deleted) == ["agent/genuinely-dead", "plan/2026-01-01-old"]
