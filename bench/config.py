@@ -63,7 +63,7 @@ class Worker:
 # the reference local open-weight model and a cheap hosted mid-tier.
 WORKERS: tuple[Worker, ...] = (
     Worker("local-openweight", "opencode", "qwen3.6-27b"),
-    Worker("hosted-flash", "agy", "Gemini 3.6 Flash (High)"),
+    Worker("hosted-flash", "agy", "Gemini 3.7 Flash (High)"),
 )
 
 # Runs with temperature above zero get two seeds; both are reported.
