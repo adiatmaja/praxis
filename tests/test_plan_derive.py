@@ -76,3 +76,82 @@ async def test_derive_raises_when_nothing_derivable(mocker):
     mocker.patch("httpx.AsyncClient.post", new=mocker.AsyncMock(return_value=mock_resp))
     with pytest.raises(PlanDeriveError):
         await derive_opus_plan(text, lm_studio_url="http://lm:1234")
+
+
+def test_parse_plan_tasks_reads_a_stated_dependency() -> None:
+    text = (
+        "## Task 1: Do the thing\n\n"
+        "**Depends on:** None\n\nBody.\n\n"
+        "## Task 2: Verify the thing\n\n"
+        "**Depends on:** Task 1\n\nBody.\n"
+    )
+    tasks = parse_plan_tasks(text)
+    assert [t["slug"] for t in tasks] == ["do-the-thing", "verify-the-thing"]
+    assert tasks[0]["depends_on"] == []
+    assert tasks[1]["depends_on"] == ["do-the-thing"]
+    # Reading the line must not rewrite the body the worker is handed.
+    assert "**Depends on:** Task 1" in tasks[1]["description"]
+
+
+def test_parse_plan_tasks_depends_on_none_is_empty() -> None:
+    text = "## Task 1: Solo\n\n**Depends on:** None\n\nBody.\n"
+    assert parse_plan_tasks(text)[0]["depends_on"] == []
+
+
+def test_parse_plan_tasks_unresolvable_dependency_is_dropped() -> None:
+    """A named task that does not exist must not become a phantom slug.
+
+    ``TaskQueue.get_dispatchable_tasks`` resolves depends_on by slug against
+    the same task list and raises ValueError on a slug it cannot find, so a
+    phantom would wedge dispatch for the whole plan, not merely leave one
+    task unordered.
+    """
+    text = "## Task 1: Real\n\n**Depends on:** Task 9\n\nBody.\n"
+    assert parse_plan_tasks(text)[0]["depends_on"] == []
+
+
+def test_parse_plan_tasks_self_dependency_is_dropped() -> None:
+    """A task naming its own number would be permanently undispatchable."""
+    text = "## Task 1: Loop\n\n**Depends on:** Task 1\n\nBody.\n"
+    assert parse_plan_tasks(text)[0]["depends_on"] == []
+
+
+def test_parse_plan_tasks_reads_several_dependencies_from_one_line() -> None:
+    text = (
+        "## Task 1: Alpha\n\nBody.\n\n"
+        "## Task 2: Beta\n\nBody.\n\n"
+        "## Task 3: Gamma\n\n**Depends on:** Task 1 and Task 2\n\nBody.\n"
+    )
+    tasks = parse_plan_tasks(text)
+    assert tasks[2]["depends_on"] == ["alpha", "beta"]
+
+
+def test_parse_plan_tasks_reads_dependency_with_the_colon_outside_the_bold() -> None:
+    text = (
+        "## Task 1: Alpha\n\nBody.\n\n"
+        "## Task 2: Beta\n\n**Depends on**: Task 1\n\nBody.\n"
+    )
+    assert parse_plan_tasks(text)[1]["depends_on"] == ["alpha"]
+
+
+def test_parse_plan_tasks_dependency_does_not_leak_across_sections() -> None:
+    """The dependency line is read from the task's own body slice only.
+
+    Searching the whole document would hand every task the first dependency
+    line the document contains, silently serializing tasks that stated
+    nothing and inverting the order of the ones that did.
+    """
+    text = (
+        "## Task 1: Alpha\n\nBody.\n\n"
+        "## Task 2: Beta\n\nBody.\n\n"
+        "## Task 3: Gamma\n\n**Depends on:** Task 2\n\nBody.\n"
+    )
+    tasks = parse_plan_tasks(text)
+    assert tasks[0]["depends_on"] == []
+    assert tasks[1]["depends_on"] == []
+    assert tasks[2]["depends_on"] == ["beta"]
+
+
+def test_parse_plan_tasks_checkbox_branch_has_no_dependencies() -> None:
+    text = "# Plan\n\n- [ ] First thing\n- [x] Second thing\n"
+    assert [t["depends_on"] for t in parse_plan_tasks(text)] == [[], []]
