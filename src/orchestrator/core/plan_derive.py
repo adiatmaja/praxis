@@ -14,6 +14,8 @@ import re
 
 import httpx
 
+from orchestrator.core.thinking import effort_param
+
 
 logger = logging.getLogger(__name__)
 
@@ -491,6 +493,12 @@ def _finalize(tasks: list[dict], text: str) -> dict:
 
 async def _derive_via_lm_studio(text: str, lm_studio_url: str) -> list[dict]:
     url = lm_studio_url.rstrip("/") + "/v1/chat/completions"
+    # Structural extraction into a fixed schema: there is nothing here worth
+    # reasoning about, and thinking actively breaks it. MEASURED on qwen3.8-27b
+    # (2026-08-15) with this exact payload: omitting `reasoning_effort` spent
+    # ~398 tokens reasoning and returned EMPTY content, which fails json.loads
+    # below with a JSONDecodeError. At `none` the same call returns a clean
+    # 8-task object. See core/thinking.py.
     body = {
         "messages": [
             {"role": "user", "content": _DERIVE_PROMPT.format(text=text[:8000])}
@@ -500,6 +508,7 @@ async def _derive_via_lm_studio(text: str, lm_studio_url: str) -> list[dict]:
             "json_schema": {"name": "tasks", "schema": _TASK_SCHEMA},
         },
         "temperature": 0,
+        **effort_param(None),
     }
     async with httpx.AsyncClient(timeout=120) as http:
         resp = await http.post(url, json=body)

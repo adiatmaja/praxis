@@ -39,12 +39,12 @@ escalation:
 # Every rung must name an implementer STRONGER than default_worker_model
 # (currently agy / "Gemini 3.7 Flash (High)"), or the escalation is a no-op.
 # Rung availability is deployment-specific: glm-4.7 needs an API key for the
-# hosted endpoint, and qwen3.6-27b needs LM Studio reachable.
+# hosted endpoint, and qwen3.8-27b needs LM Studio reachable.
 implement_escalation:
   - harness: opencode
     model: "glm-4.7"
   - harness: opencode
-    model: "qwen3.6-27b"
+    model: "qwen3.8-27b"
 
 # Hard ceiling on leaves in one plan, counting split children. Adaptive
 # splitting without this is an unbounded token spend.
@@ -97,7 +97,7 @@ worker_presets:
   - name: local-lmstudio
     label: "Local GPU via LM Studio"
     harness: opencode
-    model: "qwen3.6-27b"
+    model: "qwen3.8-27b"
     endpoint: "http://host.docker.internal:1234"
     requires: []
   - name: gemini-agy

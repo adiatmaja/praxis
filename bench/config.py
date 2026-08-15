@@ -62,7 +62,7 @@ class Worker:
 # Two workers, so the capability claim is comparative rather than anecdotal:
 # the reference local open-weight model and a cheap hosted mid-tier.
 WORKERS: tuple[Worker, ...] = (
-    Worker("local-openweight", "opencode", "qwen3.6-27b"),
+    Worker("local-openweight", "opencode", "qwen3.8-27b"),
     Worker("hosted-flash", "agy", "Gemini 3.7 Flash (High)"),
 )
 

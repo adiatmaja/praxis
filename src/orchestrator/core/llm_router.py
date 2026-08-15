@@ -6,6 +6,8 @@ import asyncio
 import shutil
 from collections.abc import Awaitable, Callable
 
+from orchestrator.core.thinking import effort_param
+
 
 class UnknownProviderError(Exception):
     """Raised when a call-site config names a provider with no builder."""
@@ -209,7 +211,9 @@ class LLMRouter:
     async def _execute_one(self, cfg: dict, prompt: str, cwd: str | None) -> str:
         provider = cfg["provider"]
         if provider == "local":
-            return await self._run_local(prompt, cfg.get("model") or "")
+            return await self._run_local(
+                prompt, cfg.get("model") or "", cfg.get("effort")
+            )
         # agy receives the prompt as a positional argv value; every other CLI
         # provider receives it on stdin (avoids the argv length limit).
         prompt_in_argv = provider == "agy"
@@ -261,13 +265,20 @@ class LLMRouter:
             raise ProviderOutputError(message)
         return out
 
-    async def _run_local(self, prompt: str, model: str) -> str:
+    async def _run_local(
+        self, prompt: str, model: str, effort: str | None = None
+    ) -> str:
         import httpx
 
         url = self._lm_studio_url.rstrip("/") + "/v1/chat/completions"
+        # `reasoning_effort` is stated EXPLICITLY, never omitted: on qwen3.8 an
+        # absent key means MAXIMUM effort, not off (see core/thinking.py). This
+        # also stops the local seat from silently discarding the registry
+        # `effort` that every CLI provider honors via build_argv.
         body: dict[str, object] = {
             "messages": [{"role": "user", "content": prompt}],
             "temperature": 0,
+            **effort_param(effort),
         }
         if model:
             body["model"] = model

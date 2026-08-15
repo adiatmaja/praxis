@@ -289,6 +289,7 @@ the relevant subsystem. Condensed index:
 - **PR body uses `TASK_SUMMARY`**, not a `TASK_PROMPT` slice. **`MODEL` env is provider-prefixed per harness.**
 - **Unified Plans view = Spec→Plan→Run**; lifecycle docs live in the TARGET repo (read via `/doc-raw`).
 - **Promote plan.md** via `POST /api/plans/promote` (deterministic parse → LM Studio fallback, never Opus).
+- **Hand-built LM Studio payloads must state `reasoning_effort` explicitly** (`core/thinking.py` SSoT, gated by `tests/test_thinking_explicit.py`) — qwen3.8-27b thinks by DEFAULT, so an absent key means MAXIMUM effort, not off; it returned empty, unparseable content on `plan_derive`'s json_schema payload.
 - **DocIndexer scans only `specs/`+`plans/`**; plans need `spec_path:` front-matter + 4-backtick outer fences.
 - **`/api/status` Planner availability is CLI-probed** (`claude --version`), not DB-only.
 - **Dashboard LM Studio URL is the effective (global) one**; New-Project model is a `/api/lm-models` dropdown.

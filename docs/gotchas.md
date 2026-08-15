@@ -158,6 +158,20 @@ keep the CLAUDE.md index in sync.
   `TaskQueue.activate_plan` so the Run view is unchanged. Stores `spec_path`/`plan_path`
   on the `plans` row. Idempotent per `plan_path`. Errors: 404 missing doc, 422 zero tasks,
   502 local LLM/clone failure.
+- **Every hand-built LM Studio payload must state `reasoning_effort` explicitly** —
+  `core/thinking.py` is the SSoT (`effort_param`), and `tests/test_thinking_explicit.py`
+  gates the invariant over all payloads. qwen3.8-27b **thinks by default**, so an ABSENT
+  key requests MAXIMUM effort rather than none: measured on the configured endpoint
+  2026-08-15, omission produced 354 reasoning tokens, byte-identical to `high`, while
+  `none` produced 0 (`low` is 317, so `low` is NOT an off switch). This is not latent —
+  `plan_derive._derive_via_lm_studio`'s `json_schema` payload returned EMPTY, unparseable
+  content with the key omitted, which raises `JSONDecodeError` out of `derive_opus_plan`
+  and breaks the promote-plan.md path; at `none` the same call returns a clean task list.
+  `LLMRouter._run_local` also used to DISCARD the registry `effort` that every CLI
+  provider honors via `build_argv`; it now threads it through. The gate strips comment
+  lines before matching, because each of these call sites carries a comment mentioning
+  `reasoning_effort` and prose would otherwise satisfy it while the payload stayed silent
+  (verified: without the strip, deleting the real parameter still passed).
 - **DocIndexer only scans `specs/` and `plans/` dirs** — top-level `docs/*.md`
   (workflow.md, architecture.md, deployment.md) are excluded to stop reference docs being
   misclassified as plans. `PLAN_BOOTSTRAP` instructs generated plans to stamp

@@ -22,7 +22,7 @@ This document is about the **second** path: capability-aware decomposition.
 
 ## What the decompose step is for
 
-The local worker (e.g. `qwen3.6-27b`) runs one-shot in a container and only ever sees a fresh
+The local worker (e.g. `qwen3.8-27b`) runs one-shot in a container and only ever sees a fresh
 `git clone`. A plan written for a strong planner may contain leaves that are too large for the
 worker's context window, or too complex for its parameter count. Decomposition is the brain
 **simulating "can this local model do each piece, and if not, how do I re-shape it so it can?"**
