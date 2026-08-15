@@ -26,6 +26,12 @@ class WorkerPreset:
     model: str
     endpoint: str
     requires: tuple[str, ...] = ()
+    #: Marks the deployment's preferred preset. ``praxis init`` offers it as the
+    #: menu default even when it has unmet ``requires``, which is why it is an
+    #: explicit opt-in rather than inferred from menu order: the fallback rule
+    #: (first preset needing no credential) cannot express "I have already done
+    #: the one-time login for this one".
+    default: bool = False
 
 
 def parse_presets(raw: list[Any]) -> list[WorkerPreset]:
@@ -67,9 +73,32 @@ def parse_presets(raw: list[Any]) -> list[WorkerPreset]:
                 model=str(entry["model"]),
                 endpoint=str(entry.get("endpoint") or ""),
                 requires=tuple(str(r) for r in (requires or [])),
+                # Anything other than a real YAML boolean is treated as not
+                # default: a stray string here must not silently promote a
+                # preset over the operator's actual choice.
+                default=entry.get("default") is True,
             )
         )
     return presets
+
+
+def default_preset_name(presets: list[WorkerPreset]) -> str | None:
+    """Return the name of the preset flagged ``default: true``, if any.
+
+    Only the FIRST flag wins. Two defaults in one file is an operator error
+    with no correct answer, so it resolves in document order and warns rather
+    than picking arbitrarily or refusing to boot.
+    """
+    flagged = [p for p in presets if p.default]
+    if not flagged:
+        return None
+    if len(flagged) > 1:
+        logger.warning(
+            "multiple worker presets marked default (%s); using %r",
+            ", ".join(p.name for p in flagged),
+            flagged[0].name,
+        )
+    return flagged[0].name
 
 
 def resolve_preset(presets: list[WorkerPreset], name: str) -> WorkerPreset:

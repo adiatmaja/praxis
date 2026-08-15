@@ -595,14 +595,24 @@ def _resolve_github_token(current: dict[str, str]) -> str | None:
 
 
 def _default_preset_index(presets: list[dict[str, Any]]) -> int:
-    """Return the 1-based menu default: the first preset ``init`` can satisfy.
+    """Return the 1-based menu default.
 
-    Holding Enter through every prompt is the documented re-run, so the
-    default must never be a preset that cannot work.  ``requires: [api_key]``
-    is exactly that: ``init`` collects no key, :class:`Settings` has no field
-    for one, and ``LM_STUDIO_URL`` IS forwarded into the container, so the
-    default answer silently repointed every ``local`` router call-site at an
-    endpoint that rejects it.
+    An explicit ``default: true`` in the settings YAML wins outright. That
+    is the deployment saying "I have already satisfied this preset's one-time
+    setup", which the fallback rule below cannot express: a one-time
+    interactive login leaves no evidence in the YAML.
+
+    Absent that flag, the default is the first preset ``init`` can satisfy
+    unaided.  Holding Enter through every prompt is the documented re-run, so
+    the default must never be a preset that cannot work.  ``requires:
+    [api_key]`` is exactly that: ``init`` collects no key, :class:`Settings`
+    has no field for one, and ``LM_STUDIO_URL`` IS forwarded into the
+    container, so the default answer silently repointed every ``local`` router
+    call-site at an endpoint that rejects it.
+
+    Flagging a preset default does NOT bypass the guard, it only changes what
+    is offered: :func:`_confirm_unmet_requirements` still challenges an unmet
+    requirement before the choice is accepted.
 
     Args:
         presets: The menu, in display order.
@@ -612,6 +622,9 @@ def _default_preset_index(presets: list[dict[str, Any]]) -> int:
         nothing on the menu is satisfiable; :func:`_confirm_unmet_requirements`
         is what stops that case.
     """
+    for index, preset in enumerate(presets, start=1):
+        if preset.get("default"):
+            return index
     for index, preset in enumerate(presets, start=1):
         if not preset["requires"]:
             return index
@@ -641,6 +654,15 @@ def _confirm_unmet_requirements(preset: dict[str, Any]) -> None:
         "`praxis init` cannot collect.[/yellow] You would have to configure "
         "it yourself afterwards, or the worker fails its first task."
     )
+    if preset.get("default"):
+        # A flagged default is the deployment asserting the one-time setup is
+        # already done, so "you picked the wrong thing" is the wrong framing
+        # here: say what to check instead of implying a mistake.
+        console.print(
+            "This preset is the configured default for this deployment, which "
+            "normally means the one-time setup is already done. Answer yes if "
+            "you have completed it."
+        )
     proceed: bool = Confirm.ask("Choose it anyway?", default=False)
     if not proceed:
         console.print(
@@ -893,6 +915,7 @@ def _fetch_presets_or_defaults() -> list[dict[str, Any]]:
             "model": p.model,
             "endpoint": p.endpoint,
             "requires": list(p.requires),
+            "default": p.default,
         }
         for p in parse_presets(raw)
     ]

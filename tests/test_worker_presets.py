@@ -4,6 +4,7 @@ import pytest
 
 from orchestrator.core.worker_presets import (
     WorkerPreset,
+    default_preset_name,
     parse_presets,
     resolve_preset,
 )
@@ -151,3 +152,51 @@ def test_every_shipped_preset_names_a_registered_harness():
     )
     for preset in presets:
         assert preset.harness in REGISTRY, preset.name
+
+
+@pytest.mark.unit
+def test_default_flag_parses_only_from_a_real_boolean():
+    """A stray string must not silently promote a preset over the operator's choice."""
+    raw = [
+        {"name": "a", "harness": "agy", "model": "m", "default": True},
+        {"name": "b", "harness": "opencode", "model": "m", "default": "yes"},
+        {"name": "c", "harness": "opencode", "model": "m", "default": 1},
+        {"name": "d", "harness": "opencode", "model": "m"},
+    ]
+    by_name = {p.name: p for p in parse_presets(raw)}
+    assert by_name["a"].default is True
+    # "yes" and 1 are both truthy in Python; neither is a YAML boolean.
+    assert by_name["b"].default is False
+    assert by_name["c"].default is False
+    assert by_name["d"].default is False
+
+
+@pytest.mark.unit
+def test_default_preset_name_returns_none_when_nothing_is_flagged():
+    presets = parse_presets([{"name": "a", "harness": "opencode", "model": "m"}])
+    assert default_preset_name(presets) is None
+
+
+@pytest.mark.unit
+def test_two_defaults_resolve_in_document_order_and_warn(caplog):
+    """No correct answer exists, so resolve deterministically rather than arbitrarily."""
+    presets = parse_presets(
+        [
+            {"name": "first", "harness": "agy", "model": "m", "default": True},
+            {"name": "second", "harness": "opencode", "model": "m", "default": True},
+        ]
+    )
+    with caplog.at_level("WARNING"):
+        assert default_preset_name(presets) == "first"
+    assert "multiple worker presets marked default" in caplog.text
+
+
+@pytest.mark.unit
+def test_the_shipped_config_flags_exactly_one_default():
+    from orchestrator.core.settings_file import config_file_path, load_yaml_settings
+
+    presets = parse_presets(
+        load_yaml_settings(config_file_path()).get("worker_presets", [])
+    )
+    flagged = [p.name for p in presets if p.default]
+    assert flagged == ["gemini-agy"]

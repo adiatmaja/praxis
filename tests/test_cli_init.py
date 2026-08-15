@@ -578,24 +578,40 @@ def fake_root(tmp_path, monkeypatch):
 
 
 @pytest.mark.unit
-def test_holding_enter_chooses_a_preset_init_can_actually_satisfy(monkeypatch):
+def test_the_shipped_menu_offers_the_flagged_default_first(monkeypatch):
     """Run against the real config/praxis.yaml, because that is what ships.
 
-    The shipped default was `hosted-openweight`, whose `requires: [api_key]`
-    init never collects and Settings has no field for.  LM_STUDIO_URL IS
-    forwarded into the container, so holding Enter repointed every `local`
-    router call-site at an endpoint that rejects it.  A yellow note does not
-    help: the whole premise of the default path is that nobody reads.
+    The shipped menu default must agree with `default_worker_*`. It did not:
+    the rule picked the first preset needing no credential, which selected
+    local-lmstudio (opencode/qwen3.8) while the configured default worker was
+    agy/Gemini. An explicit `default: true` resolves it, since the rule cannot
+    see that a one-time interactive login has already been done.
+    """
+    presets = init_mod._fetch_presets_or_defaults()
+    # An unresolvable config falls back to `_FALLBACK_PRESET`, a single entry:
+    # without this, the assertions below hold no matter what the real menu did,
+    # which is exactly the vacuous pass this test is for.
+    assert len(presets) > 1, "config/praxis.yaml did not resolve to a real menu"
+    assert any(p.get("default") for p in presets), (
+        "config/praxis.yaml flags no preset `default: true`; the menu default "
+        "would silently fall back to the first credential-free preset"
+    )
+    index = init_mod._default_preset_index(presets)
+    assert presets[index - 1]["harness"] == "agy"
+
+
+@pytest.mark.unit
+def test_a_flagged_default_still_challenges_an_unmet_requirement(monkeypatch):
+    """The flag changes what is OFFERED, never what is CHECKED.
+
+    Holding Enter must not silently accept a preset whose one-time setup may
+    not have happened; the confirmation still defaults to no, so the operator
+    who is not reading cannot answer it by holding Enter.
     """
     _hold_enter(monkeypatch)
     presets = init_mod._fetch_presets_or_defaults()
-    # An unresolvable config falls back to `_FALLBACK_PRESET`, a single entry
-    # whose `requires` is `[]` by construction: without this, the assertion
-    # below holds no matter what the real menu or `_default_preset_index`
-    # actually did, which is exactly the vacuous pass this test is for.
-    assert len(presets) > 1, "config/praxis.yaml did not resolve to a real menu"
-    chosen = init_mod._choose_preset(presets)
-    assert chosen["requires"] == []
+    with pytest.raises(typer.Exit):
+        init_mod._choose_preset(presets)
 
 
 @pytest.mark.unit

@@ -86,24 +86,34 @@ default_worker_model: "Gemini 3.7 Flash (High)"
 
 # Named worker configurations. Choosing one sets harness, model, and endpoint
 # together; there is no new resolution logic, only fewer fields to get right.
-# `praxis init` offers hosted-openweight first because it needs no local GPU.
+#
+# Listed in recommendation order, and `praxis init` offers the entry flagged
+# `default: true` as its menu default. That flag exists because init's fallback
+# rule (first preset needing no credential) cannot see that this deployment has
+# ALREADY completed gemini-agy's one-time `agy login`; without it, holding Enter
+# selected local-lmstudio and silently disagreed with default_worker_* above.
+# The flag changes what is OFFERED, not what is checked: init still challenges
+# an unmet requirement before accepting the choice.
 worker_presets:
-  - name: hosted-openweight
-    label: "Hosted open-weight model (OpenAI-compatible endpoint)"
-    harness: opencode
-    model: "glm-4.7"
-    endpoint: "https://api.z.ai/v1"
-    requires: [api_key]
-  - name: local-lmstudio
-    label: "Local GPU via LM Studio"
-    harness: opencode
-    model: "qwen3.8-27b"
-    endpoint: "http://host.docker.internal:1234"
-    requires: []
   - name: gemini-agy
     label: "Gemini via the agy harness"
     harness: agy
     model: "Gemini 3.7 Flash (High)"
     endpoint: ""
     requires: [interactive_login]
+    default: true
+  - name: local-lmstudio
+    label: "Local GPU via LM Studio"
+    harness: opencode
+    model: "qwen3.8-27b"
+    endpoint: "http://host.docker.internal:1234"
+    requires: []
+  # Last on purpose: this deployment has no api.z.ai key, so it is the one
+  # preset that cannot be exercised or verified here.
+  - name: hosted-openweight
+    label: "Hosted open-weight model (OpenAI-compatible endpoint)"
+    harness: opencode
+    model: "glm-4.7"
+    endpoint: "https://api.z.ai/v1"
+    requires: [api_key]
 
