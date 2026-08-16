@@ -142,7 +142,7 @@ def _client_returning(status: int, body: str):
 def test_doctor_renders_a_table_on_a_401(monkeypatch):
     """The bypass that mattered most: doctor's own auth check.
 
-    `/api/doctor` is auth-gated, so a wrong AUTH_TOKEN, one of doctor's eleven
+    `/api/doctor` is auth-gated, so a wrong AUTH_TOKEN, one of doctor's twelve
     checks, is the likeliest way to hit an error status. Routed through
     `cli.main._check_dict` it printed `Error 401: Unauthorized` and exited
     before `render()` ever ran, so the operator got no table and no hint for

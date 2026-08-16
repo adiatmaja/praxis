@@ -101,7 +101,7 @@ CHECKS: tuple[Check, ...] = (
     ),
     Check(
         "agent_image_freshness",
-        "Agent images newer than their entrypoints",
+        "Agent images match their entrypoints",
         "an entrypoint changed since the image was built; run "
         "`docker compose --profile agents build` or a stale image runs silently",
     ),

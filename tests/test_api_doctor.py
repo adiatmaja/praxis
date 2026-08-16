@@ -77,6 +77,16 @@ def _install_fake_worker_endpoint(monkeypatch, models) -> None:
     monkeypatch.setattr(doctor_api, "_probe_lm_studio", _fake)
 
 
+def _install_fake_worker_endpoint_unreachable(monkeypatch) -> None:
+    """Stub the LM Studio HTTP probe as unreachable, no 5s timeout either."""
+    from orchestrator.api import doctor as doctor_api
+
+    async def _fake(url: str):
+        return False, []
+
+    monkeypatch.setattr(doctor_api, "_probe_lm_studio", _fake)
+
+
 def _rows(body: dict) -> dict:
     return {check["check_id"]: check for check in body["checks"]}
 
@@ -323,6 +333,37 @@ async def test_a_non_local_llm_worker_is_never_compared_against_v1_models(
     row = _rows(body)["worker_endpoint"]
     assert row["status"] == "green"
     assert "Gemini" not in row["detail"]
+
+
+@pytest.mark.integration
+async def test_a_non_local_llm_worker_is_never_probed_for_reachability(
+    client, auth_headers, monkeypatch
+):
+    """The gathering half of the reachability gate, not just the model-name one.
+
+    `test_a_non_local_llm_worker_is_never_compared_against_v1_models` above
+    stubs the LM Studio probe as reachable, so it cannot tell whether
+    `_build_probes` actually threads `endpoint_required` through to
+    `probe_worker_endpoint`: a hardcoded `endpoint_required=True` at that call
+    site would still read green there, because reachable=True short-circuits
+    the model-name comparison regardless of the gate. Here the probe reports
+    UNREACHABLE for an agy/Gemini worker (which never talks to LM Studio at
+    all), so only a correctly wired `endpoint_required=False` keeps the row
+    green; a hardcoded True turns it red.
+    """
+    _install_fake_docker(monkeypatch, lambda _tag: _FakeImage())
+    _install_fake_worker_endpoint_unreachable(monkeypatch)
+    monkeypatch.setattr(
+        client.app.state.effective_settings,
+        "auto_delegate_worker",
+        lambda: {"harness": "agy", "model": "Gemini 3.6 Flash (High)"},
+    )
+
+    body = (await client.get("/api/doctor", headers=auth_headers)).json()
+
+    row = _rows(body)["worker_endpoint"]
+    assert row["status"] == "green"
+    assert "not applicable" in row["detail"].lower()
 
 
 def test_worker_endpoint_skipped_for_non_local_llm_harness() -> None:
