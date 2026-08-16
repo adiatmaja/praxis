@@ -254,6 +254,20 @@ printf '__PRAXIS_PR_URL__=%s\\n' "${PR_URL}"
 """
 
 
+def _to_posix(path: Path) -> str:
+    """Convert a Windows absolute path to the MSYS form Git Bash reads.
+
+    `Path.as_posix()` is NOT good enough for a PATH entry: it yields
+    ``C:/Users/...``, and PATH is colon-separated, so the drive letter becomes
+    its own entry and the rest becomes a bogus ``/Users/...`` one. The spy dir
+    then is not on PATH at all and the real binary answers.
+    """
+    text = str(path)
+    if len(text) >= 2 and text[1] == ":":
+        return "/" + text[0].lower() + text[2:].replace("\\", "/")
+    return text.replace("\\", "/")
+
+
 def _find(lines: list[str], predicate, what: str) -> int:
     for i, line in enumerate(lines):
         if predicate(line):
@@ -353,7 +367,7 @@ def _run_regions(path: Path, tmp_path: Path, backend: str | None):
     # so the real `git.exe` shadowed the spy and the run silently exercised the
     # host's git instead.  `gh` has no counterpart in that directory, which is
     # why only the git half failed and only on the CI runner.
-    spy_path_line = f'export PATH="{bindir.as_posix()}:$PATH"\n'
+    spy_path_line = f'export PATH="{_to_posix(bindir)}:$PATH"\n'
     env.pop("GIT_BACKEND", None)
     if backend is not None:
         env["GIT_BACKEND"] = backend
