@@ -459,6 +459,10 @@ the relevant subsystem. Condensed index:
 - **The merge gate judges `ref.base` when knowable, falling back to `plans.plan_branch_name`** (`106f6a7`): `auto_merge_eligible` used the plan branch while `backend.merge` acts on `ref.base`, so auto-delegate single-branch mode auto-merged straight into `main`. Fixed for local refs; GitHub PR URLs encode no base so that half is still open.
 - **Difficulty scoring runs after F3 and shares its round budget**: leaves under `reject_below` (0.35) loop back with their failing features named; two failures reject the plan entirely.
 - **The verify-gate kill switch is double-gated and literal**: `core/bench_mode.verify_gate_disabled()` needs BOTH `PRAXIS_BENCH` and `PRAXIS_BENCH_DISABLE_VERIFY` equal to the literal string "1"; either alone is refused and it disables the per-task, per-wave, and whole-plan gates together.
+- **Agent image staleness is judged by CONTENT, never mtime**: `core/entrypoint_hash.py` hashes the entrypoint and bakes it into the image as the `org.praxis.entrypoint-sha256` LABEL; `image_content_differs` is tri-state, `not image_label` is the "cannot judge" test, an image built without the build arg carries the label present but EMPTY, never absent.
+- **The worker-endpoint doctor check gates `supports_local_llm` on BOTH the model-name comparison and the reachability probe**: gating only the model-name half left `if not reachable` firing first, so the flagged default preset `gemini-agy` could never go green.
+- **`docker compose restart` does NOT re-read `.env`; only `up -d` does**: the `env_drift` doctor check detects the mismatch instead of relying on the operator knowing which of `.env` (host-only) or `config/praxis.yaml` (mounted) needs which command.
+- **An unmet preset requirement in `praxis init` must print the remedy** (`setup_hint`/`setup_doc` in `config/praxis.yaml`), and the collected token/port/credentials are written to a partial `.env` BEFORE `_choose_preset`'s `typer.Exit(1)` can discard them; that write is scoped to that one exit path, not the separate "Update `.env`?" decline.
 
 ## Documentation
 

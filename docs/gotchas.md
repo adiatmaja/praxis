@@ -758,3 +758,35 @@ keep the CLAUDE.md index in sync.
   per-task gate, the per-wave gate, and the whole-plan gate together, and logs a
   warning every time it fires so a gateless run is never mistaken for a normal
   one in the logs.
+- **Agent image staleness is judged by CONTENT, never mtime**: `core/entrypoint_hash.py`
+  hashes `entrypoint.sh` with LF-normalized line endings, the build bakes it into
+  each image as the `org.praxis.entrypoint-sha256` LABEL, and the doctor compares
+  the two. The predecessor compared image build time against the file's mtime, and
+  since `git clone` stamps every file at clone time, a correct fresh install always
+  reported a stale image. `image_content_differs` is deliberately TRI-STATE: an
+  image built before the label existed carries none, and calling those stale would
+  reproduce the same false red from the other direction, so unknown is AMBER.
+- **The worker-endpoint check is gated on `supports_local_llm` on BOTH halves**: the
+  model-name comparison was already gated (agy names a provider model, not an LM
+  Studio one) but the reachability probe was not, and `if not reachable` fires
+  first, so the flagged default preset `gemini-agy` could never go green. Gate both
+  or neither.
+- **`docker compose restart` does NOT re-read `.env`; only `up -d` does**: the docs
+  say `restart` correctly and repeatedly about the MOUNTED `config/praxis.yaml`, and
+  Quick Start says to edit `.env`, so the pattern teaches the wrong recovery for the
+  wrong file. The `env_drift` doctor check now detects it instead of relying on the
+  operator knowing.
+- **An unmet preset requirement must print the remedy, not just the requirement**:
+  `praxis init` names what is missing AND how to supply it, from the preset's
+  `setup_hint` / `setup_doc` in `config/praxis.yaml`. It also writes the collected
+  token, port, and credentials BEFORE the preset challenge can exit, because
+  `_choose_preset` raises `typer.Exit(1)` and used to discard them all.
+- **Built without the build arg, the `org.praxis.entrypoint-sha256` label key is
+  PRESENT with an EMPTY STRING value, not absent and not `<no value>`**: this is
+  why `image_content_differs`'s "cannot judge" test is `not image_label` (catches
+  both `None` and `""`), never `image_label is None` alone; the latter would treat
+  a pre-label image as a real hash mismatch and go red instead of amber. The
+  partial-`.env` write added for the preset-challenge exit is scoped to that ONE
+  path (`_choose_preset` raising `typer.Exit(1)`): the separate "Update `.env`?"
+  decline is a different code path and keeps its own pre-existing byte-identical
+  guarantee, unchanged by this fix.

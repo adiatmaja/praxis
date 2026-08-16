@@ -214,7 +214,7 @@ Verified first-hand, with output:
 
 ## Defects found, ranked
 
-1. **`praxis init` tells you the deployment's default preset needs a login it
+1. **FIXED 2026-08-16** **`praxis init` tells you the deployment's default preset needs a login it
    cannot collect, and never tells you how to do it.** The Enter-only path
    stops on `gemini-agy` with a message that names the requirement
    (`interactive_login`) and the consequence ("the worker fails its first
@@ -227,12 +227,12 @@ Verified first-hand, with output:
    reads as a dead end.** It is well-written about *what* is wrong and silent
    about *what to do*, which is the worse half to omit.
 
-2. **The Enter-only path discards everything it just collected.** It prompts
+2. **FIXED 2026-08-16** **The Enter-only path discards everything it just collected.** It prompts
    for auth token, port, and git credentials, then on declining the preset
    writes **no `.env` at all** and exits 1. A newcomer holding Enter through
    the documented Quick Start ends with an empty directory and a non-zero exit.
 
-3. **`praxis doctor` reports freshly built agent images as stale, on every
+3. **FIXED 2026-08-16** **`praxis doctor` reports freshly built agent images as stale, on every
    fresh clone.** The check compares image build time against the entrypoint's
    filesystem mtime. `git clone` stamps every file at clone time, so the
    entrypoint is always "newer" than any cached or pulled layer. Docker's own
@@ -242,7 +242,7 @@ Verified first-hand, with output:
    red on a correct install. Fix: compare content (label the image with a hash
    of the entrypoint), not mtimes.
 
-4. **The `gemini-agy` preset can never produce a green doctor.** The
+4. **FIXED 2026-08-16** **The `gemini-agy` preset can never produce a green doctor.** The
    `worker_endpoint` probe requires an OpenAI-compatible `GET /v1/models`, but
    agy authenticates to Google over OAuth and has `supports_local_llm=False`.
    Notably this is a **half-finished fix**: the code deliberately suppresses
@@ -252,7 +252,7 @@ Verified first-hand, with output:
    shows 2 of 11 red on a correct install. Fix: gate the reachability half on
    `supports_local_llm` too, exactly as the model half already is.
 
-5. **Editing `.env` then `docker compose restart` silently keeps the old
+5. **FIXED 2026-08-16** **Editing `.env` then `docker compose restart` silently keeps the old
    value.** Confirmed, not fixed since last run. The container kept serving the
    stale `LM_STUDIO_URL` and doctor stayed red; `docker compose up -d` fixed it
    immediately. The docs say `docker compose restart orchestrator` repeatedly —
@@ -323,6 +323,9 @@ near 22 minutes. That is the honest number, and the slowest step is the Docker
 build, not anything Praxis controls at runtime.
 
 ## What to fix, ranked
+
+Items 1-5 below are closed by
+`docs/superpowers/plans/2026-08-16-onboarding-blockers.md`.
 
 1. **Print the login recipe at the point of refusal.** When init challenges a
    preset's `interactive_login`, print the actual commands (or at minimum the
