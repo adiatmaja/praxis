@@ -69,7 +69,7 @@ _VERIFY_OUTPUT_MAX = 4000
 # ``passed`` by control flow, so an unexplained skip reads as a green gate.
 _SKIP_NO_VERIFY_CMD = "no verify_cmd configured"
 _SKIP_NO_CREDENTIAL_PROVIDER = "no GitHub credential provider"
-_SKIP_NO_TOKEN = "no GitHub token for repo"
+_SKIP_NO_TOKEN = "no GitHub token for repo"  # nosec B105 - a log reason string
 # The per-task gate's two extra skip reasons.  Bench-mode-disabled and
 # no-verify_cmd both leave the task's ``verify_cmd`` local variable falsy, so
 # without a distinct reason string they would read as the SAME skip in the

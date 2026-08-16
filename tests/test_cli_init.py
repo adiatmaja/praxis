@@ -485,7 +485,10 @@ def test_the_printed_cli_exports_are_what_the_cli_actually_reads(monkeypatch):
     from cli import main as cli_main
 
     exports = cli_env_exports("http://127.0.0.1:9999", "tok")
-    for key in ("ORCHESTRATOR_URL", "ORCHESTRATOR_TOKEN"):
+    # AUTH_TOKEN must go too: `_auth_token` prefers it over ORCHESTRATOR_TOKEN,
+    # so an ambient one (CI sets AUTH_TOKEN for the whole test step) shadows the
+    # export under test and the assertion reads the environment, not the mapping.
+    for key in ("ORCHESTRATOR_URL", "ORCHESTRATOR_TOKEN", "AUTH_TOKEN"):
         monkeypatch.delenv(key, raising=False)
     for key, value in exports.items():
         monkeypatch.setenv(key, value)

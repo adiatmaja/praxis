@@ -55,7 +55,7 @@ router = APIRouter(tags=["doctor"], dependencies=[Depends(verify_token)])
 
 # The value AUTH_TOKEN ships as in .env.example; still using it means the
 # operator never actually set a real token.
-_PLACEHOLDER_AUTH_TOKEN = "change-me"
+_PLACEHOLDER_AUTH_TOKEN = "change-me"  # nosec B105 - the value to REJECT, not a credential
 
 #: Where the harness entrypoint sources live, relative to the process CWD.
 #: The orchestrator image sets ``WORKDIR /app`` and both compose files bind

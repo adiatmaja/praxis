@@ -339,7 +339,9 @@ class Orchestrator(DispatchMixin, ReviewMixin, ReconcileMixin, ImprovementMixin)
         try:
             placeholders = ", ".join("?" for _ in GATED_STATUSES)
             rows = await self._tq._db.fetch_all(
-                f"SELECT * FROM tasks WHERE status IN ({placeholders})",
+                # nosec B608 - `placeholders` is a run of `?` sized from the
+                # frozen GATED_STATUSES tuple; values are bound, not inlined.
+                f"SELECT * FROM tasks WHERE status IN ({placeholders})",  # nosec B608
                 tuple(GATED_STATUSES),
             )
             summary = summarize_pending(rows)

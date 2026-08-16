@@ -26,7 +26,9 @@ async def get_pending_approvals(request: Request) -> dict[str, Any]:
     db = request.app.state.db
     placeholders = ", ".join("?" for _ in GATED_STATUSES)
     rows = await db.fetch_all(
-        f"SELECT * FROM tasks WHERE status IN ({placeholders})",
+        # nosec B608 - `placeholders` is a run of `?` sized from the frozen
+        # GATED_STATUSES tuple; the values are bound, never interpolated.
+        f"SELECT * FROM tasks WHERE status IN ({placeholders})",  # nosec B608
         tuple(GATED_STATUSES),
     )
     return summarize_pending(rows)
