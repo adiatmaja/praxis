@@ -2,7 +2,7 @@
 
 import pytest
 
-from orchestrator.core.doctor import CheckStatus
+from orchestrator.core.doctor import CheckStatus, image_content_differs
 from orchestrator.core.doctor_probes import (
     probe_agent_image_freshness,
     probe_agent_images,
@@ -109,20 +109,87 @@ def test_worker_endpoint_green_when_there_is_no_model_to_check():
 
 
 @pytest.mark.unit
-def test_agent_image_freshness_red_when_the_entrypoint_is_newer():
+def test_image_content_differs_matching_hashes() -> None:
+    assert image_content_differs("abc123", "abc123") is False
+
+
+@pytest.mark.unit
+def test_image_content_differs_mismatched_hashes() -> None:
+    assert image_content_differs("abc123", "def456") is True
+
+
+@pytest.mark.unit
+def test_image_content_differs_unknown_image_label_is_not_a_mismatch() -> None:
+    """An unlabeled image predates this check; it cannot be judged.
+
+    This must NOT be treated as stale: every image built before this feature
+    shipped has no label, and calling them all stale recreates the false red
+    from the other direction.
+    """
+    assert image_content_differs(None, "abc123") is None
+    assert image_content_differs("", "abc123") is None
+
+
+@pytest.mark.unit
+def test_image_content_differs_unknown_source_is_not_a_mismatch() -> None:
+    assert image_content_differs("abc123", None) is None
+
+
+@pytest.mark.unit
+def test_freshness_green_when_hashes_match() -> None:
     result = probe_agent_image_freshness(
-        images={"opencode-agent:latest": 100.0},
-        entrypoint_mtimes={"opencode-agent:latest": 200.0},
+        image_labels={"agy-agent:latest": "abc123"},
+        source_hashes={"agy-agent:latest": "abc123"},
+    )
+    assert result.status is CheckStatus.GREEN
+
+
+@pytest.mark.unit
+def test_freshness_red_when_hashes_differ() -> None:
+    result = probe_agent_image_freshness(
+        image_labels={"agy-agent:latest": "OLD"},
+        source_hashes={"agy-agent:latest": "NEW"},
+    )
+    assert result.status is CheckStatus.RED
+    assert "agy-agent:latest" in result.detail
+
+
+@pytest.mark.unit
+def test_freshness_amber_when_nothing_comparable() -> None:
+    """Unlabeled images cannot be judged; amber, never green, never red."""
+    result = probe_agent_image_freshness(
+        image_labels={"agy-agent:latest": None},
+        source_hashes={"agy-agent:latest": "NEW"},
+    )
+    assert result.status is CheckStatus.AMBER
+
+
+@pytest.mark.unit
+def test_freshness_reports_only_the_mismatched_tag() -> None:
+    result = probe_agent_image_freshness(
+        image_labels={"agy-agent:latest": "SAME", "opencode-agent:latest": "OLD"},
+        source_hashes={"agy-agent:latest": "SAME", "opencode-agent:latest": "NEW"},
+    )
+    assert result.status is CheckStatus.RED
+    assert "opencode-agent:latest" in result.detail
+    assert "agy-agent:latest" not in result.detail
+
+
+@pytest.mark.unit
+def test_agent_image_freshness_red_when_hashes_mismatch():
+    result = probe_agent_image_freshness(
+        image_labels={"opencode-agent:latest": "OLD"},
+        source_hashes={"opencode-agent:latest": "NEW"},
     )
     assert result.status is CheckStatus.RED
     assert "opencode-agent" in result.detail
 
 
 @pytest.mark.unit
-def test_agent_image_freshness_green_when_images_are_newer():
+def test_agent_image_freshness_green_when_hashes_match():
     result = probe_agent_image_freshness(
-        images={"opencode-agent:latest": 300.0},
-        entrypoint_mtimes={"opencode-agent:latest": 200.0},
+        image_labels={"opencode-agent:latest": "SAME"},
+        source_hashes={"opencode-agent:latest": "SAME"},
     )
     assert result.status is CheckStatus.GREEN
 
@@ -131,13 +198,13 @@ def test_agent_image_freshness_green_when_images_are_newer():
 def test_agent_image_freshness_amber_when_nothing_was_compared():
     """A green that compared nothing is a lie, and was the shipped behaviour.
 
-    With no entrypoint source readable, this returned GREEN with a detail
+    With no entrypoint hash readable, this returned GREEN with a detail
     textually identical to a verified pass. In a container that was ALWAYS the
     case, so the check the plan added to catch stale agent images reported a
     clean bill of health without ever looking at one.
     """
     result = probe_agent_image_freshness(
-        images={"opencode-agent:latest": 300.0}, entrypoint_mtimes={}
+        image_labels={"opencode-agent:latest": "SAME"}, source_hashes={}
     )
     assert result.status is CheckStatus.AMBER
     assert "opencode-agent:latest" in result.detail
@@ -147,19 +214,25 @@ def test_agent_image_freshness_amber_when_nothing_was_compared():
 def test_agent_image_freshness_amber_when_only_some_tags_were_compared():
     """A partial pass must name what it could not check, not imply it did."""
     result = probe_agent_image_freshness(
-        images={"opencode-agent:latest": 300.0, "agy-agent:latest": 300.0},
-        entrypoint_mtimes={"opencode-agent:latest": 200.0},
+        image_labels={
+            "opencode-agent:latest": "SAME",
+            "agy-agent:latest": "SAME",
+        },
+        source_hashes={"opencode-agent:latest": "SAME"},
     )
     assert result.status is CheckStatus.AMBER
     assert "agy-agent:latest" in result.detail
 
 
 @pytest.mark.unit
-def test_agent_image_freshness_stays_red_when_a_comparable_tag_is_stale():
-    """A definite stale image outranks an unknown one: red beats amber."""
+def test_agent_image_freshness_stays_red_when_a_comparable_tag_mismatches():
+    """A definite mismatch outranks an unknown one: red beats amber."""
     result = probe_agent_image_freshness(
-        images={"opencode-agent:latest": 100.0, "agy-agent:latest": 300.0},
-        entrypoint_mtimes={"opencode-agent:latest": 200.0},
+        image_labels={
+            "opencode-agent:latest": "OLD",
+            "agy-agent:latest": "SAME",
+        },
+        source_hashes={"opencode-agent:latest": "NEW"},
     )
     assert result.status is CheckStatus.RED
     assert "opencode-agent:latest" in result.detail

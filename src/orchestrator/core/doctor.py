@@ -158,17 +158,34 @@ CHECK_IDS: tuple[str, ...] = tuple(c.check_id for c in CHECKS)
 _BY_ID: dict[str, Check] = {c.check_id: c for c in CHECKS}
 
 
-def image_is_stale(image_built_at: float | None, entrypoint_mtime: float) -> bool:
-    """True when an agent image predates its entrypoint source.
+def image_content_differs(
+    image_label: str | None, source_hash: str | None
+) -> bool | None:
+    """Whether an image's baked entrypoint differs from the source on disk.
 
-    An unknown build time counts as stale: freshness cannot be proven, and a
-    silently stale agent image is the failure mode this check exists to catch.
-    An exact tie counts as stale for the same reason, since a build and an edit
-    landing in one filesystem timestamp tick cannot be ordered.
+    Deliberately tri-state.  The predecessor compared an image build time
+    against the entrypoint's mtime and treated "unknown" as stale, which made
+    a fresh ``git clone`` red on every correct install: clone stamps the
+    source at clone time, so it always looked newer than a cached layer.
+
+    ``None`` means "cannot be judged" and must not be rendered as either a
+    pass or a failure.  An image built before this label existed carries no
+    label, and calling those stale would reproduce the same false red from
+    the other direction.
+
+    Args:
+        image_label: The ``org.praxis.entrypoint-sha256`` label read off the
+            image, or ``None``/``""`` when the image carries none.
+        source_hash: The hash of the entrypoint on disk, or ``None`` when it
+            could not be read.
+
+    Returns:
+        ``True`` on a definite mismatch, ``False`` on a definite match,
+        ``None`` when either side is unknown.
     """
-    if image_built_at is None:
-        return True
-    return image_built_at <= entrypoint_mtime
+    if not image_label or not source_hash:
+        return None
+    return image_label != source_hash
 
 
 async def _invoke(probe: Callable[[], Any], check_id: str) -> CheckResult:

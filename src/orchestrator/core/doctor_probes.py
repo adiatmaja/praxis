@@ -7,7 +7,7 @@ decisions live here so they are testable with no environment at all.
 
 from __future__ import annotations
 
-from orchestrator.core.doctor import CheckResult, CheckStatus, image_is_stale
+from orchestrator.core.doctor import CheckResult, CheckStatus, image_content_differs
 
 
 def probe_docker_daemon(reachable: bool, detail: str = "") -> CheckResult:
@@ -116,63 +116,58 @@ def probe_agent_images(
 
 
 def probe_agent_image_freshness(
-    images: dict[str, float | None],
-    entrypoint_mtimes: dict[str, float],
+    image_labels: dict[str, str | None],
+    source_hashes: dict[str, str | None],
     errors: dict[str, str] | None = None,
 ) -> CheckResult:
-    """Red when any agent image predates its entrypoint source.
+    """Red when an agent image's baked entrypoint differs from the source.
 
-    This converts the project's oldest silent failure into a red light: a stale
-    agent image runs old entrypoint logic while the source looks current.
+    This converts the project's oldest silent failure into a red light: a
+    stale agent image runs old entrypoint logic while the source looks
+    current.  The comparison is on CONTENT, not timestamps, because a fresh
+    checkout rewrites every mtime and the previous timestamp comparison was
+    therefore red on every correct install.
 
-    A tag can only be judged when BOTH its build time and its entrypoint's
-    mtime are known.  Tags that could not be compared are named in the detail
-    and pull the verdict to amber, and comparing NOTHING at all is amber on its
-    own.  A green reading "all agent images newer than their entrypoints" when
-    nothing was compared is textually indistinguishable from a verified pass,
-    which is the same class of silent lie the check was added to retire.
+    A tag whose verdict is unknown (no label on the image, or an unreadable
+    source) is reported AMBER, never GREEN: a green this check has not
+    earned is exactly the failure it exists to prevent.
 
     Args:
-        images: ``image_tag`` to build time, or None when it is unknown.
-        entrypoint_mtimes: ``image_tag`` to its entrypoint source's mtime.
-        errors: ``image_tag`` to the failure text for tags that could not be
-            inspected at all; named among the unchecked.
+        image_labels: ``image_tag`` to its baked entrypoint hash.
+        source_hashes: ``image_tag`` to the on-disk entrypoint hash.
+        errors: ``image_tag`` to an inspection error, if any.
+
+    Returns:
+        The check verdict.
     """
     errors = errors or {}
-    comparable = sorted(tag for tag in images if tag in entrypoint_mtimes)
-    stale = [
-        tag for tag in comparable if image_is_stale(images[tag], entrypoint_mtimes[tag])
-    ]
+    verdicts = {
+        tag: image_content_differs(label, source_hashes.get(tag))
+        for tag, label in image_labels.items()
+    }
+    stale = sorted(tag for tag, differs in verdicts.items() if differs is True)
     if stale:
         return CheckResult(
             check_id="agent_image_freshness",
             status=CheckStatus.RED,
             detail=f"stale image(s): {', '.join(stale)}",
         )
-    unchecked = sorted((set(images) - set(comparable)) | set(errors))
-    if not comparable:
-        listed = f": {', '.join(unchecked)}" if unchecked else ""
+    unknown = sorted(
+        {tag for tag, differs in verdicts.items() if differs is None} | set(errors)
+    )
+    if unknown:
         return CheckResult(
             check_id="agent_image_freshness",
             status=CheckStatus.AMBER,
             detail=(
-                "nothing compared: no entrypoint source was available here, so "
-                f"image freshness is unverified{listed}"
-            ),
-        )
-    if unchecked:
-        return CheckResult(
-            check_id="agent_image_freshness",
-            status=CheckStatus.AMBER,
-            detail=(
-                f"{', '.join(comparable)} newer than their entrypoints; "
-                f"could not check: {', '.join(unchecked)}"
+                f"could not compare {', '.join(unknown)}: no entrypoint hash "
+                "on the image (rebuild to populate it)"
             ),
         )
     return CheckResult(
         check_id="agent_image_freshness",
         status=CheckStatus.GREEN,
-        detail="all agent images newer than their entrypoints",
+        detail="all agent images match their entrypoints",
     )
 
 
