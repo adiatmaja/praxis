@@ -11,6 +11,7 @@ from orchestrator.core.doctor_probes import (
     probe_callback_url,
     probe_config_mount,
     probe_docker_daemon,
+    probe_env_drift,
     probe_git_credential,
     probe_orchestrator_health,
     probe_planner_cli,
@@ -298,3 +299,39 @@ def test_planner_cli_red_when_installed_but_not_authenticated():
 def test_planner_cli_green_when_installed_and_authenticated():
     result = probe_planner_cli(cli_available=True, authenticated=True)
     assert result.status is CheckStatus.GREEN
+
+
+@pytest.mark.unit
+def test_env_drift_green_when_values_match() -> None:
+    result = probe_env_drift(
+        running={"LM_STUDIO_URL": "http://a:1234"},
+        on_disk={"LM_STUDIO_URL": "http://a:1234"},
+    )
+    assert result.status is CheckStatus.GREEN
+
+
+@pytest.mark.unit
+def test_env_drift_red_when_container_is_stale() -> None:
+    """The exact trap: .env edited, container restarted, old value retained."""
+    result = probe_env_drift(
+        running={"LM_STUDIO_URL": "http://old:1234"},
+        on_disk={"LM_STUDIO_URL": "http://new:1234"},
+    )
+    assert result.status is CheckStatus.RED
+    assert "LM_STUDIO_URL" in result.detail
+
+
+@pytest.mark.unit
+def test_env_drift_ignores_keys_absent_from_disk() -> None:
+    """A key the file does not set is not drift."""
+    result = probe_env_drift(
+        running={"LM_STUDIO_URL": "http://a:1234", "OTHER": "x"},
+        on_disk={"LM_STUDIO_URL": "http://a:1234"},
+    )
+    assert result.status is CheckStatus.GREEN
+
+
+@pytest.mark.unit
+def test_env_drift_amber_when_nothing_could_be_read() -> None:
+    result = probe_env_drift(running={}, on_disk={})
+    assert result.status is CheckStatus.AMBER

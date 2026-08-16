@@ -340,6 +340,50 @@ def probe_callback_url(port: int, callback_url: str | None) -> CheckResult:
     )
 
 
+def probe_env_drift(running: dict[str, str], on_disk: dict[str, str]) -> CheckResult:
+    """Red when the running container's env disagrees with ``.env`` on disk.
+
+    ``docker compose restart`` does NOT re-read ``.env``; only ``up -d``
+    recreates the container with new values.  The docs correctly say
+    ``restart`` for the MOUNTED yaml, and Quick Start says to edit ``.env``,
+    so the repeated pattern teaches the wrong recovery for the wrong file.
+    Detecting the drift is cheaper than expecting every operator to know it.
+
+    Only keys the file actually sets are compared: a variable present in the
+    container and absent from ``.env`` came from compose or the image and is
+    not drift.
+
+    Args:
+        running: Environment as seen inside the running container.
+        on_disk: Environment parsed from ``.env``.
+
+    Returns:
+        The check verdict.
+    """
+    if not running or not on_disk:
+        return CheckResult(
+            check_id="env_drift",
+            status=CheckStatus.AMBER,
+            detail="could not read the container or .env to compare",
+        )
+    drifted = sorted(
+        key
+        for key, value in on_disk.items()
+        if key in running and running[key] != value
+    )
+    if drifted:
+        return CheckResult(
+            check_id="env_drift",
+            status=CheckStatus.RED,
+            detail=f"container env is stale for: {', '.join(drifted)}",
+        )
+    return CheckResult(
+        check_id="env_drift",
+        status=CheckStatus.GREEN,
+        detail="container env matches .env",
+    )
+
+
 def probe_config_mount(config_path: str, mounted: bool) -> CheckResult:
     """Red when the settings YAML is baked into the image rather than mounted."""
     if mounted:

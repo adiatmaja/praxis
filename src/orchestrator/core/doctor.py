@@ -145,6 +145,12 @@ CHECKS: tuple[Check, ...] = (
         "add the `./config:/app/config:ro` volume and PRAXIS_CONFIG_PATH to "
         "your compose file",
     ),
+    Check(
+        "env_drift",
+        "Container env matches .env",
+        "run `docker compose up -d` (not `restart`) to recreate the container "
+        "with the new .env values",
+    ),
 )
 
 CHECK_IDS: tuple[str, ...] = tuple(c.check_id for c in CHECKS)

@@ -19,6 +19,7 @@ import asyncio
 import inspect
 import logging
 import os
+import re
 import socket
 import subprocess
 from collections.abc import Callable
@@ -252,6 +253,116 @@ def _entrypoint_mtimes() -> dict[str, float]:
     return mtimes
 
 
+# --- Minimal `.env` parsing for the env_drift check -------------------------
+#
+# This is a deliberate COPY of `cli.init.parse_env`'s parsing semantics, not
+# an import: that parser lives in the CLI layer (graded against real
+# `python-dotenv` by a differential test), and the API layer must not import
+# from `src/cli/` -- pulling in `typer`/`rich`/the init wizard just to read a
+# file is a layering violation. Keeping the regex behaviour identical matters
+# because a divergence here would make this check disagree with what
+# pydantic-settings actually reads `.env` with, which is exactly the kind of
+# silent inconsistency the original parser's own docstring warns about. If
+# `cli.init.parse_env` ever changes its parsing rules, this copy must change
+# with it. The copy is trimmed to what `probe_env_drift` needs: a final
+# key-to-value mapping, not the line-editable representation `cli.init` keeps
+# for rewriting `.env` in place.
+_ENV_EXPORT_PREFIX = re.compile(r"^export[^\S\r\n]+")
+_ENV_KEY = re.compile(r"[^=\#\s]+")
+_ENV_SINGLE_QUOTED = re.compile(r"^'((?:\\'|[^'])*)'")
+_ENV_DOUBLE_QUOTED = re.compile(r'^"((?:\\"|[^"])*)"')
+_ENV_INLINE_COMMENT = re.compile(r"\s+#")
+_ENV_TRAILING_COMMENT = re.compile(r"^[^\S\r\n]*(?:#.*)?$")
+_ENV_SINGLE_ESCAPE = re.compile(r"\\([\\'])")
+_ENV_DOUBLE_ESCAPE = re.compile(r"\\([\\'\"abfnrtv])")
+_ENV_ESCAPED: dict[str, str] = {
+    "\\": "\\",
+    "'": "'",
+    '"': '"',
+    "a": "\a",
+    "b": "\b",
+    "f": "\f",
+    "n": "\n",
+    "r": "\r",
+    "t": "\t",
+    "v": "\v",
+}
+
+
+def _parse_env_line(line: str) -> tuple[str, str] | None:
+    """Split one `.env` line into ``(key, value)``, or None if it binds nothing.
+
+    Mirrors ``cli.init._parse_line``'s value-extraction rules (export prefix,
+    quoted vs. unquoted values, inline comments, escape sequences) so this
+    reads the same value pydantic-settings and ``docker compose`` would.
+    """
+    stripped = line.strip()
+    if not stripped or stripped.startswith("#"):
+        return None
+    export = _ENV_EXPORT_PREFIX.match(stripped)
+    key_match = _ENV_KEY.match(stripped, export.end() if export else 0)
+    if key_match is None:
+        return None
+    rest = stripped[key_match.end() :].lstrip(" \t")
+    if not rest.startswith("="):
+        return None
+    raw = rest[1:].lstrip(" \t")
+
+    if raw[:1] in ("'", '"'):
+        single = raw[0] == "'"
+        quoted = (_ENV_SINGLE_QUOTED if single else _ENV_DOUBLE_QUOTED).match(raw)
+        if quoted is None or not _ENV_TRAILING_COMMENT.match(raw[quoted.end() :]):
+            return None
+        escapes = _ENV_SINGLE_ESCAPE if single else _ENV_DOUBLE_ESCAPE
+        value = escapes.sub(lambda m: _ENV_ESCAPED[m.group(1)], quoted.group(1))
+    else:
+        hash_at = _ENV_INLINE_COMMENT.search(raw)
+        cut = hash_at.start() if hash_at else len(raw)
+        value = raw[:cut].rstrip()
+
+    return key_match.group(0), value
+
+
+def _parse_env_text(text: str) -> dict[str, str]:
+    """Parse ``.env`` text into a key/value mapping, mirroring `cli.init.parse_env`.
+
+    Args:
+        text: Raw contents of a ``.env`` file.
+
+    Returns:
+        Mapping of key to unquoted, unescaped value.
+    """
+    parsed: dict[str, str] = {}
+    for line in text.splitlines():
+        entry = _parse_env_line(line)
+        if entry is not None:
+            parsed[entry[0]] = entry[1]
+    return parsed
+
+
+def _env_drift_facts() -> tuple[dict[str, str], dict[str, str]]:
+    """Return (running container env, .env on disk) for the drift check.
+
+    The orchestrator process IS the container, so ``os.environ`` is the
+    running env.  ``.env`` sits at the repo root next to the compose files;
+    ``_ENTRYPOINT_ROOT`` (``docker/``) is one level under that root, so its
+    parent resolves the same way in both a container (``./docker`` bind
+    mounted at ``/app/docker``) and a bare ``uv run uvicorn`` from the repo
+    root.
+
+    Only keys ``.env`` actually sets are compared: a key present in
+    ``os.environ`` but absent from ``.env`` came from compose or the image,
+    and its absence from the file is not drift.
+    """
+    env_path = _ENTRYPOINT_ROOT.parent / ".env"
+    try:
+        on_disk = _parse_env_text(env_path.read_text(encoding="utf-8"))
+    except OSError:
+        return dict(os.environ), {}
+    watched = {k: v for k, v in on_disk.items() if k in os.environ}
+    return {k: os.environ[k] for k in watched}, watched
+
+
 def _live_commit() -> str | None:
     """Return the working tree's current commit, ignoring PRAXIS_BUILD_SHA.
 
@@ -405,6 +516,11 @@ async def _build_probes(request: Request) -> dict[str, Any]:
 
     config_path, config_path_error = await _safe("config_path", config_file_path, "")
 
+    no_env_drift_facts: tuple[dict[str, str], dict[str, str]] = ({}, {})
+    (running_env, disk_env), env_drift_error = await _safe(
+        "env_drift", _env_drift_facts, no_env_drift_facts
+    )
+
     result_map: dict[str, CheckResult] = {}
 
     if docker_facts.reachable:
@@ -534,6 +650,15 @@ async def _build_probes(request: Request) -> dict[str, Any]:
             result_map["config_mount"] = probes.probe_config_mount(
                 config_path=config_path, mounted=mounted
             )
+
+    if env_drift_error:
+        result_map["env_drift"] = _degraded(
+            "env_drift", "the container env or .env", env_drift_error
+        )
+    else:
+        result_map["env_drift"] = probes.probe_env_drift(
+            running=running_env, on_disk=disk_env
+        )
 
     return {check_id: (lambda r=result: r) for check_id, result in result_map.items()}
 

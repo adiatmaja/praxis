@@ -32,6 +32,7 @@ def test_the_expected_checks_are_registered_in_order():
         "worker_endpoint",
         "callback_url",
         "config_mount",
+        "env_drift",
     )
 
 
