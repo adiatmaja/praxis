@@ -1490,3 +1490,46 @@ def test_the_menu_carries_the_setup_recipe_from_the_yaml(monkeypatch):
         "no preset requiring a credential carries a setup_hint; the recipe "
         "cannot reach the operator"
     )
+
+
+def test_an_empty_env_directory_from_docker_is_removed(tmp_path):
+    """Compose before init leaves a `.env/` directory; init must recover.
+
+    Both compose files bind-mount ./.env, and Docker creates a missing bind
+    source as a DIRECTORY, so every later write fails with IsADirectoryError
+    and nothing on screen says why.
+    """
+    from cli.init import _clear_env_placeholder_dir
+
+    env_path = tmp_path / ".env"
+    env_path.mkdir()
+    _clear_env_placeholder_dir(env_path)
+
+    assert not env_path.exists()
+    env_path.write_text("AUTH_TOKEN=x\n", encoding="utf-8")
+
+
+def test_a_non_empty_env_directory_is_refused_not_deleted(tmp_path):
+    """Never guess at deletion: a non-empty directory could hold real files."""
+    import typer
+
+    from cli.init import _clear_env_placeholder_dir
+
+    env_path = tmp_path / ".env"
+    env_path.mkdir()
+    (env_path / "something.txt").write_text("keep me", encoding="utf-8")
+
+    with pytest.raises(typer.Exit):
+        _clear_env_placeholder_dir(env_path)
+
+    assert (env_path / "something.txt").read_text(encoding="utf-8") == "keep me"
+
+
+def test_a_real_env_file_is_left_alone(tmp_path):
+    from cli.init import _clear_env_placeholder_dir
+
+    env_path = tmp_path / ".env"
+    env_path.write_text("AUTH_TOKEN=x\n", encoding="utf-8")
+    _clear_env_placeholder_dir(env_path)
+
+    assert env_path.read_text(encoding="utf-8") == "AUTH_TOKEN=x\n"

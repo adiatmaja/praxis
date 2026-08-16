@@ -546,6 +546,43 @@ def _compose(args: list[str], what: str, env: dict[str, str] | None = None) -> N
         raise typer.Exit(code=1) from exc
 
 
+def _clear_env_placeholder_dir(env_path: Path) -> None:
+    """Remove an EMPTY directory Docker created where ``.env`` belongs.
+
+    Both compose files bind-mount ``./.env`` so the doctor's ``env_drift``
+    check can read it.  Docker creates a missing host bind-mount source as a
+    DIRECTORY, so running ``docker compose up`` in a fresh clone BEFORE
+    ``praxis init`` leaves a ``.env/`` directory, and every later write to
+    ``.env`` then fails with ``IsADirectoryError`` for a reason nothing on
+    screen explains.
+
+    Only an EMPTY directory is removed: that shape is unambiguously Docker's
+    artifact and never operator data.  A non-empty one is left alone and
+    reported, because guessing at deletion there could destroy real files.
+
+    Args:
+        env_path: The ``.env`` path about to be read and written.
+
+    Raises:
+        typer.Exit: If the directory exists and is not empty.
+    """
+    if not env_path.is_dir():
+        return
+    try:
+        env_path.rmdir()
+    except OSError:
+        console.print(
+            f"[red]{env_path} is a non-empty directory, not a file.[/red] "
+            "Docker creates this when `docker compose up` runs before "
+            "`praxis init`. Inspect it, move it aside, then re-run."
+        )
+        raise typer.Exit(code=1) from None
+    console.print(
+        f"[dim]Removed the empty {env_path} directory Docker left behind "
+        "(compose ran before init).[/dim]"
+    )
+
+
 def _entrypoint_build_env(root: Path) -> dict[str, str]:
     """Return build-arg env vars carrying each harness entrypoint's hash.
 
@@ -884,6 +921,7 @@ def init() -> None:
     root = _require_repo_root()
 
     env_path = root / ".env"
+    _clear_env_placeholder_dir(env_path)
     existing = env_path.read_text(encoding="utf-8") if env_path.is_file() else ""
     current = parse_env(existing)
 
