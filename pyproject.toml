@@ -22,7 +22,7 @@ dependencies = [
     "sse-starlette>=2.0",
     "mcp>=1.28.1",
     "pyjwt>=2.8",
-    "cryptography>=42.0",
+    "cryptography>=50.0",
 ]
 
 [project.optional-dependencies]
