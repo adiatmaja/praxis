@@ -53,4 +53,12 @@ ENV XDG_DATA_HOME=/home/agent/.local/share
 # in about 15 seconds with worker_tokens 0.
 RUN mkdir -p /home/agent/.local/share/opencode/log
 
+# Content hash of entrypoint.sh, supplied by the build and read back by
+# `praxis doctor` to decide whether this image is stale.  Compared against a
+# hash of the file on disk, never against mtimes: a fresh `git clone` stamps
+# every file at clone time, which made the old mtime check red on every
+# correct install.
+ARG PRAXIS_ENTRYPOINT_SHA256=""
+LABEL org.praxis.entrypoint-sha256=$PRAXIS_ENTRYPOINT_SHA256
+
 ENTRYPOINT ["/home/agent/entrypoint.sh"]

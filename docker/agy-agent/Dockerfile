@@ -48,4 +48,12 @@ RUN chmod +x /home/agent/entrypoint.sh
 # /usr/local/bin here is fine even after the USER agent switch above.
 COPY --chown=agent:agent extract_session.py /usr/local/bin/extract_session.py
 
+# Content hash of entrypoint.sh, supplied by the build and read back by
+# `praxis doctor` to decide whether this image is stale.  Compared against a
+# hash of the file on disk, never against mtimes: a fresh `git clone` stamps
+# every file at clone time, which made the old mtime check red on every
+# correct install.
+ARG PRAXIS_ENTRYPOINT_SHA256=""
+LABEL org.praxis.entrypoint-sha256=$PRAXIS_ENTRYPOINT_SHA256
+
 ENTRYPOINT ["/home/agent/entrypoint.sh"]
