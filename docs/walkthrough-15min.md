@@ -54,7 +54,7 @@ this deployment.
 **Prerequisites confirmed before the clock started** (the previous run lost
 time to exactly this):
 
-- `praxis-gemini-creds` volume seeded — verified with a real `agy -p` returning
+- `praxis-gemini-creds` volume seeded, verified with a real `agy -p` returning
   `PONG`, exit 0, on Gemini 3.7 Flash (High). Existence of the volume is not
   evidence it is seeded; the PONG is.
 - LM Studio reachable with `qwen3.8-27b` in `state: loaded` (131k context).
@@ -68,7 +68,7 @@ time to exactly this):
 | Clone | `git clone https://github.com/adiatmaja/praxis.git praxis-newcomer` | **4 s** |
 | Install | `uv venv && uv sync --extra dev` | **5 s** (warm uv cache) |
 
-### Arm A — `gemini-agy`
+### Arm A: `gemini-agy`
 
 | Phase | Command | Time |
 |---|---|---|
@@ -83,7 +83,7 @@ time to exactly this):
 **Arm A documented-path total: 2 min 41 s.**
 Wall clock including my own detours: **17 min 57 s** (see "Where I left the path").
 
-### Arm B — `local-lmstudio`
+### Arm B: `local-lmstudio`
 
 | Phase | Command | Time |
 |---|---|---|
@@ -138,7 +138,7 @@ reasons, stated plainly:
 1. The task is a single easy leaf. Maximum-effort thinking hurts on long or
    ambiguous work; it is nearly invisible on a 17-line function.
 2. **opencode reports no token usage at all**, so the one measurement that
-   would actually settle the question — how many thinking tokens were burned —
+   would actually settle the question, how many thinking tokens were burned,
    does not exist.
 3. **I did not intercept opencode's outgoing payload.** The plan called for
    inspecting it if symptoms appeared; none did, so this was not done. Whether
@@ -221,7 +221,7 @@ Verified first-hand, with output:
    task"), but gives **no command, no doc link, and no next step**. The exact
    cross-platform recipe exists in `docs/deployment.md`, and the harness
    registry in-process even carries a `when_to_pick` string ending "see
-   docs/deployment.md" — init prints none of it. Its only recovery advice is
+   docs/deployment.md", init prints none of it. Its only recovery advice is
    "pick one that needs no credential", i.e. abandon the deployment's own
    default. **Verdict on the question this run was asked to judge: the stop
    reads as a dead end.** It is well-written about *what* is wrong and silent
@@ -247,7 +247,7 @@ Verified first-hand, with output:
    agy authenticates to Google over OAuth and has `supports_local_llm=False`.
    Notably this is a **half-finished fix**: the code deliberately suppresses
    the *model-name* comparison for non-local-LLM harnesses, with a comment
-   naming the category error — but still runs the reachability probe ungated,
+   naming the category error, but still runs the reachability probe ungated,
    and `if not reachable` fires first. So the deployment's own default preset
    shows 2 of 11 red on a correct install. Fix: gate the reachability half on
    `supports_local_llm` too, exactly as the model half already is.
@@ -305,7 +305,7 @@ model were indistinguishable in output quality on a properly scoped leaf.
 **Execution and onboarding layer: 5/10.** Up from 3. The README gap that made
 the CLI unusable is genuinely closed, the verify gate and review verdict now
 leave evidence, and doctor now catches an unreachable implementer before it
-wastes a dispatch — all four are real, verified improvements. But a correct
+wastes a dispatch, all four are real, verified improvements. But a correct
 fresh install still shows two red checks that are both the product's fault, the
 default preset cannot be completed by anyone who reads only the product's own
 output, and the Enter-only path throws away your answers and exits 1.
@@ -317,7 +317,7 @@ continue".
 
 **Is the 15-minute claim met?** On the documented path, yes, comfortably:
 **2 min 41 s** (Arm A) and **2 min 23 s** (Arm B) from a warm machine, or under
-5 minutes including clone and install. **On a cold machine it is not met** —
+5 minutes including clone and install. **On a cold machine it is not met**,
 add roughly 19 minutes of unavoidable image build, which puts a true first run
 near 22 minutes. That is the honest number, and the slowest step is the Docker
 build, not anything Praxis controls at runtime.
