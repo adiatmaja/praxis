@@ -359,3 +359,76 @@ Items 1-5 below are closed by
   to Praxis. agy already puts it on the wire.
 - **No cold-machine number was produced this run.** The 19-minute figure is
   carried over from 2026-08-14 on the same hardware.
+
+## Live verification 2026-08-16
+
+Ran against real Docker, real images, and a real fresh clone, on branch
+`docs/walkthrough-and-onboarding-plan`. Unit tests were green for every fix
+below before this ran; three of them were still inert, and only executing the
+product exposed that. Recorded as it happened, including what failed.
+
+**Prerequisite.** `agy -p` inside `agy-agent:latest` with the
+`praxis-gemini-creds` volume returned `PONG`, so the credential really is
+seeded rather than merely present as a volume.
+
+### What passed first try
+
+- **Label round-trip (defect 3).** `AGY_ENTRYPOINT_SHA256` exported from
+  `hash_entrypoint`, then `docker compose --profile agents build agy-agent`:
+  the image label read back as
+  `60fbbc713340227b9f42f17ae39de3067b5910b23876922324a505241f39f3a2`, byte
+  identical to the source hash. Same for opencode
+  (`eda1bae895d181ff0594398f1af8b9c248bfd9d1dcad997d532c32b527c653a5`).
+- **Staleness goes red for the right reason.** Appending a comment to
+  `docker/agy-agent/entrypoint.sh` without rebuilding turned the row FAIL;
+  restoring the file turned it OK. The check is live, not decorative.
+- **Worker endpoint (defect 4).** With the `gemini-agy` default preset the row
+  is OK with detail `not applicable: this harness does not use an OpenAI
+  endpoint`, where it was permanently red before.
+- **Answers survive a declined preset (defect 2).** On a fresh clone with no
+  `.env`, `printf '\n\n\n\n\n\n' | praxis init` printed
+  `Wrote ...\.env`, and the file held `AUTH_TOKEN` and `PORT`. No
+  `GITHUB_TOKEN`, correctly, because holding Enter selects `skip` (local mode).
+
+### What live verification caught that the unit tests did not
+
+1. **`env_drift` could never fire (defect 5 shipped inert).** The row read
+   `could not read the container or .env to compare`. Cause: `.env` is never
+   mounted into the container. Compose reads it on the HOST to substitute
+   variables and passes the resulting values as env vars; the file itself does
+   not enter. `_env_drift_facts` was reading a path that does not exist there.
+   Fixed by mounting `./.env:/app/.env:ro` in both compose files.
+2. **`env_drift` then reported a false red on `PORT`.** `PORT` in `.env` is the
+   HOST publish port (12323, via `${PORT}:8080`); inside the container uvicorn
+   always listens on 8080. Comparing them is the same category error defect 4
+   was about. Fixed with a documented `_HOST_ONLY_ENV_KEYS` exclusion.
+   After both fixes, the trap itself is now caught end to end: editing
+   `LM_STUDIO_URL` then `docker compose restart` gives
+   `FAIL ... container env is stale for: LM_STUDIO_URL` with the hint
+   `run docker compose up -d (not restart)`, and `up -d` returns it to OK.
+3. **The setup recipe never reached the operator (defect 1 shipped inert).**
+   The first live `praxis init` printed the refusal with no recipe at all.
+   Cause: `_fetch_presets_or_defaults` builds its menu dict key by key and did
+   not list `setup_doc` / `setup_hint`, so the YAML held the recipe, `init`
+   looked for it, and nothing joined the two. The Task 8 unit test passed
+   because it constructed the preset dict literally. Fixed by carrying both
+   fields through `WorkerPreset` and pinning the seam with a test that fails
+   when either key is dropped. Re-run on a fresh clone then printed the full
+   `agy login` recipe and the `docs/deployment.md` pointer.
+4. **A bare `docker compose --profile agents build` leaves the label empty**,
+   so the freshness check reports AMBER rather than green. Only `praxis init`
+   exports the hash env vars. The check's fix hint named exactly that
+   non-working command; it now names `praxis init` first.
+
+### Final state
+
+`praxis doctor` against a correct `gemini-agy` install: **all twelve checks
+green**, including the two rows that were structurally unable to go green
+before this plan. The one FAIL seen mid-run was the build-stamp check
+correctly noticing the container predated the newest commit; it cleared on
+rebuild.
+
+**Not verified.** The opencode arm was not exercised end to end this run
+(LM Studio was not loaded), so the opencode label was proven to round-trip but
+no opencode task was dispatched. The `reasoning_effort` question above remains
+open.
