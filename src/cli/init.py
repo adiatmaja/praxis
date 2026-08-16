@@ -663,11 +663,25 @@ def _confirm_unmet_requirements(preset: dict[str, Any]) -> None:
             "normally means the one-time setup is already done. Answer yes if "
             "you have completed it."
         )
+    setup_hint = preset.get("setup_hint") or ""
+    setup_doc = preset.get("setup_doc") or ""
+    if setup_hint:
+        # Naming the requirement without naming the remedy is what made this
+        # stop read as a dead end: the recipe exists in the docs and the
+        # preset now carries it, so print it at the point of refusal.
+        # markup=False: the hint is config-authored shell text (quotes, `$`,
+        # `<...>` placeholders), not console markup we control, and rich
+        # treats a literal "[" as the start of a markup tag.
+        console.print("\n[bold]To satisfy it:[/bold]")
+        console.print(setup_hint.rstrip(), markup=False)
+    if setup_doc:
+        console.print(f"[dim]Full instructions: {setup_doc}[/dim]")
     proceed: bool = Confirm.ask("Choose it anyway?", default=False)
     if not proceed:
         console.print(
-            "[red]No worker preset chosen.[/red] Re-run `praxis init` and pick "
-            "one that needs no credential."
+            "[red]No worker preset chosen.[/red] Complete the setup above and "
+            "re-run `praxis init`, or re-run it now and pick a preset that "
+            "needs no credential."
         )
         raise typer.Exit(code=1)
 

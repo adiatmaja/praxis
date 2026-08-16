@@ -7,6 +7,7 @@ still prints "Praxis is running", and the damage surfaces weeks later as a
 reverted timezone or a worker model truncated at its first space.
 """
 
+import contextlib
 import inspect
 import io
 import json
@@ -637,6 +638,44 @@ def test_holding_enter_refuses_a_preset_whose_requirement_init_cannot_collect(
     with pytest.raises(typer.Exit) as exit_info:
         init_mod._choose_preset(unsatisfiable)
     assert exit_info.value.exit_code == 1
+
+
+@pytest.mark.unit
+def test_unmet_requirement_prints_the_setup_hint(capsys, monkeypatch):
+    """The stop must name the remedy, not only the requirement."""
+    from rich.prompt import Confirm
+
+    from cli.init import _confirm_unmet_requirements
+
+    monkeypatch.setattr(Confirm, "ask", lambda *_a, **_k: False)
+    preset = {
+        "label": "Gemini via the agy harness",
+        "requires": ["interactive_login"],
+        "default": True,
+        "setup_doc": "docs/deployment.md#agy",
+        "setup_hint": "docker run --rm -it ... 'agy login'",
+    }
+
+    with contextlib.suppress(typer.Exit):
+        _confirm_unmet_requirements(preset)
+
+    out = capsys.readouterr().out
+    assert "agy login" in out
+    assert "docs/deployment.md#agy" in out
+
+
+@pytest.mark.unit
+def test_unmet_requirement_without_hint_still_stops(capsys, monkeypatch):
+    """A preset with no hint must not crash on the missing key."""
+    from rich.prompt import Confirm
+
+    from cli.init import _confirm_unmet_requirements
+
+    monkeypatch.setattr(Confirm, "ask", lambda *_a, **_k: False)
+    preset = {"label": "Some preset", "requires": ["api_key"]}
+
+    with pytest.raises(typer.Exit):
+        _confirm_unmet_requirements(preset)
 
 
 @pytest.mark.unit
