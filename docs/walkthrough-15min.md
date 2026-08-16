@@ -432,3 +432,306 @@ rebuild.
 (LM Studio was not loaded), so the opencode label was proven to round-trip but
 no opencode task was dispatched. The `reasoning_effort` question above remains
 open.
+
+---
+
+# Run #3, 2026-08-16
+
+Product commit **`c858247`** (`main` == `origin/main`, clean). Previous scores
+**5/10** (2026-08-14) and **7/10** (2026-08-15/16). This is the first run where
+the first-ten-minutes blockers were fixed *before* it started.
+
+**Score: 6/10.** Down from 7/10, and the drop is not a regression in what the
+onboarding plan fixed. Everything that plan set out to fix is confirmed fixed
+and green. The score fell because running the documented CLI path end to end,
+which no previous run did, found that `praxis submit` silently discards the
+specification. The previous runs scored a product whose only working path was
+one a newcomer cannot reach.
+
+## Method
+
+Identical to run #2 so the numbers compare. Fresh `git clone` into
+`C:\working-space\praxis-newcomer`, no `.env` copied, data volume removed
+between arms, `opencode-agent:latest` and `agy-agent:latest` deleted first.
+Treated as available: `README.md`, the docs it links, `.env.example`, and the
+running product's own output. Everything else out of bounds.
+
+Target `adiatmaja/playground` at `df04d51`, same frozen-test task: create
+`src/playground/initials.py` so four frozen acceptance tests pass.
+
+**Caches were warm** (Docker layers and `uv`). Every build number below is a
+floor. The 2026-08-14 cold-machine measurement was **+19 minutes**; nothing here
+contradicts it.
+
+### Prerequisites, confirmed with real calls before the clock
+
+- `agy -p` inside `agy-agent:latest` with the `praxis-gemini-creds` volume
+  returned `PONG`, exit 0.
+- LM Studio: `qwen3.8-27b` in `state: loaded`, 131072 context.
+
+Both passed first time. Unlike 2026-08-14, no time was lost here.
+
+## Phase timings, unrounded
+
+| Phase | Elapsed |
+|---|---|
+| `git clone` | 61.381 s |
+| `uv venv && uv sync --extra dev` | 4.180 s |
+| `docker build -t agy-agent:latest` per `docs/deployment.md` | 18.118 s |
+| `praxis init`, Arm A, incl. both agent images + orchestrator + doctor | 115.671 s |
+| `praxis init`, Arm B, images already built | 18.164 s |
+| Arm B dispatch to reviewed PR | **45 m 38 s** |
+
+`praxis init` to an all-green doctor from a fresh clone: **1 m 55.671 s.**
+
+## The four questions this run had to answer
+
+**1. Does a fresh clone reach a green `praxis doctor` unaided? YES.** Both
+arms. Arm A printed `All checks passed.` and exited 0 with all twelve checks
+green, on the first correct `init`. Arm B showed exactly one FAIL, the worker
+endpoint, because `local-lmstudio` defaults to `host.docker.internal:1234` and
+this deployment serves LM Studio remotely. That FAIL is correct behavior and its
+remedy line was actionable. This is the first run where this succeeded, and it
+is the plan's central claim.
+
+**2. Does holding Enter through `init` leave a newcomer somewhere useful?
+PARTLY.** It no longer leaves an empty directory and exit 1. It writes a real
+`.env`, verbatim:
+
+```
+Wrote C:\working-space\praxis-newcomer\.env
+```
+
+containing `AUTH_TOKEN` and `PORT`. But it still exits 1 with no preset, no
+images, and no orchestrator, because the configured default preset
+`gemini-agy` requires `interactive_login` and the default answer to
+`Choose it anyway? [y/n] (n)` is no. Holding Enter is a dead end that preserves
+your answers rather than a dead end that discards them. Better, not solved.
+
+**3. Does the opencode arm work end to end? YES, first try, zero retries.**
+Not exercised at all last session. Dispatched at 14:13:10, review PASSED at
+14:58:48, PR #36, attempt 1, exactly one file changed. I ran the four frozen
+tests against the branch myself rather than trusting the reviewer:
+`4 passed in 0.04s`. The reviewer's own note was substantive and correct.
+
+**4. Does opencode send `reasoning_effort`? NO. Now VERIFIED, not inferred.**
+This was UNVERIFIED after two runs. I put a logging reverse proxy between the
+agent container and LM Studio and captured every outgoing request rather than
+waiting for a symptom. Across **18 captured `POST /v1/chat/completions`, not one
+carried `reasoning_effort`,** or any other thinking-control key. The complete
+top-level key set opencode sends is:
+
+```
+["max_tokens", "messages", "model", "stream", "stream_options", "top_p"]
+["max_tokens", "messages", "model", "stream", "stream_options", "tool_choice", "tools", "top_p"]
+```
+
+qwen3.8-27b thinks by DEFAULT, so an absent key means **maximum** reasoning
+effort on every opencode worker call, not off. `core/thinking.py` is the SSoT
+for payloads Praxis hand-builds; opencode builds its own requests inside the
+container and Praxis has no say in them.
+
+**The cost is measured, not theoretical.** 45 m 38 s for a task whose answer is
+a 9-line function, across only 18 model calls, roughly 2.5 minutes per call. It
+spent its first 31 minutes and 7 calls in the `understanding` phase reading six
+files. Correct, and impractically slow.
+
+## Leak log
+
+| # | Leak | Severity | Source |
+|---|---|---|---|
+| 1 | LM Studio is served remotely (`https://pcllm.sigmasolusi.com`), not `localhost:1234`. A genuine newcomer picking `local-lmstudio` gets the doctor FAIL and no way to know the URL. | HIGH | Read from the existing dev `.env`. Same as run #2's leak #1, unfixed. |
+| 2 | Reused the already-seeded `praxis-gemini-creds` volume. A real newcomer must complete browser OAuth. | MEDIUM | Pre-existing volume; the handoff mandates verifying it. |
+| 3 | Used an existing `gh auth token` for `GITHUB_TOKEN` rather than minting a PAT. | LOW | `gh auth token`. Does not change any product behavior tested. |
+| 4 | Dispatched Arm B over raw REST because the CLI has no dispatch command. Knowing the `/api/dispatch` schema is not newcomer knowledge. | MEDIUM | Prior sessions. Consequence of defect 9. |
+| 5 | Knew to look at `spec_path` and `api/plans.py` to confirm the discarded spec. A newcomer would only see a wrong plan. | LOW | Source reading, after the symptom. |
+
+## Defects, ranked
+
+**1. CRITICAL, new. `praxis submit` accepts a specification and silently
+discards it.** It is the only way the CLI can drive the engine.
+`api/plans.py:32-50`:
+
+```python
+async def create_plan(request: Request, project_id: str, body: PlanCreate) -> dict[str, Any]:
+    ...
+    plan_id = await request.app.state.task_queue.create_plan(project_id)
+```
+
+`body` is validated (`spec` must be non-empty) and then **never referenced
+again**. `plans.spec` was dropped in Spec 2 and nothing replaced it: `spec_path`
+stayed `None`. The brain planned from the repository *name* alone. Submitted
+spec: create one Python file to satisfy four frozen tests. What the brain
+produced, verbatim from `opus_plan`:
+
+```
+"plan_summary": "Set up and scaffold the playground repository with basic project structure and tooling"
+tasks: Initialize project structure / Add linting and formatting configuration
+       / Create example JavaScript modules / Add testing setup
+```
+
+It invented a **Node.js/JavaScript** scaffold for a Python repo with a
+`pyproject.toml`, including "Add ESLint and Prettier" and "Create src/utils.js".
+Then it activated the plan and dispatched a real worker against the real
+repository. This is worse than defect 9: the CLI path is not merely incomplete,
+it is actively destructive, and it fails silently. I stopped it and restored the
+target repo.
+
+**2. HIGH. The setup recipe `init` prints tells you to run a command against an
+image that does not exist yet.** The defect-1 fix from the last plan now prints
+the `agy login` recipe, which is a real improvement, but `init` exits *before*
+building images, so following it verbatim on a fresh clone gives:
+
+```
+Unable to find image 'agy-agent:latest' locally
+docker: Error response from daemon: pull access denied for agy-agent, repository does not exist or may require 'docker login'
+```
+
+Chicken-and-egg: `init` will not proceed without the credential, and the
+credential cannot be created without the image `init` would have built.
+Recoverable only because the recipe also links `docs/deployment.md`, which has
+the build command at line 26, correctly ordered above the login section. The
+printed recipe is missing that one step.
+
+**3. HIGH. The documented `docker build` command produces an image the doctor
+can never judge.** `docs/deployment.md:23-26` omits
+`--build-arg PRAXIS_ENTRYPOINT_SHA256=...`, so the image carries
+`org.praxis.entrypoint-sha256` present but **empty**, which is the designed
+"cannot judge" state. Verified: label empty after the documented build,
+populated (`60fbbc71...`) after `praxis init` rebuilt it. Only `init` builds
+correctly, so anyone following the docs gets a permanently unjudgeable image.
+This was noted in the previous run against `--profile agents build`; the
+per-image commands have the same hole.
+
+**4. MEDIUM, new. `/api/dispatch` ignores the supplied `title`.** Passing
+`"title": "Create src/playground/initials.py"` stored the title as the truncated
+first sentence of `instructions`, and derived the branch from that:
+
+```
+title:  "The repository has four frozen acceptance tests in src/playground/test_initials."
+branch: agent/the-repository-has-four-frozen-acceptanc-6558ef
+```
+
+**5. MEDIUM, new. The CLI prints IDs its own commands reject.** Tables show
+8-character IDs; every command needs the full UUID. Feeding the CLI its own
+output:
+
+```
+$ uv run praxis stop 8f929f8a
+Error 404: {"detail":"Task not found"}
+```
+
+`praxis pending` likewise truncates the PR URL so it cannot be copied.
+
+**6. MEDIUM. `dashboard_url` reports the wrong port** (known defect 7,
+confirmed verbatim). Dispatch returned `"dashboard_url":"http://localhost:8080/"`
+against an installation on 12323.
+
+**7. LOW. `/health` reports `"commit":"dev"`** (known defect 10, confirmed),
+which makes the build-stamp doctor check permanently a NOTE:
+`running commit dev; no working tree available here to compare against`.
+
+**8. LOW, new. The `plans` table renders a dead `Spec` column,** always empty,
+left over from the dropped `plans.spec`.
+
+**9. LOW, new. Table rendering corrupts the callback URL,** in both arms:
+`http://host.docker.internal:1232?` for a port of `12323`.
+
+**Known and re-confirmed, unchanged:** defect 6 (`verify_cmd` unreachable from
+every client; the created project had `verify_cmd: null` and no CLI flag sets
+it), defect 8 (`add-project` requires a model, and calls it "LM Studio model
+name" even for the agy default), defect 9 (no CLI dispatch command).
+
+Defect 8 is milder than recorded: the harness *is* correctly inherited from the
+preset. `add-project` with no `--harness` flag produced `harness: "agy"` from
+`.env`. Only `model` is wrongly mandatory.
+
+## Confirmed fixed since run #2
+
+All verified live on a fresh clone, not from unit tests.
+
+1. **The `.env` directory trap recovers.** Deliberately ran `docker compose up`
+   before `init`; Docker created an empty `.env/` directory as predicted, and
+   `init` printed, verbatim:
+   ```
+   Removed the empty C:\working-space\praxis-newcomer\.env directory Docker left
+   behind (compose ran before init).
+   ```
+2. **`init` prints the full setup recipe** on an unmet preset requirement, both
+   `docker run` commands and the `docs/deployment.md` anchor. See defect 2 for
+   the one step it still omits.
+3. **Declining a preset preserves your answers** (`Wrote ...\.env` on the
+   `typer.Exit` path).
+4. **Agent-image freshness is judged by content**, green in both arms on a fresh
+   clone, where the old mtime check was structurally red.
+5. **`worker_endpoint` can reach green on `gemini-agy`**:
+   `not applicable: this harness does not use an OpenAI endpoint`.
+6. **`env_drift` works and stays quiet**: `container env matches .env` in both
+   arms, including after an `.env` edit followed by `up -d`.
+
+Also confirmed correct: the protected-branch guard refused `main` as a plan base
+with an actionable message; auth failed closed (401 on absent, empty, and junk
+bearer tokens) even on a container started with a blank `AUTH_TOKEN`; the merge
+gate parked the passing task rather than merging it, and `praxis pending`
+surfaced it.
+
+## Score: 6/10, reasoning
+
+**What earns it.** The plan's own target is met without qualification: a fresh
+clone reaches an all-green doctor in under two minutes, unaided, on the first
+correct `init`. That failed in both previous runs. Every one of the five shipped
+fixes is confirmed live. Both arms produced correct work first try with zero
+retries, and I verified Arm B's output by running the frozen tests rather than
+trusting the review. The safety rails all held.
+
+**What costs it.** The single documented CLI path for driving the engine,
+`praxis submit`, accepts your specification, throws it away, invents unrelated
+work from the repository name, and dispatches a worker to do it. A newcomer
+following only the README hits this on their first real task, gets a JavaScript
+scaffolding plan for their Python repo, and has no way to see why. Both
+successful arms in this run reached the engine through paths a newcomer does not
+have: raw REST for Arm B, and for Arm A the CLI worked only up to the point
+where the spec vanished.
+
+The 45-minute opencode task is the second cost. It is correct but no one would
+adopt it, and now we know the cause with intercepted evidence rather than a
+guess.
+
+Run #2's 7/10 was measured on a product whose reachable surface was never fully
+exercised. The onboarding plan genuinely moved *setup* from 5 to better than 7.
+The first ten minutes are close to solved. The eleventh minute, the first real
+task through the documented path, is where it now breaks.
+
+## What to fix, ranked
+
+1. **Make `POST /api/projects/{id}/plans` persist the spec** and feed it to the
+   planner. Write it as a spec doc and set `spec_path`, which is the Spec 2
+   design the code stopped short of. Gate it with a test that starts at the REAL
+   `praxis submit` call and asserts the submitted text reaches the brain prompt,
+   then mutate the carrier and watch it go red. This is exactly the
+   `unit-green-seam-inert` shape: both ends correct, the link dead, invisible
+   from either side.
+2. **Add `praxis dispatch`** (defect 9). Without it the CLI cannot drive the
+   engine at all, and item 1 is the only reason it looks like it can.
+3. **Add the image build step to the recipe `init` prints**, or build images
+   before the preset check.
+4. **Fix the documented `docker build` commands** to pass the entrypoint hash,
+   or have the doctor say plainly that a hand-built image cannot be judged.
+5. **Accept short IDs** in CLI commands, or print full ones.
+6. Honor `title` in `/api/dispatch`; fix the `dashboard_url` port; drop the dead
+   `Spec` column; fix the truncated callback URL rendering.
+7. **Decide what to do about opencode's thinking effort.** Praxis cannot inject
+   `reasoning_effort` into requests opencode builds itself. Either configure it
+   through opencode's own config, choose a model that does not think by default,
+   or document that the opencode arm runs at maximum effort.
+
+## Verdict on a second onboarding plan
+
+Yes, and it is now clearly scoped. Items 1 and 2 above are one plan: make the
+documented client actually drive the engine. Item 1 alone is worth shipping on
+its own, ahead of everything else in the backlog, because it is a correctness
+bug that silently produces wrong work against a real repository.
+
+Defects 6-11 from the earlier list survive this run unchanged and belong in the
+same plan, along with the non-interactive `praxis init` surface captured but not
+built last session.
