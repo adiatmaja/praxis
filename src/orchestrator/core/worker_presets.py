@@ -32,6 +32,13 @@ class WorkerPreset:
     #: (first preset needing no credential) cannot express "I have already done
     #: the one-time login for this one".
     default: bool = False
+    #: Where the full recipe for an unmet ``requires`` entry lives, and the
+    #: recipe itself. ``praxis init`` prints both at the point of refusal.
+    #: They are carried on the preset rather than looked up by name because a
+    #: stop that names the requirement without naming the remedy reads as a
+    #: dead end, which is exactly how a newcomer abandoned the default preset.
+    setup_doc: str = ""
+    setup_hint: str = ""
 
 
 def parse_presets(raw: list[Any]) -> list[WorkerPreset]:
@@ -77,6 +84,8 @@ def parse_presets(raw: list[Any]) -> list[WorkerPreset]:
                 # default: a stray string here must not silently promote a
                 # preset over the operator's actual choice.
                 default=entry.get("default") is True,
+                setup_doc=str(entry.get("setup_doc") or ""),
+                setup_hint=str(entry.get("setup_hint") or ""),
             )
         )
     return presets

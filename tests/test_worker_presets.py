@@ -200,3 +200,33 @@ def test_the_shipped_config_flags_exactly_one_default():
     )
     flagged = [p.name for p in presets if p.default]
     assert flagged == ["gemini-agy"]
+
+
+def test_setup_doc_and_hint_survive_parsing() -> None:
+    """The recipe must reach the preset, not be dropped between YAML and menu.
+
+    This is the seam that shipped inert: `config/praxis.yaml` carried
+    `setup_hint`, `praxis init` printed `preset["setup_hint"]`, and nothing
+    joined the two, so a newcomer holding Enter still saw a bare refusal.
+    """
+    presets = parse_presets(
+        [
+            {
+                "name": "gemini-agy",
+                "harness": "agy",
+                "model": "M",
+                "requires": ["interactive_login"],
+                "setup_doc": "docs/deployment.md#agy",
+                "setup_hint": "agy login",
+            }
+        ]
+    )
+    assert presets[0].setup_doc == "docs/deployment.md#agy"
+    assert presets[0].setup_hint == "agy login"
+
+
+def test_a_preset_without_setup_fields_parses_to_empty_strings() -> None:
+    """Absent is "" rather than None, so `preset.get(...) or ""` stays honest."""
+    presets = parse_presets([{"name": "p", "harness": "h", "model": "m"}])
+    assert presets[0].setup_doc == ""
+    assert presets[0].setup_hint == ""

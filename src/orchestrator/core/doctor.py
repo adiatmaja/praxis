@@ -102,8 +102,10 @@ CHECKS: tuple[Check, ...] = (
     Check(
         "agent_image_freshness",
         "Agent images match their entrypoints",
-        "an entrypoint changed since the image was built; run "
-        "`docker compose --profile agents build` or a stale image runs silently",
+        "an entrypoint changed since the image was built; run `praxis init` "
+        "(or `docker compose --profile agents build` with "
+        "AGY_ENTRYPOINT_SHA256/OPENCODE_ENTRYPOINT_SHA256 exported) or a "
+        "stale image runs silently",
     ),
     Check(
         "auth_token",

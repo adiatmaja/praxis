@@ -37,12 +37,20 @@ services:
       # kept serving the baked-in value.
       - ./config:/app/config:ro
       # Harness entrypoint sources, read-only: `praxis doctor`'s
-      # agent_image_freshness check stats docker/*/entrypoint.sh to prove each
-      # agent image was built AFTER its entrypoint last changed. The image does
-      # not COPY docker/, so without this mount the check compares nothing and a
-      # stale agent image keeps running old logic silently, which is the exact
-      # failure the check exists to turn into a red light.
+      # agent_image_freshness check HASHES docker/*/entrypoint.sh and compares
+      # that against the org.praxis.entrypoint-sha256 LABEL baked into each
+      # image. The image does not COPY docker/, so without this mount the check
+      # compares nothing and a stale agent image keeps running old logic
+      # silently, which is the exact failure the check exists to turn into a
+      # red light.
       - ./docker:/app/docker:ro
+      # .env, read-only: `praxis doctor`'s env_drift check compares the values
+      # the container is actually running against the file on disk, because
+      # `docker compose restart` does NOT re-read .env and only `up -d` does.
+      # Compose reads this file on the HOST to substitute variables; it never
+      # enters the container on its own, so without this mount the check can
+      # only ever answer "could not read .env" and the whole feature is inert.
+      - ./.env:/app/.env:ro
     # Bound log rotation prevents json-file log growth from making `docker logs`
     # seek slowly or hang on Docker Desktop for Windows (unbounded json-file logs
     # accumulate metadata Docker must scan on every `docker logs` call).

@@ -255,8 +255,8 @@ Verified first-hand, with output:
 5. **FIXED 2026-08-16** **Editing `.env` then `docker compose restart` silently keeps the old
    value.** Confirmed, not fixed since last run. The container kept serving the
    stale `LM_STUDIO_URL` and doctor stayed red; `docker compose up -d` fixed it
-   immediately. The docs say `docker compose restart orchestrator` repeatedly —
-   always correctly, about the *mounted YAML* — and Quick Start tells you to
+   immediately. The docs say `docker compose restart orchestrator` repeatedly,
+   always correctly, about the *mounted YAML*, and Quick Start tells you to
    edit `.env`, so the repeated pattern teaches the wrong recovery for the
    wrong file. This cost real time in both runs.
 

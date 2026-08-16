@@ -327,6 +327,14 @@ def _parse_env_text(text: str) -> dict[str, str]:
     return parsed
 
 
+#: Keys whose ``.env`` value is deliberately NOT the container's value, so
+#: comparing them is a category error rather than drift.  ``PORT`` is the
+#: HOST port compose publishes on (``${PORT}:8080``); inside the container
+#: uvicorn always listens on 8080.  A live run reported "container env is
+#: stale for: PORT" on a perfectly correct deployment before this existed.
+_HOST_ONLY_ENV_KEYS = frozenset({"PORT"})
+
+
 def _env_drift_facts() -> tuple[dict[str, str], dict[str, str]]:
     """Return (running container env, .env on disk) for the drift check.
 
@@ -340,13 +348,20 @@ def _env_drift_facts() -> tuple[dict[str, str], dict[str, str]]:
     Only keys ``.env`` actually sets are compared: a key present in
     ``os.environ`` but absent from ``.env`` came from compose or the image,
     and its absence from the file is not drift.
+
+    Keys in :data:`_HOST_ONLY_ENV_KEYS` are compared by nobody, because they
+    deliberately mean different things on the two sides.
     """
     env_path = _ENTRYPOINT_ROOT.parent / ".env"
     try:
         on_disk = _parse_env_text(env_path.read_text(encoding="utf-8"))
     except OSError:
         return dict(os.environ), {}
-    watched = {k: v for k, v in on_disk.items() if k in os.environ}
+    watched = {
+        k: v
+        for k, v in on_disk.items()
+        if k in os.environ and k not in _HOST_ONLY_ENV_KEYS
+    }
     return {k: os.environ[k] for k in watched}, watched
 
 

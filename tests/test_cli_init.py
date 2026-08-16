@@ -1471,3 +1471,22 @@ def test_agent_image_build_receives_entrypoint_hash_env(fake_root, monkeypatch):
     assert other_calls, "expected the orchestrator `up -d --build` call too"
     for call in other_calls:
         assert call["env"] is None, "only the agent build should get a merged env"
+
+
+def test_the_menu_carries_the_setup_recipe_from_the_yaml(monkeypatch):
+    """`_fetch_presets_or_defaults` must not drop setup_doc/setup_hint.
+
+    The dict it builds is enumerated key by key, so a field added to
+    WorkerPreset and not listed there reaches `_confirm_unmet_requirements`
+    as absent and the recipe silently never prints. Only a live init run
+    caught it the first time; this pins it.
+    """
+    from cli.init import _fetch_presets_or_defaults
+
+    presets = _fetch_presets_or_defaults()
+    agy = [p for p in presets if p.get("requires")]
+    assert agy, "expected at least one preset with an unmet-able requirement"
+    assert any(p.get("setup_hint") for p in agy), (
+        "no preset requiring a credential carries a setup_hint; the recipe "
+        "cannot reach the operator"
+    )

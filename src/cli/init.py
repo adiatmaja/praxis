@@ -1002,6 +1002,13 @@ def _fetch_presets_or_defaults() -> list[dict[str, Any]]:
             "endpoint": p.endpoint,
             "requires": list(p.requires),
             "default": p.default,
+            # Carried through explicitly: this dict is built key by key, so a
+            # field added to WorkerPreset and never listed here reaches the
+            # menu as absent. That is how the setup recipe shipped inert, the
+            # YAML held it and the printer looked for it and nothing joined
+            # the two.
+            "setup_doc": p.setup_doc,
+            "setup_hint": p.setup_hint,
         }
         for p in parse_presets(raw)
     ]
