@@ -2,7 +2,8 @@ import docker.errors
 import httpx
 import pytest
 
-from orchestrator.core.doctor import CHECK_IDS
+from orchestrator.core.doctor import CHECK_IDS, CheckStatus
+from orchestrator.core.doctor_probes import probe_worker_endpoint
 
 
 # --- Fakes for the gathering layer ------------------------------------------
@@ -168,6 +169,12 @@ async def test_a_non_dict_models_body_degrades_one_row_not_the_response(
     `data.get("data", [])` then raises `AttributeError`, which the probe's
     narrow `(httpx.HTTPError, ValueError, KeyError)` never caught. A proxy or
     a gateway login page in front of LM Studio produces exactly this.
+
+    The worker harness is pinned to a local-LLM one (`opencode`) so this
+    stays a test of the malformed-body path specifically: the suite's
+    default worker (`config/praxis.yaml`, `default_worker_harness: agy`)
+    does not use an OpenAI endpoint at all, which would make the row green
+    before the malformed body was ever inspected.
     """
     from orchestrator.api import doctor as doctor_api
 
@@ -199,6 +206,11 @@ async def test_a_non_dict_models_body_degrades_one_row_not_the_response(
 
     _install_fake_docker(monkeypatch, lambda _tag: _FakeImage())
     monkeypatch.setattr(doctor_api, "httpx", _Httpx)
+    monkeypatch.setattr(
+        client.app.state.effective_settings,
+        "auto_delegate_worker",
+        lambda: {"harness": "opencode", "model": "qwen3.6-27b"},
+    )
 
     response = await client.get("/api/doctor", headers=auth_headers)
 
@@ -296,3 +308,31 @@ async def test_a_non_local_llm_worker_is_never_compared_against_v1_models(
     row = _rows(body)["worker_endpoint"]
     assert row["status"] == "green"
     assert "Gemini" not in row["detail"]
+
+
+def test_worker_endpoint_skipped_for_non_local_llm_harness() -> None:
+    """agy talks to Google directly; an LM Studio probe is a category error.
+
+    Reachability must be gated exactly like the model-name comparison
+    already is, or the flagged default preset is permanently red.
+    """
+    result = probe_worker_endpoint(
+        reachable=False,
+        models=[],
+        configured_model="",
+        error="connection refused",
+        endpoint_required=False,
+    )
+    assert result.status is CheckStatus.GREEN
+    assert "not applicable" in result.detail.lower()
+
+
+def test_worker_endpoint_still_red_for_local_llm_harness() -> None:
+    result = probe_worker_endpoint(
+        reachable=False,
+        models=[],
+        configured_model="qwen3.8-27b",
+        error="connection refused",
+        endpoint_required=True,
+    )
+    assert result.status is CheckStatus.RED

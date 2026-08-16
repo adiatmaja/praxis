@@ -245,7 +245,11 @@ def probe_planner_cli(cli_available: bool, authenticated: bool) -> CheckResult:
 
 
 def probe_worker_endpoint(
-    reachable: bool, models: list[str], configured_model: str, error: str = ""
+    reachable: bool,
+    models: list[str],
+    configured_model: str,
+    error: str = "",
+    endpoint_required: bool = True,
 ) -> CheckResult:
     """Green only when the endpoint answers AND the configured model is loaded.
 
@@ -267,7 +271,22 @@ def probe_worker_endpoint(
         error: Failure text when the probe itself broke, surfaced in the row
             so an unexpected body (a proxy's HTML, a JSON list) is named
             rather than reported as a plain timeout.
+        endpoint_required: Whether the configured harness talks to an
+            OpenAI-compatible endpoint at all. False for a harness like
+            agy/Gemini that calls its own API directly, in which case there
+            is nothing here to reach and the check must stay green.
     """
+    if not endpoint_required:
+        # A harness that does not talk to an OpenAI-compatible endpoint (agy
+        # calls Google directly) has nothing here to reach.  The model-name
+        # comparison below was already gated for this reason; leaving the
+        # reachability half ungated made the flagged default preset
+        # permanently red on a correct install.
+        return CheckResult(
+            check_id="worker_endpoint",
+            status=CheckStatus.GREEN,
+            detail="not applicable: this harness does not use an OpenAI endpoint",
+        )
     if not reachable:
         detail = "worker endpoint did not answer a usable GET /v1/models"
         return CheckResult(

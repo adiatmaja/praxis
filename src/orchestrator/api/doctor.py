@@ -377,6 +377,7 @@ async def _build_probes(request: Request) -> dict[str, Any]:
         if worker_harness_spec.supports_local_llm
         else ""
     )
+    endpoint_required = worker_harness_spec.supports_local_llm
 
     has_git_creds = bool(
         settings.github_token
@@ -483,6 +484,7 @@ async def _build_probes(request: Request) -> dict[str, Any]:
             models=worker_models,
             configured_model=configured_worker_model,
             error=worker_probe_error,
+            endpoint_required=endpoint_required,
         )
 
     callback_url = settings.agent_callback_url
