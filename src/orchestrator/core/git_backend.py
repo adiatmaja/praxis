@@ -370,6 +370,18 @@ class LocalGitBackend:
             await self._run_checked(
                 ["git", "clone", "--no-single-branch", self._path, workdir]
             )
+            # Identity goes on the CLONE, not just the commit.  `git merge`
+            # validates the committer up front and aborts with exit 128
+            # ("Committer identity unknown") before it ever reaches the commit
+            # that carried the `-c` flags.  A fresh container or CI runner has
+            # no global identity, so local-mode merges failed there while
+            # passing on any developer machine that happened to have one.
+            await self._run_checked(
+                ["git", "config", "user.name", "praxis"], cwd=workdir
+            )
+            await self._run_checked(
+                ["git", "config", "user.email", "praxis@localhost"], cwd=workdir
+            )
             await self._run_checked(["git", "checkout", ref.base], cwd=workdir)
             await self._run_checked(
                 ["git", "merge", "--squash", f"origin/{ref.branch}"], cwd=workdir
@@ -377,10 +389,6 @@ class LocalGitBackend:
             await self._run_checked(
                 [
                     "git",
-                    "-c",
-                    "user.name=praxis",
-                    "-c",
-                    "user.email=praxis@localhost",
                     "commit",
                     "-m",
                     f"Merge {ref.branch} into {ref.base} (squash)",

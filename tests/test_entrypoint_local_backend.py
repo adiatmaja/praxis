@@ -347,12 +347,22 @@ def _run_regions(path: Path, tmp_path: Path, backend: str | None):
     env = {**os.environ}
     env["PATH"] = f"{bindir}{os.pathsep}{env.get('PATH', '')}"
     env["PRAXIS_SPY_LOG"] = log.as_posix()
+    # ...and again INSIDE the script, which is the one that actually holds on
+    # Windows.  Git for Windows' `bash.exe` is a wrapper that rewrites PATH at
+    # startup, putting its own `/mingw64/bin` ahead of whatever the parent set,
+    # so the real `git.exe` shadowed the spy and the run silently exercised the
+    # host's git instead.  `gh` has no counterpart in that directory, which is
+    # why only the git half failed and only on the CI runner.
+    spy_path_line = f'export PATH="{bindir.as_posix()}:$PATH"\n'
     env.pop("GIT_BACKEND", None)
     if backend is not None:
         env["GIT_BACKEND"] = backend
 
     result = subprocess.run(
-        [bash, "-c", _assemble(path)], capture_output=True, text=True, env=env
+        [bash, "-c", spy_path_line + _assemble(path)],
+        capture_output=True,
+        text=True,
+        env=env,
     )
     calls = log.read_text(encoding="utf-8").splitlines() if log.exists() else []
     urls = re.findall(r"^__PRAXIS_PR_URL__=(.*)$", result.stdout, re.MULTILINE)

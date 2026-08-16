@@ -209,6 +209,11 @@ def _run_no_change(
 
     preamble = [
         "set -euo pipefail",
+        # Prepending the spy dir in the parent env is not enough on Windows:
+        # Git for Windows' `bash.exe` is a wrapper that rewrites PATH at
+        # startup and puts its own `/mingw64/bin` first, so the REAL git.exe
+        # answered instead of the spy and the assertions read the host's git.
+        f'export PATH="{_to_posix(bindir)}:$PATH"',
         'BRANCH="agent/no-change-leaf"',
         'BASE_BRANCH="plan/2026-08-14-diagnostics"',
         'STATUS="completed"',
