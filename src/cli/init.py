@@ -749,7 +749,7 @@ def _choose_preset(presets: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 def _managed_values(
-    token: str, gh_token: str | None, port: str, preset: Mapping[str, Any]
+    token: str, gh_token: str | None, port: str, preset: Mapping[str, Any] | None
 ) -> dict[str, str | None]:
     """Return every key ``init`` writes and what each one gets.
 
@@ -762,19 +762,28 @@ def _managed_values(
         token: Auth token to write.
         gh_token: GitHub credential, or None to leave any existing one alone.
         port: Dashboard port, as a string.
-        preset: The chosen worker preset.  Its values are authored, so an
-            empty endpoint clears ``LM_STUDIO_URL`` rather than keeping it.
+        preset: The chosen worker preset, or None when no preset has been
+            chosen yet -- ``init`` writes a partial ``.env`` before the
+            preset confirmation can exit.  With a preset, its values are
+            authored, so an empty endpoint clears ``LM_STUDIO_URL`` rather
+            than keeping it.  With None, every preset-derived key resolves to
+            None ("no opinion") rather than "" ("clear"), so
+            :func:`merge_env` leaves any existing line alone instead of
+            blanking it.
 
     Returns:
         Managed key to value, in the order ``init`` writes them.
     """
+    endpoint = preset.get("endpoint") if preset else None
+    harness = preset.get("harness") if preset else None
+    model = preset.get("model") if preset else None
     return {
         "AUTH_TOKEN": token,
         "GITHUB_TOKEN": gh_token,
         "PORT": port,
-        "LM_STUDIO_URL": preset["endpoint"],
-        "DEFAULT_WORKER_HARNESS": preset["harness"],
-        "DEFAULT_WORKER_MODEL": preset["model"],
+        "LM_STUDIO_URL": endpoint,
+        "DEFAULT_WORKER_HARNESS": harness,
+        "DEFAULT_WORKER_MODEL": model,
     }
 
 
@@ -885,7 +894,32 @@ def init() -> None:
         )
     )
     gh_token = _resolve_github_token(current)
-    preset = _choose_preset(_fetch_presets_or_defaults())
+
+    try:
+        preset = _choose_preset(_fetch_presets_or_defaults())
+    except typer.Exit:
+        # `_choose_preset` raises out of `_confirm_unmet_requirements` when
+        # the operator declines a preset that needs a credential `init`
+        # cannot collect.  That used to propagate straight out of `init()`
+        # before anything was written, discarding the token, port, and
+        # GitHub credential just typed -- the single most likely outcome of
+        # holding Enter through Quick Start, leaving a fresh clone with no
+        # `.env` at all and exit 1.  Write what was already collected before
+        # re-raising.  `preset=None` makes every preset-derived key resolve
+        # to "no opinion" rather than "clear", so on a re-run this leaves an
+        # existing DEFAULT_WORKER_HARNESS/DEFAULT_WORKER_MODEL/LM_STUDIO_URL
+        # line untouched.  Scoped to this except so the unrelated "Update
+        # .env?" decline path below (reached only once a preset IS chosen)
+        # keeps its own guarantee that declining leaves the file untouched.
+        partial = _managed_values(
+            token=token, gh_token=gh_token, port=port, preset=None
+        )
+        partial_text = (
+            merge_env(existing, partial) if existing else build_env_file(partial)
+        )
+        env_path.write_text(partial_text, encoding="utf-8")
+        console.print(f"[green]Wrote {env_path}[/green]")
+        raise
 
     values = _managed_values(token=token, gh_token=gh_token, port=port, preset=preset)
     env_text = merge_env(existing, values) if existing else build_env_file(values)

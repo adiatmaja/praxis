@@ -1125,6 +1125,93 @@ def test_the_chosen_preset_is_what_lands_in_the_file(fake_root, monkeypatch):
 
 
 @pytest.mark.unit
+def test_declining_preset_still_writes_collected_answers(fake_root, monkeypatch):
+    """Declining a preset must not discard the token, port, and credentials.
+
+    `_choose_preset` raises `typer.Exit(1)` out of
+    `_confirm_unmet_requirements` when the operator declines a preset that
+    needs a credential `init` cannot collect.  That used to propagate
+    straight out of `init()` before anything was written: a newcomer holding
+    Enter through Quick Start answers every prompt, then declines the one
+    preset needing a login `init` cannot do for them, and ends with an empty
+    directory and exit 1 -- every answer just typed, discarded.
+    """
+    monkeypatch.setattr(init_mod, "_resolve_auth_token", lambda _current: "TESTTOKEN")
+    monkeypatch.setattr(init_mod, "_resolve_github_token", lambda _current: "GHTOKEN")
+    monkeypatch.setattr(init_mod.IntPrompt, "ask", lambda *_a, **_k: 12323)
+    monkeypatch.setattr(
+        init_mod,
+        "_fetch_presets_or_defaults",
+        lambda: [
+            {
+                "name": "p",
+                "label": "P",
+                "harness": "agy",
+                "model": "M",
+                "endpoint": "",
+                "requires": ["interactive_login"],
+                "default": True,
+            }
+        ],
+    )
+    monkeypatch.setattr(init_mod.Confirm, "ask", lambda *_a, **_k: False)
+
+    with pytest.raises(typer.Exit):
+        init_mod.init()
+
+    env = (fake_root / ".env").read_text(encoding="utf-8")
+    assert "AUTH_TOKEN=TESTTOKEN" in env
+    assert "PORT=12323" in env
+    assert "GITHUB_TOKEN=GHTOKEN" in env
+
+
+@pytest.mark.unit
+def test_declining_preset_on_a_re_run_leaves_the_existing_worker_config_intact(
+    fake_root, monkeypatch
+):
+    """None means "no opinion", never "clear" -- pinned through the partial write.
+
+    A re-run that declines the preset writes a partial `.env` with
+    `preset=None`.  If that ever resolved to `""` instead of `None`,
+    `merge_env` would read it as the PRESET authoring an empty value and
+    blank the operator's existing, working `DEFAULT_WORKER_HARNESS` and
+    `DEFAULT_WORKER_MODEL` -- the opposite of "nothing new was confirmed".
+    """
+    (fake_root / ".env").write_text(
+        "AUTH_TOKEN=old-token\n"
+        "DEFAULT_WORKER_HARNESS=opencode\n"
+        "DEFAULT_WORKER_MODEL=qwen3-32b\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(init_mod, "_resolve_auth_token", lambda _current: "old-token")
+    monkeypatch.setattr(init_mod, "_resolve_github_token", lambda _current: None)
+    monkeypatch.setattr(init_mod.IntPrompt, "ask", lambda *_a, **_k: 12323)
+    monkeypatch.setattr(
+        init_mod,
+        "_fetch_presets_or_defaults",
+        lambda: [
+            {
+                "name": "p",
+                "label": "P",
+                "harness": "agy",
+                "model": "M",
+                "endpoint": "",
+                "requires": ["interactive_login"],
+                "default": True,
+            }
+        ],
+    )
+    monkeypatch.setattr(init_mod.Confirm, "ask", lambda *_a, **_k: False)
+
+    with pytest.raises(typer.Exit):
+        init_mod.init()
+
+    env = (fake_root / ".env").read_text(encoding="utf-8")
+    assert "DEFAULT_WORKER_HARNESS=opencode" in env
+    assert "DEFAULT_WORKER_MODEL=qwen3-32b" in env
+
+
+@pytest.mark.unit
 def test_switching_preset_on_a_re_run_clears_the_previous_endpoint(
     fake_root, monkeypatch
 ):
