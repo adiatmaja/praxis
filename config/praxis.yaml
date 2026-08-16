@@ -102,6 +102,17 @@ worker_presets:
     endpoint: ""
     requires: [interactive_login]
     default: true
+    # Printed verbatim by `praxis init` when it challenges the unmet
+    # requirement above.  Without this the operator was told WHAT was
+    # missing and never HOW to supply it, which read as a dead end.
+    setup_doc: "docs/deployment.md#agy-antigravity--gemini-harness--one-time-credential-setup"
+    setup_hint: |
+      Run these two commands once, then re-run `praxis init`:
+        docker run --rm --user root -v praxis-gemini-creds:/home/agent/.gemini \
+          --entrypoint bash agy-agent:latest -c 'chown -R agent:agent /home/agent/.gemini'
+        docker run --rm -it -v praxis-gemini-creds:/home/agent/.gemini \
+          --entrypoint bash agy-agent:latest -c 'agy login'
+      The second is interactive: agy prints an OAuth URL to open in a browser.
   - name: local-lmstudio
     label: "Local GPU via LM Studio"
     harness: opencode
@@ -116,4 +127,9 @@ worker_presets:
     model: "glm-4.7"
     endpoint: "https://api.z.ai/v1"
     requires: [api_key]
+    setup_doc: "docs/deployment.md"
+    setup_hint: |
+      Set an API key for your OpenAI-compatible endpoint in .env after init:
+        LM_STUDIO_API_KEY=<your key>
+      Then re-run `praxis init` and pick this preset again.
 
