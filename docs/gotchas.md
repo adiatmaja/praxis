@@ -1,8 +1,9 @@
 # Gotchas — Praxis
 
-Full narrative for the non-obvious traps in Praxis. `CLAUDE.md` carries a condensed
-one-line index of these; this file is the detailed reference. Add new gotchas here and
-keep the CLAUDE.md index in sync.
+Full narrative for the non-obvious traps in Praxis. **This file is the complete list and the
+canonical reference.** `CLAUDE.md` carries only a shortlist of the ones that bite during
+ordinary edits, so a new gotcha goes HERE first; add it to the CLAUDE.md shortlist only if it
+belongs among the everyday traps.
 
 - **Merge is gated by default**: review PASS parks a task at `PASSED` (PR left
   open, `task_awaiting_merge` event emitted), it does NOT auto-merge. Merge
@@ -790,3 +791,15 @@ keep the CLAUDE.md index in sync.
   path (`_choose_preset` raising `typer.Exit(1)`): the separate "Update `.env`?"
   decline is a different code path and keeps its own pre-existing byte-identical
   guarantee, unchanged by this fix.
+- **Line endings are a contract, and `.gitattributes` is what enforces it**: GitHub's
+  `windows-latest` runner checks out with `core.autocrlf=true`, so without the repo-root
+  `.gitattributes` (`* text=auto eol=lf`) every `docker/*/entrypoint.sh` lands in the
+  working tree with CRLF. That matters because the entrypoint tests EXECUTE the sliced
+  guard regions under `bash`, which then reads `fi\r` and never runs them: the git spy
+  records no calls and the assertions fail on Windows ONLY, with an error message
+  (`credential.helper` never configured, `git rev-list` rc=128) that points at the
+  product rather than at the checkout. The bench sample's explicit LF assertion failed
+  the same way. Note the index was always clean: these blobs are LF-in-index, so the
+  corruption existed only in the runner's working tree, which is exactly why it was
+  invisible locally. Adding a new executable-under-test or a byte-asserted fixture
+  needs no action, the glob already covers it; adding a genuinely binary file type does.

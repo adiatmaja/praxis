@@ -43,74 +43,54 @@ consequence of this flexibility, not the constraint.
 praxis/
 ├── src/
 │   ├── orchestrator/
-│   │   ├── main.py                  # FastAPI app + lifespan (seeds default user)
-│   │   ├── config.py                # Settings via pydantic-settings
-│   │   ├── database.py              # SQLite connection + inline migrations
-│   │   ├── api/
-│   │   │   ├── projects.py          # /api/projects CRUD
-│   │   │   ├── plans.py             # /api/plans + approve/reject + /api/plans/promote
-│   │   │   ├── lifecycle.py         # /api/projects/{id}/lifecycle + /doc-raw (Spec→Plan→Run)
-│   │   │   ├── specs.py             # /api/specs Create-Spec chat + generate_plan
-│   │   │   ├── docs.py              # /api/docs doc index + raw read
-│   │   │   ├── context.py           # /api/projects/{id}/context (Memory view)
-│   │   │   ├── settings.py          # /api/settings global/project + /settings/models
-│   │   │   ├── harnesses.py         # /api/harnesses catalog
-│   │   │   ├── tasks.py             # /api/tasks + logs streaming
-│   │   │   ├── system.py            # /api/status (CLI-probed), /api/lm-models, /api/opus/state
-│   │   │   ├── events.py            # /api/events SSE stream
-│   │   │   ├── internal.py          # /api/internal/agent-done callback
-│   │   │   └── auth.py              # Bearer token validation
-│   │   ├── core/
-│   │   │   ├── orchestrator.py          # Loop core: __init__, plan_and_activate, run_once, run_loop, shutdown
-│   │   │   ├── orchestrator_dispatch.py # DispatchMixin: dispatch_pending_tasks, _build_worker_bible
-│   │   │   ├── orchestrator_review.py   # ReviewMixin: review_task, approve/reject merge, on_plan_completed
-│   │   │   ├── orchestrator_reconcile.py# ReconcileMixin: reconcile_runs, monitor_run, _classify_pr_failure
-│   │   │   ├── orchestrator_improve.py  # ImprovementMixin: check_improvements, create_improvement_plan
-│   │   │   ├── task_queue.py        # Task state machine + scheduling
-│   │   │   ├── opus_bridge.py       # claude -p invocation + rate limit handling
-│   │   │   ├── llm_router.py        # Per-call-site {provider,model,effort} routing (Spec 3)
-│   │   │   ├── effective_settings.py# override(project)→global→default resolution
-│   │   │   ├── settings_file.py     # config/praxis.yaml loader + env overrides (Spec 2)
-│   │   │   ├── agent_manager.py     # Docker container lifecycle
-│   │   │   ├── harnesses.py         # Harness registry (OpenCode/agy)
-│   │   │   ├── git_ops.py           # Branch, PR, merge, conflict ops
-│   │   │   ├── brainstorm.py        # Clone repo, run claude -p, write/list/read docs
-│   │   │   ├── context_sync.py      # CLAUDE.md/MEMORY.md freshness (Memory view)
-│   │   │   ├── doc_indexer.py       # Index specs/ + plans/ markdown into doc_index
-│   │   │   ├── markdown_utils.py    # Pure markdown helpers (title, checklist, frontmatter)
-│   │   │   ├── plan_derive.py       # plan.md -> opus_plan (deterministic parse + LM Studio fallback)
-│   │   │   ├── backfill.py          # One-time legacy plans.spec -> repo doc (Spec 2)
-│   │   │   └── event_bus.py         # In-memory async pub/sub for SSE
-│   │   └── models/
-│   │       └── schemas.py           # Pydantic request/response + Opus JSON payloads
-│   ├── mcp_server/
-│   │   ├── client.py                # PraxisClient — thin httpx wrapper over REST API
-│   │   ├── server.py                # MCP tool definitions (dispatch_task, poll_task, …)
-│   │   └── __main__.py              # stdio entry point (praxis-mcp)
-│   └── cli/
-│       └── main.py                  # Typer CLI client (entrypoint: orchestrator-cli)
-├── web/
-│   ├── index.html                   # Dashboard HTML (no-build, dark/light theme)
-│   ├── styles.css                   # Dashboard CSS (extracted from index.html)
-│   └── app.js                       # Dashboard JS (extracted from index.html, classic script)
-├── docker/
-│   ├── orchestrator/Dockerfile
-│   ├── opencode-agent/
-│   │   ├── Dockerfile
-│   │   └── entrypoint.sh
-│   ├── agy-agent/
-│   │   ├── Dockerfile
-│   │   └── entrypoint.sh
-│   └── caddy/Caddyfile
-├── config/
-│   └── praxis.yaml                  # Global orchestrator settings (env-overridable)
-├── tests/                           # pytest suite (current count/coverage: see CI)
-├── docker-compose.yml               # Production compose
-├── docker-compose.local.yml         # Dev overrides (hot reload, mounted source)
-├── pyproject.toml
-├── .env.example
-└── .python-version                  # 3.11
+│   │   ├── main.py           # FastAPI app + lifespan (seeds the default user)
+│   │   ├── config.py         # pydantic-settings; env > config/praxis.yaml > default
+│   │   ├── database.py       # SQLite, raw SQL, versioned MIGRATIONS list
+│   │   ├── api/              # REST routers, one file per surface
+│   │   ├── core/             # the engine (table below)
+│   │   └── models/schemas.py # Pydantic boundary types + the LeafTask contract
+│   ├── mcp_server/           # stdio MCP adapter over the REST API (praxis-mcp)
+│   └── cli/main.py           # Typer CLI (entrypoints: praxis, orchestrator-cli)
+├── web/                      # no-build dashboard: index.html + styles.css + app.js
+├── docker/                   # orchestrator + opencode-agent + agy-agent + caddy
+├── config/praxis.yaml        # global settings, MOUNTED read-only, never baked
+├── bench/                    # SWE-bench-style evaluation harness
+├── tests/                    # pytest suite
+└── docker-compose.yml + docker-compose.local.yml
 ```
+
+`api/` routers: `projects`, `plans`, `lifecycle`, `specs`, `docs`, `context`, `settings`,
+`presets`, `harnesses`, `tasks`, `dispatch`, `execute_plan`, `git_state`, `system`,
+`doctor`, `approvals`, `events` (SSE), `internal` (agent callback), `auth`.
+
+`core/` is the engine. The orchestrator is ONE class split across mixins, so patch
+module-level helpers on the mixin that calls them, never on `core.orchestrator`:
+
+| Module | Role |
+|--------|------|
+| `orchestrator.py` | loop core: `plan_and_activate`, `run_once`, `run_loop`, `shutdown` |
+| `orchestrator_dispatch.py` | `dispatch_pending_tasks`, `_build_worker_bible`, wave verify gate |
+| `orchestrator_review.py` | `review_task`, merge approval, `on_plan_completed` |
+| `orchestrator_reconcile.py` | `reconcile_runs`, `monitor_run`, stale-branch sweep |
+| `orchestrator_improve.py` | autonomous improvement loop |
+
+The rest of `core/`, grouped by concern:
+
+- **Routing & settings:** `llm_router`, `roles`, `effective_settings`, `settings_file`,
+  `opus_bridge` (legacy name, all brain calls), `thinking`, `provider_errors`,
+  `escalation`, `worker_presets`, `bench_mode`
+- **Execution:** `task_queue`, `agent_manager`, `agent_prompt`, `worker_bible`, `harnesses`,
+  `preflight`, `session_resume`, `progress_handover`, `clarification_states`, `token_budget`
+- **Git & platform:** `git_ops`, `git_backend` (GitHub / local), `github_credentials`,
+  `repo_url_policy`, `merge_policy`, `branch_sweeper`, `diff_guard`, `diff_stats`
+- **Capability engine:** `execute_plan_decompose`, `plan_derive`, `plan_graph`, `plan_review`,
+  `leaf_validator`, `leaf_templates`, `leaf_split`, `leaf_triage`, `difficulty`,
+  `capabilities`, `capability_events`, `capability_history`, `outcome_recorder`,
+  `failure_taxonomy`, `status_vocab`
+- **Docs & context:** `brainstorm`, `context_sync`, `context_scrub`, `doc_indexer`,
+  `markdown_utils`, `backfill`
+- **Operability:** `doctor`, `doctor_probes`, `verify_gate`, `build_info`, `entrypoint_hash`,
+  `approvals`, `event_bus`, `log_context`
 
 ## Commands
 
@@ -245,224 +225,65 @@ single caller-named work branch; dead branches are swept by the reconcile loop. 
 
 ## Gotchas
 
-Full detail for every trap below lives in **`docs/gotchas.md`** — read it before touching
-the relevant subsystem. Condensed index:
+**`docs/gotchas.md` is the full list (95 traps, with the narrative for each). Read the
+relevant entry there before touching a subsystem.** Below are only the ones that bite during
+ordinary edits, because each fails SILENTLY. When you learn a new one, write it there and add
+a line here only if it belongs in this shortlist.
 
-- **Merge is gated by default** — review PASS parks at `PASSED`, never auto-merges; needs
-  `approve-merge` or `auto_merge=True` (protected branches never auto-merge). `core/merge_policy.py`.
-- **CLI is at `src/cli/`** (not top-level), works via `where = ["src"]` in pyproject.
-- **`ruff format`, not `ruff fmt`**; **claude effort flag is `--effort`, not `--reasoning-effort`**.
-- **`.env` read by pydantic-settings** — tests asserting missing env must pass `_env_file=None`.
-- **Default user auto-seeded** in lifespan; without it project creation 500s.
-- **Windows port cleanup** uses `taskkill //PID <pid> //F`, not `kill -9`.
-- **Orchestrator is split across mixins** (`orchestrator_{dispatch,review,reconcile,improve}.py`);
-  patch module-level helpers on the MIXIN module, not `core.orchestrator`.
-- **SSE `/api/events`** is long-lived; EventBus is in-memory (events lost with no subscriber).
-- **SQLite DB** at `data/orchestrator.db` (CWD-relative); delete to reset state.
-- **Context Sync / Memory view** re-clones per open (cross-platform temp dir), surfaces 502 not 500.
-- **Agent runs are reconciled** (`reconcile_runs`), not fire-and-forget — the backstop for lost callbacks.
-- **`agent_log` events come only from `monitor_run`**, attached at spawn AND in reconcile.
-- **Agent container names are reused** — spawn force-removes stale `praxis-agent-*` (409 otherwise).
-- **Callback URL is port-derived** (`Settings.callback_url()`); wrong port → every callback 404s.
-- **Brain prompts go via stdin, never argv** (argv overflows OS limit, Windows `WinError 206`).
+**Editing and running**
+
+- **`ruff format`, not `ruff fmt`**; the claude effort flag is **`--effort`**, not `--reasoning-effort`.
+- **CLI lives at `src/cli/`** (not top-level), which works via `where = ["src"]` in pyproject.
+- **The orchestrator is one class across mixins**: patch module-level helpers on the MIXIN
+  module that calls them (`orchestrator_{dispatch,review,reconcile,improve}.py`), not on
+  `core.orchestrator`.
+- **`.env` is read by pydantic-settings**, so tests asserting a missing env var must pass
+  `_env_file=None`. Ambient env beats it too: clear the var in the test, or CI's value wins.
+- **SQLite lives at `data/orchestrator.db`** (CWD-relative); delete it to reset all state.
+- **Windows port cleanup is `taskkill //PID <pid> //F`**, never `kill -9`.
+- **`.gitattributes` pins the working tree to LF.** The Windows CI runner checks out with
+  `core.autocrlf=true`; CRLF silently breaks any `entrypoint.sh` executed by a test.
+
+**Config and deployment**
+
+- **`config/praxis.yaml` is MOUNTED, not baked**: a YAML edit needs `docker compose restart`,
+  never a rebuild. `core/settings_file.config_file_path()` is the ONLY place that path is
+  decided; a hardcoded `"config/praxis.yaml"` literal in `src/` reintroduces a fixed bug and
+  `tests/test_config_path.py` greps for exactly that.
+- **`docker compose restart` does NOT re-read `.env`; only `up -d` does.** The `env_drift`
+  doctor check exists for this.
+- **Agent images are standalone, NOT in compose**: rebuild `opencode-agent:latest` /
+  `agy-agent:latest` after ANY `entrypoint.sh` change or a stale image runs silently.
+  Staleness is judged by CONTENT (the `org.praxis.entrypoint-sha256` label), never mtime.
+- **Worker preset env vars reach the container as BARE compose pass-throughs**
+  (`- DEFAULT_WORKER_HARNESS`), never `${VAR:-default}`: any expansion form sets the variable
+  even when unset, which silently suppresses the mounted YAML.
+- **`praxis doctor` is the front door to every problem**: twelve read-only checks; pure
+  decision logic in `core/doctor_probes.py`, live fact gathering in `api/doctor.py`.
+
+**The loop**
+
+- **Merge is gated by default**: a review PASS parks at `PASSED` and never auto-merges
+  (`core/merge_policy.py`); protected branches never auto-merge at all.
+- **Brain prompts go via stdin, never argv** (argv overflows the OS limit; Windows `WinError 206`).
 - **`gh pr` calls need `--repo <owner/name>`** or they target the orchestrator's own cwd.
-- **Agent callbacks retry with backoff**; `/api/internal/agent-done` fails closed (503) w/o secret.
-- **Agent containers use bridge net + `host.docker.internal`**, not `network_mode=host`.
-- **Harness images are standalone (NOT in compose)** — rebuild `opencode-agent:latest` or `agy-agent:latest`
-  after ANY `entrypoint.sh` change or a stale image runs silently. Read baked files via `docker cp`.
-- **agy harness auth is a login-seeded Docker VOLUME, never host-path creds** — agy ignores
-  `GEMINI_API_KEY`/ADC (upstream issue #78) and cross-OS host `~/.gemini` files are the wrong
-  format. The working model (live-verified 2026-07-16): chown the `praxis-gemini-creds` volume
-  to the agent user, run a one-time interactive `agy login` into it, then the orchestrator mounts
-  it **read-write** at `/home/agent/.gemini` (`GEMINI_CREDS_VOLUME`). A fresh `agy -p` worker reads
-  those Linux-native creds back and authenticates (issue #479's "write-only" claim does NOT bite
-  v1.1.2 with a persisted volume). RW is required so ~1h token refreshes persist. Setup is
-  identical on every OS — see `docs/deployment.md`. **`agy -p` still needs valid creds present or
-  it hangs with no stdout and ignores `timeout` (forks a detached child); it is TTY-oriented.**
-- **Agent runs non-root** — workspace `/home/agent/workspace`; **git auth via `GH_TOKEN`**;
-  **agy needs valid creds in the `praxis-gemini-creds` volume** (see agy harness gotcha above).
-- **GitHub creds via provider seam** (`core/github_credentials.py`) — App installation tokens
-  (short-lived, repo-scoped) or `GITHUB_TOKEN` PAT fallback; install tokens cap at 1h.
-- **Plan branch race** handled by fetch-fallback on push failure.
-- **OpenCode and agy don't auto-commit** (entrypoint does); **OpenCode needs `limit.output`**;
-  **Static Bible must NOT land in the PR** (entrypoint strips it from `AGENTS.md`).
-- **PR body uses `TASK_SUMMARY`**, not a `TASK_PROMPT` slice. **`MODEL` env is provider-prefixed per harness.**
-- **Unified Plans view = Spec→Plan→Run**; lifecycle docs live in the TARGET repo (read via `/doc-raw`).
-- **Promote plan.md** via `POST /api/plans/promote` (deterministic parse → LM Studio fallback, never Opus).
-- **Hand-built LM Studio payloads must state `reasoning_effort` explicitly** (`core/thinking.py` SSoT, gated by `tests/test_thinking_explicit.py`) — qwen3.8-27b thinks by DEFAULT, so an absent key means MAXIMUM effort, not off; it returned empty, unparseable content on `plan_derive`'s json_schema payload.
-- **DocIndexer scans only `specs/`+`plans/`**; plans need `spec_path:` front-matter + 4-backtick outer fences.
-- **`/api/status` Planner availability is CLI-probed** (`claude --version`), not DB-only.
-- **Dashboard LM Studio URL is the effective (global) one**; New-Project model is a `/api/lm-models` dropdown.
-- **Create-Spec chat needs the SSE stream open** (`openSpecChat` re-opens it); errors via `brainstorm_error`.
-- **Provider auth is detected, never automated** — `ProviderAuthError` on dead session; codex exits 0 on
-  401 (stderr-scanned); Windows shims resolved via `shutil.which`; agy unusable as a brain.
-- **MCP server is a separate package** (`src/mcp_server/`); read-back tools
-  `get_project`/`list_projects` wrap `GET /api/projects` client-side (no new REST
-  endpoint). Orchestrators resolve a repo's configured worker `model` via
-  `get_project` before `execute_plan`/`dispatch_task` (see the orchestration guide).
-- **`dispatch` `branch` is always a base**, never a target (re-dispatch = new PR).
-- **`execute_plan` bridges brain ids → slugs** (`_normalize_slugs`) or the dispatch loop `KeyError`s.
-- **Login banner is SSE-driven** (`provider_auth_required`), not just poll (`codex login status` lies).
-- **Mechanical verify gate runs before the brain** (`core/verify_gate.py`) — non-zero exit fails free.
-- **Build stamp on /health + /api/status** (`core/build_info.py`) exposes running commit; restart after deploy.
-- **Decomposition emits per-leaf `plan_text`** (verbatim contract) so review checks against the real spec.
-- **`LeafTask` is the S2 decomposition contract** (`models/schemas.py`) with golden fixtures; a decomposed leaf must round-trip through it, so extend the fixtures when you add a field.
-- **Status vocabulary is frozen in `core/status_vocab.py`** (S9) drawn from the `TaskStatus`/`PlanStatus` enums; add a value to the enum AND its exhaustive `test_schemas` assertion together, never one alone (a lone `SUPERSEDED` add broke that test at integration).
-- **Capability decision records live in `core/capability_events.py`** (S1 stub retired): versioned Pydantic events + `capability_events` table + bus wiring. `Orchestrator.__init__` constructs `self._emitter` unconditionally. Production emissions: `TaskSplitEvent`, `TaskEscalatedEvent`, `LeafDifficultyScoredEvent`, `LeafRejectedPredispatchEvent`.
-- **F2 decomposition constraints are hard, not advisory** — the profile's numeric limits (`max_files_touched`, `max_loc_delta`, `max_dep_depth`, etc.) are injected as a `HARD CONSTRAINTS` block in the decompose prompt; leaves violating them are rejected by F3, not merely warned about.
-- **F3 leaf validator is deterministic and fail-closed** — `core/leaf_validator.py` runs after `_normalize_slugs`; on hard rejection the brain is re-invoked with specific violations (≤2 informed rounds), then the plan is rejected entirely — no dispatch of an invalid graph.
-- **F15 supply-chain gates block auto-merge** — `core/diff_guard.py` checks new deps in `pyproject.toml`/`package.json`/lockfiles and runs a secret regex over the diff; any hit forces the human gate regardless of review verdict. `added_dependencies` matches PEP621 array items too (`"pkg>=1.0"` under `[project] dependencies`), not just `requirements.txt`-style bare lines (Plan 2 Phase B fix; the array-item form was a false-negative — the shape THIS repo uses).
-- **Persistent worker-endpoint block is capped, not respawned forever** — a provider/gateway error (Cloudflare/WAF 403, 429, 5xx via `ReconcileMixin.is_provider_error`) re-queues WITHOUT burning a retry, but `_provider_error_streak` counts trailing consecutive provider-error runs and after `Orchestrator.PROVIDER_ERROR_RESPAWN_CAP` (5) it stops, marks the task FAILED, and publishes `worker_endpoint_unreachable` (Plan 2 Phase B HIGH-1: was a silent infinite respawn loop with `status=in_progress`, `failed_count=0`). Bounded backoff (`_provider_error_backoff * streak`, capped 30s) throttles respawns before the cap.
-- **Per-wave cross-leaf verify gate** — `DispatchMixin._wave_verify_gate` runs the project `verify_cmd` against the accumulated plan branch before dispatching each wave built on already-MERGED leaves (memoized per `merged_count` in `_wave_verify_state`); a fail publishes `plan_wave_verify_failed` and PARKS the wave. Catches cross-leaf contract breaks early (per-task tests are task-scoped and miss them, e.g. a leaf shipping `leaf.slug`); `on_plan_completed` whole-plan verify remains the final backstop. No `verify_cmd` = no-op (Plan 2 Phase B HIGH-2).
-- **Plan-branch verify gates now FETCH the plan branch and FAIL CLOSED** — `_verify_plan_branch` clones then `git_ops.checkout_branch`, which fetches `origin <branch>` and checks out `FETCH_HEAD` via `checkout -B` (a bare `git fetch origin <branch>` only moves FETCH_HEAD, so a plain `git checkout <branch>` failed with exit 1 and the gate was SILENTLY SKIPPED on every plan). Both `_wave_verify_gate` and `on_plan_completed` now treat an `error` status the same as `failed` (park / publish `plan_verify_failed`), but an `error` is NOT memoized so the next tick retries (transient clone/network faults self-heal); only `skipped` (no `verify_cmd`/branch/credential) passes through.
-- **`opus_bridge.py` + `users.token_hash` are legacy names on purpose** (renames deferred as churn).
-- **Blocked workers ask, they don't guess** — `Status: BLOCKED`/`NEEDS_CONTEXT` → `NEEDS_CLARIFICATION`
-  (no retry burned) → brain `answer_clarification` → re-dispatch or human gate. Both harnesses parse it.
-- **Remote preflight is shared** (`core/preflight.py`) — every dispatch path runs
-  cheap, read-only remote checks before spawning a container. Non-GitHub URL, auth
-  failure, missing branch or file return 422. Unreachable remote returns 502. Base-SHA
-  mismatch returns 409. Without a configured credential, checks are skipped with a
-  warning so local-only experimentation still works.
-- **`local_context` fills the worker's `repo_memory` Bible slot** with client-gathered
-  non-committed context (gitignored config shapes, user-scope conventions); minimum-blocking,
-  names/shapes over values, never a "read file X" pointer. Threaded like `context_text`.
-- **Outcome recording is fire-and-forget** — `core/outcome_recorder.record_outcome` writes one
-  `task_outcomes` row per terminal `review_task` verdict, swallows its own DB/emit errors;
-  attribution decided ONLY by `core/failure_taxonomy.counts_against_worker` (S6);
-  `provider_error` and human merge-gate rejections never count against the worker.
-- **Decomposition history is real now** — `decompose_plan(db=...)` feeds
-  `fetch_recent_outcomes` (scoped `(model, project)` → `(model, *)`, worker-attributable rows
-  only) into the prompt history slot; Wilson-bound learned limits and `GET /api/capability`
-  remain Plan 6.
-- **Role fallback chains resolve before per-call-site overrides** — `EffectiveSettings.call_site_chain` maps a call-site to a role (`core/roles.ROLE_OF_CALL_SITE`, frozen + golden-tested) then to an ordered registry chain; an EMPTY chain falls through to the `models.<call_site>` override, then `CALL_SITE_DEFAULTS`. The router (`LLMRouter.run`) tries each entry and falls back ONLY on unavailability (`core/provider_errors.is_unavailability`: auth/rate-limit/gateway) — a bad-output error never falls back. `implement` role is NOT router-driven in v1 (worker model is spawn-baked).
-- **Auto-delegate mode is a global toggle, not per-project** — `auto_delegate.enabled` persists in `settings_overrides` (source of truth), read via `EffectiveSettings.auto_delegate_enabled()`; toggle with `praxis mode on|off` or `PUT /api/settings/auto-delegate`, mirrored by MCP `get_mode`. The delegated/global-default worker (`default_worker_harness` / `default_worker_model`) lives in `config/praxis.yaml` (reference: `agy` / `Gemini 3.7 Flash (High)`); the product default outside the mode stays `opencode`. A project with no `model_name` falls back to the global default worker.
-- **Single-branch discipline is entrypoint-driven** — in auto-delegate mode `dispatch_pending_tasks` reuses one caller-named work branch and threads `single_branch=True` → `SINGLE_BRANCH=1` into the container; both harness entrypoints then REUSE the existing remote `BRANCH` with a non-force push instead of cutting a fresh `agent/{slug}`. Changing this behavior needs an agent IMAGE REBUILD (entrypoint change), not just a src edit.
-- **Stale-branch sweeper is fail-safe and reconcile-driven** — `core/branch_sweeper.dead_branches` picks reclaimable branches (no open PR, no live run, never protected); `ReconcileMixin.sweep_dead_branches` deletes them each reconcile pass and swallows its own errors (never wedges the loop).
-- **`config/praxis.yaml` is MOUNTED, not baked**: both compose files bind-mount `./config` read-only at `/app/config` and the BASE file sets `PRAXIS_CONFIG_PATH` (the dev overlay inherits it through the compose environment merge), so a YAML edit (e.g. `default_worker_*`) takes effect on `docker compose restart orchestrator`, never an image rebuild. This reverses the behavior that bit us live 2026-07-27. `core/settings_file.config_file_path()` is the ONLY place the `praxis.yaml` path is decided; a hardcoded `"config/praxis.yaml"` literal anywhere else reintroduces the bug and `tests/test_config_path.py` greps for exactly that. Agent-image entrypoint changes still need a rebuild.
-- **Session resume is gated to answered clarifications**: `core/session_resume.resolve_resume_session`
-  returns an id only when a stored `worker_session_id`, a matching `worker_session_harness`, and a
-  `clarification_state` of `answered_by_brain`/`resolved` all line up; a plain failure retry never
-  satisfies that last condition, and its branch is rebuilt from base anyway, so restored memory can
-  never describe a tree that no longer exists. `WORKER_SESSION_ID` means BOTH "resume the
-  conversation" and "reuse the remote branch": they move together, or restored memory contradicts
-  the tree. A worker reports its session id ONLY after its BLOCKED checkpoint push succeeds, so a
-  failed push silently forces the next turn to start cold. Entrypoint change: needs an agent IMAGE
-  REBUILD. **The agy JSON envelope shape is UNVERIFIED** (no real agy build was available while this
-  was built); the happy path needs a live dogfood run before anyone relies on it.
-- **Leaf templates are enforced**: `core/leaf_templates.py` is the single source of
-  per-`LeafType` `plan_text` section requirements; the F3 validator enforces
-  `REQUIRED_SECTIONS` and missing sections raise `KeyError` at test time.
-- **Context pack fits greedily by priority**: floor sections (plan, edits,
-  acceptance, feedback, handover) never drop; remaining sections fit in priority
-  order so a section that doesn't fit is skipped but lower-priority ones may survive.
-- **`LEAF_SCHEMA_VERSION` is 2**: a new `LeafTask` field, even with a default,
-  changes `model_dump()` output and breaks `tests/fixtures/decompose/expected_leaf_graph.json`;
-  regenerate the fixture in the same commit.
-- **`_normalize_edit_locations` must never raise**: it normalizes raw brain JSON
-  `files` into the edit locations floor section; a `TypeError` aborts the loop, so
-  it returns None on garbage input rather than raising.
-- **MCP payloads lead with a `summary` key, `get_task_logs` tails at 40 KB**: dict
-  insertion order is what the client renders, so every state-returning tool puts
-  a one-line summary first; a clipped log always says so, tailing the last
-  `LOG_TAIL_CHARS`, never the head.
-- **`praxis doctor` is the front door to every problem**: eleven read-only checks
-  in `core/doctor.py`, pure decision logic in `core/doctor_probes.py`, live fact
-  gathering in `api/doctor.py`. Probes are pre-bound ZERO-ARGUMENT callables; a
-  hintless RED resolves its specific hint from the registry; gathering is guarded
-  per unit so the endpoint always answers 200; `agent_image_freshness` is AMBER,
-  never GREEN, when it had nothing to compare.
-- **`praxis init` is re-runnable and never eats your `.env`**: it merges only
-  `MANAGED_KEYS`, preserving every other key, position, and comment, and its
-  `.env` parser is graded against real `python-dotenv` by a differential test.
-  Empty means clear, `None` means no opinion.
-- **The approvals digest is rate-limited but the surfaces are not**: only the
-  `approvals_digest` SSE event is throttled (`approvals_digest_interval_h`,
-  default 6h); `pending_approvals`, the `poll_task`/`poll_plan` digest line,
-  `praxis pending`, and the dashboard badge all read live. Nothing parked means
-  no event at all.
-- **Local git mode is a backend, not a special case**: `core/git_backend.resolve_backend`
-  picks `LocalGitBackend` for a filesystem/`file://` `repo_url`, `GitHubBackend`
-  otherwise; the merge gate, verify gates, and outcome recording are unchanged
-  above the seam. A local "PR" is a `praxis-local://pr?branch=...&base=...`
-  string in the existing `tasks.pr_url` column, parsed via `PullRequestRef.from_url`.
-- **One `repo_url` policy, shared by all three request schemas**: `core/repo_url_policy.py`
-  is the single implementation; `ProjectCreate`, `DispatchRequest` and `ExecutePlanRequest`
-  all call it (they used to carry three different policies, and `ExecutePlanRequest` had
-  none). The option-injection check is a CONTAINMENT check, never prefix-only, and it runs
-  BEFORE the local-path branch. A LOCAL filesystem path is syntactically valid there because
-  a pydantic validator cannot see runtime settings; whether one is admitted is decided by
-  `Settings.allow_local_repo_paths` (default OFF) via `core/preflight.assert_repo_url_allowed`,
-  called at all three endpoints and failing CLOSED. Turning it on is what makes the local git
-  backend and `bench/` reachable through REST. Never write the literal config path in `src/`.
-- **A local `repo_url` is preflighted on ALL THREE endpoints, unconditionally**:
-  `/api/execute-plan` used to run `preflight_remote` only when `expected_base_sha`
-  was supplied, so `{"repo_url": "/"}` was accepted, a project row was written, and
-  `agent_manager.local_repo_volume` would have bind-mounted the whole host filesystem
-  read-write into an agent container. It now preflights whenever `is_local_repo_url`
-  is true. The opt-in answers "may a local path be used"; only `_preflight_local`
-  answers "is it a bare repo". The opt-in is admission control, NOT a kill switch:
-  turning it off does not stop already-registered local projects from dispatching.
-- **A local `repo_url` is judged on its DECODED form**: `local_repo_path` percent-
-  decodes and expands `~`, so checking the raw candidate left `file://%2D%2Dupload-
-  pack=/bin/sh` (decoding to `--upload-pack=...`) admitted. The single-argv-element
-  argument does NOT protect the local backend: git reads an argv element starting
-  with `-` as an OPTION, verified (`git clone --no-single-branch --upload-pack=/bin/sh
-  dest` reports `repository 'dest' does not exist`). A decoded path starting with `-`
-  is refused; a dash elsewhere in the path is fine.
-- **`sanitize_branch_ref` is shared too**: `ExecutePlanRequest.branch` had no
-  validator while `DispatchRequest.branch` did, so `--upload-pack=/bin/sh` was
-  accepted there and became `plan_branch_name`, `BASE_BRANCH`, then git argv.
-- **`doctor._is_local_mode` uses `is_local_repo_url`, not a SQL `LIKE 'file://%'`**:
-  the LIKE recognized one of five local forms, and `bench/` registers plain paths,
-  so the most local deployment there is reported a false credential problem.
-- **The local repo MUST be bare**: `core/preflight._preflight_local` checks
-  `rev-parse --is-bare-repository` and 422s (`NOT_A_REPO`) before any container
-  spawns; local mode needs no GitHub credential at all.
-- **Local mode bind-mounts the bare repo at `agent_manager.LOCAL_REPO_MOUNT`**
-  (`/srv/praxis-repo.git`), rewriting `REPO_URL` and setting `GIT_BACKEND=local`
-  so both entrypoints skip credential setup and `gh pr create`. Unset
-  `GIT_BACKEND` defaults to `github`. Entrypoint changes need an agent IMAGE REBUILD.
-- **Both entrypoints collapse `GIT_BACKEND` to one `IS_LOCAL_BACKEND` boolean**
-  before any guard (the `REUSING_BRANCH` precedent in the same files), and the
-  guards are tested by EXECUTING the real sliced regions against `gh`/`git`
-  spies. A substring-grep-near-the-guard test cannot see polarity or containment.
-- **`url_encode` must escape `%` before `/`, space, and `&`**: wrong order
-  double-escapes `&` and `PullRequestRef.from_url` decodes the wrong branch
-  name silently, no error anywhere, the reviewable change just vanishes.
-- **`GitHubBackend` refuses ANY ref with `repo=None`**, not just a `github`-tagged
-  one: the backend comes from `project["repo_url"]` and the ref from
-  `task["pr_url"]`, two independent sources, so a `local` ref can reach it and
-  `repo=None` makes `gh` act on the orchestrator's own cwd. `to_url()` guards the
-  same way. Never backfill the repo from the project: for a fork PR that silently
-  targets the wrong one.
-- **An unparseable `pr_url` fails the task, it never returns silently**: a bare
-  `return` leaves the task REVIEWING, the loop re-enters it every tick, REVIEWING
-  counts as active so the plan never completes, and `plan_stalled` needs
-  `not active` so it never fires. One log line per interval, forever.
-- **The worker preset reaches the container as a BARE compose pass-through**
-  (`- DEFAULT_WORKER_HARNESS`), never `${VAR:-default}` and never `- VAR=${VAR}`:
-  `Settings.__init__` drops a YAML key whenever the name is in `os.environ`, and
-  both expansion forms set the variable (to a default, or to empty) when unset,
-  silently suppressing the mounted `config/praxis.yaml`. Bare yields `null` when
-  unset, so the YAML stays authoritative. `tests/test_config_path.py` pins every
-  `init.MANAGED_KEYS` entry.
-- **`praxis init` refuses to run outside the repo root**: it used to write a live
-  `AUTH_TOKEN` into whatever directory you ran it from. The guard runs before any
-  prompt and accepts a renamed fork that still ships the `praxis` console script.
-- **`load_yaml_settings` warns once per missing path**: `EffectiveSettings._get_yaml`
-  has no memoization, so it runs on every lookup. It only fires on a path that does
-  not EXIST; a dropped `./config` mount leaves the baked copy present and stale, and
-  that case belongs to the doctor's `config_mount` probe.
-- **Triage fires once per leaf, on the second worker-attributable failure**: `tasks.triage_decision` is a durable bound and `tasks.parent_task_id` blocks a split child from splitting again; provider errors never reach triage.
-- **Split children APPEND, the parent is never deleted**: `get_dispatchable_tasks` maps `opus_plan["tasks"]` to rows BY LIST INDEX, so `core/leaf_split.py` must only append; the split parent goes to `SUPERSEDED` so dependents and completion checks still pass.
-- **Escalation is a dispatch-time substitution, not a router fallback**: `core/escalation.next_escalation` walks `config/praxis.yaml`'s `implement_escalation` ladder via `tasks.escalation_index`; `config/praxis.yaml` is mounted, not baked, so a ladder edit only needs a restart.
-- **The merge gate judges `ref.base` when knowable, falling back to `plans.plan_branch_name`** (`106f6a7`): `auto_merge_eligible` used the plan branch while `backend.merge` acts on `ref.base`, so auto-delegate single-branch mode auto-merged straight into `main`. Fixed for local refs; GitHub PR URLs encode no base so that half is still open.
-- **Difficulty scoring runs after F3 and shares its round budget**: leaves under `reject_below` (0.35) loop back with their failing features named; two failures reject the plan entirely.
-- **The verify-gate kill switch is double-gated and literal**: `core/bench_mode.verify_gate_disabled()` needs BOTH `PRAXIS_BENCH` and `PRAXIS_BENCH_DISABLE_VERIFY` equal to the literal string "1"; either alone is refused and it disables the per-task, per-wave, and whole-plan gates together.
-- **Agent image staleness is judged by CONTENT, never mtime**: `core/entrypoint_hash.py` hashes the entrypoint and bakes it into the image as the `org.praxis.entrypoint-sha256` LABEL; `image_content_differs` is tri-state, `not image_label` is the "cannot judge" test, an image built without the build arg carries the label present but EMPTY, never absent.
-- **The worker-endpoint doctor check gates `supports_local_llm` on BOTH the model-name comparison and the reachability probe**: gating only the model-name half left `if not reachable` firing first, so the flagged default preset `gemini-agy` could never go green.
-- **`docker compose restart` does NOT re-read `.env`; only `up -d` does**: the `env_drift` doctor check detects the mismatch instead of relying on the operator knowing which of `.env` (host-only) or `config/praxis.yaml` (mounted) needs which command.
-- **An unmet preset requirement in `praxis init` must print the remedy** (`setup_hint`/`setup_doc` in `config/praxis.yaml`), and the collected token/port/credentials are written to a partial `.env` BEFORE `_choose_preset`'s `typer.Exit(1)` can discard them; that write is scoped to that one exit path, not the separate "Update `.env`?" decline.
+- **Verify gates FAIL CLOSED and fetch the branch first**: treat `error` like `failed`, and
+  only `skipped` passes through. An `error` is never memoized, so the next tick retries.
+- **`get_dispatchable_tasks` maps `opus_plan["tasks"]` to rows BY LIST INDEX**: anything
+  touching the graph (e.g. `core/leaf_split.py`) must only APPEND; supersede, never delete.
+- **Hand-built LM Studio payloads must state `reasoning_effort` explicitly**
+  (`core/thinking.py` is the SSoT): an absent key means MAXIMUM effort, not off.
+- **Agent runs non-root** in `/home/agent/workspace`, with git auth via `GH_TOKEN`.
+
+**Contracts that break fixtures**
+
+- **`LEAF_SCHEMA_VERSION` is 2**: a new `LeafTask` field, even with a default, changes
+  `model_dump()` and breaks `tests/fixtures/decompose/expected_leaf_graph.json`; regenerate
+  it in the same commit.
+- **The status vocabulary is frozen in `core/status_vocab.py`**: add a value to the enum AND
+  its exhaustive `test_schemas` assertion together, never one alone.
+- **`core/leaf_templates.py` is the single source of per-`LeafType` section requirements**;
+  the F3 validator enforces them and a missing section raises at test time.
 
 ## Documentation
 
@@ -473,7 +294,7 @@ the relevant subsystem. Condensed index:
 - **Configuration surface (seats, presets, arrangements):** `docs/configurations.md`
 - **Gotchas (full narrative):** `docs/gotchas.md`
 - **Design spec:** `docs/superpowers/specs/2026-06-01-ai-agent-orchestrator-design.md`
-- **Capability-engine roadmap (canonical, 2026-07-11):** `docs/superpowers/specs/2026-07-11-capability-engine-roadmap.md` — features F1-F15, standardization contracts S1-S11, 10-plan breakdown; next up = Plan 3 `outcome-recording`
+- **Capability-engine roadmap (canonical, 2026-07-11):** `docs/superpowers/specs/2026-07-11-capability-engine-roadmap.md`: features F1-F15, standardization contracts S1-S11, 10-plan breakdown; next up = Plan 3 `outcome-recording`
 - **Implementation plans:** `docs/superpowers/plans/` (sequential plans)
 - **Implemented + merged (2026-06-29 epic, live e2e-verified 2026-07-01):** worker context
   continuity (`specs/2026-06-29-worker-context-continuity-design.md`), capability-aware plan

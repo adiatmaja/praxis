@@ -88,6 +88,34 @@ Cost efficiency falls out of this rather than driving it: implementation is wher
 go, and it can run on a free open-weight model while the judgment-heavy seats run on a
 capable hosted one.
 
+## What people use it for
+
+Three shapes of work. They are the same loop with different seats filled, which is the
+point: you do not adopt a different tool to move between them.
+
+**Execute a plan you already have.** You did the thinking in a chat, an editor, or a design
+doc, and what is left is the typing. Hand Praxis the `plan.md` or spec and it capability-gates
+that plan against the worker that will implement it, decomposes anything too coarse for that
+worker, then drives dispatch, PR, verify, and review to the merge gate. The plan's full
+context crosses the handoff, which is the part that breaks when you paste a plan into a
+cheaper model by hand. Entry point: `execute_plan` (REST and MCP).
+
+**Keep the brain reasoning, let a worker touch the code.** Auto-delegate mode inverts the
+usual assistant loop: your reasoning model stops editing files and becomes a planner and
+reviewer full time, designing the prompt for each task, dispatching it to a worker, and
+reviewing the PR that comes back. You get the frontier model's judgment on every task without
+spending frontier tokens on the mechanical edits, and every change still arrives as an
+inspectable PR. Toggle with `praxis mode on`. Detail: [auto-delegate mode](#daily-dev-auto-delegate-mode).
+
+**Put each kind of work on the model that is actually good at it.** Model strength is
+uneven and does not track the price list. Field observation from daily use: Claude is
+excellent at workflow and systems reasoning but has weak visual judgment, including when
+asked to *repair* an existing interface, where Gemini is noticeably stronger. Because the
+harness and model are set per project (and per call-site under **Settings → Models**), you can
+point the implement seat at Gemini via the `agy` harness for the UI work and keep planning
+and review on Claude, without changing anything else about the loop. The same lever applies
+to any split you find: a language, a framework, a codebase a particular model knows well.
+
 ## Key concepts
 
 **Capability-aware task decomposition.** The core feature. Praxis keeps a capability profile
