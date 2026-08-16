@@ -14,6 +14,7 @@ different claims and only the second one is useful.
 from __future__ import annotations
 
 import json
+import os
 import re
 import secrets
 import subprocess  # nosec B404 - docker compose is the interface
@@ -510,8 +511,17 @@ def _wait_for_health(url: str, timeout_s: int = 180) -> bool:
     return False
 
 
-def _compose(args: list[str], what: str) -> None:
+def _compose(args: list[str], what: str, env: dict[str, str] | None = None) -> None:
     """Run one ``docker compose`` invocation, failing with a next step.
+
+    Args:
+        args: Compose subcommand and flags, e.g. ``["up", "-d"]``.
+        what: Human description used in the failure message.
+        env: Process environment for the subprocess, or ``None`` to inherit
+            the parent's (``subprocess.run``'s own default).  The agent image
+            build passes a merged environment carrying the per-harness
+            entrypoint content hash as a compose build arg; every other
+            invocation needs nothing extra.
 
     Raises:
         typer.Exit: With code 1 when docker is missing or the command fails.
@@ -520,7 +530,7 @@ def _compose(args: list[str], what: str) -> None:
     """
     try:
         subprocess.run(  # nosec B603 B607 - fixed argv, operator-invoked
-            ["docker", "compose", *args], check=True
+            ["docker", "compose", *args], check=True, env=env
         )
     except FileNotFoundError as exc:
         console.print(
@@ -534,6 +544,33 @@ def _compose(args: list[str], what: str) -> None:
             "above, then re-run `praxis init`; it is safe to re-run."
         )
         raise typer.Exit(code=1) from exc
+
+
+def _entrypoint_build_env(root: Path) -> dict[str, str]:
+    """Return build-arg env vars carrying each harness entrypoint's hash.
+
+    The compose build args are read from the process environment, so these
+    are merged into the env passed to the build subprocess.  A harness whose
+    entrypoint cannot be read contributes no key: an absent build arg leaves
+    the label empty, which the doctor reports as "cannot judge" rather than
+    as a mismatch.
+
+    Args:
+        root: The repository root.
+
+    Returns:
+        ``{"<HARNESS>_ENTRYPOINT_SHA256": "<hex>"}`` for each readable file.
+    """
+    from orchestrator.core.entrypoint_hash import hash_entrypoint
+    from orchestrator.core.harnesses import REGISTRY
+
+    build_env: dict[str, str] = {}
+    for harness in REGISTRY.values():
+        path = root / "docker" / f"{harness.id}-agent" / "entrypoint.sh"
+        digest = hash_entrypoint(path)
+        if digest is not None:
+            build_env[f"{harness.id.upper()}_ENTRYPOINT_SHA256"] = digest
+    return build_env
 
 
 def _int_or(value: str, fallback: int) -> int:
@@ -873,7 +910,8 @@ def init() -> None:
         console.print(f"[green]Wrote {env_path}[/green]")
 
     console.print("\nBuilding agent images (this takes a few minutes the first time)")
-    _compose(["--profile", "agents", "build"], "the agent image build")
+    build_env = {**os.environ, **_entrypoint_build_env(root)}
+    _compose(["--profile", "agents", "build"], "the agent image build", env=build_env)
 
     console.print("Starting the orchestrator")
     _compose(["up", "-d", "--build"], "starting the orchestrator")

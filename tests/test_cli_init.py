@@ -544,7 +544,7 @@ def _stub_the_world(monkeypatch, healthy: bool = True, doctor_code: int = 0):
     """
     calls: dict[str, list] = {"compose": [], "doctor": []}
 
-    def _fake_compose(args, _what):
+    def _fake_compose(args, _what, env=None):
         calls["compose"].append(args)
 
     def _fake_doctor(url, token):
@@ -1294,3 +1294,93 @@ def test_cli_doctor_exposes_every_name_run_doctor_imports():
 
     missing = [name for name in names if not hasattr(doctor_mod, name)]
     assert missing == [], f"cli.doctor no longer exposes: {missing}"
+
+
+# --------------------------------------------------------------------------
+# Entrypoint content hashes, passed to the agent image build so the
+# `org.praxis.entrypoint-sha256` label is actually populated.
+# --------------------------------------------------------------------------
+
+
+def _write_entrypoints(root: Path) -> None:
+    """Create a minimal ``docker/<harness>-agent/entrypoint.sh`` per harness."""
+    for harness in ("agy", "opencode"):
+        d = root / "docker" / f"{harness}-agent"
+        d.mkdir(parents=True)
+        (d / "entrypoint.sh").write_text(
+            f"#!/bin/bash\necho {harness}\n", encoding="utf-8"
+        )
+
+
+@pytest.mark.unit
+def test_build_env_includes_entrypoint_hashes(tmp_path, monkeypatch):
+    """init must compute a hash per harness before invoking the build."""
+    from orchestrator.core.entrypoint_hash import hash_entrypoint
+
+    root = tmp_path
+    _write_entrypoints(root)
+
+    env = init_mod._entrypoint_build_env(root)
+
+    assert env["AGY_ENTRYPOINT_SHA256"] == hash_entrypoint(
+        root / "docker" / "agy-agent" / "entrypoint.sh"
+    )
+    assert env["OPENCODE_ENTRYPOINT_SHA256"] == hash_entrypoint(
+        root / "docker" / "opencode-agent" / "entrypoint.sh"
+    )
+
+
+@pytest.mark.unit
+def test_build_env_omits_unreadable_entrypoint(tmp_path):
+    """A missing entrypoint yields no key, so the label stays empty."""
+    env = init_mod._entrypoint_build_env(tmp_path)
+    assert "AGY_ENTRYPOINT_SHA256" not in env
+
+
+@pytest.mark.unit
+def test_agent_image_build_receives_entrypoint_hash_env(fake_root, monkeypatch):
+    """The real subprocess.run for the agent image build carries the hashes.
+
+    `_stub_the_world` (used by every other full-flow test here) fakes
+    `_compose` itself, which would hide whether the `env=` merge that lives
+    in `init()` -- not in `_compose` -- actually reaches the subprocess call.
+    This test leaves `_compose` real and fakes `subprocess.run` instead, so
+    it is the one place that actually observes the wiring rather than just
+    the helper that feeds it.
+    """
+    _write_entrypoints(fake_root)
+
+    calls: list[dict] = []
+
+    def _fake_run(cmd, check=True, env=None):
+        calls.append({"cmd": cmd, "env": env})
+
+        class _Result:
+            returncode = 0
+
+        return _Result()
+
+    monkeypatch.setattr(init_mod.subprocess, "run", _fake_run)
+    monkeypatch.setattr(init_mod, "_wait_for_health", lambda _url, _timeout_s=180: True)
+    monkeypatch.setattr(init_mod, "_run_doctor", lambda _url, _token: 0)
+    monkeypatch.setattr(
+        init_mod,
+        "_fetch_presets_or_defaults",
+        lambda: [dict(p) for p in TWO_PRESETS],
+    )
+    _hold_enter(monkeypatch)
+
+    with pytest.raises(typer.Exit):
+        init_mod.init()
+
+    build_calls = [c for c in calls if "agents" in c["cmd"]]
+    assert len(build_calls) == 1, f"expected exactly one agent build call, got {calls}"
+    env = build_calls[0]["env"]
+    assert env is not None, "agent image build must receive an explicit env"
+    assert "AGY_ENTRYPOINT_SHA256" in env
+    assert "OPENCODE_ENTRYPOINT_SHA256" in env
+
+    other_calls = [c for c in calls if "agents" not in c["cmd"]]
+    assert other_calls, "expected the orchestrator `up -d --build` call too"
+    for call in other_calls:
+        assert call["env"] is None, "only the agent build should get a merged env"
