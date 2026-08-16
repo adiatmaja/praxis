@@ -24,7 +24,6 @@ import socket
 import subprocess
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import datetime
 from pathlib import Path
 from typing import Any, TypeVar
 
@@ -44,6 +43,7 @@ from orchestrator.core.doctor import (
     overall_status,
     run_checks,
 )
+from orchestrator.core.entrypoint_hash import LABEL_KEY, hash_entrypoint
 from orchestrator.core.git_backend import is_local_repo_url
 from orchestrator.core.harnesses import REGISTRY, default_harness_id
 from orchestrator.core.settings_file import config_file_path
@@ -149,7 +149,7 @@ class _DockerFacts:
     reachable: bool
     error: str = ""
     image_present: dict[str, bool] = field(default_factory=dict)
-    image_created_at: dict[str, float | None] = field(default_factory=dict)
+    image_labels: dict[str, str | None] = field(default_factory=dict)
     #: Tags the daemon refused to describe, mapped to the failure text.  Not
     #: the same thing as absent: unknown, and reported as such.
     image_errors: dict[str, str] = field(default_factory=dict)
@@ -159,16 +159,6 @@ class _DockerFacts:
 def _in_container() -> bool:
     """Best-effort detection of running inside a Docker container."""
     return Path("/.dockerenv").exists()
-
-
-def _parse_created(created: str | None) -> float | None:
-    """Parse a Docker image's ``Created`` timestamp into a Unix epoch float."""
-    if not created:
-        return None
-    try:
-        return datetime.fromisoformat(created.replace("Z", "+00:00")).timestamp()
-    except ValueError:
-        return None
 
 
 def _resolve_published_port(client: Any) -> int | None:
@@ -199,18 +189,19 @@ def _gather_docker_facts(resolve_port: bool) -> _DockerFacts:
         return _DockerFacts(reachable=False, error=f"{type(exc).__name__}: {exc}")
 
     image_present: dict[str, bool] = {}
-    image_created_at: dict[str, float | None] = {}
+    image_labels: dict[str, str | None] = {}
     image_errors: dict[str, str] = {}
     for harness in REGISTRY.values():
         tag = harness.image
         try:
             image = client.images.get(tag)
             image_present[tag] = True
-            image_created_at[tag] = _parse_created(image.attrs.get("Created"))
+            labels = image.attrs.get("Config", {}).get("Labels") or {}
+            image_labels[tag] = labels.get(LABEL_KEY)
         except docker.errors.ImageNotFound:
             # The only DEFINITE verdict here: the image is not built.
             image_present[tag] = False
-            image_created_at[tag] = None
+            image_labels[tag] = None
         except Exception as exc:  # noqa: BLE001 - every other failure is UNKNOWN
             # A daemon that answered the ping and then failed this query (an
             # APIError from a 500, a mid-request disconnect) tells us nothing
@@ -223,34 +214,30 @@ def _gather_docker_facts(resolve_port: bool) -> _DockerFacts:
     return _DockerFacts(
         reachable=True,
         image_present=image_present,
-        image_created_at=image_created_at,
+        image_labels=image_labels,
         image_errors=image_errors,
         published_port=published_port,
     )
 
 
-def _entrypoint_mtimes() -> dict[str, float]:
-    """Return {image_tag: source mtime} for entrypoints readable from here.
+def _entrypoint_hashes() -> dict[str, str | None]:
+    """Return {image_tag: source entrypoint hash} for every harness.
 
     ``docker/<harness>-agent/entrypoint.sh`` is not COPYed into the
-    orchestrator image, so a container can only see it through the
+    orchestrator image, so a container only sees it through the
     ``./docker:/app/docker:ro`` mount both compose files carry; a bare
     ``uv run uvicorn`` from the repo root sees it because its CWD IS the
-    checkout. Either way ``_ENTRYPOINT_ROOT`` is the one path to look at.
+    checkout.  Either way ``_ENTRYPOINT_ROOT`` is the one path to look at.
 
-    A tag missing from this dict is named as unchecked by
-    ``probe_agent_image_freshness`` rather than silently excluded: without the
-    mount this returned {} in every containerized deployment and the check
-    reported a green it had not earned.
+    A tag whose file cannot be read maps to ``None`` rather than being
+    omitted, so the probe reports it as unjudgeable instead of silently
+    excluding it and claiming a green it has not earned.
     """
-    mtimes: dict[str, float] = {}
+    hashes: dict[str, str | None] = {}
     for harness in REGISTRY.values():
         entrypoint = _ENTRYPOINT_ROOT / f"{harness.id}-agent" / "entrypoint.sh"
-        try:
-            mtimes[harness.image] = entrypoint.stat().st_mtime
-        except OSError as exc:
-            logger.debug("entrypoint mtime unavailable for %s: %s", harness.id, exc)
-    return mtimes
+        hashes[harness.image] = hash_entrypoint(entrypoint)
+    return hashes
 
 
 # --- Minimal `.env` parsing for the env_drift check -------------------------
@@ -456,9 +443,9 @@ async def _build_probes(request: Request) -> dict[str, Any]:
     )
     if docker_error:
         docker_facts = _DockerFacts(reachable=False, error=docker_error)
-    no_mtimes: dict[str, float] = {}
-    entrypoint_mtimes, mtimes_error = await _safe(
-        "entrypoint_mtimes", _entrypoint_mtimes, no_mtimes
+    no_hashes: dict[str, str | None] = {}
+    entrypoint_hashes, hashes_error = await _safe(
+        "entrypoint_hashes", _entrypoint_hashes, no_hashes
     )
 
     if es is not None:
@@ -528,14 +515,14 @@ async def _build_probes(request: Request) -> dict[str, Any]:
         result_map["agent_images"] = probes.probe_agent_images(
             present=docker_facts.image_present, errors=docker_facts.image_errors
         )
-        if mtimes_error:
+        if hashes_error:
             result_map["agent_image_freshness"] = _degraded(
-                "agent_image_freshness", "the entrypoint sources", mtimes_error
+                "agent_image_freshness", "the entrypoint sources", hashes_error
             )
         else:
             result_map["agent_image_freshness"] = probes.probe_agent_image_freshness(
-                images=docker_facts.image_created_at,
-                entrypoint_mtimes=entrypoint_mtimes,
+                image_labels=docker_facts.image_labels,
+                source_hashes=entrypoint_hashes,
                 errors=docker_facts.image_errors,
             )
     else:

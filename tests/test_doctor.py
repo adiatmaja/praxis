@@ -151,35 +151,6 @@ async def test_an_amber_check_does_not_make_the_overall_status_red():
 
 
 @pytest.mark.unit
-async def test_stale_agent_image_is_detected_from_the_entrypoint_mtime():
-    from orchestrator.core.doctor import image_is_stale
-
-    assert image_is_stale(image_built_at=100.0, entrypoint_mtime=200.0) is True
-    assert image_is_stale(image_built_at=300.0, entrypoint_mtime=200.0) is False
-
-
-@pytest.mark.unit
-async def test_an_image_built_at_exactly_the_entrypoint_mtime_is_stale():
-    """A tie cannot prove freshness either, so it counts as stale.
-
-    Same reasoning as the unknown-build-time case below, and the boundary is
-    reachable in practice: a build and an edit inside the same filesystem
-    timestamp tick are indistinguishable.
-    """
-    from orchestrator.core.doctor import image_is_stale
-
-    assert image_is_stale(image_built_at=200.0, entrypoint_mtime=200.0) is True
-
-
-@pytest.mark.unit
-async def test_a_missing_image_build_time_is_treated_as_stale():
-    """Unknown build time means we cannot prove freshness; say so."""
-    from orchestrator.core.doctor import image_is_stale
-
-    assert image_is_stale(image_built_at=None, entrypoint_mtime=200.0) is True
-
-
-@pytest.mark.unit
 async def test_a_missing_probe_is_red_not_skipped():
     """A check with no probe registered must still appear, and be RED.
 

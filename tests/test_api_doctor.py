@@ -4,6 +4,7 @@ import pytest
 
 from orchestrator.core.doctor import CHECK_IDS, CheckStatus
 from orchestrator.core.doctor_probes import probe_worker_endpoint
+from orchestrator.core.entrypoint_hash import LABEL_KEY
 
 
 # --- Fakes for the gathering layer ------------------------------------------
@@ -21,6 +22,20 @@ class _FakeImage:
 
     def __init__(self, created: str = _CREATED) -> None:
         self.attrs = {"Created": created}
+
+
+class _FakeImageWithLabel:
+    """A docker-SDK image object carrying a real entrypoint-hash label.
+
+    `_FakeImage` above carries no `Config` key at all, so its
+    `image_labels` entry comes out `None` whether or not the label-reading
+    code actually runs; a mutation that hardcodes `image_labels[tag] = None`
+    passes every test using `_FakeImage` unnoticed. This fake is the one
+    that would catch it.
+    """
+
+    def __init__(self, label_value: str) -> None:
+        self.attrs = {"Config": {"Labels": {LABEL_KEY: label_value}}}
 
 
 class _FakeImages:
@@ -228,7 +243,7 @@ async def test_a_gathering_helper_raising_a_bare_runtime_error_still_answers(
 ):
     """Not every failure mode is enumerable, so the guard is per unit.
 
-    `_entrypoint_mtimes` only stats files today, but the contract this pins is
+    `_entrypoint_hashes` only reads files today, but the contract this pins is
     that ANY exception out of ANY gathering unit degrades that unit's row and
     nothing else.
     """
@@ -240,7 +255,7 @@ async def test_a_gathering_helper_raising_a_bare_runtime_error_still_answers(
 
     _install_fake_docker(monkeypatch, lambda _tag: _FakeImage())
     _install_fake_worker_endpoint(monkeypatch, ["qwen3.6-27b"])
-    monkeypatch.setattr(doctor_api, "_entrypoint_mtimes", _boom)
+    monkeypatch.setattr(doctor_api, "_entrypoint_hashes", _boom)
 
     response = await client.get("/api/doctor", headers=auth_headers)
 
@@ -336,3 +351,53 @@ def test_worker_endpoint_still_red_for_local_llm_harness() -> None:
         endpoint_required=True,
     )
     assert result.status is CheckStatus.RED
+
+
+# --- _entrypoint_hashes: content hashing replaces mtime comparison ----------
+
+
+def test_entrypoint_hashes_reads_every_registered_harness(tmp_path, monkeypatch):
+    """Every harness in the registry contributes a source hash."""
+    from orchestrator.api import doctor as doctor_api
+    from orchestrator.core.harnesses import REGISTRY
+
+    for harness in REGISTRY.values():
+        d = tmp_path / f"{harness.id}-agent"
+        d.mkdir(parents=True)
+        (d / "entrypoint.sh").write_text("#!/bin/bash\necho x\n", encoding="utf-8")
+
+    monkeypatch.setattr(doctor_api, "_ENTRYPOINT_ROOT", tmp_path)
+    hashes = doctor_api._entrypoint_hashes()
+
+    for harness in REGISTRY.values():
+        assert hashes[harness.image] is not None
+
+
+def test_entrypoint_hashes_missing_file_is_none(tmp_path, monkeypatch):
+    from orchestrator.api import doctor as doctor_api
+    from orchestrator.core.harnesses import REGISTRY
+
+    monkeypatch.setattr(doctor_api, "_ENTRYPOINT_ROOT", tmp_path)
+    hashes = doctor_api._entrypoint_hashes()
+
+    for harness in REGISTRY.values():
+        assert hashes[harness.image] is None
+
+
+def test_gather_docker_facts_reads_the_entrypoint_hash_label(monkeypatch):
+    """The label-reading half of the gathering layer, pinned directly.
+
+    `_FakeImage` (used by every other test in this file) carries no
+    `Config` key, so `image_labels` comes out `None` regardless of whether
+    the code under test actually reads the label — a mutation that
+    hardcodes `image_labels[tag] = None` passes the whole suite unnoticed.
+    This test uses `_FakeImageWithLabel` specifically to close that gap.
+    """
+    from orchestrator.api import doctor as doctor_api
+
+    _install_fake_docker(monkeypatch, lambda _tag: _FakeImageWithLabel("abc123"))
+
+    facts = doctor_api._gather_docker_facts(resolve_port=False)
+
+    assert facts.image_labels["opencode-agent:latest"] == "abc123"
+    assert facts.image_labels["agy-agent:latest"] == "abc123"
