@@ -245,15 +245,32 @@ BIBLE_INSTRUCTIONS='  "instructions": [".praxis-bible.md"],'
 
 echo "--- Writing OpenCode config (OpenAI-compatible local provider) ---"
 mkdir -p "${HOME}/.config/opencode"
+# WORKER_REASONING_EFFORT is resolved by the orchestrator from the harness's
+# declared effort channel (src/orchestrator/core/worker_effort.py). It is ALWAYS
+# set for this harness: an absent reasoning_effort means MAXIMUM effort on
+# qwen3.8, not off, so silence here is a real behaviour change with no error.
+#
+# Key name: OpenCode's own config schema reads a per-model request option as
+# camelCase "options": { "reasoningEffort": ... }, NOT snake_case
+# "reasoning_effort" -- verified against https://opencode.ai/docs/models/ and
+# https://github.com/anomalyco/opencode/issues/23622 (same npm package,
+# @ai-sdk/openai-compatible, and the docs' own "lmstudio" worked example).
+# OpenCode's transform layer converts this camelCase config key into the
+# wire-level snake_case "reasoning_effort" field of the actual LM Studio HTTP
+# request; that snake_case form belongs to the wire payload, not this file.
+effort="${WORKER_REASONING_EFFORT:-none}"
+model_opts='"options": { "reasoningEffort": "'"${effort}"'" }'
+echo "Using reasoning effort: ${effort}"
+
 # MODEL_CONTEXT_LIMIT is detected per-model from LM Studio by the orchestrator
 # (never hardcoded). When present, advertise it as the model's context limit so
 # OpenCode's auto-compaction triggers at the real window instead of overflowing
 # into silent server-side truncation. Omitted -> OpenCode uses its own default.
-model_cfg='{ "name": "'"${MODEL}"'" }'
+model_cfg='{ "name": "'"${MODEL}"'", '"${model_opts}"' }'
 if [ -n "${MODEL_CONTEXT_LIMIT:-}" ]; then
     # OpenCode's schema requires BOTH context and output in a limit block;
     # omitting output fails validation ("Missing key ...limit.output").
-    model_cfg='{ "name": "'"${MODEL}"'", "limit": { "context": '"${MODEL_CONTEXT_LIMIT}"', "output": 8192 } }'
+    model_cfg='{ "name": "'"${MODEL}"'", '"${model_opts}"', "limit": { "context": '"${MODEL_CONTEXT_LIMIT}"', "output": 8192 } }'
     echo "Using detected context limit: ${MODEL_CONTEXT_LIMIT}"
 fi
 cat > "${HOME}/.config/opencode/opencode.json" <<EOF
