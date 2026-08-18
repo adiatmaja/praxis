@@ -10,10 +10,13 @@ from __future__ import annotations
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from httpx import AsyncClient
 
 from orchestrator.core.agent_manager import AgentManager, build_spawn_env
 from orchestrator.core.harnesses import EFFORT_CHANNELS, REGISTRY
+from orchestrator.core.task_queue import TaskQueue
 from orchestrator.database import Database
+from orchestrator.models.schemas import TaskStatus
 
 
 @pytest.mark.unit
@@ -192,3 +195,133 @@ async def test_agent_runs_has_token_telemetry_columns(db: Database) -> None:
     names = {c["name"] for c in cols}
     assert "tokens_used" in names
     assert "tokens_source" in names
+
+
+# ---------------------------------------------------------------------------
+# Task 7: the /internal/agent-done callback accepts and persists token
+# telemetry. OpenCode cannot report tokens at all, so a callback with no
+# tokens_used field must still succeed -- the columns exist precisely to make
+# that "cannot report" state visible, not to make it a failure.
+# ---------------------------------------------------------------------------
+
+
+async def _seed_in_progress_task_with_run(
+    db: Database, queue: TaskQueue
+) -> tuple[str, str]:
+    """Create a user+project+plan+task(in_progress)+run; return (task_id, run_id)."""
+    await db.execute(
+        "INSERT INTO users (id, name, token_hash) VALUES (?, ?, ?)",
+        ("u-tok", "Tok User", "hash"),
+    )
+    await db.execute(
+        """INSERT INTO projects
+           (id, user_id, name, repo_url, default_branch, model_name,
+            harness, max_retries)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+        (
+            "proj-tok",
+            "u-tok",
+            "TokProj",
+            "https://github.com/o/r",
+            "main",
+            "qwen3.6-27b",
+            "agy",
+            3,
+        ),
+    )
+    plan_id = await queue.create_plan("proj-tok", "Tokens")
+    await queue.activate_plan(
+        plan_id,
+        {
+            "plan_summary": "Tokens",
+            "plan_slug": "tokens",
+            "tasks": [
+                {
+                    "title": "Do work",
+                    "slug": "do-work",
+                    "description": "Do the work",
+                    "depends_on": [],
+                }
+            ],
+        },
+        "plan/2026-08-18-tokens",
+    )
+    task_id = (await queue.get_tasks_for_plan(plan_id))[0]["id"]
+    await queue.update_task_status(task_id, TaskStatus.IN_PROGRESS)
+    run_id = await queue.create_agent_run(task_id, "container-tok")
+    return task_id, run_id
+
+
+@pytest.mark.integration
+async def test_agent_done_with_tokens_used_persists_harness_source(
+    client: AsyncClient, db: Database
+) -> None:
+    queue: TaskQueue = client.app.state.task_queue  # type: ignore[attr-defined]
+    task_id, run_id = await _seed_in_progress_task_with_run(db, queue)
+
+    resp = await client.post(
+        "/api/internal/agent-done",
+        headers={"X-Praxis-Callback-Token": "test-auth"},
+        json={
+            "task_id": task_id,
+            "run_id": run_id,
+            "status": "completed",
+            "tokens_used": 4321,
+        },
+    )
+    assert resp.status_code == 200
+
+    run = await queue.get_agent_run(run_id)
+    assert run is not None
+    assert run["tokens_used"] == 4321
+    assert run["tokens_source"] == "harness"
+
+
+@pytest.mark.integration
+async def test_agent_done_without_tokens_used_persists_unavailable_source(
+    client: AsyncClient, db: Database
+) -> None:
+    """OpenCode cannot report tokens; a callback with no field must still succeed."""
+    queue: TaskQueue = client.app.state.task_queue  # type: ignore[attr-defined]
+    task_id, run_id = await _seed_in_progress_task_with_run(db, queue)
+
+    resp = await client.post(
+        "/api/internal/agent-done",
+        headers={"X-Praxis-Callback-Token": "test-auth"},
+        json={"task_id": task_id, "run_id": run_id, "status": "completed"},
+    )
+    assert resp.status_code == 200
+
+    run = await queue.get_agent_run(run_id)
+    assert run is not None
+    assert run["tokens_used"] is None
+    assert run["tokens_source"] == "unavailable"
+
+
+@pytest.mark.integration
+async def test_agent_done_with_zero_tokens_used_is_not_treated_as_missing(
+    client: AsyncClient, db: Database
+) -> None:
+    """A reported 0 is a real count, not a stand-in for "not reported".
+
+    ``if body.tokens_used:`` is falsy for 0 -- exactly the bug this pins.
+    """
+    queue: TaskQueue = client.app.state.task_queue  # type: ignore[attr-defined]
+    task_id, run_id = await _seed_in_progress_task_with_run(db, queue)
+
+    resp = await client.post(
+        "/api/internal/agent-done",
+        headers={"X-Praxis-Callback-Token": "test-auth"},
+        json={
+            "task_id": task_id,
+            "run_id": run_id,
+            "status": "completed",
+            "tokens_used": 0,
+        },
+    )
+    assert resp.status_code == 200
+
+    run = await queue.get_agent_run(run_id)
+    assert run is not None
+    assert run["tokens_used"] == 0
+    assert run["tokens_source"] == "harness"

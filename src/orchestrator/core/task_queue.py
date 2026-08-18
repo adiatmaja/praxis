@@ -570,3 +570,19 @@ class TaskQueue:
                WHERE id = ?""",
             (status, logs, now, run_id),
         )
+
+    async def record_run_tokens(
+        self, run_id: str, tokens_used: int | None, source: str
+    ) -> None:
+        """Persist token telemetry for an agent run.
+
+        Args:
+            run_id: The agent_runs row to update.
+            tokens_used: Total tokens reported by the harness, or None when the
+                harness cannot report them.
+            source: "harness" or "unavailable".
+        """
+        await self._db.execute(
+            "UPDATE agent_runs SET tokens_used = ?, tokens_source = ? WHERE id = ?",
+            (tokens_used, source, run_id),
+        )

@@ -37,6 +37,7 @@ STATUS="completed"
 PR_URL=""
 QUESTION=""
 CAPTURED_SESSION_ID=""
+TOKENS_USED=""
 
 # Single source of truth for "this run reuses the existing remote branch
 # instead of rebuilding it from base": single-branch mode and a resume turn
@@ -103,7 +104,19 @@ send_callback() {
         session_json=$(printf "%s" "${CAPTURED_SESSION_ID}" | json_escape)
     fi
 
-    local payload="{\"task_id\":\"${TASK_ID}\",\"run_id\":${run_json},\"status\":\"${STATUS}\",\"pr_url\":${pr_json},\"question\":${question_json},\"session_id\":${session_json}}"
+    # tokens_used is NUMERIC in the payload, never quoted, and must be the bare
+    # word null (not "") when absent -- the callback schema treats a missing
+    # count as "this harness cannot report", not as zero. Guarded against a
+    # non-numeric capture so a malformed envelope can never emit invalid JSON.
+    local tokens_json="null"
+    if [ -n "${TOKENS_USED:-}" ]; then
+        case "${TOKENS_USED}" in
+            ''|*[!0-9]*) tokens_json="null" ;;
+            *) tokens_json="${TOKENS_USED}" ;;
+        esac
+    fi
+
+    local payload="{\"task_id\":\"${TASK_ID}\",\"run_id\":${run_json},\"status\":\"${STATUS}\",\"pr_url\":${pr_json},\"question\":${question_json},\"session_id\":${session_json},\"tokens_used\":${tokens_json}}"
     local max_attempts="${CALLBACK_MAX_ATTEMPTS:-5}"
     local attempt=1
     while [ "${attempt}" -le "${max_attempts}" ]; do
@@ -356,6 +369,36 @@ else
     cp "${RAW_LOG}" "${OUTPUT_LOG}"
     echo "Envelope unparseable; continuing without conversation id"
 fi
+
+# agy's JSON envelope carries a sibling "usage" object with total_tokens.
+# Observed live against a real agy build on 2026-08-14 (two dispatched tasks,
+# concrete non-zero counts read back from this exact field); the entrypoint's
+# own envelope-shape comment further down was added from that same run. NOTE:
+# docs/gotchas.md still marks the envelope UNVERIFIED as of this commit --
+# that entry predates the 2026-08-14 run and was never updated; it needs a
+# doc fix, tracked separately, not a reason to distrust the observed shape.
+# Read from RAW_LOG, not OUTPUT_LOG: the split above strips the envelope.
+# Guarded twice, like the envelope_info read further below, so a
+# missing/unparseable field can never trip `set -e`; TOKENS_USED just stays
+# empty and the callback reports null.
+tokens_raw="$(python3 -c '
+import json, sys
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    d = None
+if isinstance(d, dict):
+    usage = d.get("usage")
+    if isinstance(usage, dict):
+        total = usage.get("total_tokens")
+        if total is not None:
+            print(total)
+' < "${RAW_LOG}" 2>/dev/null)" || tokens_raw=""
+case "${tokens_raw}" in
+    ''|*[!0-9]*) TOKENS_USED="" ;;
+    *) TOKENS_USED="${tokens_raw}" ;;
+esac
+echo "Token usage: ${TOKENS_USED:-<not reported>}"
 
 report_status=$(grep -oE '^Status:[[:space:]]*[A-Z_]+' "${OUTPUT_LOG}" \
     | tail -n1 | sed -E 's/^Status:[[:space:]]*//' ) || true

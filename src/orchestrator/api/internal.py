@@ -28,6 +28,8 @@ class AgentDonePayload(BaseModel):
     pr_url: str | None = None
     question: str | None = None
     session_id: str | None = None
+    tokens_used: int | None = None
+    tokens_source: str | None = None
 
 
 def _verify_callback_token(request: Request) -> None:
@@ -88,6 +90,15 @@ async def agent_done(request: Request, body: AgentDonePayload) -> dict[str, str]
     if agent_manager is not None:
         logs = agent_manager.get_container_logs(run["container_id"])
     await queue.complete_agent_run(run["id"], body.status, logs)
+
+    # Token telemetry is optional by design: harnesses declare whether they can
+    # report it (core/harnesses.py reports_tokens). Recording the source makes
+    # "not reported" distinguishable from "reported zero". The source is
+    # derived from presence, never trusted from the payload, so a harness
+    # cannot misreport it: "is not None" is required here because 0 is a
+    # legitimate reported count and must not be treated as absent.
+    tokens_source = "harness" if body.tokens_used is not None else "unavailable"
+    await queue.record_run_tokens(run["id"], body.tokens_used, tokens_source)
 
     if body.pr_url is not None:
         await queue.set_task_pr_url(body.task_id, body.pr_url)
