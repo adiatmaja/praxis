@@ -156,7 +156,6 @@ async def dispatch_task(request: Request, body: DispatchRequest) -> dict[str, An
             detail="No user found. Seed a user first.",
         )
 
-    harness = body.harness or default_harness_id()
     project = await db.fetch_one(
         "SELECT * FROM projects WHERE repo_url = ? ORDER BY rowid LIMIT 1",
         (body.repo_url,),
@@ -176,14 +175,18 @@ async def dispatch_task(request: Request, body: DispatchRequest) -> dict[str, An
                 "main",
                 False,
                 body.model,
-                harness,
+                body.harness or default_harness_id(),
             ),
         )
     else:
+        # A None harness means "no preference": preserve whatever the project
+        # was already configured with instead of silently re-pointing it at
+        # the registry default (see execute_plan._create_or_reuse_project).
         project_id = project["id"]
+        effective_harness = body.harness or project["harness"] or default_harness_id()
         await db.execute(
             "UPDATE projects SET model_name = ?, harness = ? WHERE id = ?",
-            (body.model, harness, project_id),
+            (body.model, effective_harness, project_id),
         )
 
     plan_id = await queue.create_plan(project_id, source="mcp")

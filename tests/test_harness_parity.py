@@ -12,11 +12,13 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from httpx import AsyncClient
 
+from orchestrator.api.execute_plan import _create_or_reuse_project
 from orchestrator.core.agent_manager import AgentManager, build_spawn_env
 from orchestrator.core.harnesses import EFFORT_CHANNELS, REGISTRY
 from orchestrator.core.task_queue import TaskQueue
 from orchestrator.database import Database
 from orchestrator.models.schemas import TaskStatus
+from tests.conftest import seed_user
 
 
 @pytest.mark.unit
@@ -325,3 +327,72 @@ async def test_agent_done_with_zero_tokens_used_is_not_treated_as_missing(
     assert run is not None
     assert run["tokens_used"] == 0
     assert run["tokens_source"] == "harness"
+
+
+# ---------------------------------------------------------------------------
+# Task 8: an omitted harness must not overwrite a project's configured one.
+# ---------------------------------------------------------------------------
+
+
+async def _seed_project_with_harness(db: Database, harness: str) -> str:
+    """Seed a user and a project configured with the given harness; return its id."""
+    await seed_user(db)
+    project_id = "proj-harness-8"
+    await db.execute(
+        """INSERT INTO projects
+           (id, user_id, name, repo_url, default_branch, model_name, harness)
+           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+        (
+            project_id,
+            "test-user",
+            "HarnessProj",
+            "https://github.com/o/harness-repo",
+            "main",
+            "qwen3.6-27b",
+            harness,
+        ),
+    )
+    return project_id
+
+
+@pytest.mark.integration
+async def test_omitted_harness_preserves_the_projects_configured_harness(
+    db: Database,
+) -> None:
+    """An omitted harness must preserve what an existing project was configured with.
+
+    This pins the actual defect: eagerly defaulting an unset harness to
+    "opencode" before reuse used to silently re-point an agy project at
+    opencode on every plan submitted without the field.
+    """
+    project_id = await _seed_project_with_harness(db, "agy")
+
+    returned_id = await _create_or_reuse_project(
+        db, "https://github.com/o/harness-repo", None, "qwen3.6-27b", harness=None
+    )
+    assert returned_id == project_id
+
+    row = await db.fetch_one("SELECT harness FROM projects WHERE id = ?", (project_id,))
+    assert row is not None
+    assert row["harness"] == "agy"
+
+
+@pytest.mark.integration
+async def test_explicit_harness_still_overrides_the_projects_configured_harness(
+    db: Database,
+) -> None:
+    """A caller-supplied harness is a real preference and must still win."""
+    project_id = await _seed_project_with_harness(db, "agy")
+
+    returned_id = await _create_or_reuse_project(
+        db,
+        "https://github.com/o/harness-repo",
+        None,
+        "qwen3.6-27b",
+        harness="opencode",
+    )
+    assert returned_id == project_id
+
+    row = await db.fetch_one("SELECT harness FROM projects WHERE id = ?", (project_id,))
+    assert row is not None
+    assert row["harness"] == "opencode"

@@ -47,9 +47,16 @@ __all__ = ["_normalize_slugs"]
 
 
 async def _create_or_reuse_project(
-    db: Any, repo_url: str, name: str | None, model: str, harness: str
+    db: Any, repo_url: str, name: str | None, model: str, harness: str | None
 ) -> str:
-    """Return an existing project id for the repo, or create one. Mirrors dispatch."""
+    """Return an existing project id for the repo, or create one. Mirrors dispatch.
+
+    A None ``harness`` means "the caller expressed no preference". For an
+    existing project that preserves whatever it was configured with; only a new
+    project falls back to the registry default. Defaulting eagerly used to
+    re-point an agy project at opencode on every plan submitted without the
+    field, which made "which harness ran this" unanswerable.
+    """
     user = await db.fetch_one("SELECT id FROM users LIMIT 1")
     if user is None:
         raise HTTPException(
@@ -62,9 +69,10 @@ async def _create_or_reuse_project(
     )
     if project is not None:
         project_id = project["id"]
+        effective_harness = harness or project["harness"] or default_harness_id()
         await db.execute(
             "UPDATE projects SET model_name = ?, harness = ? WHERE id = ?",
-            (model, harness, project_id),
+            (model, effective_harness, project_id),
         )
         return str(project_id)
 
@@ -82,7 +90,7 @@ async def _create_or_reuse_project(
             "main",
             False,
             model,
-            harness,
+            harness or default_harness_id(),
         ),
     )
     return project_id
@@ -171,9 +179,8 @@ async def execute_plan(request: Request, body: ExecutePlanRequest) -> dict[str, 
                 detail=status_and_detail(exc)[1],
             ) from exc
 
-    harness = body.harness or default_harness_id()
     project_id = await _create_or_reuse_project(
-        db, body.repo_url, None, body.model, harness
+        db, body.repo_url, None, body.model, body.harness
     )
     branch_name = body.branch or f"plan/execute-{branch_slug(body.plan)}"
     pending_input = json.dumps(
