@@ -10,6 +10,17 @@ from dataclasses import asdict, dataclass, field
 from typing import Any
 
 
+#: How a harness receives a thinking-effort signal.
+#:
+#: ``request_option`` - praxis controls it directly in the request/provider
+#:   config, so it MUST be stated explicitly (see :mod:`orchestrator.core.thinking`:
+#:   an absent key means MAXIMUM effort on qwen3.8, not off).
+#: ``model_name``     - the effort is encoded in the model string itself
+#:   (e.g. "Gemini 3.5 Flash (High)"); there is no separate knob to set.
+#: ``none``           - the harness exposes no effort control at all.
+EFFORT_CHANNELS: frozenset[str] = frozenset({"request_option", "model_name", "none"})
+
+
 @dataclass(frozen=True)
 class HarnessSpec:
     """A selectable implementation harness."""
@@ -26,6 +37,8 @@ class HarnessSpec:
     recommended: bool = False
     supports_local_llm: bool = True
     does_own_git: bool = True
+    effort_channel: str = "none"
+    reports_tokens: bool = False
     notes: tuple[str, ...] = field(default_factory=tuple)
 
 
@@ -66,6 +79,8 @@ REGISTRY: dict[str, HarnessSpec] = {
         maturity="active",
         recommended=True,
         does_own_git=False,
+        effort_channel="request_option",
+        reports_tokens=False,
         notes=(
             "Praxis's entrypoint runs `git add -A && git commit` after the "
             "agent because OpenCode edits files but does not commit.",
@@ -108,6 +123,8 @@ REGISTRY: dict[str, HarnessSpec] = {
         recommended=False,
         does_own_git=False,
         supports_local_llm=False,
+        effort_channel="model_name",
+        reports_tokens=True,
         notes=(
             "One-time setup: chown the praxis-gemini-creds volume to the agent "
             "user, then run an interactive `agy login` into it. The orchestrator "
