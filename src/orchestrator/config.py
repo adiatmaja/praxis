@@ -7,6 +7,7 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from orchestrator.core.settings_file import config_file_path, load_yaml_settings
@@ -78,6 +79,14 @@ class Settings(BaseSettings):
     # volume this needs no interactive seeding; Docker creates it on first use.
     # Empty disables persistence: workers then always start cold, never error.
     opencode_sessions_volume: str = "praxis-opencode-sessions"
+    worker_reasoning_effort: str = Field(
+        default="none",
+        description=(
+            "Thinking effort sent to harnesses praxis drives through a request "
+            "option (currently OpenCode). Harnesses that encode effort in the "
+            "model string (agy) ignore this. One of: none, low, medium, high."
+        ),
+    )
     # Admit a LOCAL filesystem path as a project's repo_url (the local git
     # backend: a bind-mounted bare repo, no GitHub credential, no PR object).
     # OFF by default because it lets an authenticated caller point the

@@ -84,6 +84,12 @@ models:
 default_worker_harness: agy
 default_worker_model: "Gemini 3.7 Flash (High)"
 
+# Thinking effort for implementation workers driven through a request option
+# (OpenCode). An ABSENT reasoning_effort means MAXIMUM effort on qwen3.8, so
+# praxis always states this explicitly. Harnesses that bake effort into the
+# model string (agy) ignore it.
+worker_reasoning_effort: none
+
 # Named worker configurations. Choosing one sets harness, model, and endpoint
 # together; there is no new resolution logic, only fewer fields to get right.
 #
