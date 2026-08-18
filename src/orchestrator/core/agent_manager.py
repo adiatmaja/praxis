@@ -20,6 +20,7 @@ from orchestrator.core.github_credentials import (
     PatCredentialProvider,
 )
 from orchestrator.core.harnesses import REGISTRY, default_harness_id
+from orchestrator.core.worker_effort import resolve_worker_effort
 
 
 # Minimum free disk space (in bytes) required before spawning an agent container.
@@ -184,8 +185,21 @@ def build_spawn_env(
     single_branch: bool = False,
     context_limit: int | None = None,
     worker_session_id: str | None = None,
+    reasoning_effort: str | None = None,
 ) -> dict[str, str]:
-    """Build environment variables dictionary for spawned agent containers."""
+    """Build environment variables dictionary for spawned agent containers.
+
+    Args:
+        reasoning_effort: The operator's configured worker thinking-effort
+            level (``Settings.worker_reasoning_effort``), or None for no
+            preference. Resolved through ``core.worker_effort.resolve_worker_effort``
+            against the harness's declared effort channel: harnesses driven
+            through a request option (opencode) always get an explicit
+            ``WORKER_REASONING_EFFORT`` (never omitted, since an absent value
+            means MAXIMUM effort downstream, not off); harnesses that bake
+            effort into the model string (agy) get no env var at all, since a
+            var they silently ignore would be a lie.
+    """
     local_mode = is_local_repo_url(repo_url)
     environment: dict[str, str] = {
         "REPO_URL": LOCAL_REPO_MOUNT if local_mode else repo_url,
@@ -227,6 +241,13 @@ def build_spawn_env(
         # the existing remote branch": memory and tree must move together.
         environment["WORKER_SESSION_ID"] = worker_session_id
 
+    # Effort is resolved from the harness's DECLARED channel, so a harness that
+    # bakes effort into its model string gets no env var rather than a variable
+    # it would silently ignore. See core/worker_effort.py.
+    effective_effort = resolve_worker_effort(harness_id, reasoning_effort)
+    if effective_effort is not None:
+        environment["WORKER_REASONING_EFFORT"] = effective_effort
+
     return environment
 
 
@@ -245,6 +266,7 @@ class AgentManager:
         min_free_disk_bytes: int = _MIN_FREE_DISK_BYTES,
         gemini_creds_volume: str = "",
         opencode_sessions_volume: str = "",
+        worker_reasoning_effort: str = "none",
     ) -> None:
         self._lm_studio_url = lm_studio_url
         self._effective_settings = effective_settings
@@ -252,6 +274,12 @@ class AgentManager:
         self._git_author_email = git_author_email
         self._gemini_creds_volume = gemini_creds_volume
         self._opencode_sessions_volume = opencode_sessions_volume
+        # Sourced from Settings.worker_reasoning_effort at construction, the
+        # same "restart-only, no live DB override" pattern as
+        # gemini_creds_volume/opencode_sessions_volume above: baked in once
+        # at startup, not re-read per spawn. See main.py's AgentManager(...)
+        # call for where this is threaded from config.
+        self._worker_reasoning_effort = worker_reasoning_effort
         self._max_agent_concurrency = max_agent_concurrency
         self._min_free_disk_bytes = min_free_disk_bytes
         if credentials is not None:
@@ -359,6 +387,7 @@ class AgentManager:
             single_branch=single_branch,
             context_limit=context_limit,
             worker_session_id=worker_session_id,
+            reasoning_effort=self._worker_reasoning_effort,
         )
 
         # Mount the agy OAuth credentials VOLUME. The credentials are Linux-native
