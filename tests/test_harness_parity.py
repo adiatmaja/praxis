@@ -13,6 +13,7 @@ import pytest
 
 from orchestrator.core.agent_manager import AgentManager, build_spawn_env
 from orchestrator.core.harnesses import EFFORT_CHANNELS, REGISTRY
+from orchestrator.database import Database
 
 
 @pytest.mark.unit
@@ -174,3 +175,20 @@ async def test_spawn_agent_agy_omits_effort_even_when_configured(
 
     env = mock_client.containers.run.call_args.kwargs["environment"]
     assert "WORKER_REASONING_EFFORT" not in env
+
+
+# ---------------------------------------------------------------------------
+# Task 6: token telemetry columns. agy can report token usage, OpenCode
+# cannot, so agent_runs needs both a value column and a column that
+# distinguishes "the harness reported zero" from "this harness cannot
+# report" -- an unexplained NULL is the same invisible gap the columns
+# exist to close.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.integration
+async def test_agent_runs_has_token_telemetry_columns(db: Database) -> None:
+    cols = await db.fetch_all("SELECT name FROM pragma_table_info('agent_runs')")
+    names = {c["name"] for c in cols}
+    assert "tokens_used" in names
+    assert "tokens_source" in names

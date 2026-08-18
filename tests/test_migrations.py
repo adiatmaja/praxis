@@ -116,5 +116,5 @@ async def test_escalation_index_defaults_to_zero(tmp_path):
 
 
 @pytest.mark.unit
-def test_current_schema_version_is_seven():
-    assert CURRENT_SCHEMA_VERSION == 7
+def test_current_schema_version_is_eight():
+    assert CURRENT_SCHEMA_VERSION == 8

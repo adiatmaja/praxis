@@ -263,6 +263,23 @@ async def _migration_0007_leaf_triage(connection: aiosqlite.Connection) -> None:
     )
 
 
+async def _migration_0008_run_tokens(connection: aiosqlite.Connection) -> None:
+    """Add token telemetry to agent_runs so harnesses are comparable.
+
+    ``tokens_source`` distinguishes "the harness reported 0" from "this harness
+    cannot report", which is the whole point: an unexplained NULL is the same
+    invisible gap the column exists to close.
+    """
+    cursor = await connection.execute("PRAGMA table_info(agent_runs)")
+    cols = {row[1] for row in await cursor.fetchall()}
+    if "tokens_used" not in cols:
+        await connection.execute(
+            "ALTER TABLE agent_runs ADD COLUMN tokens_used INTEGER"
+        )
+    if "tokens_source" not in cols:
+        await connection.execute("ALTER TABLE agent_runs ADD COLUMN tokens_source TEXT")
+
+
 MIGRATIONS: list[Migration] = [
     Migration(1, "baseline: schema as of 2026-07-02", _migration_0001_baseline),
     Migration(
@@ -294,6 +311,11 @@ MIGRATIONS: list[Migration] = [
         7,
         "add tasks triage/split/escalation columns for decomposition standard v2",
         _migration_0007_leaf_triage,
+    ),
+    Migration(
+        8,
+        "add agent_runs token telemetry (tokens_used, tokens_source)",
+        _migration_0008_run_tokens,
     ),
 ]
 
