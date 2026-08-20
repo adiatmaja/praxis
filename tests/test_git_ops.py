@@ -734,3 +734,81 @@ async def test_merge_pr_exhausts_retries_and_raises(
 
     assert merge_call_count == 3
     assert len(sleep_calls) == 2  # sleep between attempts, not after last
+
+
+@pytest.mark.unit
+async def test_merge_pr_succeeds_when_the_pr_is_already_merged(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A 504 AFTER a successful merge must not be reported as a failure.
+
+    Observed twice in three merges during newcomer walkthrough #4: gh timed out
+    while GitHub had already merged, leaving the task stuck at the gate.
+    """
+
+    async def fake_sleep(seconds: float) -> None:
+        return None
+
+    monkeypatch.setattr(git_ops_mod, "_merge_sleep", fake_sleep)
+    git = GitOps("ghp_test")
+
+    async def fake_token_for_workspace(workspace: str) -> str:
+        return "ghp_test"
+
+    monkeypatch.setattr(git, "_token_for_workspace", fake_token_for_workspace)
+
+    timeout_stderr = (
+        "non-200 OK status code: 504 Gateway Timeout body: "
+        '"{\\"message\\": \\"We couldn\'t respond to your request in time. '
+        'Sorry about that. Please try resubmitting your request.\\"}"'
+    )
+
+    async def fake_run_command(
+        cmd: list[str],
+        cwd: str | None = None,
+        token: str | None = None,
+    ) -> tuple[int, str, str]:
+        if "merge" in cmd:
+            return (1, "", timeout_stderr)
+        if "view" in cmd:
+            return (0, '{"state":"MERGED"}', "")
+        return (0, "", "")
+
+    monkeypatch.setattr(git, "_run_command", fake_run_command)
+
+    # Must NOT raise: GitHub says the PR is merged.
+    await git.merge_pr("/tmp/workspace", 39)
+
+
+@pytest.mark.unit
+async def test_merge_pr_still_raises_when_the_pr_is_not_merged(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The idempotency check must not swallow a genuine failure."""
+
+    async def fake_sleep(seconds: float) -> None:
+        return None
+
+    monkeypatch.setattr(git_ops_mod, "_merge_sleep", fake_sleep)
+    git = GitOps("ghp_test")
+
+    async def fake_token_for_workspace(workspace: str) -> str:
+        return "ghp_test"
+
+    monkeypatch.setattr(git, "_token_for_workspace", fake_token_for_workspace)
+
+    async def fake_run_command(
+        cmd: list[str],
+        cwd: str | None = None,
+        token: str | None = None,
+    ) -> tuple[int, str, str]:
+        if "merge" in cmd:
+            return (1, "", "Not found: repository or object does not exist")
+        if "view" in cmd:
+            return (0, '{"state":"OPEN"}', "")
+        return (0, "", "")
+
+    monkeypatch.setattr(git, "_run_command", fake_run_command)
+
+    with pytest.raises(RuntimeError, match="Git command failed"):
+        await git.merge_pr("/tmp/workspace", 7)

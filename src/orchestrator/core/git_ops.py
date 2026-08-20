@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import re
@@ -27,6 +28,12 @@ _TRANSIENT_MERGE_PATTERNS: tuple[str, ...] = (
     "please try again",
     "merge already in progress",
     "unexpected error",
+    # GitHub's own 504 wording. It says "resubmitting", not "try again", so it
+    # matched nothing and raised on the first attempt. Seen on two of three
+    # merges during newcomer walkthrough #4.
+    "504",
+    "gateway timeout",
+    "resubmitting your request",
 )
 
 # Retry tuning — monkeypatched in tests.
@@ -283,6 +290,51 @@ class GitOps:
         logger.info("Created PR: %s", stdout)
         return stdout.strip()
 
+    async def _pr_is_merged(
+        self, workspace: str, pr_number: int, repo: str | None, token: str | None
+    ) -> bool:
+        """Ask GitHub whether a PR is already merged.
+
+        ``gh pr merge`` can time out AFTER GitHub has performed the merge, so a
+        non-zero exit is not evidence the merge did not happen. Any failure to
+        answer returns False, which keeps the caller failing closed.
+
+        Args:
+            workspace: Working directory to run ``gh`` from.
+            pr_number: Pull request number to inspect.
+            repo: ``owner/name`` slug, or None to infer from ``workspace``.
+            token: GitHub token passed to the subprocess environment.
+
+        Returns:
+            True only when GitHub answers that the PR state is MERGED.
+        """
+        cmd = [
+            "gh",
+            "pr",
+            "view",
+            str(pr_number),
+            "--json",
+            "state",
+            *(["--repo", repo] if repo else []),
+        ]
+        try:
+            code, stdout, _ = await self._run_command(cmd, cwd=workspace, token=token)
+        except OSError as spawn_error:
+            # gh missing from PATH, workspace already cleaned up, spawn refused.
+            # Not being able to ask is not evidence of a merge.
+            logger.warning(
+                "Could not ask GitHub whether PR #%d is merged: %s",
+                pr_number,
+                spawn_error,
+            )
+            return False
+        if code != 0:
+            return False
+        try:
+            return str(json.loads(stdout).get("state", "")).upper() == "MERGED"
+        except (ValueError, AttributeError):
+            return False
+
     async def merge_pr(
         self, workspace: str, pr_number: int, repo: str | None = None
     ) -> None:
@@ -310,6 +362,16 @@ class GitOps:
                 return
             message = f"Git command failed (exit {code}): {' '.join(cmd)}\n{stderr}"
             exc = RuntimeError(message)
+            # gh can fail AFTER GitHub merged (a 504 on the response, not the
+            # merge). GitHub's own answer outranks gh's exit code.
+            if await self._pr_is_merged(workspace, pr_number, repo, token):
+                logger.info(
+                    "PR #%d reported a merge error but GitHub says it is merged; "
+                    "treating as success: %s",
+                    pr_number,
+                    stderr.strip(),
+                )
+                return
             stderr_lower = stderr.lower()
             if not any(pat in stderr_lower for pat in _TRANSIENT_MERGE_PATTERNS):
                 raise exc
@@ -329,6 +391,12 @@ class GitOps:
                 )
                 await _merge_sleep(backoff)
         if last_exc is not None:
+            if await self._pr_is_merged(workspace, pr_number, repo, token):
+                logger.info(
+                    "PR #%d exhausted merge retries but GitHub says it is merged",
+                    pr_number,
+                )
+                return
             raise last_exc
         err_msg = f"Git command failed: {' '.join(cmd)}\nExhausted {_MERGE_MAX_ATTEMPTS} attempts"
         raise RuntimeError(err_msg)
