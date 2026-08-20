@@ -906,3 +906,86 @@ belongs among the everyday traps.
   appears in the prompt string handed to the LLM router. It was proven by mutation, three
   times: drop `spec_path` on the insert, pass the path instead of the text, and drop the
   body from the rendered doc; each goes red with a distinct message.
+
+## The merge gate, the operator's `.env`, and a doctor that spends money
+
+- **The merge gate had no CLI verb at all, and that is why the loop could not be
+  closed without `curl`**: `POST /api/tasks/{id}/approve-merge` and
+  `POST /api/plans/{id}/approve-merges` existed, were documented, and were used
+  by the MCP server, but nothing in the CLI invoked either. The command a
+  newcomer reaches for, `praxis approve`, targets autonomous improvement PLANS
+  and returns `404 Plan not found` against a task id. `praxis merge <task-id>`
+  and `praxis merge-plan <plan-id>` now exist. `merge-plan` exits 1 when any
+  task failed, because the endpoint skips non-eligible tasks BEFORE its try
+  block, so every entry it returns in `errors` is a review-passed task that
+  genuinely did not merge.
+
+- **A table that prints an id an API will reject is worse than printing
+  nothing**: `pending` printed no id at all, and `plans` printed `id[:8]` while
+  the lookup is an exact match, so following the help text returned 404. Note
+  `overflow="fold"` alone does not fix this: on a narrow column rich still wraps
+  the uuid across physical lines separated by border characters, which scrambles
+  the value on copy. Worse, a bordered table cannot hold a 36-char id AND a PR
+  url at 80 columns no matter which columns you drop, so `pending` now prints a
+  plain `praxis merge <id>` line per task underneath the table. Rich's default
+  word-wrap only breaks on whitespace, so a token with none survives contiguous
+  at any width. `praxis tasks` and `praxis projects` still truncate to 8 chars.
+
+- **An unrecognised key in `.env` used to abort orchestrator startup**:
+  `docker-compose.yml` mounts `./.env` at `/app/.env` so `praxis doctor`'s
+  `env_drift` check can compare them, which means pydantic-settings parses the
+  operator's whole dotenv file. `BaseSettings` defaults to `extra="forbid"`, so
+  one container-only variable produced `extra_forbidden` and a restart loop, with
+  a traceback naming the key but never naming `.env` as the source. `Settings`
+  now sets `extra="ignore"`. **The cost, stated accurately: a typo in a real key
+  is now silent and NOTHING catches it.** `env_drift` structurally cannot:
+  compose passes an explicit key allowlist with no `env_file:` directive, so a
+  typo'd key never enters the container env; `_env_drift_facts` then filters the
+  on-disk map to `if k in os.environ`, discarding it; and `probe_env_drift` only
+  compares keys present on both sides. Verified by executing the probe: a `.env`
+  carrying `AUTH_TOKN` returns GREEN. `AUTH_TOKEN` itself is the exception,
+  being a required field with no default.
+
+- **`gh pr merge` can fail AFTER GitHub has performed the merge**: a
+  `504 Gateway Timeout` on the response is not evidence the merge did not
+  happen. Observed on two of three merges in one session. The old code raised,
+  the task stayed at `passed`, it kept appearing in `praxis pending`, and every
+  dependent task stalled, because dependents wait for a MERGE and not a review
+  pass. `merge_pr` now asks `gh pr view --json state` before declaring failure,
+  and GitHub's answer outranks gh's exit code. Note the 504 body says
+  "resubmitting your request", which is why it matched none of the old
+  `_TRANSIENT_MERGE_PATTERNS` entries and never even retried; gh has a second
+  rendering (`HTTP 504 (https://api.github.com/...)`) containing neither that
+  phrase nor "gateway timeout", so both anchored forms are needed and both are
+  pinned by parametrized tests.
+
+- **A merged task's `agent/*` branch is swept by nothing**: `branch_sweeper`
+  nominates a branch only from `terminal_failed` or `merged_plan`, and
+  `merged_plan` reads `plans.plan_branch_name`, never `tasks.branch_name`. A
+  merged task is also excluded from `live_branches` and `open_pr_branches`.
+  Normally `--delete-branch` on the merge cleans it up, which is why this has not
+  bitten; it bites exactly when gh 504s after the merge, because the branch
+  delete never lands. Still open: the structural fix is to add
+  `SELECT branch_name FROM tasks WHERE status = 'merged'` to the sweeper's
+  dead set. GitHub's repo-level "automatically delete head branches" setting
+  collects these server-side meanwhile.
+
+- **An installed, authenticated planner CLI can still refuse every prompt**:
+  `_PROVIDER_CMDS["claude"]` has no auth command, so `authenticated` only ever
+  meant "the binary exists". A hook mounted in with `~/.claude` refused every
+  prompt while `praxis doctor` printed `OK planner CLI installed and
+  authenticated`, and the operator found out minutes later as
+  `ValueError: Could not extract JSON from response` mid-plan. The check now runs
+  one real round-trip and asserts on the OUTPUT, not the exit code, because a
+  blocking hook can still exit 0. Two consequences to know: the sentinel is
+  stripped from the reply before matching, because the prompt contains the word
+  `PONG` and an echo of the input would otherwise read as success; and a
+  rate-limited subscription reports AMBER with its own hint rather than RED,
+  because Praxis treats the 5h limit as normal and self-healing and
+  `praxis init` exits with the doctor's status code.
+
+- **`praxis doctor` is no longer free**: the `planner_cli` check spends one real
+  planner call per run, cached 60s. It is read-only against your repo and
+  database, but it is not free. The timeout is 20s deliberately: a healthy cold
+  `claude -p` was measured at 15.68s on a Windows host, so a 15s timeout would
+  false-RED a working planner and accuse the operator of a blocked hook.

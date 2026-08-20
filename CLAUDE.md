@@ -260,8 +260,16 @@ a line here only if it belongs in this shortlist.
 - **Worker preset env vars reach the container as BARE compose pass-throughs**
   (`- DEFAULT_WORKER_HARNESS`), never `${VAR:-default}`: any expansion form sets the variable
   even when unset, which silently suppresses the mounted YAML.
-- **`praxis doctor` is the front door to every problem**: twelve read-only checks; pure
-  decision logic in `core/doctor_probes.py`, live fact gathering in `api/doctor.py`.
+- **`praxis doctor` is the front door to every problem**: twelve checks, read-only against
+  your repo and database but spending one planner call per run; pure decision logic in
+  `core/doctor_probes.py`, live fact gathering in `api/doctor.py`.
+- **An unrecognised key in `.env` is IGNORED, not rejected**: `./.env` is mounted
+  into the container and parsed whole, so `extra="forbid"` used to abort startup.
+  The cost is that a typo in a real key is now silent and NOTHING catches it;
+  `env_drift` only compares keys the container actually received, so a key living
+  only in `.env` is invisible to it. `AUTH_TOKEN` is the exception, being required.
+- **`praxis doctor` spends one planner call per run** (cached 60s). It is
+  read-only against your repo and DB, not free. A rate limit is AMBER, not RED.
 
 **The loop**
 
@@ -271,6 +279,15 @@ a line here only if it belongs in this shortlist.
 - **`gh pr` calls need `--repo <owner/name>`** or they target the orchestrator's own cwd.
 - **Verify gates FAIL CLOSED and fetch the branch first**: treat `error` like `failed`, and
   only `skipped` passes through. An `error` is never memoized, so the next tick retries.
+- **`praxis merge <task-id>` / `praxis merge-plan <plan-id>` open the merge gate**;
+  `praxis approve` is for improvement PLANS and 404s on a task id. `merge-plan`
+  exits 1 if any task failed.
+- **GitHub's PR state outranks `gh`'s exit code**: `gh pr merge` can 504 AFTER the
+  merge succeeded, so `merge_pr` re-reads `gh pr view --json state` before failing.
+- **A table printing an id must fold it AND be wide enough**: `overflow="fold"` on
+  a narrow column still splits a uuid across border characters. `pending` prints a
+  plain copyable `praxis merge <id>` line instead. `tasks` and `projects` still
+  truncate to 8 chars and still 404 if you use them.
 - **`get_dispatchable_tasks` maps `opus_plan["tasks"]` to rows BY LIST INDEX**: anything
   touching the graph (e.g. `core/leaf_split.py`) must only APPEND; supersede, never delete.
 - **Hand-built LM Studio payloads must state `reasoning_effort` explicitly**

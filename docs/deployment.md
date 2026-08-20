@@ -379,7 +379,8 @@ Key properties:
   against the cloned checkout (`core/verify_gate.py`), so it applies equally to OpenCode
   and agy agents without any entrypoint changes.
 - **Trusted operator config, never from a PR.** `verify_cmd` is stored in the projects
-  table and set only by the operator via the API or dashboard. It is never read from PR
+  table and set only by the operator via the REST API or `praxis configure --verify-cmd`
+  (the dashboard has no verify_cmd control). It is never read from PR
   content or branch files. Prefer running the orchestrator inside a container to further
   limit the blast radius of a misconfigured command.
 
@@ -530,9 +531,9 @@ Approve or reject a parked merge via:
 
 | Endpoint | Effect |
 |----------|--------|
-| `POST /api/tasks/{id}/approve-merge` | Squash-merge one review-passed task's PR. |
+| `POST /api/tasks/{id}/approve-merge` | Squash-merge one review-passed task's PR. CLI: `praxis merge <task-id>`. |
 | `POST /api/tasks/{id}/reject-merge` | Comment on the PR, fail the task, and re-dispatch if retry attempts remain (optional `{"feedback": "..."}` body). |
-| `POST /api/plans/{id}/approve-merges` | Batch-approve every `PASSED` task in a plan; returns `{approved, errors}`. |
+| `POST /api/plans/{id}/approve-merges` | Batch-approve every `PASSED` task in a plan; returns `{approved, errors}`. CLI: `praxis merge-plan <plan-id>`. |
 
 MCP `poll_task` surfaces a parked task as `status: awaiting_merge` (with `pr_url`,
 `review`, `branch`, `verdict`) so a main brain can relay the PR for approval.

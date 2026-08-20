@@ -213,7 +213,8 @@ that the CLI reaches your installation. Then verify everything is working:
 uv run praxis doctor
 ```
 
-`uv run praxis doctor` is a read-only diagnostic that connects to the orchestrator API and checks
+`uv run praxis doctor` is a read-only diagnostic against your repo and database (it spends one
+planner call per run) that connects to the orchestrator API and checks
 about a dozen things (connectivity, Docker, credentials, configuration). It exits 0 when
 healthy and non-zero on any red; reds are expected in fresh installs without all credentials
 configured, so failures just point you at what to fix next.
