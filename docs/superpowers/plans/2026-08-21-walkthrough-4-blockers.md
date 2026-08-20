@@ -176,9 +176,22 @@ git commit -m "feat: add praxis merge to open the merge gate from the CLI"
 
 **Depends on:** Task 1
 
-`POST /api/plans/{id}/approve-merges` returns `{approved, errors}`. Because a
-dependent task waits for its predecessor to be *merged*, a multi-task plan needs
-one gate call per task; this is the verb that does them in one go.
+Because a dependent task waits for its predecessor to be *merged*, a multi-task
+plan needs one gate call per task; this is the verb that does them in one go.
+
+**The exact response shape, read from `src/orchestrator/api/plans.py:249-268`:**
+
+```python
+approved = 0                              # an INT counter, not a list
+errors: list[dict[str, str]] = []         # a LIST of {"task_id", "error"} dicts
+return {"plan_id": plan_id, "approved": approved, "errors": errors}
+```
+
+An earlier draft of this task assumed `approved` was a list and `errors` a dict,
+which would raise `TypeError: object of type 'int' has no len()` on every batch
+that actually merged something, while its test passed because the mock encoded
+the same wrong shape. Assert against the real contract above, not against a
+convenient mock.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -191,8 +204,15 @@ def test_merge_plan_posts_batch_and_reports_counts(monkeypatch) -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         if request.method == "POST":
             seen["path"] = request.url.path
+            # The REAL shape from api/plans.py: approved is an int, errors is a
+            # list of {"task_id", "error"} dicts.
             return httpx.Response(
-                200, json={"approved": ["t1", "t2"], "errors": {"t3": "boom"}}
+                200,
+                json={
+                    "plan_id": "plan-9",
+                    "approved": 2,
+                    "errors": [{"task_id": "t3", "error": "boom"}],
+                },
             )
         return httpx.Response(404, json={"detail": "not found"})
 
@@ -203,6 +223,34 @@ def test_merge_plan_posts_batch_and_reports_counts(monkeypatch) -> None:
     assert seen["path"] == "/api/plans/plan-9/approve-merges"
     assert "2" in result.stdout
     assert "t3" in result.stdout
+    assert "boom" in result.stdout
+
+
+def test_merge_plan_reports_zero_without_crashing(monkeypatch) -> None:
+    """The all-quiet case must not depend on falsy fallbacks to survive."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200, json={"plan_id": "plan-9", "approved": 0, "errors": []}
+        )
+
+    _patch_client(monkeypatch, handler)
+    result = runner.invoke(app, ["merge-plan", "plan-9"])
+
+    assert result.exit_code == 0
+    assert "0" in result.stdout
+```
+
+- [ ] **Step 1b: Strengthen the Task 1 success test while you are in this file**
+
+Task 1's `test_merge_posts_approve_merge_for_the_task` asserts only
+`"merged" in result.stdout`, which comes from the server-hardcoded `status`
+field. Deleting `{data['task_id']}` from the command's output leaves both Task 1
+tests green, so the id echo is currently unpinned. Add one line to that existing
+test, directly after the `"merged" in result.stdout` assertion:
+
+```python
+    assert "abc-123" in result.stdout
 ```
 
 - [ ] **Step 2: Run the test to verify it fails**
@@ -224,18 +272,21 @@ def merge_plan(
 
     with _client() as client:
         data = _check_dict(client.post(f"/api/plans/{plan_id}/approve-merges"))
-    approved = data.get("approved") or []
-    errors = data.get("errors") or {}
-    console.print(f"[green]Merged:[/green] {len(approved)} task(s)")
-    for task_id, reason in errors.items():
-        console.print(f"[red]Failed:[/red] {task_id}: {reason}")
+    approved = int(data.get("approved") or 0)
+    errors = data.get("errors") or []
+    console.print(f"[green]Merged:[/green] {approved} task(s)")
+    for failure in errors:
+        console.print(
+            f"[red]Failed:[/red] {failure.get('task_id', '?')}: "
+            f"{failure.get('error', 'unknown error')}"
+        )
 ```
 
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `uv run pytest tests/test_cli_merge.py -v`
 
-Expected: PASS, 3 passed.
+Expected: PASS, 4 passed (Task 1's two, plus the two added here).
 
 - [ ] **Step 5: Commit**
 
@@ -261,6 +312,14 @@ anything. `summarize_pending` already returns `task_id`
 
 `overflow="fold"` makes rich wrap rather than truncate, so the full uuid and the
 full PR URL both survive an 80-column terminal.
+
+**`pending` is not the only table with this defect.** A quality review of Task 2
+found that `praxis plans` prints `plan["id"][:8]` at `src/cli/main.py:163` while
+`TaskQueue.get_plan` does an exact `SELECT * FROM plans WHERE id = ?`, so the
+`merge-plan` help text pointing at `praxis plans` leads to
+`Error 404: {"detail":"Plan not found"}`. That column is being folded as part of
+Task 2's fix round. `praxis tasks` and `praxis projects` truncate the same way
+and remain unfixed; folding those is a follow-up, not part of this plan.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -1240,9 +1299,19 @@ Append:
   whole dotenv file. `BaseSettings` defaults to `extra="forbid"`, so one
   container-only variable produced `extra_forbidden` and a restart loop, with a
   traceback naming the key but never naming `.env` as the source. `Settings` now
-  sets `extra="ignore"`. Note the trade-off this locks in: a typo in a real
-  setting is now silently ignored rather than rejected, so `praxis doctor`'s
-  `env_drift` check is the thing that catches it, not startup.
+  sets `extra="ignore"`. **Note the trade-off this locks in, and state it
+  accurately: a typo in a real key is now silent, and NOTHING catches it.**
+  `env_drift` structurally cannot: `docker-compose.yml` has no `env_file:`
+  directive, it passes an explicit key allowlist, so a typo'd key never enters
+  the container env at all; `_env_drift_facts` then filters the on-disk map to
+  `if k in os.environ`, discarding it; and `probe_env_drift` only reports value
+  mismatches for keys present in BOTH sides, having no concept of an unknown
+  key. Verified by executing the probe directly: a `.env` carrying `AUTH_TOKN`
+  returns GREEN `container env matches .env`. The one exception is `AUTH_TOKEN`
+  itself, which is a required field with no default and so still fails loudly.
+  Do not write that `env_drift` catches this; that sentence would be a
+  documented-but-inert claim of exactly the class this project keeps getting
+  burned by.
 
 - **`gh pr merge` can fail AFTER GitHub has merged**: a `504 Gateway Timeout` on
   the response is not evidence the merge did not happen. Observed on two of
@@ -1253,6 +1322,14 @@ Append:
   outranks gh's exit code. Note the 504 wording is "resubmitting your request",
   which is why it matched none of the old `_TRANSIENT_MERGE_PATTERNS` entries and
   never even retried.
+
+- **`praxis doctor` is no longer free**: the `planner_cli` check now spends one
+  real planner call per run, cached for 60s. `README.md` ("a read-only
+  diagnostic") and `CLAUDE.md` ("twelve read-only checks") both need a clause:
+  read-only against your repo and database, but it costs one planner call. A
+  rate-limited subscription is a normal, self-healing state in this product
+  (`opus_state` has `rate_limited`), so the check must not report it as a
+  blocked hook.
 
 - **An installed, authenticated planner CLI can still refuse every prompt**:
   `_PROVIDER_CMDS["claude"]` has no auth command, so `authenticated` meant
@@ -1271,7 +1348,9 @@ Under "**Config and deployment**" in the Gotchas shortlist:
 ```markdown
 - **An unrecognised key in `.env` is IGNORED, not rejected**: `./.env` is mounted
   into the container and parsed whole, so `extra="forbid"` used to abort startup.
-  The cost is that a typo in a real key is silent; `doctor`'s `env_drift` catches it.
+  The cost is that a typo in a real key is now silent and NOTHING catches it;
+  `env_drift` compares only keys the container actually received, so a key living
+  solely in `.env` is invisible to it. `AUTH_TOKEN` is the exception, being required.
 ```
 
 Under "**The loop**":
@@ -1280,7 +1359,15 @@ Under "**The loop**":
 - **GitHub's PR state outranks `gh`'s exit code**: `gh pr merge` can 504 after the
   merge succeeded, so `merge_pr` re-reads `gh pr view --json state` before failing.
 - **`praxis merge <task-id>` / `praxis merge-plan <plan-id>` open the merge gate**;
-  `praxis approve` is for improvement PLANS and 404s on a task id.
+  `praxis approve` is for improvement PLANS and 404s on a task id. `merge-plan`
+  exits 1 if any task failed, because every entry the endpoint returns in
+  `errors` is a review-passed task that did not merge.
+- **Tables that print an id must FOLD it, and the column must be wide enough**:
+  `overflow="fold"` alone on a narrow column still wraps a uuid across physical
+  lines separated by border characters. Worse, a bordered table cannot hold both
+  a 36-char id and a PR url at 80 columns at all, so `pending` prints a plain
+  copyable `praxis merge <id>` line per task instead. `praxis tasks` and
+  `praxis projects` still truncate ids to 8 chars and still 404 if you use them.
 ```
 
 - [ ] **Step 3: Point the API reference at the CLI**
@@ -1328,6 +1415,29 @@ editing that file in one worktree destroy each other's uncommitted work, so do
 not flatten these waves without giving each task its own worktree.
 
 ---
+
+## Follow-up: a merged task's agent branch is swept by nothing
+
+Found by the Task 6 quality review and verified against the code, not guessed.
+`branch_sweeper.dead_branches` nominates a branch only if it appears in
+`terminal_failed` or `merged_plan`. `merged_plan` is built from
+`SELECT plan_branch_name FROM plans WHERE status IN ('completed','merged')`
+(`orchestrator_reconcile.py:266-273`) and **never reads `tasks.branch_name`**. A
+merged task is also excluded from `live_branches` (`merged` is terminal) and from
+`open_pr_branches` (that query excludes `merged`). So its `agent/*` branch is
+nominated by nothing, forever, and `delete_remote_branch` has exactly one caller.
+
+Normally `--delete-branch` on `gh pr merge` cleans it up, which is why this has
+not bitten. It bites exactly when gh 504s AFTER the merge: the branch delete
+never lands, and Task 6's new success path removes the loud `merge failed` that
+used to accompany the leak. **The leak pre-dates Task 6; what Task 6 changes is
+that it becomes silent.**
+
+Fix, structural: add `SELECT branch_name FROM tasks WHERE status = 'merged'` to
+the sweeper's dead-set construction. Deliberately NOT done inside Task 6, which
+is scoped to `git_ops.py`. Practical mitigation worth mentioning in the docs
+meanwhile: GitHub's repo-level "automatically delete head branches" setting
+collects these server-side.
 
 ## Verification: the walkthrough question this plan closes
 
