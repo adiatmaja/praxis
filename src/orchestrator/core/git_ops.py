@@ -30,8 +30,12 @@ _TRANSIENT_MERGE_PATTERNS: tuple[str, ...] = (
     "unexpected error",
     # GitHub's own 504 wording. It says "resubmitting", not "try again", so it
     # matched nothing and raised on the first attempt. Seen on two of three
-    # merges during newcomer walkthrough #4.
-    "504",
+    # merges during newcomer walkthrough #4. The two 504 forms are ANCHORED to
+    # how gh renders the number, because a bare "504" matches arbitrary digits;
+    # both forms are needed, since gh's status-line rendering carries neither
+    # of the prose phrases below.
+    "http 504",
+    "status code: 504",
     "gateway timeout",
     "resubmitting your request",
 )

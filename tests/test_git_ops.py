@@ -607,6 +607,22 @@ async def test_git_ops_remote_validation_raises():
 # merge_pr transient-retry tests
 # ---------------------------------------------------------------------------
 
+# GitHub's 504 as gh renders it when it surfaces the response body. Seen on two
+# of three merges during newcomer walkthrough #4, where GitHub HAD performed the
+# merge. Note it says "resubmitting", not "try again".
+_GATEWAY_TIMEOUT_STDERR = (
+    "non-200 OK status code: 504 Gateway Timeout body: "
+    '"{\\"message\\": \\"We couldn\'t respond to your request in time. '
+    'Sorry about that. Please try resubmitting your request.\\"}"'
+)
+
+# gh's OTHER rendering of the same failure, a bare status line. Neither
+# "gateway timeout" nor "resubmitting your request" appears here, so only the
+# "http 504" pattern can match it. Kept distinct so that pattern is pinned.
+_GATEWAY_TIMEOUT_STDERR_HTTP = (
+    "HTTP 504 (https://api.github.com/repos/o/r/pulls/39/merge)"
+)
+
 
 @pytest.mark.unit
 async def test_merge_pr_retries_on_transient_error_then_succeeds(
@@ -644,6 +660,8 @@ async def test_merge_pr_retries_on_transient_error_then_succeeds(
             merge_call_count += 1
             if merge_call_count == 1:
                 return (1, "", "Base branch was modified. Please try again.")
+            return (0, "", "")
+        if "view" in cmd:
             return (0, "", "")
         return await original_run_command(cmd, cwd=cwd, token=token)
 
@@ -757,19 +775,13 @@ async def test_merge_pr_succeeds_when_the_pr_is_already_merged(
 
     monkeypatch.setattr(git, "_token_for_workspace", fake_token_for_workspace)
 
-    timeout_stderr = (
-        "non-200 OK status code: 504 Gateway Timeout body: "
-        '"{\\"message\\": \\"We couldn\'t respond to your request in time. '
-        'Sorry about that. Please try resubmitting your request.\\"}"'
-    )
-
     async def fake_run_command(
         cmd: list[str],
         cwd: str | None = None,
         token: str | None = None,
     ) -> tuple[int, str, str]:
         if "merge" in cmd:
-            return (1, "", timeout_stderr)
+            return (1, "", _GATEWAY_TIMEOUT_STDERR)
         if "view" in cmd:
             return (0, '{"state":"MERGED"}', "")
         return (0, "", "")
@@ -812,3 +824,162 @@ async def test_merge_pr_still_raises_when_the_pr_is_not_merged(
 
     with pytest.raises(RuntimeError, match="Git command failed"):
         await git.merge_pr("/tmp/workspace", 7)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "merge_stderr",
+    [_GATEWAY_TIMEOUT_STDERR, _GATEWAY_TIMEOUT_STDERR_HTTP],
+    ids=["response-body-wording", "http-status-line"],
+)
+async def test_merge_pr_retries_a_gateway_timeout_instead_of_raising_at_once(
+    monkeypatch: pytest.MonkeyPatch, merge_stderr: str
+) -> None:
+    """A 504 must reach the retry loop, not raise on the first attempt.
+
+    This is the ONLY test that can see _TRANSIENT_MERGE_PATTERNS for a 504.
+    GitHub is asked first and answers OPEN here, so the merged-check cannot
+    short-circuit, which leaves the pattern list as the sole thing deciding
+    retry-versus-raise. The attempt count is therefore the assertion: without
+    the 504 patterns the very first failure raises and only one merge is tried.
+    """
+    sleep_calls: list[float] = []
+
+    async def fake_sleep(seconds: float) -> None:
+        sleep_calls.append(seconds)
+
+    monkeypatch.setattr(git_ops_mod, "_merge_sleep", fake_sleep)
+    monkeypatch.setattr(git_ops_mod, "_MERGE_MAX_ATTEMPTS", 3)
+    git = GitOps("ghp_test")
+
+    async def fake_token_for_workspace(workspace: str) -> str:
+        return "ghp_test"
+
+    monkeypatch.setattr(git, "_token_for_workspace", fake_token_for_workspace)
+
+    merge_call_count = 0
+
+    async def fake_run_command(
+        cmd: list[str],
+        cwd: str | None = None,
+        token: str | None = None,
+    ) -> tuple[int, str, str]:
+        nonlocal merge_call_count
+        if "merge" in cmd:
+            merge_call_count += 1
+            return (1, "", merge_stderr)
+        if "view" in cmd:
+            # Never merged, so the idempotency shortcut cannot mask the
+            # pattern check.
+            return (0, '{"state":"OPEN"}', "")
+        return (0, "", "")
+
+    monkeypatch.setattr(git, "_run_command", fake_run_command)
+
+    with pytest.raises(RuntimeError, match="Git command failed"):
+        await git.merge_pr("/tmp/workspace", 39)
+
+    assert merge_call_count == 3
+    assert len(sleep_calls) == 2
+
+
+@pytest.mark.unit
+async def test_merge_pr_succeeds_when_the_merge_landed_on_the_final_attempt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A merge that lands on the LAST retry must not be reported as a failure.
+
+    Exercises the second _pr_is_merged call site, the one guarding the raise
+    after the retry loop is exhausted. Deleting that block turns a merge GitHub
+    actually performed back into an error on the merge gate.
+    """
+    sleep_calls: list[float] = []
+
+    async def fake_sleep(seconds: float) -> None:
+        sleep_calls.append(seconds)
+
+    monkeypatch.setattr(git_ops_mod, "_merge_sleep", fake_sleep)
+    monkeypatch.setattr(git_ops_mod, "_MERGE_MAX_ATTEMPTS", 3)
+    git = GitOps("ghp_test")
+
+    async def fake_token_for_workspace(workspace: str) -> str:
+        return "ghp_test"
+
+    monkeypatch.setattr(git, "_token_for_workspace", fake_token_for_workspace)
+
+    merge_call_count = 0
+    view_call_count = 0
+
+    async def fake_run_command(
+        cmd: list[str],
+        cwd: str | None = None,
+        token: str | None = None,
+    ) -> tuple[int, str, str]:
+        nonlocal merge_call_count, view_call_count
+        if "merge" in cmd:
+            merge_call_count += 1
+            return (1, "", _GATEWAY_TIMEOUT_STDERR)
+        if "view" in cmd:
+            view_call_count += 1
+            # OPEN for the in-loop check of every attempt, MERGED only for the
+            # post-loop check. That is what forces the second call site.
+            if view_call_count <= 3:
+                return (0, '{"state":"OPEN"}', "")
+            return (0, '{"state":"MERGED"}', "")
+        return (0, "", "")
+
+    monkeypatch.setattr(git, "_run_command", fake_run_command)
+
+    # Must NOT raise: the merge landed, gh just never got to say so.
+    await git.merge_pr("/tmp/workspace", 71)
+
+    assert merge_call_count == 3
+    # The 4th view is the post-loop check; reaching it is what proves which
+    # call site returned success.
+    assert view_call_count == 4
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("view_mode", ["spawn-fails", "nonzero-exit"])
+async def test_merge_pr_raises_when_github_cannot_be_asked(
+    monkeypatch: pytest.MonkeyPatch, view_mode: str
+) -> None:
+    """Not being able to ask GitHub is not evidence of a merge.
+
+    Covers both ways the state read can fail to answer: the gh subprocess never
+    starting (missing binary, workspace already cleaned up) and gh exiting
+    non-zero. Both must fail CLOSED, surfacing the original merge error rather
+    than swallowing it or leaking the spawn error to the caller.
+    """
+
+    async def fake_sleep(seconds: float) -> None:
+        return None
+
+    monkeypatch.setattr(git_ops_mod, "_merge_sleep", fake_sleep)
+    git = GitOps("ghp_test")
+
+    async def fake_token_for_workspace(workspace: str) -> str:
+        return "ghp_test"
+
+    monkeypatch.setattr(git, "_token_for_workspace", fake_token_for_workspace)
+
+    async def fake_run_command(
+        cmd: list[str],
+        cwd: str | None = None,
+        token: str | None = None,
+    ) -> tuple[int, str, str]:
+        if "merge" in cmd:
+            return (1, "", "Not found: repository or object does not exist")
+        if "view" in cmd:
+            if view_mode == "spawn-fails":
+                raise OSError(267, "The directory name is invalid")
+            # Non-zero exit, yet stdout still parses as MERGED. A failed gh
+            # invocation must never be trusted, however plausible its output.
+            return (1, '{"state":"MERGED"}', "gh: connection reset")
+        return (0, "", "")
+
+    monkeypatch.setattr(git, "_run_command", fake_run_command)
+
+    # The merge error must surface, NOT the OSError and NOT a false success.
+    with pytest.raises(RuntimeError, match="Git command failed"):
+        await git.merge_pr("/tmp/workspace", 12)
