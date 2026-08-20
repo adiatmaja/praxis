@@ -20,6 +20,13 @@ from orchestrator.models.schemas import PlanStatus, TaskStatus
 _REVIEW_LOGGER = "orchestrator.core.orchestrator_review"
 
 
+def _spec_reader(text: str = "Build auth") -> AsyncMock:
+    """A stand-in for BrainstormManager that serves one spec doc."""
+    reader = AsyncMock()
+    reader.read_doc.return_value = text
+    return reader
+
+
 async def _setup(db: Database) -> tuple[TaskQueue, str, str]:
     """Create a project, active plan, and one task."""
 
@@ -777,7 +784,9 @@ class TestPerProjectAgentModel:
             ),
         )
         task_queue = TaskQueue(db)
-        plan_id = await task_queue.create_plan("p1", "Build auth")
+        plan_id = await task_queue.create_plan(
+            "p1", "Build auth", spec_path="docs/superpowers/specs/auth.md"
+        )
         project = await db.fetch_one("SELECT * FROM projects WHERE id = 'p1'")
         assert project is not None
 
@@ -801,6 +810,7 @@ class TestPerProjectAgentModel:
             opus_bridge=mock_opus,
             git_ops=AsyncMock(),
             event_bus=EventBus(),
+            spec_reader=_spec_reader(),
         )
         await orch.plan_and_activate(plan_id, project)
 
@@ -892,7 +902,9 @@ class TestOrchestrationLoop:
             ("p1", "u1", "App", "https://github.com/u/a", "deepseek"),
         )
         task_queue = TaskQueue(db)
-        plan_id = await task_queue.create_plan("p1", "Build auth")
+        plan_id = await task_queue.create_plan(
+            "p1", "Build auth", spec_path="docs/superpowers/specs/auth.md"
+        )
         mock_opus = AsyncMock()
         mock_opus.is_available.return_value = True
         mock_opus.plan_spec.return_value = {
@@ -913,6 +925,7 @@ class TestOrchestrationLoop:
             opus_bridge=mock_opus,
             git_ops=AsyncMock(),
             event_bus=EventBus(),
+            spec_reader=_spec_reader(),
         )
 
         await orch.run_once()
@@ -922,6 +935,78 @@ class TestOrchestrationLoop:
         assert plan is not None
         assert plan["status"] == PlanStatus.ACTIVE
         assert len(tasks) == 1
+
+    async def test_plan_fails_closed_when_it_has_no_spec(self, db: Database) -> None:
+        """A spec-less plan must never reach the planner.
+
+        Planning with an empty spec yields a plausible task graph derived from
+        the repository name and then dispatches real workers against it.
+        """
+        await db.execute(
+            "INSERT INTO users (id, name, token_hash) VALUES (?, ?, ?)",
+            ("u1", "User", "hash"),
+        )
+        await db.execute(
+            """INSERT INTO projects (id, user_id, name, repo_url, model_name)
+               VALUES (?, ?, ?, ?, ?)""",
+            ("p1", "u1", "App", "https://github.com/u/a", "deepseek"),
+        )
+        task_queue = TaskQueue(db)
+        plan_id = await task_queue.create_plan("p1", "Build auth")
+        mock_opus = AsyncMock()
+        mock_opus.is_available.return_value = True
+        orch = Orchestrator(
+            task_queue=task_queue,
+            agent_manager=MagicMock(),
+            opus_bridge=mock_opus,
+            git_ops=AsyncMock(),
+            event_bus=EventBus(),
+            spec_reader=_spec_reader(),
+        )
+
+        await orch.run_once()
+
+        mock_opus.plan_spec.assert_not_called()
+        plan = await task_queue.get_plan(plan_id)
+        assert plan is not None
+        assert plan["status"] == PlanStatus.FAILED
+        assert "spec" in (plan["error"] or "")
+
+    async def test_plan_fails_closed_when_the_spec_doc_is_unreadable(
+        self, db: Database
+    ) -> None:
+        await db.execute(
+            "INSERT INTO users (id, name, token_hash) VALUES (?, ?, ?)",
+            ("u1", "User", "hash"),
+        )
+        await db.execute(
+            """INSERT INTO projects (id, user_id, name, repo_url, model_name)
+               VALUES (?, ?, ?, ?, ?)""",
+            ("p1", "u1", "App", "https://github.com/u/a", "deepseek"),
+        )
+        task_queue = TaskQueue(db)
+        plan_id = await task_queue.create_plan(
+            "p1", "Build auth", spec_path="docs/superpowers/specs/gone.md"
+        )
+        mock_opus = AsyncMock()
+        mock_opus.is_available.return_value = True
+        reader = AsyncMock()
+        reader.read_doc.side_effect = FileNotFoundError("doc not found: gone.md")
+        orch = Orchestrator(
+            task_queue=task_queue,
+            agent_manager=MagicMock(),
+            opus_bridge=mock_opus,
+            git_ops=AsyncMock(),
+            event_bus=EventBus(),
+            spec_reader=reader,
+        )
+
+        await orch.run_once()
+
+        mock_opus.plan_spec.assert_not_called()
+        plan = await task_queue.get_plan(plan_id)
+        assert plan is not None
+        assert plan["status"] == PlanStatus.FAILED
 
     async def test_run_once_creates_gated_improvement_plan(self, db: Database) -> None:
         task_queue, plan_id, task_id = await _setup(db)

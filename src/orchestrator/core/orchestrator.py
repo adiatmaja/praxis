@@ -46,6 +46,7 @@ class Orchestrator(DispatchMixin, ReviewMixin, ReconcileMixin, ImprovementMixin)
         callback_token: str | None = None,
         effective_settings: Any = None,
         llm_router: Any = None,
+        spec_reader: Any = None,
     ) -> None:
         self._tq = task_queue
         self._agents = agent_manager
@@ -54,6 +55,10 @@ class Orchestrator(DispatchMixin, ReviewMixin, ReconcileMixin, ImprovementMixin)
         self._bus = event_bus
         self._doc_indexer = doc_indexer
         self._context_sync = context_sync
+        # Reads a spec doc out of the project repo (``read_doc(repo_url, path)``).
+        # Without it a plan's ``spec_path`` cannot be resolved to text and
+        # planning fails closed rather than planning from nothing.
+        self._spec_reader = spec_reader
         self._emitter = CapabilityEventEmitter(task_queue._db, event_bus)
         # Resolves the escalation policy (block | brain | paid_fallback) for a
         # failing leaf. Optional so tests/older callers can omit it.
@@ -94,6 +99,32 @@ class Orchestrator(DispatchMixin, ReviewMixin, ReconcileMixin, ImprovementMixin)
         """
         return resolve_backend(repo_url, self._git)
 
+    async def _load_spec_text(self, plan: dict[str, Any], repo_url: str) -> str:
+        """Return the spec text a plan points at.
+
+        ``plans.spec_path`` is a repo path, not the specification itself, so it
+        has to be read back out of the repository. Anything that goes wrong
+        here raises: planning from an empty spec produces a plausible-looking
+        task graph derived from the repository name and dispatches real workers
+        against it, which is worse than not planning at all.
+        """
+
+        spec_path = plan.get("spec_path")
+        if not spec_path:
+            msg = (
+                "plan has no spec_path, so there is no specification to plan "
+                "from; resubmit the specification"
+            )
+            raise ValueError(msg)
+        if self._spec_reader is None:
+            msg = f"no spec reader is configured, cannot read {spec_path}"
+            raise ValueError(msg)
+        text = await self._spec_reader.read_doc(repo_url, spec_path)
+        if not text.strip():
+            msg = f"spec doc {spec_path} is empty"
+            raise ValueError(msg)
+        return str(text)
+
     async def plan_and_activate(self, plan_id: str, project: dict[str, Any]) -> None:
         """Ask Opus to plan a pending spec and activate the resulting task graph."""
 
@@ -108,8 +139,20 @@ class Orchestrator(DispatchMixin, ReviewMixin, ReconcileMixin, ImprovementMixin)
             self._bus.publish({"type": "opus_queued", "action": "plan"})
             return
 
+        try:
+            spec_text = await self._load_spec_text(plan, project["repo_url"])
+        except Exception as exc:  # noqa: BLE001 - terminal, reported on the plan
+            reason = f"could not load the plan's specification: {exc}"
+            logger.error("Planning aborted for plan %s: %s", plan_id, reason)
+            await self._tq.set_plan_error(plan_id, reason)
+            await self._tq.update_plan_status(plan_id, PlanStatus.FAILED)
+            self._bus.publish(
+                {"type": "plan_failed", "plan_id": plan_id, "reason": reason}
+            )
+            return
+
         opus_plan = await self._opus.plan_spec(
-            plan.get("spec_path") or "",
+            spec_text,
             project["repo_url"],
             model=project.get("agent_model"),
             effort=project.get("agent_model_effort"),

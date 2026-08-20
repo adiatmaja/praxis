@@ -88,7 +88,7 @@ The rest of `core/`, grouped by concern:
   `capabilities`, `capability_events`, `capability_history`, `outcome_recorder`,
   `failure_taxonomy`, `status_vocab`
 - **Docs & context:** `brainstorm`, `context_sync`, `context_scrub`, `doc_indexer`,
-  `markdown_utils`, `backfill`
+  `markdown_utils`, `backfill`, `spec_docs`
 - **Operability:** `doctor`, `doctor_probes`, `verify_gate`, `build_info`, `entrypoint_hash`,
   `approvals`, `event_bus`, `log_context`
 
@@ -282,6 +282,11 @@ a line here only if it belongs in this shortlist.
 - **An omitted `harness` must never downgrade a project**: `execute_plan` and `dispatch` pass
   `None` through, so an existing project keeps its configured harness and only a NEW project
   falls back to the registry default.
+- **A submitted spec travels as a repo doc, never in the DB**: `POST /plans` commits it under
+  `docs/superpowers/specs/` first and stores only `spec_path`; `plan_and_activate` reads it
+  back through `Orchestrator._spec_reader` and fails the plan closed if it cannot. Both ends
+  can be correct with the link dead, so `tests/test_submit_spec_seam.py` starts at the real
+  `praxis submit` and ends at the prompt; keep it that way or the seam goes invisible again.
 - **Agent runs non-root** in `/home/agent/workspace`, with git auth via `GH_TOKEN`.
 
 **Contracts that break fixtures**

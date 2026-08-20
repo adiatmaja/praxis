@@ -128,6 +128,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     except Exception as exc:
         logger.warning("Agent manager unavailable during startup: %s", exc)
         app.state.agent_manager = None
+    app.state.brainstorm = BrainstormManager(
+        workspace_base=settings.brainstorm_workspace,
+        event_bus=app.state.event_bus,
+        credentials=credential_provider,
+    )
     app.state.orchestrator = Orchestrator(
         task_queue=app.state.task_queue,
         agent_manager=app.state.agent_manager,
@@ -138,11 +143,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         callback_token=app.state.internal_callback_secret,
         effective_settings=effective_settings,
         llm_router=app.state.llm_router,
-    )
-    app.state.brainstorm = BrainstormManager(
-        workspace_base=settings.brainstorm_workspace,
-        event_bus=app.state.event_bus,
-        credentials=credential_provider,
+        # The planner reads a plan's spec doc back out of the repo; without
+        # this the spec submitted via /plans never reaches the brain.
+        spec_reader=app.state.brainstorm,
     )
 
     from orchestrator.core.context_sync import ContextSync

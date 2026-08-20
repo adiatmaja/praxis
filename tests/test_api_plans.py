@@ -30,11 +30,29 @@ async def _create_project(client: AsyncClient, auth_headers: dict[str, str]) -> 
     return str(response.json()["id"])
 
 
+@pytest.fixture
+def spec_repo(client: AsyncClient, monkeypatch: pytest.MonkeyPatch) -> dict[str, str]:
+    """Capture spec docs the API commits, keyed by repo path."""
+    written: dict[str, str] = {}
+
+    async def _write_and_commit(repo_url: str, path: str, content: str) -> dict:
+        written[path] = content
+        return {"status": "committed", "path": path}
+
+    monkeypatch.setattr(
+        client.app.state.brainstorm,  # type: ignore[attr-defined]
+        "write_and_commit",
+        _write_and_commit,
+    )
+    return written
+
+
 @pytest.mark.integration
 async def test_create_list_get_approve_reject_plan(
     client: AsyncClient,
     db: Database,
     auth_headers: dict[str, str],
+    spec_repo: dict[str, str],
 ) -> None:
     await seed_user(db)
     project_id = await _create_project(client, auth_headers)
@@ -56,6 +74,64 @@ async def test_create_list_get_approve_reject_plan(
     assert fetched.status_code == 200
     assert approved.json()["status"] == "active"
     assert rejected.json()["status"] == "rejected"
+
+
+@pytest.mark.integration
+async def test_submitted_spec_is_committed_and_recorded_on_the_plan(
+    client: AsyncClient,
+    db: Database,
+    auth_headers: dict[str, str],
+    spec_repo: dict[str, str],
+) -> None:
+    await seed_user(db)
+    project_id = await _create_project(client, auth_headers)
+
+    created = await client.post(
+        f"/api/projects/{project_id}/plans",
+        json={"spec": "Add rate limiting to the login endpoint"},
+        headers=auth_headers,
+    )
+
+    assert created.status_code == 201
+    row = await db.fetch_one(
+        "SELECT spec_path FROM plans WHERE id = ?", (created.json()["id"],)
+    )
+    assert row is not None
+    spec_path = row["spec_path"]
+    assert spec_path is not None
+    assert spec_path.startswith("docs/superpowers/specs/")
+    assert "Add rate limiting to the login endpoint" in spec_repo[spec_path]
+
+
+@pytest.mark.integration
+async def test_create_plan_fails_closed_when_the_spec_cannot_be_persisted(
+    client: AsyncClient,
+    db: Database,
+    auth_headers: dict[str, str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No plan may exist without its spec: a spec-less plan plans from nothing."""
+    await seed_user(db)
+    project_id = await _create_project(client, auth_headers)
+
+    async def _boom(repo_url: str, path: str, content: str) -> dict:
+        msg = "push rejected"
+        raise RuntimeError(msg)
+
+    monkeypatch.setattr(
+        client.app.state.brainstorm,  # type: ignore[attr-defined]
+        "write_and_commit",
+        _boom,
+    )
+
+    created = await client.post(
+        f"/api/projects/{project_id}/plans",
+        json={"spec": "Add rate limiting"},
+        headers=auth_headers,
+    )
+
+    assert created.status_code == 502
+    assert await db.fetch_all("SELECT id FROM plans") == []
 
 
 @pytest.mark.integration

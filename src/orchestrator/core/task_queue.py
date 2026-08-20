@@ -55,13 +55,14 @@ class TaskQueue:
         source: str = "user",
         confidence: float | None = None,
         confidence_reason: str | None = None,
+        spec_path: str | None = None,
     ) -> str:
         plan_id = str(uuid.uuid4())
         await self._db.execute(
             """INSERT INTO plans
-               (id, project_id, source, confidence, confidence_reason)
-               VALUES (?, ?, ?, ?, ?)""",
-            (plan_id, project_id, source, confidence, confidence_reason),
+               (id, project_id, source, confidence, confidence_reason, spec_path)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (plan_id, project_id, source, confidence, confidence_reason, spec_path),
         )
         logger.info("Created plan %s for project %s", plan_id, project_id)
         return plan_id
