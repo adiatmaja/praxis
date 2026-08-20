@@ -120,7 +120,10 @@ CHECKS: tuple[Check, ...] = (
     ),
     Check(
         "planner_cli",
-        "Planner CLI installed and authenticated",
+        # Not "installed and authenticated": the row can be RED precisely
+        # BECAUSE it is both of those and still cannot answer, and a label
+        # asserting the true half of that reads as a contradiction.
+        "Planner CLI answers a test prompt",
         "install the planner CLI and run its login command; see "
         "docs/getting-started.md",
     ),

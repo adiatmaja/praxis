@@ -408,3 +408,68 @@ def test_env_drift_ignores_keys_absent_from_disk() -> None:
 def test_env_drift_amber_when_nothing_could_be_read() -> None:
     result = probe_env_drift(running={}, on_disk={})
     assert result.status is CheckStatus.AMBER
+
+
+@pytest.mark.unit
+def test_planner_cli_red_when_installed_but_prompt_refused():
+    """Installed + authenticated is not enough if prompts do not complete.
+
+    A host hook mounted into the container (walkthrough #4) refused every
+    prompt while this check stayed green.
+    """
+    result = probe_planner_cli(cli_available=True, authenticated=True, prompt_ok=False)
+
+    assert result.status is CheckStatus.RED
+    assert "prompt" in result.detail.lower()
+    # The registry hint says "run its login command", which is actively wrong
+    # here: the CLI IS logged in. The probe must override it.
+    assert "login" not in result.hint.lower()
+
+
+@pytest.mark.unit
+def test_planner_cli_green_when_the_round_trip_answers():
+    result = probe_planner_cli(cli_available=True, authenticated=True, prompt_ok=True)
+
+    assert result.status is CheckStatus.GREEN
+
+
+@pytest.mark.unit
+def test_planner_cli_unprobed_keeps_the_old_verdict():
+    result = probe_planner_cli(cli_available=True, authenticated=True)
+
+    assert result.status is CheckStatus.GREEN
+
+
+@pytest.mark.unit
+def test_planner_cli_red_detail_quotes_what_the_cli_actually_said():
+    """A red nobody can act on is barely better than no red at all."""
+    result = probe_planner_cli(
+        cli_available=True,
+        authenticated=True,
+        prompt_ok=False,
+        prompt_error="Blocked by policy hook",
+    )
+
+    assert result.status is CheckStatus.RED
+    assert "Blocked by policy hook" in result.detail
+
+
+@pytest.mark.unit
+def test_planner_cli_amber_not_red_when_the_subscription_is_rate_limited():
+    """Praxis treats the 5h limit as normal and self-healing.
+
+    `praxis init` ends by running doctor, so a red here fails a correct
+    install, and the red's hint would send the operator hunting a blocking
+    hook that does not exist.
+    """
+    result = probe_planner_cli(
+        cli_available=True,
+        authenticated=True,
+        prompt_ok=None,
+        rate_limited=True,
+        prompt_error="Claude usage limit reached",
+    )
+
+    assert result.status is CheckStatus.AMBER
+    assert "rate limited" in result.detail.lower()
+    assert "hook" not in result.hint.lower()
