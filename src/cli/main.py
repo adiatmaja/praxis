@@ -115,6 +115,14 @@ def configure(
     gate: bool | None = typer.Option(None, help="Approval gate on/off"),
     threshold: float | None = typer.Option(None, help="Confidence threshold"),
     retries: int | None = typer.Option(None, help="Max retries"),
+    verify_cmd: str | None = typer.Option(
+        None,
+        "--verify-cmd",
+        help=(
+            "Shell command the verify gate runs before review, "
+            "e.g. 'python -m pytest -q'"
+        ),
+    ),
 ) -> None:
     """Update project settings."""
 
@@ -125,6 +133,8 @@ def configure(
         body["confidence_threshold"] = threshold
     if retries is not None:
         body["max_retries"] = retries
+    if verify_cmd is not None:
+        body["verify_cmd"] = verify_cmd
     if not body:
         console.print("[yellow]No settings to update[/yellow]")
         return
