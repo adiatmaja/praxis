@@ -114,14 +114,19 @@ def projects() -> None:
     with _client() as client:
         data = _check_list(client.get("/api/projects"))
     table = Table(title="Projects")
-    table.add_column("ID", style="dim", max_width=8)
+    # A uuid, whole. `add-project` prints a full id once at creation time and
+    # nothing else ever does, while `configure`, `submit`, and `plans` all look
+    # a project up by EXACT match: a truncated id here means that from a new
+    # terminal tomorrow the documented path is unreachable without curl. `fold`
+    # wraps the value instead of cutting it when the console is narrow.
+    table.add_column("ID", style="dim", max_width=36, overflow="fold")
     table.add_column("Name")
     table.add_column("Repo")
     table.add_column("Model")
     table.add_column("Gate")
     for project in data:
         table.add_row(
-            project["id"][:8],
+            project["id"],
             project["name"],
             project["repo_url"],
             project["model_name"],
@@ -238,14 +243,17 @@ def tasks(plan_id: str = typer.Argument(..., help="Plan ID")) -> None:
     with _client() as client:
         data = _check_list(client.get(f"/api/plans/{plan_id}/tasks"))
     table = Table(title="Tasks")
-    table.add_column("ID", style="dim", max_width=8)
+    # Same contract as the Projects and Plans tables above: `task`, `stop`, and
+    # `merge` all take a full task id by exact match, so printing eight
+    # characters hands the operator something the API will reject.
+    table.add_column("ID", style="dim", max_width=36, overflow="fold")
     table.add_column("Title")
     table.add_column("Branch")
     table.add_column("Status")
     table.add_column("Attempt")
     for task in data:
         table.add_row(
-            task["id"][:8],
+            task["id"],
             task["title"],
             task["branch_name"],
             task["status"],
