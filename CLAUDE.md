@@ -98,11 +98,14 @@ The rest of `core/`, grouped by concern:
 # Setup (one command, idempotent, ends by verifying)
 uv run praxis init
 
-# Diagnose (read-only, exits non-zero on any red)
+# Diagnose (read-only against repo and DB, but spends one planner call per
+# run, cached 60s; exits non-zero on any red, and a rate limit is amber)
 uv run praxis doctor
 
-# See what is parked at the merge gate
+# See what is parked at the merge gate, and open it
 uv run praxis pending
+uv run praxis merge <task-id>        # one task
+uv run praxis merge-plan <plan-id>   # every parked task in one plan
 
 # Setup, manual equivalent of `praxis init`
 uv venv && uv sync --extra dev && cp .env.example .env
@@ -286,8 +289,14 @@ a line here only if it belongs in this shortlist.
   merge succeeded, so `merge_pr` re-reads `gh pr view --json state` before failing.
 - **A table printing an id must fold it AND be wide enough**: `overflow="fold"` on
   a narrow column still splits a uuid across border characters. `pending` prints a
-  plain copyable `praxis merge <id>` line instead. `tasks` and `projects` still
-  truncate to 8 chars and still 404 if you use them.
+  plain copyable `praxis merge <id>` line instead. `plans`, `tasks`, and `projects`
+  now print the id WHOLE (36-wide folding column); an id truncated to 8 chars 404s,
+  because every consumer looks it up by exact match.
+- **The merge verbs need their own HTTP timeout**: `merge-plan` merges a plan's
+  PASSED tasks sequentially (up to `max_leaves_per_plan`), and one `merge_pr`
+  under repeated 504s is three attempts plus backoff. The CLI's read-only 60s
+  budget times out mid-merge while the orchestrator finishes correctly, so both
+  verbs use `_MERGE_TIMEOUT` and report "may still be running", never "failed".
 - **`get_dispatchable_tasks` maps `opus_plan["tasks"]` to rows BY LIST INDEX**: anything
   touching the graph (e.g. `core/leaf_split.py`) must only APPEND; supersede, never delete.
 - **Hand-built LM Studio payloads must state `reasoning_effort` explicitly**

@@ -224,6 +224,9 @@ With the orchestrator running, you can:
 - **Dashboard:** http://localhost:12323 (or your configured port)
 - **API docs:** http://localhost:12323/docs
 - **CLI:** `uv run praxis projects`, `uv run praxis add-project`, `uv run praxis submit`, etc.
+- **Merge gate:** `uv run praxis pending` lists what is parked awaiting your sign-off, and
+  `uv run praxis merge <task-id>` (or `uv run praxis merge-plan <plan-id>` for a whole plan)
+  is how you approve it. Nothing merges to your default branch without this step.
 - **Auto-delegate mode:** `uv run praxis mode on|off|status` to toggle delegation to a single
   global worker. See [auto-delegate mode](#daily-dev-auto-delegate-mode) below.
 
@@ -258,7 +261,8 @@ At a high level, one turn of the engine:
    model reviews it.
 5. The **reviewer** inspects each PR diff. Pass squash-merges into the plan branch; fail
    retries with feedback (up to 3).
-6. When all tasks land, Praxis opens an integration PR to `main`. **You** review and merge.
+6. When all tasks land, Praxis opens an integration PR to `main`. **You** review and merge:
+   `praxis pending` shows what is parked, `praxis merge <task-id>` opens the gate.
 
 A per-project approval gate can pause the loop after planning for your sign-off; leave it off
 for a fully autonomous run. Full workflow, orchestration cycle, and the swimlane diagram:
