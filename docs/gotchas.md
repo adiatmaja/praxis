@@ -872,3 +872,37 @@ belongs among the everyday traps.
   and reports amber rather than red, so the rebuild looks done while the image may not be.
   Note also that a plain `sha256sum` of the entrypoint only matches the label when the file
   happens to have no CRLF; that agreement is incidental, not the real comparison path.
+
+## Submitted specs: the carrier between `praxis submit` and the planner
+
+- **A validated field that is never read again is not a feature, it is a leak**:
+  `POST /api/projects/{id}/plans` took a `PlanCreate` body, validated that `spec` was
+  non-empty, and then never referenced `body` again. Spec 2 dropped the `plans.spec`
+  column on the correct principle that markdown docs are the source of truth, but nothing
+  was ever written in the column's place, so `spec_path` stayed NULL and the brain planned
+  from the repository name alone. Observed live on a Python repo: a spec asking for one
+  Python file produced a Node.js/ESLint/Jest scaffold, which was then activated and
+  dispatched at the real repository. `praxis submit` is the only route the CLI has to the
+  engine, so the failure was silently destructive rather than merely incomplete. The
+  submitted text is now committed as a spec doc under `docs/superpowers/specs/` BEFORE the
+  plan row exists: if that write fails the endpoint returns 502 and no plan is created,
+  because a plan with no spec is worse than no plan.
+
+- **`plans.spec_path` is a PATH, and the planner prompt wants TEXT**: even after the write
+  end was fixed, `plan_and_activate` passed `plan["spec_path"]` straight into
+  `plan_spec(spec=...)`, which interpolates its argument into the prompt. The brain would
+  then have received the literal string `docs/superpowers/specs/2026-08-20-....md` as its
+  specification. Resolving the path back to text needs a reader, so `Orchestrator` takes a
+  `spec_reader` (wired to `BrainstormManager` in `main.py`); when it cannot resolve, the
+  plan goes terminal FAILED with the reason recorded, never to the planner with an empty
+  spec.
+
+- **Both ends of this carrier were independently correct and independently tested**: the
+  CLI genuinely sent the spec, the prompt template genuinely interpolated whatever it was
+  given, and every unit test at either end passed while the product was broken. This is the
+  `unit-green-seam-inert` shape and no end-anchored test can see it. `tests/test_submit_spec_seam.py`
+  is deliberately anchored OUTSIDE both ends: it invokes the real Typer `submit` command
+  over a real `httpx.Client` into the real ASGI app, then asserts the submitted sentence
+  appears in the prompt string handed to the LLM router. It was proven by mutation, three
+  times: drop `spec_path` on the insert, pass the path instead of the text, and drop the
+  body from the rendered doc; each goes red with a distinct message.

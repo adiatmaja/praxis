@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import uuid
 from datetime import UTC, datetime
 from typing import Any, cast
 
@@ -12,6 +13,7 @@ from pydantic import BaseModel
 from orchestrator.api.auth import verify_token
 from orchestrator.core.markdown_utils import extract_frontmatter_field
 from orchestrator.core.plan_derive import PlanDeriveError, derive_opus_plan
+from orchestrator.core.spec_docs import render_spec_doc, spec_doc_path
 from orchestrator.models.schemas import (
     PlanCreate,
     PlanResponse,
@@ -34,16 +36,43 @@ async def create_plan(
     project_id: str,
     body: PlanCreate,
 ) -> dict[str, Any]:
-    """Create a pending plan for a project."""
+    """Create a pending plan for a project, persisting its spec as a doc.
+
+    The submitted specification is committed to the repository as a spec doc
+    and recorded on the plan as ``spec_path``; that doc is what the planner
+    reads. Persisting it FIRST is deliberate: if the write fails there must be
+    no plan, because a plan with no spec plans from the repository name alone
+    and then dispatches real workers at a real repository.
+    """
 
     db = request.app.state.db
-    project = await db.fetch_one("SELECT id FROM projects WHERE id = ?", (project_id,))
+    project = await db.fetch_one(
+        "SELECT id, repo_url FROM projects WHERE id = ?", (project_id,)
+    )
     if project is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Project not found"
         )
 
-    plan_id = await request.app.state.task_queue.create_plan(project_id)
+    spec_path = spec_doc_path(
+        body.spec,
+        today=datetime.now(UTC).date(),
+        unique=uuid.uuid4().hex[:8],
+    )
+    try:
+        await request.app.state.brainstorm.write_and_commit(
+            project["repo_url"], spec_path, render_spec_doc(body.spec)
+        )
+    except Exception as exc:  # noqa: BLE001 - fail closed, never plan spec-less
+        logger.exception("Failed to persist submitted spec for project %s", project_id)
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"could not persist the specification to the repository: {exc}",
+        ) from exc
+
+    plan_id = await request.app.state.task_queue.create_plan(
+        project_id, spec_path=spec_path
+    )
     plan = await request.app.state.task_queue.get_plan(plan_id)
     if plan is None:
         raise HTTPException(status_code=500, detail="Plan creation failed")
