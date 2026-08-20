@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import os
-from typing import Any
+from typing import Any, NoReturn
 
 import httpx
 import typer
@@ -36,12 +36,51 @@ def _auth_token() -> str:
     return token
 
 
-def _client() -> httpx.Client:
+#: Every read-only verb answers out of SQLite in milliseconds, so 60 s is
+#: already generous and a longer wait would only make a down orchestrator feel
+#: hung.
+_DEFAULT_TIMEOUT = 60.0
+
+#: The merge verbs are different in kind: they wait on real work at GitHub.
+#: `merge-plan` merges a plan's PASSED tasks SEQUENTIALLY, bounded only by
+#: max_leaves_per_plan (24), and one `merge_pr` under repeated 504s is three
+#: `gh pr merge` attempts plus backoff plus up to four `gh pr view` calls. At
+#: the default budget a 12-task plan times out deterministically, in exactly
+#: the 504 case Task 6 taught the server to survive. 15 minutes covers the
+#: ceiling with room to spare, and the operator still gets an actionable
+#: message rather than a traceback if it is ever reached.
+_MERGE_TIMEOUT = 900.0
+
+
+def _client(timeout: float = _DEFAULT_TIMEOUT) -> httpx.Client:
     return httpx.Client(
         base_url=_api_url(),
         headers={"Authorization": f"Bearer {_auth_token()}"},
-        timeout=60.0,
+        timeout=timeout,
     )
+
+
+def _abandoned_merge(exc: httpx.RequestError) -> NoReturn:
+    """Report a merge request the CLI gave up on, without claiming it failed.
+
+    The orchestrator does not stop merging when the client stops listening, so
+    "no answer" does NOT mean "not merged"; announcing a failure here would be
+    a lie that invites a re-run. A re-run is also the wrong instruction: the
+    API answers 409 "is not awaiting merge" for work that already landed,
+    which reads as an error rather than as "already done". So point at
+    ``praxis pending``, whose absence of the task is the real proof.
+    """
+    what = (
+        "request timed out"
+        if isinstance(exc, httpx.TimeoutException)
+        else f"request failed: {exc}"
+    )
+    console.print(f"[yellow]{what}; the merge may still be running.[/yellow]")
+    console.print(
+        "Re-run 'praxis pending' to check: a task that no longer appears there "
+        "has been merged."
+    )
+    raise typer.Exit(1)
 
 
 def _check(response: httpx.Response) -> dict[str, Any] | list[dict[str, Any]]:
@@ -323,8 +362,12 @@ def merge(
 ) -> None:
     """Approve and merge one review-passed task parked at the merge gate."""
 
-    with _client() as client:
-        data = _check_dict(client.post(f"/api/tasks/{task_id}/approve-merge"))
+    with _client(_MERGE_TIMEOUT) as client:
+        try:
+            response = client.post(f"/api/tasks/{task_id}/approve-merge")
+        except httpx.RequestError as exc:
+            _abandoned_merge(exc)
+        data = _check_dict(response)
     console.print(f"[green]Merged:[/green] {data['task_id']} ({data['status']})")
 
 
@@ -334,8 +377,12 @@ def merge_plan(
 ) -> None:
     """Approve every review-passed task parked in one plan."""
 
-    with _client() as client:
-        data = _check_dict(client.post(f"/api/plans/{plan_id}/approve-merges"))
+    with _client(_MERGE_TIMEOUT) as client:
+        try:
+            response = client.post(f"/api/plans/{plan_id}/approve-merges")
+        except httpx.RequestError as exc:
+            _abandoned_merge(exc)
+        data = _check_dict(response)
     approved = int(data.get("approved") or 0)
     errors = data.get("errors") or []
     console.print(f"[green]Merged:[/green] {approved} task(s)")
