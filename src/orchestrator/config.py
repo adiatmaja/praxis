@@ -112,7 +112,15 @@ class Settings(BaseSettings):
             return self.agent_callback_url
         return f"http://host.docker.internal:{self.port}/api/internal/agent-done"
 
-    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
+    # extra="ignore", deliberately: docker-compose.yml mounts ./.env at
+    # /app/.env for the env_drift doctor check, so pydantic-settings parses the
+    # operator's whole dotenv file. With the pydantic-settings default of
+    # "forbid", a single container-only variable an operator adds there aborts
+    # startup and the container restart-loops, with a traceback that names the
+    # key but never says .env is the source.
+    model_config = SettingsConfigDict(
+        env_file=".env", env_file_encoding="utf-8", extra="ignore"
+    )
 
     def __init__(self, *args: Any, yaml_path: str | None = None, **kwargs: Any) -> None:
         """Overlay YAML defaults beneath explicit kwargs; env vars still win.
