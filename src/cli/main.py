@@ -282,16 +282,30 @@ def pending() -> None:
         console.print("[green]Nothing awaiting approval.[/green]")
         return
     table = Table(title=f"{data['count']} awaiting approval")
-    for column in ("Age", "Task", "Branch", "PR"):
-        table.add_column(column)
+    table.add_column("Age")
+    table.add_column("Task")
+    # Folded, not truncated: these are the values the operator must copy into
+    # `praxis merge`, so a rich ellipsis makes the whole table useless.
+    table.add_column("Task ID", max_width=36, overflow="fold")
+    table.add_column("Branch", overflow="fold")
+    table.add_column("PR", overflow="fold")
     for task in data["tasks"]:
         table.add_row(
             f"{int(task['age_hours'])}h",
             task["title"] or task["task_id"],
+            task["task_id"] or "",
             task["branch"] or "",
             task["pr_url"] or "",
         )
-    console.print(table)
+    # A full task id (36 chars) plus a full PR url cannot both fit on one
+    # line inside the default 80-column console: rich then folds them across
+    # physical lines interleaved with the neighboring columns' text, which
+    # scrambles the very value the operator needs to copy. Render this one
+    # table on a wider console instead of narrowing the columns; a real
+    # terminal narrower than that just soft-wraps the line, which leaves the
+    # id and url intact and contiguous.
+    Console(width=200).print(table)
+    console.print("\nApprove one with: [cyan]praxis merge <Task ID>[/cyan]")
 
 
 @app.command()
