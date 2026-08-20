@@ -294,6 +294,17 @@ def pending() -> None:
     console.print(table)
 
 
+@app.command()
+def merge(
+    task_id: str = typer.Argument(..., help="Full task ID from `praxis pending`"),
+) -> None:
+    """Approve and merge one review-passed task parked at the merge gate."""
+
+    with _client() as client:
+        data = _check_dict(client.post(f"/api/tasks/{task_id}/approve-merge"))
+    console.print(f"[green]Merged:[/green] {data['task_id']} ({data['status']})")
+
+
 config_app = typer.Typer(
     name="config", help="Configure the model registry and role chains"
 )
