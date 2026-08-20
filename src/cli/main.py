@@ -305,6 +305,24 @@ def merge(
     console.print(f"[green]Merged:[/green] {data['task_id']} ({data['status']})")
 
 
+@app.command("merge-plan")
+def merge_plan(
+    plan_id: str = typer.Argument(..., help="Plan ID from `praxis plans`"),
+) -> None:
+    """Approve every review-passed task parked in one plan."""
+
+    with _client() as client:
+        data = _check_dict(client.post(f"/api/plans/{plan_id}/approve-merges"))
+    approved = int(data.get("approved") or 0)
+    errors = data.get("errors") or []
+    console.print(f"[green]Merged:[/green] {approved} task(s)")
+    for failure in errors:
+        console.print(
+            f"[red]Failed:[/red] {failure.get('task_id', '?')}: "
+            f"{failure.get('error', 'unknown error')}"
+        )
+
+
 config_app = typer.Typer(
     name="config", help="Configure the model registry and role chains"
 )
