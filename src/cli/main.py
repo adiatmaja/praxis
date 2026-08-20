@@ -154,13 +154,13 @@ def plans(project_id: str = typer.Argument(..., help="Project ID")) -> None:
     with _client() as client:
         data = _check_list(client.get(f"/api/projects/{project_id}/plans"))
     table = Table(title="Plans")
-    table.add_column("ID", style="dim", max_width=8)
+    table.add_column("ID", style="dim", max_width=36, overflow="fold")
     table.add_column("Spec", max_width=40)
     table.add_column("Source")
     table.add_column("Status")
     for plan in data:
         spec_display = (plan.get("spec_path") or "")[:40]
-        table.add_row(plan["id"][:8], spec_display, plan["source"], plan["status"])
+        table.add_row(plan["id"], spec_display, plan["source"], plan["status"])
     console.print(table)
 
 
@@ -321,6 +321,8 @@ def merge_plan(
             f"[red]Failed:[/red] {failure.get('task_id', '?')}: "
             f"{failure.get('error', 'unknown error')}"
         )
+    if errors:
+        raise typer.Exit(1)
 
 
 config_app = typer.Typer(

@@ -73,7 +73,7 @@ def test_merge_plan_posts_batch_and_reports_counts(monkeypatch) -> None:
     _patch_client(monkeypatch, handler)
     result = runner.invoke(app, ["merge-plan", "plan-9"])
 
-    assert result.exit_code == 0
+    assert result.exit_code == 1
     assert seen["path"] == "/api/plans/plan-9/approve-merges"
     assert "2" in result.stdout
     assert "t3" in result.stdout
@@ -93,3 +93,30 @@ def test_merge_plan_reports_zero_without_crashing(monkeypatch) -> None:
 
     assert result.exit_code == 0
     assert "0" in result.stdout
+
+
+FULL_PLAN_ID = "11111111-2222-3333-4444-555555555555"
+
+
+def test_plans_prints_the_full_plan_id(monkeypatch) -> None:
+    """`praxis plans` must print an id `praxis merge-plan` can actually use."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json=[
+                {
+                    "id": FULL_PLAN_ID,
+                    "spec_path": "docs/spec.md",
+                    "source": "human",
+                    "status": "active",
+                }
+            ],
+        )
+
+    _patch_client(monkeypatch, handler)
+    result = runner.invoke(app, ["plans", "project-1"])
+
+    assert result.exit_code == 0
+    flat = "".join(result.stdout.split())
+    assert FULL_PLAN_ID in flat
