@@ -185,3 +185,26 @@ def test_yaml_provides_defaults(tmp_path, monkeypatch):
 
     s = Settings(_env_file=None, yaml_path=str(cfg))
     assert s.loop_interval == 7
+
+
+@pytest.mark.unit
+def test_unknown_env_key_does_not_abort_startup(monkeypatch, tmp_path) -> None:
+    """A stray .env key must be ignored, not fatal.
+
+    ./.env is mounted into the container for the env_drift check, so operators
+    put container-only variables there. Before this, one unrecognised key
+    crashed Settings() and the orchestrator restart-looped.
+    """
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "AUTH_TOKEN=tok\nGITHUB_TOKEN=ghp_x\nCLAUDE_VPN_KILLSWITCH_OFF=1\n",
+        encoding="utf-8",
+    )
+    monkeypatch.delenv("AUTH_TOKEN", raising=False)
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+    monkeypatch.delenv("CLAUDE_VPN_KILLSWITCH_OFF", raising=False)
+
+    settings = Settings(_env_file=str(env_file))
+
+    assert settings.auth_token == "tok"
+    assert "claude_vpn_killswitch_off" not in settings.model_dump()
