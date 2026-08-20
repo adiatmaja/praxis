@@ -44,17 +44,30 @@ def no_live_planner_round_trip(monkeypatch: pytest.MonkeyPatch) -> None:
     made.  ``tests/test_api_doctor.py`` pins that choice.
 
     Patched on ``api.doctor``, the module that calls it, because that is the
-    only call site permitted to spend the round trip.  The real function in
-    ``api.system`` is left alone so it stays directly unit-testable.  A test
-    needing a different answer monkeypatches the same name again; the later
-    ``setattr`` wins and is undone in reverse order.
+    only call site permitted to spend the round trip.  A test needing a
+    different answer monkeypatches the same name again; the later ``setattr``
+    wins and is undone in reverse order.
+
+    The SOURCE binding in ``api.system`` is separately replaced with a tripwire
+    that raises.  Patching the consumer alone would not mask a future second
+    call site, but it would not stop one either: ``tests/test_api_system.py``
+    leaves ``asyncio.create_subprocess_exec`` real, so wiring the probe into
+    ``/api/status`` would quietly start billing live calls with nothing going
+    red.  A test that means to exercise the real body holds a reference taken
+    at import time, which is the documented escape hatch.
     """
     from orchestrator.api import doctor as doctor_api
+    from orchestrator.api import system as sys_mod
 
-    async def _not_probed(name: str) -> bool | None:
-        return None
+    async def _not_probed(name: str) -> sys_mod.RoundTripResult:
+        return sys_mod.RoundTripResult()
+
+    async def _forbidden(name: str) -> sys_mod.RoundTripResult:
+        message = "a test tried to spend a live planner round trip"
+        raise AssertionError(message)
 
     monkeypatch.setattr(doctor_api, "probe_provider_roundtrip", _not_probed)
+    monkeypatch.setattr(sys_mod, "probe_provider_roundtrip", _forbidden)
 
 
 @pytest.fixture

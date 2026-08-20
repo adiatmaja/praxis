@@ -7,6 +7,7 @@ import json
 import logging
 import shutil
 import time
+from dataclasses import dataclass
 from typing import Any
 
 import httpx
@@ -16,6 +17,7 @@ from orchestrator.api.auth import verify_token
 from orchestrator.core.bench_mode import bench_mode, verify_gate_disabled
 from orchestrator.core.build_info import build_stamp
 from orchestrator.core.llm_router import LOGIN_HINTS
+from orchestrator.core.opus_bridge import RATE_LIMIT_SIGNATURES
 from orchestrator.models.schemas import OpusStateResponse
 
 
@@ -43,13 +45,34 @@ _CLAUDE_PROBE_TTL = 60.0
 # Per-provider probe cache: name -> (monotonic_ts, result_dict)
 _provider_probe_cache: dict[str, tuple[float, dict[str, Any]]] = {}
 
-# Round-trip probe cache: name -> (monotonic_ts, ok). Separate from
+
+@dataclass(frozen=True)
+class RoundTripResult:
+    """What one planner round trip established, unpacked by ``api/doctor``.
+
+    ``ok`` is tri-state on purpose.  ``None`` means no round trip could be made
+    at all, which is NOT a failure: the provider may have none defined, or the
+    subscription may be throttled.  Either way the pre-round-trip verdict must
+    stand rather than a red being invented.
+    """
+
+    ok: bool | None = None
+    rate_limited: bool = False
+    error: str = ""
+
+
+# Round-trip probe cache: name -> (monotonic_ts, result). Separate from
 # _provider_probe_cache because this one costs a real model call, so it is
 # called ONLY from /api/doctor, never from the 5s-polled /api/status.
-_roundtrip_probe_cache: dict[str, tuple[float, bool]] = {}
+_roundtrip_probe_cache: dict[str, tuple[float, RoundTripResult]] = {}
 _ROUNDTRIP_PROMPT = "reply with exactly: PONG"
 _ROUNDTRIP_SENTINEL = "PONG"  # nosec B105 - a sentinel string, not a credential
-_ROUNDTRIP_TIMEOUT = 25.0
+#: 20s, down from the 25s this shipped with.  ``/api/doctor`` gathers its facts
+#: sequentially and the CLI abandons the whole request at 60s, so an over-long
+#: probe renders a FALSE red on ``orchestrator_health`` instead.  Not lower than
+#: 20 either: a healthy cold ``claude -p`` measured 13-15s on Windows, and a
+#: timeout here accuses the operator of a blocked hook that does not exist.
+_ROUNDTRIP_TIMEOUT = 20.0
 
 # Commands used to check if a provider CLI is available and authenticated.
 # Each entry: (version_cmd, auth_cmd | None)
@@ -120,31 +143,27 @@ async def _probe_provider(name: str) -> dict[str, Any]:
     return result
 
 
-async def probe_provider_roundtrip(name: str) -> bool | None:
-    """Run one real, minimal prompt through a provider CLI.
+def _first_line(text: str, limit: int = 160) -> str:
+    """First non-empty line of CLI output, truncated to fit one detail line."""
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped:
+            return stripped[:limit]
+    return ""
 
-    Checking the OUTPUT rather than only the exit code is deliberate: a hook
-    that refuses a prompt can still exit 0, which is exactly how a blocked
-    planner passed as healthy during newcomer walkthrough #4.
 
-    Returns:
-        True when the CLI answered, False when it did not, and None when this
-        provider has no round-trip defined (so the caller can tell "not probed"
-        apart from "probed and refused").
-    """
-    if name != "claude":
-        return None
-    now = time.monotonic()
-    cached = _roundtrip_probe_cache.get(name)
-    if cached is not None and now - cached[0] < _CLAUDE_PROBE_TTL:
-        return cached[1]
+def _is_rate_limited(stdout: str, stderr: str) -> bool:
+    """Whether the CLI's own output says the subscription is throttled."""
+    combined = f"{stdout} {stderr}".lower()
+    return any(pattern in combined for pattern in RATE_LIMIT_SIGNATURES)
 
+
+async def _claude_roundtrip() -> RoundTripResult:
+    """One uncached ``claude -p`` round trip. See ``probe_provider_roundtrip``."""
     resolved = shutil.which("claude")
     if resolved is None:
-        _roundtrip_probe_cache[name] = (now, False)
-        return False
+        return RoundTripResult(ok=False, error="claude not found on PATH")
 
-    ok = False
     try:
         proc = await asyncio.create_subprocess_exec(
             resolved,
@@ -152,20 +171,81 @@ async def probe_provider_roundtrip(name: str) -> bool | None:
             _ROUNDTRIP_PROMPT,
             stdin=asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.PIPE,
         )
-        stdout, _ = await asyncio.wait_for(
+    except OSError as exc:
+        logger.debug("claude round-trip probe could not start: %s", exc)
+        return RoundTripResult(ok=False, error=_first_line(str(exc)))
+
+    try:
+        stdout, stderr = await asyncio.wait_for(
             proc.communicate(), timeout=_ROUNDTRIP_TIMEOUT
         )
-        ok = proc.returncode == 0 and _ROUNDTRIP_SENTINEL in stdout.decode(
-            errors="replace"
+    except TimeoutError:
+        # wait_for cancels the AWAIT, not the child.  Without this kill the
+        # `claude` process outlives every probe that hangs, and a hung planner
+        # is precisely what this check exists to catch, so they accrue.
+        proc.kill()
+        await proc.wait()
+        logger.debug("claude round-trip probe timed out")
+        return RoundTripResult(
+            ok=False, error=f"no answer within {_ROUNDTRIP_TIMEOUT:.0f}s"
         )
-    except (TimeoutError, OSError) as exc:
+    except OSError as exc:
         logger.debug("claude round-trip probe failed: %s", exc)
-        ok = False
+        return RoundTripResult(ok=False, error=_first_line(str(exc)))
 
-    _roundtrip_probe_cache[name] = (now, ok)
-    return ok
+    out = stdout.decode(errors="replace")
+    err = stderr.decode(errors="replace")
+
+    if _is_rate_limited(out, err):
+        # Praxis treats the 5h subscription limit as normal and self-healing
+        # (`opus_state` queues the calls and resumes itself), so this is not a
+        # broken planner.  Reporting it as one would fail `praxis init`, which
+        # ends by running doctor, and send the operator hunting a hook that
+        # does not exist.
+        return RoundTripResult(
+            ok=None,
+            rate_limited=True,
+            error=_first_line(err) or _first_line(out),
+        )
+
+    # The sentinel appears verbatim inside the PROMPT, so a CLI that echoes its
+    # input, or a refusal that quotes the prompt it refused, would satisfy a
+    # naive substring check and report itself healthy.  Strip the prompt first.
+    # upper() additionally accepts a model that answers "Pong".
+    answered = _ROUNDTRIP_SENTINEL in out.replace(_ROUNDTRIP_PROMPT, "").upper()
+    ok = proc.returncode == 0 and answered
+    if ok:
+        return RoundTripResult(ok=True)
+    return RoundTripResult(ok=False, error=_first_line(err) or _first_line(out))
+
+
+async def probe_provider_roundtrip(name: str) -> RoundTripResult:
+    """Run one real, minimal prompt through a provider CLI.
+
+    Checking the OUTPUT rather than only the exit code is deliberate: a hook
+    that refuses a prompt can still exit 0, which is exactly how a blocked
+    planner passed as healthy during newcomer walkthrough #4.
+
+    Costs a real model call, so it is cached and must only ever be reached from
+    ``/api/doctor``, never from the 5s-polled ``/api/status``.
+
+    Returns:
+        A ``RoundTripResult``.  ``ok`` is True when the CLI answered, False
+        when it did not, and None when no round trip was possible at all: a
+        provider with none defined, or a rate-limited subscription.
+    """
+    if name != "claude":
+        return RoundTripResult()
+    now = time.monotonic()
+    cached = _roundtrip_probe_cache.get(name)
+    if cached is not None and now - cached[0] < _CLAUDE_PROBE_TTL:
+        return cached[1]
+
+    result = await _claude_roundtrip()
+    _roundtrip_probe_cache[name] = (now, result)
+    return result
 
 
 async def _probe_claude_cli() -> bool:

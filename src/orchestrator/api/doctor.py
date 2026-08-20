@@ -33,7 +33,11 @@ from fastapi import APIRouter, Depends, Request
 
 import docker
 from orchestrator.api.auth import verify_token
-from orchestrator.api.system import _probe_provider, probe_provider_roundtrip
+from orchestrator.api.system import (
+    RoundTripResult,
+    _probe_provider,
+    probe_provider_roundtrip,
+)
 from orchestrator.core import doctor_probes as probes
 from orchestrator.core.build_info import build_stamp
 from orchestrator.core.doctor import (
@@ -504,7 +508,7 @@ async def _build_probes(request: Request) -> dict[str, Any]:
     provider, provider_error = await _safe(
         "planner_cli", lambda: _probe_provider("claude"), no_provider
     )
-    no_roundtrip: bool | None = None
+    no_roundtrip = RoundTripResult()
     roundtrip, roundtrip_error = await _safe(
         "planner_cli_roundtrip",
         lambda: probe_provider_roundtrip("claude"),
@@ -595,7 +599,9 @@ async def _build_probes(request: Request) -> dict[str, Any]:
             authenticated=bool(provider.get("authenticated")),
             # An errored probe is "not probed", never a red: a probe that could
             # not run must not invent a verdict about the CLI.
-            prompt_ok=None if roundtrip_error else roundtrip,
+            prompt_ok=None if roundtrip_error else roundtrip.ok,
+            rate_limited=not roundtrip_error and roundtrip.rate_limited,
+            prompt_error="" if roundtrip_error else roundtrip.error,
         )
 
     worker_config_error = lm_url_error or worker_cfg_error

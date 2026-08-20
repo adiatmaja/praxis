@@ -28,6 +28,17 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+#: Substrings that identify a subscription rate limit in a CLI's own output.
+#: Exported because ``api/system.py``'s doctor round-trip must reach the same
+#: verdict this module does: a rate limit is a normal, self-healing state, and
+#: a second private copy of these strings would silently drift into reporting
+#: one as a broken planner.
+RATE_LIMIT_SIGNATURES: tuple[str, ...] = (
+    "rate limit",
+    "usage limit",
+    "too many requests",
+)
+
 PLAN_PROMPT_TEMPLATE = """You are an AI project planner. Given a specification, break it into implementation tasks.
 
 Repository: {repo_url}
@@ -199,8 +210,7 @@ class OpusBridge:
     ) -> bool:
         combined = f"{stdout} {stderr}".lower()
         rate_limited = any(
-            pattern in combined
-            for pattern in ("rate limit", "usage limit", "too many requests")
+            pattern in combined for pattern in RATE_LIMIT_SIGNATURES
         ) or (code != 0 and "limit" in combined)
         if not rate_limited:
             return False

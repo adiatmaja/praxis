@@ -438,3 +438,38 @@ def test_planner_cli_unprobed_keeps_the_old_verdict():
     result = probe_planner_cli(cli_available=True, authenticated=True)
 
     assert result.status is CheckStatus.GREEN
+
+
+@pytest.mark.unit
+def test_planner_cli_red_detail_quotes_what_the_cli_actually_said():
+    """A red nobody can act on is barely better than no red at all."""
+    result = probe_planner_cli(
+        cli_available=True,
+        authenticated=True,
+        prompt_ok=False,
+        prompt_error="Blocked by policy hook",
+    )
+
+    assert result.status is CheckStatus.RED
+    assert "Blocked by policy hook" in result.detail
+
+
+@pytest.mark.unit
+def test_planner_cli_amber_not_red_when_the_subscription_is_rate_limited():
+    """Praxis treats the 5h limit as normal and self-healing.
+
+    `praxis init` ends by running doctor, so a red here fails a correct
+    install, and the red's hint would send the operator hunting a blocking
+    hook that does not exist.
+    """
+    result = probe_planner_cli(
+        cli_available=True,
+        authenticated=True,
+        prompt_ok=None,
+        rate_limited=True,
+        prompt_error="Claude usage limit reached",
+    )
+
+    assert result.status is CheckStatus.AMBER
+    assert "rate limited" in result.detail.lower()
+    assert "hook" not in result.hint.lower()
