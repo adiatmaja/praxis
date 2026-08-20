@@ -389,9 +389,17 @@ belongs among the everyday traps.
   conversation id against its own task id. That is cross-task memory bleed on the next resume,
   not a degradation to a cold start, and no test catches it because the race needs two live
   containers. The per-task name removes it by construction rather than by heuristic.
-- **The agy JSON envelope shape is UNVERIFIED.** No `agy-agent:latest` image and no
-  `praxis-gemini-creds` volume were available while this was built, so `--output-format json`
-  and `--conversation <id>` are unconfirmed against a real agy v1.1.2 build. `conversation_id`
+- **The agy JSON envelope shape was VERIFIED on 2026-08-14; the resume path still is not.**
+  This entry originally said the whole envelope was unverified, written 2026-08-05 when no
+  `agy-agent:latest` image and no `praxis-gemini-creds` volume were available. A live dogfood
+  run on 2026-08-14 confirmed `--output-format json` against a real agy build: the envelope
+  carries `{conversation_id, status, response, duration_seconds, num_turns, usage}`, and the
+  sibling `usage` object carries `input_tokens`, `output_tokens`, `thinking_tokens`,
+  `cache_read_tokens` and `total_tokens` with concrete non-zero counts. `usage.total_tokens`
+  is what the token-telemetry callback reads (see the harness parity entries at the end of
+  this file). What remains unverified is narrower than it looks: `--conversation <id>` and the
+  resume happy path (an id captured, stored, and successfully replayed) have still never been
+  exercised end to end. `conversation_id`
   is a single guessed key with no fallback; the response-body key is a genuine multi-candidate
   guess (`response`, `text`, `output`, `content`, `message`, tried in that order in
   `docker/agy-agent/extract_session.py`). Malformed or unrecognized JSON makes the extractor
@@ -803,3 +811,64 @@ belongs among the everyday traps.
   corruption existed only in the runner's working tree, which is exactly why it was
   invisible locally. Adding a new executable-under-test or a byte-asserted fixture
   needs no action, the glob already covers it; adding a genuinely binary file type does.
+
+## Harness parity: making delegation predictable across harnesses
+
+- **Worker thinking effort must be STATED, per harness, from the harness's declared channel**:
+  `core/thinking.py` encodes the rule for BRAIN payloads, that an absent `reasoning_effort`
+  means MAXIMUM effort on qwen3.8 and not off. Workers had the same hole and it was worse,
+  because it differed by harness with nothing declaring so. OpenCode's generated provider
+  config carried no effort at all, so every OpenCode worker silently ran at maximum, while agy
+  takes its effort baked into the Gemini model string (`"Gemini 3.5 Flash (High)"`). The same
+  task therefore ran under two different and undeclared thinking regimes depending on which
+  harness picked it up, with no error, no warning and no failing test. `core/harnesses.py` now
+  declares an `effort_channel` per harness (`request_option`, `model_name`, or `none`) and
+  `core/worker_effort.py` resolves exactly one value from it. Read the return type carefully:
+  `None` is a real answer meaning "this harness has no knob to turn", and it is NOT the same as
+  "off". Collapsing the two reintroduces the bug, because setting an env var a harness ignores
+  reads as configured-but-working when it is neither.
+
+- **The OpenCode config key is camelCase `reasoningEffort`, NOT snake_case `reasoning_effort`**:
+  two different naming conventions live at two different layers, and picking the wrong one
+  fails silently. OpenCode's own config schema reads a per-model request option as
+  `"options": { "reasoningEffort": "high" }` (verified against <https://opencode.ai/docs/models/>).
+  OpenCode's transform layer then converts that camelCase config key into the wire-level
+  snake_case `reasoning_effort` field of the actual HTTP request to LM Studio. The snake_case
+  form belongs to the wire payload, never to `docker/opencode-agent/entrypoint.sh`. Writing
+  snake_case in the config produces syntactically valid JSON that OpenCode's option parser
+  never finds, so the setting is dropped and the model quietly runs at its default effort,
+  which for qwen3.8 is MAXIMUM. This one was caught only because the fix was checked against
+  the vendor docs rather than written from memory.
+
+- **`@ai-sdk/openai-compatible` SILENTLY DROPS model-level `options` when the provider name
+  contains a dot**: filed upstream as <https://github.com/anomalyco/opencode/issues/23622>
+  (note OpenCode's repo moved from `sst/opencode` to `anomalyco/opencode`, so a remembered
+  `sst` URL is stale). Praxis names its provider `lmstudio`, with no dot, so it is safe today.
+  The trap is renaming: pointing the provider id at something like `pcllm.sigmasolusi.com`
+  would disable `reasoningEffort` with no error and no log line, and the symptom would be a
+  worker that reasons more than it was told to, which looks like a model problem rather than a
+  config problem. Keep the provider id dot-free.
+
+- **An omitted `harness` used to re-point an existing project at OpenCode**: both
+  `POST /api/execute-plan` and `POST /api/dispatch` computed `body.harness or
+  default_harness_id()` up front and then ran `UPDATE projects SET model_name = ?, harness = ?`
+  unconditionally for an existing project. Submitting a plan without the field therefore
+  downgraded an agy project to opencode, and because the write succeeded quietly, "which
+  harness actually ran this task" became unanswerable after the fact. The parameter is now
+  `str | None` all the way down, and `None` means "the caller expressed no preference": an
+  existing project keeps its configured harness, and only a NEW project falls back to the
+  registry default. Both endpoints had the identical bug, so fixing one and not the other
+  would have left the hole open through the MCP dispatch path.
+
+- **A bare `docker build` gives an agent image an EMPTY entrypoint-sha256 label**: the
+  Dockerfile takes the hash as a build ARG that defaults to the empty string, and
+  `docker-compose.yml` supplies it as `PRAXIS_ENTRYPOINT_SHA256: ${OPENCODE_ENTRYPOINT_SHA256:-}`
+  from a variable computed and exported by `src/cli/init.py` via
+  `core/entrypoint_hash.hash_entrypoint` (which normalizes CRLF to LF before hashing, so the
+  hash is checkout-independent). So the correct rebuild after an entrypoint edit is
+  `praxis init` followed by `docker compose --profile agents build`, never a bare
+  `docker build -t opencode-agent:latest docker/opencode-agent/`. A bare build produces an
+  image whose label is present-but-empty, which the staleness check reads as "cannot judge"
+  and reports amber rather than red, so the rebuild looks done while the image may not be.
+  Note also that a plain `sha256sum` of the entrypoint only matches the label when the file
+  happens to have no CRLF; that agreement is incidental, not the real comparison path.

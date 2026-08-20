@@ -42,6 +42,27 @@
 > default, or agy) and can drive any OpenAI-compatible endpoint (LM Studio, Ollama, or a
 > hosted one). Nothing is hard-wired to a single vendor.
 
+### The harness driving contract
+
+Pluggable harnesses only make delegation predictable if each one declares *how* praxis drives
+it. `core/harnesses.py` is that declaration, alongside the image:
+
+| Harness | Effort channel | Reports tokens |
+|---------|----------------|----------------|
+| OpenCode | `request_option` (LM Studio provider `options.reasoningEffort`) | No |
+| agy | `model_name` (effort is inside the Gemini model string) | Yes |
+
+Adding a harness means answering both columns. `core/worker_effort.py` reads the first and
+resolves a single explicit value per spawn: harnesses driven through a request option always
+receive `WORKER_REASONING_EFFORT` (never omitted, because an absent `reasoning_effort` means
+MAXIMUM effort downstream, not off), while a harness that encodes effort in its model string
+receives nothing rather than a variable it would silently ignore.
+
+The `/internal/agent-done` callback records the second column as `agent_runs.tokens_source`,
+set to `harness` or `unavailable` by the server from whether a count was present. That is what
+keeps "the harness reported zero" distinguishable from "this harness cannot report", so runs
+stay comparable across harnesses instead of both collapsing into an unexplained NULL.
+
 ## Components
 
 ### API Layer (`src/orchestrator/api/`)
@@ -102,7 +123,8 @@ MCP transport cannot surface.
 | `markdown_utils.py` | Pure markdown helpers (title, checklist progress, front-matter) |
 | `backfill.py` | One-time legacy `plans.spec` → repo spec doc (Spec 2 migration) |
 | `agent_manager.py` | Docker SDK: spawn/stop/cleanup harness containers |
-| `harnesses.py` | Harness registry (OpenCode/agy: image + About) |
+| `harnesses.py` | Harness registry (OpenCode/agy: image + About + driving contract) |
+| `worker_effort.py` | Resolve the thinking-effort signal for a spawn from the harness's declared channel |
 | `branch_sweeper.py` | `dead_branches` — pick reclaimable work branches (no open PR / live run, never protected) for the reconcile-loop sweeper (auto-delegate mode) |
 | `git_ops.py` | git/gh CLI wrappers: branch, push, PR, merge, diff |
 | `event_bus.py` | In-memory async pub/sub for SSE streaming |

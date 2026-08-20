@@ -225,7 +225,7 @@ single caller-named work branch; dead branches are swept by the reconcile loop. 
 
 ## Gotchas
 
-**`docs/gotchas.md` is the full list (95 traps, with the narrative for each). Read the
+**`docs/gotchas.md` is the full list (100 traps, with the narrative for each). Read the
 relevant entry there before touching a subsystem.** Below are only the ones that bite during
 ordinary edits, because each fails SILENTLY. When you learn a new one, write it there and add
 a line here only if it belongs in this shortlist.
@@ -255,6 +255,8 @@ a line here only if it belongs in this shortlist.
 - **Agent images are standalone, NOT in compose**: rebuild `opencode-agent:latest` /
   `agy-agent:latest` after ANY `entrypoint.sh` change or a stale image runs silently.
   Staleness is judged by CONTENT (the `org.praxis.entrypoint-sha256` label), never mtime.
+  Rebuild via `praxis init` then `docker compose --profile agents build`: a bare `docker build`
+  leaves that label EMPTY (it is a build ARG), which reads as "cannot judge", not as fresh.
 - **Worker preset env vars reach the container as BARE compose pass-throughs**
   (`- DEFAULT_WORKER_HARNESS`), never `${VAR:-default}`: any expansion form sets the variable
   even when unset, which silently suppresses the mounted YAML.
@@ -273,6 +275,13 @@ a line here only if it belongs in this shortlist.
   touching the graph (e.g. `core/leaf_split.py`) must only APPEND; supersede, never delete.
 - **Hand-built LM Studio payloads must state `reasoning_effort` explicitly**
   (`core/thinking.py` is the SSoT): an absent key means MAXIMUM effort, not off.
+- **Worker effort is PER-HARNESS and must be stated too**: `core/harnesses.py` declares each
+  harness's `effort_channel`, `core/worker_effort.py` resolves it. `None` means "this harness
+  has no knob", NOT "off". The OpenCode config key is camelCase `reasoningEffort`; snake_case
+  is the wire field and is silently ignored in the config file.
+- **An omitted `harness` must never downgrade a project**: `execute_plan` and `dispatch` pass
+  `None` through, so an existing project keeps its configured harness and only a NEW project
+  falls back to the registry default.
 - **Agent runs non-root** in `/home/agent/workspace`, with git auth via `GH_TOKEN`.
 
 **Contracts that break fixtures**
