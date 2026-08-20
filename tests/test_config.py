@@ -197,14 +197,14 @@ def test_unknown_env_key_does_not_abort_startup(monkeypatch, tmp_path) -> None:
     """
     env_file = tmp_path / ".env"
     env_file.write_text(
-        "AUTH_TOKEN=tok\n"
-        "GITHUB_TOKEN=ghp_x\n"
-        "CLAUDE_VPN_KILLSWITCH_OFF=1\n",
+        "AUTH_TOKEN=tok\nGITHUB_TOKEN=ghp_x\nCLAUDE_VPN_KILLSWITCH_OFF=1\n",
         encoding="utf-8",
     )
+    monkeypatch.delenv("AUTH_TOKEN", raising=False)
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
     monkeypatch.delenv("CLAUDE_VPN_KILLSWITCH_OFF", raising=False)
 
     settings = Settings(_env_file=str(env_file))
 
     assert settings.auth_token == "tok"
-    assert not hasattr(settings, "claude_vpn_killswitch_off")
+    assert "claude_vpn_killswitch_off" not in settings.model_dump()

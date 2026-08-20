@@ -117,7 +117,8 @@ class Settings(BaseSettings):
     # operator's whole dotenv file. With the pydantic-settings default of
     # "forbid", a single container-only variable an operator adds there aborts
     # startup and the container restart-loops, with a traceback that names the
-    # key but never says .env is the source.
+    # key but never says .env is the source. Trade-off: a typo in a real key
+    # (e.g. AUTHH_TOKEN) is now silently ignored and nothing catches it.
     model_config = SettingsConfigDict(
         env_file=".env", env_file_encoding="utf-8", extra="ignore"
     )
@@ -144,9 +145,15 @@ class Settings(BaseSettings):
         }
         # Explicit kwargs passed by caller override YAML defaults.
         merged = {**filtered, **kwargs}
-        # The YAML may carry nested config consumed elsewhere (e.g. capability,
-        # escalation read via EffectiveSettings); drop keys that are not Settings
-        # fields so pydantic's extra="forbid" does not reject them.
+        # Filter to prevent source-directive kwargs (_env_file, _secrets_dir, etc.)
+        # from being passed to pydantic-settings as if they were field values.
+        # pydantic-settings intercepts these underscore-prefixed kwargs before
+        # validation and uses them to control where configuration is loaded from.
+        # If load_yaml_settings folds an arbitrary env var as a lowercase key
+        # (e.g. PRAXIS_ENV_FILE -> env_file) and we pass it through as a field,
+        # it could silently redirect settings reads. The "or k in kwargs" clause
+        # is load-bearing: it allows callers to explicitly pass _env_file=None,
+        # which is how tests isolate themselves from the real ./.env file.
         known_fields = set(type(self).model_fields)
         merged = {k: v for k, v in merged.items() if k in known_fields or k in kwargs}
         super().__init__(*args, **merged)
