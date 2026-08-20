@@ -470,3 +470,33 @@ async def test_doctor_reds_planner_cli_when_the_round_trip_is_refused(
     check = next(c for c in response.json()["checks"] if c["check_id"] == "planner_cli")
     assert check["status"] == "red"
     assert check["hint"]
+
+
+@pytest.mark.integration
+async def test_the_suite_never_spends_a_live_planner_round_trip(
+    client, auth_headers, monkeypatch
+):
+    """The `no_live_planner_round_trip` autouse fixture, pinned.
+
+    Nothing else in the suite asserts a non-red `planner_cli`, so without this
+    test the fixture could return the wrong value, or be deleted outright, and
+    every check would still pass while the suite quietly spent a real
+    subscription call on every doctor request.
+
+    The DETAIL is asserted, not just the status: "installed and authenticated"
+    is the pre-round-trip verdict and is reachable only from `prompt_ok=None`.
+    `True` would say "answering prompts" and `False` would go red, so this one
+    assertion pins the fixture to exactly "not probed".
+    """
+    from orchestrator.api import doctor as doctor_api
+
+    async def fake_provider(name: str) -> dict:
+        return {"cli_available": True, "authenticated": True}
+
+    monkeypatch.setattr(doctor_api, "_probe_provider", fake_provider)
+
+    response = await client.get("/api/doctor", headers=auth_headers)
+
+    check = next(c for c in response.json()["checks"] if c["check_id"] == "planner_cli")
+    assert check["status"] == "green"
+    assert check["detail"] == "planner CLI installed and authenticated"

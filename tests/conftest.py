@@ -25,6 +25,38 @@ from orchestrator.main import app
 FAKE_GITHUB_TOKEN = "ghp_abcdef1234567890abcdef1234567890abcd"
 
 
+@pytest.fixture(autouse=True)
+def no_live_planner_round_trip(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep doctor's planner round-trip off the wire in every test.
+
+    ``/api/doctor`` runs one real ``claude -p`` to prove the planner CLI can
+    actually answer, which is the entire point of that check.  Unstubbed, any
+    test touching the endpoint on a machine with ``claude`` on PATH spends a
+    real subscription call and about 16 seconds.  The probe's own 60 s cache
+    hides most of that only while the doctor tests happen to run back to back,
+    so sharding or reordering the suite would multiply the cost.
+
+    ``None`` is the value that keeps every pre-existing test behaving exactly
+    as it did before the round-trip landed: it means "not probed", so
+    ``probe_planner_cli`` falls through to its install-plus-auth verdict.
+    ``False`` would turn the row red and ``True`` would rewrite its detail,
+    either of which is this fixture inventing a diagnosis the machine never
+    made.  ``tests/test_api_doctor.py`` pins that choice.
+
+    Patched on ``api.doctor``, the module that calls it, because that is the
+    only call site permitted to spend the round trip.  The real function in
+    ``api.system`` is left alone so it stays directly unit-testable.  A test
+    needing a different answer monkeypatches the same name again; the later
+    ``setattr`` wins and is undone in reverse order.
+    """
+    from orchestrator.api import doctor as doctor_api
+
+    async def _not_probed(name: str) -> bool | None:
+        return None
+
+    monkeypatch.setattr(doctor_api, "probe_provider_roundtrip", _not_probed)
+
+
 @pytest.fixture
 def test_settings(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Settings:
     db_path = tmp_path / "test.db"
