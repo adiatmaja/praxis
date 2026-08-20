@@ -929,7 +929,15 @@ belongs among the everyday traps.
   url at 80 columns no matter which columns you drop, so `pending` now prints a
   plain `praxis merge <id>` line per task underneath the table. Rich's default
   word-wrap only breaks on whitespace, so a token with none survives contiguous
-  at any width. `praxis tasks` and `praxis projects` still truncate to 8 chars.
+  at any width. `plans`, `projects`, and `tasks` now print the id whole in a
+  36-wide folding column, which removes the 404. Be precise about what that does
+  and does not buy: the id is no longer truncated, but on a terminal narrower
+  than roughly 100 columns the folding column still wraps it across physical
+  lines with border characters between the fragments, so it reads correctly but
+  does not copy cleanly. `tests/test_cli_ids.py` pins `COLUMNS=160` and therefore
+  does not cover that case. Only `pending`, which prints a plain line rather than
+  a table cell, is genuinely copy-pasteable at any width. Agent-run ids inside
+  `praxis task` are still truncated on purpose: no command takes one.
 
 - **An unrecognised key in `.env` used to abort orchestrator startup**:
   `docker-compose.yml` mounts `./.env` at `/app/.env` so `praxis doctor`'s
