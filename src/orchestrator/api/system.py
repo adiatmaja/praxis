@@ -43,6 +43,14 @@ _CLAUDE_PROBE_TTL = 60.0
 # Per-provider probe cache: name -> (monotonic_ts, result_dict)
 _provider_probe_cache: dict[str, tuple[float, dict[str, Any]]] = {}
 
+# Round-trip probe cache: name -> (monotonic_ts, ok). Separate from
+# _provider_probe_cache because this one costs a real model call, so it is
+# called ONLY from /api/doctor, never from the 5s-polled /api/status.
+_roundtrip_probe_cache: dict[str, tuple[float, bool]] = {}
+_ROUNDTRIP_PROMPT = "reply with exactly: PONG"
+_ROUNDTRIP_SENTINEL = "PONG"  # nosec B105 - a sentinel string, not a credential
+_ROUNDTRIP_TIMEOUT = 25.0
+
 # Commands used to check if a provider CLI is available and authenticated.
 # Each entry: (version_cmd, auth_cmd | None)
 # version_cmd exit 0 → cli_available; auth_cmd exit 0 → authenticated.
@@ -110,6 +118,54 @@ async def _probe_provider(name: str) -> dict[str, Any]:
     }
     _provider_probe_cache[name] = (now, result)
     return result
+
+
+async def probe_provider_roundtrip(name: str) -> bool | None:
+    """Run one real, minimal prompt through a provider CLI.
+
+    Checking the OUTPUT rather than only the exit code is deliberate: a hook
+    that refuses a prompt can still exit 0, which is exactly how a blocked
+    planner passed as healthy during newcomer walkthrough #4.
+
+    Returns:
+        True when the CLI answered, False when it did not, and None when this
+        provider has no round-trip defined (so the caller can tell "not probed"
+        apart from "probed and refused").
+    """
+    if name != "claude":
+        return None
+    now = time.monotonic()
+    cached = _roundtrip_probe_cache.get(name)
+    if cached is not None and now - cached[0] < _CLAUDE_PROBE_TTL:
+        return cached[1]
+
+    resolved = shutil.which("claude")
+    if resolved is None:
+        _roundtrip_probe_cache[name] = (now, False)
+        return False
+
+    ok = False
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            resolved,
+            "-p",
+            _ROUNDTRIP_PROMPT,
+            stdin=asyncio.subprocess.DEVNULL,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        stdout, _ = await asyncio.wait_for(
+            proc.communicate(), timeout=_ROUNDTRIP_TIMEOUT
+        )
+        ok = proc.returncode == 0 and _ROUNDTRIP_SENTINEL in stdout.decode(
+            errors="replace"
+        )
+    except (TimeoutError, OSError) as exc:
+        logger.debug("claude round-trip probe failed: %s", exc)
+        ok = False
+
+    _roundtrip_probe_cache[name] = (now, ok)
+    return ok
 
 
 async def _probe_claude_cli() -> bool:

@@ -408,3 +408,33 @@ def test_env_drift_ignores_keys_absent_from_disk() -> None:
 def test_env_drift_amber_when_nothing_could_be_read() -> None:
     result = probe_env_drift(running={}, on_disk={})
     assert result.status is CheckStatus.AMBER
+
+
+@pytest.mark.unit
+def test_planner_cli_red_when_installed_but_prompt_refused():
+    """Installed + authenticated is not enough if prompts do not complete.
+
+    A host hook mounted into the container (walkthrough #4) refused every
+    prompt while this check stayed green.
+    """
+    result = probe_planner_cli(cli_available=True, authenticated=True, prompt_ok=False)
+
+    assert result.status is CheckStatus.RED
+    assert "prompt" in result.detail.lower()
+    # The registry hint says "run its login command", which is actively wrong
+    # here: the CLI IS logged in. The probe must override it.
+    assert "login" not in result.hint.lower()
+
+
+@pytest.mark.unit
+def test_planner_cli_green_when_the_round_trip_answers():
+    result = probe_planner_cli(cli_available=True, authenticated=True, prompt_ok=True)
+
+    assert result.status is CheckStatus.GREEN
+
+
+@pytest.mark.unit
+def test_planner_cli_unprobed_keeps_the_old_verdict():
+    result = probe_planner_cli(cli_available=True, authenticated=True)
+
+    assert result.status is CheckStatus.GREEN

@@ -33,7 +33,7 @@ from fastapi import APIRouter, Depends, Request
 
 import docker
 from orchestrator.api.auth import verify_token
-from orchestrator.api.system import _probe_provider
+from orchestrator.api.system import _probe_provider, probe_provider_roundtrip
 from orchestrator.core import doctor_probes as probes
 from orchestrator.core.build_info import build_stamp
 from orchestrator.core.doctor import (
@@ -504,6 +504,12 @@ async def _build_probes(request: Request) -> dict[str, Any]:
     provider, provider_error = await _safe(
         "planner_cli", lambda: _probe_provider("claude"), no_provider
     )
+    no_roundtrip: bool | None = None
+    roundtrip, roundtrip_error = await _safe(
+        "planner_cli_roundtrip",
+        lambda: probe_provider_roundtrip("claude"),
+        no_roundtrip,
+    )
 
     # In a thread: a hung `git` would otherwise stall the event loop for the
     # subprocess timeout on every /api/doctor call, blocking other in-flight
@@ -587,6 +593,9 @@ async def _build_probes(request: Request) -> dict[str, Any]:
         result_map["planner_cli"] = probes.probe_planner_cli(
             cli_available=bool(provider.get("cli_available")),
             authenticated=bool(provider.get("authenticated")),
+            # An errored probe is "not probed", never a red: a probe that could
+            # not run must not invent a verdict about the CLI.
+            prompt_ok=None if roundtrip_error else roundtrip,
         )
 
     worker_config_error = lm_url_error or worker_cfg_error

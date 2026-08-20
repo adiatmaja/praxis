@@ -442,3 +442,31 @@ def test_gather_docker_facts_reads_the_entrypoint_hash_label(monkeypatch):
 
     assert facts.image_labels["opencode-agent:latest"] == "abc123"
     assert facts.image_labels["agy-agent:latest"] == "abc123"
+
+
+@pytest.mark.integration
+async def test_doctor_reds_planner_cli_when_the_round_trip_is_refused(
+    client, auth_headers, monkeypatch
+):
+    """The check must go red when prompts are blocked, not stay green.
+
+    Walkthrough #4: this row printed OK while every brain call in the container
+    was refused, and the operator found out mid-plan instead.
+    """
+    from orchestrator.api import doctor as doctor_api
+
+    async def fake_provider(name: str) -> dict:
+        return {"cli_available": True, "authenticated": True}
+
+    async def fake_roundtrip(name: str) -> bool:
+        return False
+
+    monkeypatch.setattr(doctor_api, "_probe_provider", fake_provider)
+    monkeypatch.setattr(doctor_api, "probe_provider_roundtrip", fake_roundtrip)
+
+    response = await client.get("/api/doctor", headers=auth_headers)
+
+    assert response.status_code == 200
+    check = next(c for c in response.json()["checks"] if c["check_id"] == "planner_cli")
+    assert check["status"] == "red"
+    assert check["hint"]

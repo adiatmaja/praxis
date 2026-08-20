@@ -218,8 +218,21 @@ def probe_git_credential(configured: bool, local_mode: bool) -> CheckResult:
     )
 
 
-def probe_planner_cli(cli_available: bool, authenticated: bool) -> CheckResult:
-    """Green only when the planner CLI is installed AND authenticated."""
+def probe_planner_cli(
+    cli_available: bool,
+    authenticated: bool,
+    prompt_ok: bool | None = None,
+) -> CheckResult:
+    """Green only when the planner CLI is installed, authenticated, and answering.
+
+    Args:
+        cli_available: The CLI binary resolved on PATH.
+        authenticated: The CLI reports a usable session.
+        prompt_ok: Result of one real round-trip, or None when not probed.
+            None preserves the pre-round-trip verdict; False is a hard red,
+            because an installed-and-authenticated CLI whose prompts are refused
+            fails every plan while looking healthy here.
+    """
     if not cli_available:
         return CheckResult(
             check_id="planner_cli",
@@ -231,6 +244,30 @@ def probe_planner_cli(cli_available: bool, authenticated: bool) -> CheckResult:
             check_id="planner_cli",
             status=CheckStatus.RED,
             detail="planner CLI installed but not authenticated",
+        )
+    if prompt_ok is False:
+        return CheckResult(
+            check_id="planner_cli",
+            status=CheckStatus.RED,
+            detail=(
+                "planner CLI is installed and authenticated but a test prompt "
+                "did not complete; a hook or policy may be blocking it"
+            ),
+            # Explicit, because the registry hint for this check says "run its
+            # login command" and that is the one thing that will NOT help: the
+            # CLI is already authenticated. CheckResult only auto-fills a hint
+            # when none is passed.
+            hint=(
+                "the CLI is authenticated but something refused the prompt. "
+                "Check for a Claude Code hook in the mounted ~/.claude whose "
+                "detector assumes the host OS; see docs/gotchas.md"
+            ),
+        )
+    if prompt_ok is True:
+        return CheckResult(
+            check_id="planner_cli",
+            status=CheckStatus.GREEN,
+            detail="planner CLI installed, authenticated, and answering prompts",
         )
     return CheckResult(
         check_id="planner_cli",
