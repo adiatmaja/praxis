@@ -17,7 +17,7 @@ from orchestrator.api.auth import verify_token
 from orchestrator.core.bench_mode import bench_mode, verify_gate_disabled
 from orchestrator.core.build_info import build_stamp
 from orchestrator.core.llm_router import LOGIN_HINTS
-from orchestrator.core.opus_bridge import RATE_LIMIT_SIGNATURES
+from orchestrator.core.opus_bridge import is_rate_limited
 from orchestrator.models.schemas import OpusStateResponse
 
 
@@ -152,12 +152,6 @@ def _first_line(text: str, limit: int = 160) -> str:
     return ""
 
 
-def _is_rate_limited(stdout: str, stderr: str) -> bool:
-    """Whether the CLI's own output says the subscription is throttled."""
-    combined = f"{stdout} {stderr}".lower()
-    return any(pattern in combined for pattern in RATE_LIMIT_SIGNATURES)
-
-
 async def _claude_roundtrip() -> RoundTripResult:
     """One uncached ``claude -p`` round trip. See ``probe_provider_roundtrip``."""
     resolved = shutil.which("claude")
@@ -197,8 +191,12 @@ async def _claude_roundtrip() -> RoundTripResult:
 
     out = stdout.decode(errors="replace")
     err = stderr.decode(errors="replace")
+    # The EXIT CODE is half the shared predicate, so it has to travel with the
+    # output. Dropping it here is how this probe silently disagreed with the
+    # brain about three of four real Claude rate-limit wordings.
+    code = proc.returncode or 0
 
-    if _is_rate_limited(out, err):
+    if is_rate_limited(code, out, err):
         # Praxis treats the 5h subscription limit as normal and self-healing
         # (`opus_state` queues the calls and resumes itself), so this is not a
         # broken planner.  Reporting it as one would fail `praxis init`, which
@@ -215,7 +213,7 @@ async def _claude_roundtrip() -> RoundTripResult:
     # naive substring check and report itself healthy.  Strip the prompt first.
     # upper() additionally accepts a model that answers "Pong".
     answered = _ROUNDTRIP_SENTINEL in out.replace(_ROUNDTRIP_PROMPT, "").upper()
-    ok = proc.returncode == 0 and answered
+    ok = code == 0 and answered
     if ok:
         return RoundTripResult(ok=True)
     return RoundTripResult(ok=False, error=_first_line(err) or _first_line(out))
