@@ -1207,3 +1207,65 @@ belongs among the everyday traps.
   without any collision at all. With the lookup state-aware, a colliding branch
   name is harmless in the ordinary two-tier case, because `REUSING_BRANCH` is 0
   there and the branch is rebuilt from base and force-pushed.
+
+- **The autonomous improvement loop used to propose work for a repository it
+  never read.** `check_improvements` built its entire prompt from three strings,
+  the project name, the repo URL and a plan path, and cloned nothing. Asked what
+  to build next for `playground` (seven files of helper functions) it proposed
+  hashing auth tokens with bcrypt, adding a transaction context manager to the
+  Database class, adding a Content-Security-Policy header to the Caddyfile and
+  rate-limiting the auth endpoints. None of those exist in that repo; every one
+  describes Praxis itself. With no information about the target, the only
+  codebase in the planner's context is the one it can see. Measured in
+  walkthrough #7 (2026-08-21).
+
+  This was never a prompt-tuning problem. The prompt was reasonable and had
+  nothing to reason about. `core/repo_survey.py` supplies the missing input: a
+  bounded, factual survey of the cloned tree, real paths plus a short excerpt of
+  the files that say what the project is, reached through
+  `BrainstormManager.survey_repo` (the same clone-read-delete shape as the other
+  readers on that class).
+
+  **It fails CLOSED, and that is the load-bearing half.** No readable repository
+  means no proposal at all. Falling back to the name-only summary would
+  reproduce the defect exactly on the days a clone fails, which is the worst
+  possible time for it to return silently. Three conditions are equivalent and
+  each has its own test: no reader configured, the read raised, or the survey
+  came back blank. `build_repo_survey` never returns `""` (an empty repository
+  yields a positive "no files" line), so a blank string means something failed
+  upstream without saying so, and silence must not buy a proposal.
+
+  Two things about the survey worth keeping. Its bounds ANNOUNCE themselves,
+  because a silently truncated survey reads to the planner as a complete picture
+  of a smaller project, which is a subtler version of the same failure. And
+  `.git`, `node_modules`, `__pycache__` and friends are pruned, or the cap is
+  spent on objects before a single source file is reached.
+
+  **The approval gate was not the problem and must not be "fixed".** It held:
+  `approval_gate` defaults true, so the plan parked at `pending` and nothing
+  dispatched. Note while reading logs here that `create_improvement_plan` calls
+  `activate_plan` unconditionally and only then flips the status back to
+  `PENDING`, so the log says `Activated plan <id> with 5 tasks` even when the
+  gate parks it. The status is correct everywhere a human looks.
+
+- **A plan whose every task is a no-op has nothing to integrate, and that is a
+  fact rather than an error.** Such a plan leaves its branch identical to base,
+  so `gh pr create` refuses with `No commits between main and plan/...`, and
+  attempting it anyway logged `Integration PR open failed` over a completely
+  correct outcome. Same fact-versus-verdict split as `no_changes` one layer
+  down: the absence of a diff is a fact and the orchestrator decides what it
+  means. `_plan_branch_has_nothing_to_integrate` now makes that call BEFORE
+  attempting creation.
+
+  The check is POSITIVE and deliberately sufficient rather than necessary,
+  exactly like `_existing_integration_pr`: only two known, equal SHAs skip
+  creation. A branch that merely TRAILS its base also has nothing to integrate,
+  is not detected, and falls through to the normal attempt. That is the safe
+  direction. A `None` from either lookup means "could not ask", never "no
+  commits".
+
+  Both values must be actual `str`. That is not defensive clutter: "equal" is
+  only meaningful for two answers, and any other object being equal to itself
+  makes the check skip integration for EVERY plan while looking correct. It was
+  measured doing precisely that against an `AsyncMock`, which returns the same
+  sentinel for every call; seven existing tests went red and caught it.

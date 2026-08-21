@@ -31,6 +31,56 @@ class ImprovementMixin:
         _tq: TaskQueue
         _bus: EventBus
 
+    async def _repo_survey(self, project: dict[str, Any]) -> str | None:
+        """Return a survey of the project's repository, or None if unavailable.
+
+        None is the "no evidence" answer and every caller must treat it as a
+        refusal, never as an empty string to carry on with. Three ways to get
+        it, all equivalent to the caller:
+
+        - no reader is configured (the shape every pre-fix unit test used, and
+          the shape in which the loop used to analyse happily),
+        - the clone or read raised,
+        - the survey came back blank. ``build_repo_survey`` never returns "",
+          since an empty repository yields a positive "no files" line, so a
+          blank string means something upstream failed silently, and silence
+          must not buy a proposal.
+
+        Args:
+            project: Project dict; needs ``repo_url``.
+
+        Returns:
+            The survey text, or None when the repository could not be read.
+        """
+        reader = getattr(self, "_spec_reader", None)
+        repo_url = project.get("repo_url")
+        if reader is None or not repo_url:
+            logger.info(
+                "Improvement analysis skipped for project %s: no repository "
+                "reader is configured, so there is nothing to reason about",
+                project.get("id"),
+            )
+            return None
+        try:
+            survey = await reader.survey_repo(repo_url)
+        except Exception as exc:  # noqa: BLE001 - any read failure is "no evidence"
+            logger.warning(
+                "Improvement analysis skipped for project %s: could not survey %s (%s)",
+                project.get("id"),
+                repo_url,
+                exc,
+            )
+            return None
+        if not str(survey).strip():
+            logger.warning(
+                "Improvement analysis skipped for project %s: the survey of %s "
+                "came back empty",
+                project.get("id"),
+                repo_url,
+            )
+            return None
+        return str(survey)
+
     async def check_improvements(
         self,
         plan_id: str,
@@ -51,10 +101,26 @@ class ImprovementMixin:
         if plan is None:
             return None
 
+        # The repository itself, not just its name. Without this the planner is
+        # asked what to build next with no information about the codebase, and
+        # answers from the only codebase in its context: measured in
+        # walkthrough #7, five proposals for a seven-file helper repo that all
+        # described Praxis (a Caddyfile CSP header, auth rate limiting, bcrypt
+        # token hashing, a Database transaction manager). See core/repo_survey.
+        #
+        # Fails CLOSED. Falling back to the name-only summary when the survey
+        # is unavailable would reproduce that defect exactly, on the days a
+        # clone fails, which is the worst possible time for it to come back
+        # silently. No readable repository means no basis for proposing work.
+        survey = await self._repo_survey(project)
+        if survey is None:
+            return None
+
         summary = (
             f"Project: {project['name']}\n"
             f"Repo: {project['repo_url']}\n"
-            f"Completed plan: {plan.get('plan_path') or plan.get('spec_path') or 'unknown'}"
+            f"Completed plan: {plan.get('plan_path') or plan.get('spec_path') or 'unknown'}\n"
+            f"\n{survey}"
         )
         analysis = cast(
             dict[str, Any],

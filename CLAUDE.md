@@ -322,6 +322,15 @@ a line here only if it belongs in this shortlist.
 - **`praxis merge <task-id>` / `praxis merge-plan <plan-id>` open the merge gate**;
   `praxis approve` is for improvement PLANS and 404s on a task id. `merge-plan`
   exits 1 if any task failed.
+- **The improvement loop must be given the REPOSITORY, and fails closed without it**:
+  `check_improvements` once built its whole prompt from three strings and cloned nothing,
+  so it proposed Praxis-shaped work for an unrelated repo. `core/repo_survey.py` +
+  `BrainstormManager.survey_repo` supply it; no readable repo means NO proposal, because
+  falling back to the name-only summary reproduces the defect whenever a clone fails.
+- **A plan with no commits has nothing to integrate**: all-no-op plans leave the branch
+  identical to base, so `gh pr create` refuses and that is a FACT, not a failed PR.
+  `_plan_branch_has_nothing_to_integrate` decides before attempting. Positive check only:
+  two known, equal `str` SHAs. Anything else falls through to the attempt.
 - **A plan reaches the gate TWICE**: each task onto the plan branch, then the plan's
   own integration PR onto the base branch. The PR url lives on
   `plans.integration_pr_url` and `integration_merged_at` is what takes it back out of

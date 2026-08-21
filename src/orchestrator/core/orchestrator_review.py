@@ -1286,6 +1286,62 @@ class ReviewMixin:
 
         return _verify_outcome(passed, output, plan_branch, verify_cmd)
 
+    async def _plan_branch_has_nothing_to_integrate(
+        self, repo_url: str, base: str, head: str
+    ) -> bool:
+        """Positively establish that ``head`` carries no commits beyond ``base``.
+
+        True ONLY when both branches resolve to the same SHA, which proves the
+        plan branch has nothing of its own: every task closed as a no-op, so
+        the repository already satisfied the spec. `gh pr create` refuses that
+        case with "No commits between ...", and reporting a refusal the code
+        could have predicted as `Integration PR open failed` misfiled a correct
+        outcome as an error.
+
+        Sufficient, not necessary, and deliberately so. A branch that merely
+        TRAILS its base also has nothing to integrate but is not detected here;
+        it falls through to the normal creation attempt and the old error path.
+        That is the safe direction, and it is the same rule
+        ``_existing_integration_pr`` follows: only a POSITIVE, fully answered
+        check may change the flow.
+
+        A ``None`` from either lookup means "could not ask", never "no
+        commits". Treating an unanswered lookup as a skip would stop opening
+        integration PRs the first time the network hiccupped, and the plan
+        would complete with no PR and no error, which is exactly the class of
+        silent gap this loop keeps rediscovering.
+
+        Both values must be actual non-empty ``str``, which is what
+        ``remote_head_sha`` is declared to return. That is not defensive
+        clutter: "equal" is only meaningful for two answers, and any other
+        object being equal to itself would make this skip integration for
+        every plan while looking correct. It was measured doing exactly that
+        against a loose test double before the check was tightened.
+
+        Args:
+            repo_url: The project's repository.
+            base: The integration PR's base branch.
+            head: The plan's branch.
+
+        Returns:
+            True only when both SHAs are known, are strings, and are equal.
+        """
+        try:
+            head_sha = await self._git.remote_head_sha(repo_url, head)
+            base_sha = await self._git.remote_head_sha(repo_url, base)
+        except Exception as exc:  # noqa: BLE001 - cannot ask is not an answer
+            logger.warning(
+                "Could not compare %s against %s to decide whether there is "
+                "anything to integrate (%s); attempting the PR anyway",
+                head,
+                base,
+                exc,
+            )
+            return False
+        if not isinstance(head_sha, str) or not isinstance(base_sha, str):
+            return False
+        return bool(head_sha) and head_sha == base_sha
+
     async def _existing_integration_pr(
         self, repo_url: str, base: str, head: str
     ) -> str | None:
@@ -1406,6 +1462,24 @@ class ReviewMixin:
                     plan_branch,
                     base,
                     existing_pr,
+                )
+            elif await self._plan_branch_has_nothing_to_integrate(
+                repo_url, base, plan_branch
+            ):
+                # Not a failure. A plan whose tasks all closed as no-ops leaves
+                # its branch identical to base, and `gh pr create` then refuses
+                # with "No commits between main and plan/...". Attempting it
+                # anyway logged `Integration PR open failed` over a completely
+                # correct outcome (walkthrough #7). This is the same
+                # fact-versus-verdict split as `no_changes` one layer down: the
+                # absence of a diff is a fact, and what it MEANS is decided
+                # here.
+                log.info(
+                    "nothing to integrate for plan %s: branch=%s is identical "
+                    "to base=%s, so there is no diff to open a PR for",
+                    plan_id,
+                    plan_branch,
+                    base,
                 )
             else:
                 try:

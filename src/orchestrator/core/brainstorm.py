@@ -207,6 +207,28 @@ class BrainstormManager:
         finally:
             shutil.rmtree(workspace, ignore_errors=True)
 
+    async def survey_repo(self, repo_url: str) -> str:
+        """Clone the repo and return a bounded factual survey of its contents.
+
+        Exists for the autonomous improvement loop, which used to ask "what
+        should we build next?" while supplying only a project name, a repo URL
+        and a plan path. See :mod:`orchestrator.core.repo_survey` for the
+        measured failure that produced.
+
+        Same clone-read-delete shape as the other readers on this class, so the
+        workspace never outlives the call.
+        """
+        from orchestrator.core.repo_survey import build_repo_survey
+
+        session_id = uuid.uuid4().hex
+        workspace = str(Path(self._base) / session_id)
+        Path(workspace).mkdir(parents=True, exist_ok=True)
+        await self._clone_repo(repo_url, workspace)
+        try:
+            return build_repo_survey(Path(workspace))
+        finally:
+            shutil.rmtree(workspace, ignore_errors=True)
+
     async def list_lifecycle_docs(self, repo_url: str) -> list[dict]:
         """Clone the repo and list spec/plan markdown with metadata."""
         session_id = uuid.uuid4().hex

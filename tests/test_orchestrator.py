@@ -27,6 +27,22 @@ def _spec_reader(text: str = "Build auth") -> AsyncMock:
     return reader
 
 
+def _survey_reader() -> MagicMock:
+    """A spec_reader that can survey a repo, which the improvement loop requires.
+
+    `check_improvements` fails CLOSED without repository context: proposing work
+    on a codebase nobody read is the walkthrough-#7 defect
+    (`tests/test_improvement_repo_context.py` owns that contract). These tests
+    are about the loop's plumbing rather than its inputs, so they supply the
+    cheapest survey that satisfies it.
+    """
+    reader = MagicMock()
+    reader.survey_repo = AsyncMock(
+        return_value="Repository contents (1 files):\n  src/app.py\n"
+    )
+    return reader
+
+
 async def _setup(db: Database) -> tuple[TaskQueue, str, str]:
     """Create a project, active plan, and one task."""
 
@@ -666,6 +682,7 @@ class TestImprovementLoop:
             opus_bridge=mock_opus,
             git_ops=AsyncMock(),
             event_bus=EventBus(),
+            spec_reader=_survey_reader(),
         )
         result = await orch.check_improvements(plan_id, await _project(db))
 
@@ -1030,6 +1047,7 @@ class TestOrchestrationLoop:
             opus_bridge=mock_opus,
             git_ops=AsyncMock(),
             event_bus=EventBus(),
+            spec_reader=_survey_reader(),
         )
 
         await orch.run_once()
