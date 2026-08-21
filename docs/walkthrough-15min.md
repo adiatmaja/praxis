@@ -1437,3 +1437,193 @@ the one place this run had to guess twice.
 Also untouched: no `praxis reject-merge`, so the gate remains one-way from the
 CLI; the all-whitespace `verify_cmd` hole; and the doctor probing the CLI default
 model rather than the configured planner.
+
+# Run #6, 2026-08-21
+
+Product commit **`92bc3e3`**, the walkthrough-#5 blocker fixes plus
+`praxis logs`. Previous scores **5/10**, **7/10**, **6/10**, **7/10**, **7/10**.
+
+Run #5 answered its question ALMOST: everything worked up to the last link, and
+the integration PR was invisible to the CLI. Run #6 measures whether the repair
+holds, and whether an empty diff has stopped meaning failure.
+
+## The question this run existed to answer
+
+**Can a newcomer take a spec from `praxis submit` all the way onto `main`,
+using only the CLI, never reaching for `curl`?**
+
+**Yes.** For the first time in six runs, the loop closed completely. A spec went
+in, two tasks were planned, dispatched, reviewed, merged to the plan branch, and
+the plan's integration PR merged onto `main`, with `duration.py` and
+`test_duration.py` landing there. Zero `curl`. Every step was reachable from a
+printed, copyable command.
+
+**Score: 8/10.** The point deducted is not for friction. It is for a new HIGH
+defect this run found, described below, in which Praxis reports a change as
+reviewed and merged while the worker's actual commit is left behind.
+
+## Setup: 70 seconds, the best of the six runs
+
+| Step | Time |
+|---|---|
+| `git clone` | 5 s |
+| `uv venv && uv sync --extra dev` | 5 s |
+| `praxis init --non-interactive --accept-preset-requirements` | 60 s |
+| **To a running orchestrator** | **70 s** |
+| Killswitch workaround, recreate, re-doctor | ~35 s |
+| Re-init with a GitHub credential | 21 s |
+
+`praxis init --non-interactive` worked first try and is the single largest
+usability change since run #1. No wizard, no piped newlines, no answer set that
+misaligns on the second run.
+
+**The unmet-requirements guard fired, and that is worth recording.** Run with no
+`--preset`, init picked the deployment default (`gemini-agy`), refused in **2 s**
+because that preset needs an interactive login, printed the two-command setup
+recipe, and named both escape hatches (`--accept-preset-requirements`,
+`--preset <name>`). It also wrote the partial `.env` rather than discarding the
+token it had already resolved. A newcomer-agent gets a correct, actionable stop
+instead of an install that starts, reports healthy, and fails its first task.
+
+## The three run-#5 blockers, measured
+
+**1. Integration PR visible and mergeable: FIXED, verified live.**
+
+```
+$ praxis plans <project-id>
+| d8275b9c-... | docs/superpowers/sp... | user | completed (PR open) |
+
+$ praxis pending
+           1 plan(s) awaiting integration
+| 0h | plan/2026-08-21-add-format-duration-helper |
+
+praxis merge-plan d8275b9c-d335-429f-bebc-a5f94f6c58be   # integrate onto the base branch
+  PR: https://github.com/adiatmaja/playground/pull/51
+
+$ praxis merge-plan d8275b9c-d335-429f-bebc-a5f94f6c58be
+Integrated: plan merged to its base branch
+  PR: https://github.com/adiatmaja/playground/pull/51
+```
+
+Afterwards `praxis pending` says `Nothing awaiting approval.` and means it, and
+`praxis plans` reads `completed (integrated)`. In run #5 that same sentence was
+printed with two integration PRs open. The status suffix is what closes the
+interpretive gap: `completed` alone reads as "landed" and never was.
+
+**2. CLI finds its own install: FIXED, verified live.** In a shell with
+`AUTH_TOKEN`, `ORCHESTRATOR_TOKEN` and `ORCHESTRATOR_URL` all explicitly unset,
+standing in the install directory:
+
+```
+URL:   http://localhost:12323
+       from PORT in C:\working-space\praxis-newcomer\.env
+Token: AUTH_TOKEN in C:\working-space\praxis-newcomer\.env
+```
+
+Run #5's returning-operator case is closed.
+
+**3. Empty diff is a no-op: NOT EXERCISED. Unverified.**
+
+This is the honest result and it must not be read as a pass. The plan decomposed
+into exactly the shape that triggers it, "Implement format_duration helper" then
+"Write unit tests for format_duration", and **task 1 wrote the tests too**
+(`test_duration.py`, +33 lines). That is 5 of 5 plans across two runs in which
+task 1 writes task 2's file.
+
+Task 2 still produced a diff: it wrote a second, overlapping set of tests. The
+reviewer noticed and passed it anyway, calling it "minor overlap with the
+pre-existing parametrized `test_format_duration` suite, but this is harmless
+redundancy rather than a defect". So the worker took the coin flip run #5
+described, and the no-op path was never reached.
+
+A deliberate attempt to force it, by re-submitting the identical spec against a
+repository that already satisfied it, did not reach it either: the worker again
+found something to write. **The `no_changes` path remains unverified live after
+two attempts to provoke it.** It is unit-tested at both the entrypoint and the
+orchestrator, but the entrypoint half has never been observed firing in
+production.
+
+## NEW, HIGH: a re-submitted spec makes Praxis merge the wrong PR
+
+Found by the second attempt above, and it is the most serious defect in six runs
+because it silently discards reviewed work while reporting success at every
+layer.
+
+Two plans from the same spec text produce the same slugs, so the second plan
+reuses the first plan's branch names, both the `plan/<date>-<slug>` branch and
+the `agent/<task-slug>` branch. The worker for plan 2 pushed a genuine new commit
+to `agent/implement-format-duration`, and then:
+
+```
+--- Creating PR ---
+Reusing existing PR: https://github.com/adiatmaja/playground/pull/49
+PR created: https://github.com/adiatmaja/playground/pull/49
+```
+
+PR #49 is plan 1's task PR. It was **already merged**, and its base was plan 1's
+branch. The cause is one missing filter in `docker/*/entrypoint.sh`:
+
+```bash
+if PR_URL=$(gh pr view "${BRANCH}" --json url --jq .url 2>/dev/null) && [ -n "${PR_URL}" ]; then
+    echo "Reusing existing PR: ${PR_URL}"
+```
+
+`gh pr view <branch>` resolves a branch to a PR **regardless of state**, so a
+merged or closed PR is happily "reused". The orchestrator's own equivalent,
+`_existing_integration_pr` in `core/orchestrator_review.py`, deliberately does
+the opposite, and its docstring explains why a POSITIVE open-state check matters.
+The two halves of the product disagree with each other.
+
+What was measured:
+
+- `agent/implement-format-duration` is **1 commit ahead** of the plan branch
+  (`gh api compare` returned `status=ahead ahead=1 behind=0`). That commit is
+  real, new, and unmerged.
+- The task is parked at `passed`, pointing at PR #49.
+- PR #49's files are the three from plan 1. So the review that passed judged
+  **already-merged code**, not the worker's commit. The stored feedback describes
+  plan 1's implementation.
+
+What was NOT executed, and why: merging that task would discard the commit, so
+the last step is confirmed by reading `GitOps.merge_pr` rather than by running
+it. On a non-zero `gh pr merge` it calls `_pr_is_merged`, which returns true for
+#49, logs "reported a merge error but GitHub says it is merged; treating as
+success", and returns cleanly. The task would be marked MERGED and the commit
+would never reach the plan branch.
+
+Severity is high because every layer reports success: the worker says DONE, the
+review passes, the merge reports merged, and the change is not there. That is
+precisely the failure mode the gated loop exists to prevent.
+
+The trigger is ordinary, not exotic: re-submitting a spec after a failure, or two
+plans that summarise to the same slug on the same day.
+
+## `praxis logs` earned its place immediately
+
+Run #5's ranked item 5, shipped in `92bc3e3`, used four times in this run. It is
+what produced the finding above: the "Reusing existing PR" line exists only in
+the container transcript, and the container was removed minutes before anyone
+thought to look. It printed the agy envelope, the token count (275,614 on that
+run), the commit, the push and the PR resolution.
+
+Before this verb that diagnosis required curling `GET /api/tasks/{id}` and
+extracting `runs[].logs` from JSON by hand.
+
+## Leaks that persist
+
+| Sev | Leak | Age |
+|---|---|---|
+| HIGH | The VPN killswitch remedy, `CLAUDE_VPN_KILLSWITCH_OFF=1` as a compose LITERAL, is written **nowhere in the product**. The doctor now diagnoses it precisely and points at `docs/gotchas.md`, and that document explains the diagnosis without ever stating the fix. Verified this run by grep: the string appears only in this walkthrough log and in a superseded plan file. | 5 runs |
+| MED | `praxis config show` is documented in the README as the way to list preset names, but it needs a running orchestrator, which is what you are trying to set up. On a fresh clone the only source of preset names is reading `config/praxis.yaml`. | new |
+| MED | The `tasks` table folds a uuid across three lines at an 80-column console, so ids are still not copyable there. `pending` and `plans` both print a clean copyable line; `tasks` does not. | 3 runs |
+| LOW | agy reported a real internal tool error ("invalid artifact path") inside its envelope, still reported DONE, and still committed. The error reaches `agent_runs.logs` and nothing reads it. | new |
+
+## What run #7 should measure
+
+The no-op path is the only run-#5 fix still unverified, and two natural attempts
+failed to provoke it. Forcing it needs a task whose file the previous task
+provably completed AND whose worker cannot find anything to add: a docs-only or
+config-only leaf is the likeliest shape.
+
+Otherwise the merged-PR defect above is the top fix, and it should land before
+run #7 so that run measures a product with no known silent-work-loss path.
