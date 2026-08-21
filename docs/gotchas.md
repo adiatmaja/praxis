@@ -1099,3 +1099,17 @@ belongs among the everyday traps.
   when patching a file from a script (`open(p,'rb').read().decode()` /
   `open(p,'wb').write(s.encode())`), and check `git diff --stat` for the
   "CRLF will be replaced by LF" warning afterwards.
+
+- **`praxis logs <task-id>` reads a captured log, not a live container**: the
+  orchestrator removes each agent container seconds after it reports, so
+  `docker logs` is already too late by the time you know you want it. The
+  output is captured onto `agent_runs.logs` at that moment and surfaced at
+  `GET /api/tasks/{id}` under `runs[].logs`; for three walkthroughs the only
+  way to read it was curling that endpoint by hand. Two things the command has
+  to get right, and both fail silently: **`markup=False`** on every printed
+  line, because worker transcripts are full of bracketed tokens
+  (`[PRAXIS PHASE] understanding`, `[main] INFO`) and rich reads a leading `[`
+  as a markup tag, swallowing them or raising on an unclosed one; and an EMPTY
+  `logs` value must be reported as "not captured" rather than printed as
+  nothing, because "we could not read the container" and "the worker was
+  silent" are different facts and only the second is alarming.

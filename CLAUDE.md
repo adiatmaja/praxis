@@ -113,7 +113,8 @@ uv run praxis init --non-interactive --preset <name>   # scriptable, never promp
 # Diagnose (read-only against repo and DB, but spends one planner call per
 # run, cached 60s; exits non-zero on any red, and a rate limit is amber)
 uv run praxis doctor
-uv run praxis env   # which URL and token the CLI resolved, and from where
+uv run praxis env               # which URL and token the CLI resolved, and from where
+uv run praxis logs <task-id>    # the agent container log, captured on the run row
 
 # See what is parked at the merge gate, and open it
 uv run praxis pending                # parked tasks AND plans awaiting integration

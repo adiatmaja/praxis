@@ -398,6 +398,112 @@ def task(task_id: str = typer.Argument(..., help="Task ID")) -> None:
         console.print(f"  {run['id'][:8]} | {run['status']} | {run['started_at']}")
 
 
+#: Lines of container log printed by default. A worker transcript runs to
+#: hundreds of kilobytes and the answer is almost always at the end, so the
+#: default is a tail. The count of suppressed lines is always printed, because
+#: a silently truncated log is how you conclude the worker said nothing.
+_LOG_TAIL_DEFAULT = 200
+
+
+def _print_run_log(run: dict[str, Any], tail: int) -> None:
+    """Print one agent run's captured container log.
+
+    Args:
+        run: An ``agent_runs`` row as returned by ``GET /api/tasks/{id}``.
+        tail: Lines to print from the end; 0 means all of them.
+    """
+    header = (
+        f"run {run['id']}  |  {run.get('status') or '?'}  |  "
+        f"started {run.get('started_at') or '?'}"
+    )
+    console.print(f"[bold]{header}[/bold]")
+
+    logs = run.get("logs") or ""
+    if not logs.strip():
+        # An empty log is a REPORTABLE state, not an absence. It means the
+        # orchestrator had no agent manager when the callback arrived, or the
+        # container was already gone. Printing nothing here is how an operator
+        # concludes "the worker said nothing", which is a different and much
+        # more alarming fact than "we did not capture it".
+        console.print(
+            "  [yellow]No log captured for this run.[/yellow] The orchestrator "
+            "stores container output when the agent reports; an empty value "
+            "means it could not read the container, not that the worker was "
+            "silent."
+        )
+        return
+
+    lines = logs.splitlines()
+    shown = lines if tail <= 0 else lines[-tail:]
+    suppressed = len(lines) - len(shown)
+    if suppressed > 0:
+        console.print(
+            f"  [dim]... {suppressed} earlier line(s) suppressed; "
+            f"--tail 0 prints all {len(lines)}[/dim]"
+        )
+    for line in shown:
+        # markup=False and highlight=False are both load-bearing. Worker
+        # transcripts contain bracketed text (`[PRAXIS PHASE] understanding`,
+        # `[main] INFO`), and rich reads a leading `[` as the start of a markup
+        # tag: it would swallow those tokens or raise on an unclosed one. This
+        # is a log viewer, so the bytes must survive verbatim.
+        console.print(line, markup=False, highlight=False)
+
+
+@app.command()
+def logs(
+    task_id: str = typer.Argument(..., help="Full task ID from `praxis tasks`"),
+    tail: int = typer.Option(
+        _LOG_TAIL_DEFAULT,
+        "--tail",
+        help="Lines to print from the end of each log. 0 prints everything.",
+    ),
+    all_runs: bool = typer.Option(
+        False,
+        "--all",
+        help="Print every attempt's log, oldest first, not just the latest.",
+    ),
+) -> None:
+    """Print the agent container log for a task's run.
+
+    The orchestrator removes an agent container seconds after it reports, so
+    `docker logs` is already too late by the time you know you want it. The
+    output is captured onto the run row at that moment and was reachable only
+    by curling `GET /api/tasks/{id}` and reading `runs[].logs` out of the JSON.
+
+    Defaults to the most recent attempt, which is the one you want after a
+    failure. Use `--all` to see how earlier attempts differed, which is how you
+    tell a worker that failed the same way three times from one that failed
+    three different ways.
+    """
+
+    with _client() as client:
+        data = _check_dict(client.get(f"/api/tasks/{task_id}"))
+    runs = data.get("runs") or []
+    if not runs:
+        task_data = data.get("task") or {}
+        console.print(
+            f"[yellow]No agent runs for this task[/yellow] "
+            f"(status: {task_data.get('status') or 'unknown'})."
+        )
+        console.print(
+            "A task that never dispatched has no container output. "
+            "Run 'praxis task <id>' for its status and review feedback."
+        )
+        return
+
+    selected = runs if all_runs else runs[-1:]
+    if not all_runs and len(runs) > 1:
+        console.print(
+            f"[dim]Attempt {len(runs)} of {len(runs)}; --all shows the "
+            f"earlier {len(runs) - 1}.[/dim]"
+        )
+    for index, run in enumerate(selected):
+        if index:
+            console.print()
+        _print_run_log(run, tail)
+
+
 @app.command()
 def stop(task_id: str = typer.Argument(..., help="Task ID")) -> None:
     """Stop a running agent."""

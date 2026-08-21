@@ -165,8 +165,9 @@ prefix, or activate the venv once (`.venv\Scripts\activate` on Windows,
 `source .venv/bin/activate` elsewhere) and drop it.
 
 ```bash
-uv run praxis doctor   # read-only diagnostic; exits 0 when healthy, reds point at the fix
-uv run praxis env      # what URL and token the CLI resolved, and from where
+uv run praxis doctor            # read-only diagnostic; exits 0 when healthy, reds point at the fix
+uv run praxis env               # what URL and token the CLI resolved, and from where
+uv run praxis logs <task-id>    # what the worker actually did, after its container is gone
 ```
 
 Run the CLI from your install directory and it reads `AUTH_TOKEN` and `PORT` out of the
