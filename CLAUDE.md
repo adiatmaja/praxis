@@ -378,7 +378,18 @@ in both directions and then gets cited as authority.)
   `praxis <verb> <id>` line below the table instead. An id truncated to 8 chars
   404s, because every consumer looks it up by exact match. Assert contiguity on ONE
   line at 80 columns: the old guard pinned `COLUMNS=160` and flattened the output,
-  so it passed for five walkthroughs while nothing was copyable.
+  so it passed for five walkthroughs while nothing was copyable. **A copyable line
+  printed only SOMETIMES reads as a working one**: `plans` printed its line only for
+  a plan with an open integration PR, so pending, active and integrated plans got
+  none, and it looked fixed in exactly the state you check after fixing it. One test
+  scenario per branch of the condition, or the working branch masks the rest.
+- **Help text is a status line too, and rich's borders can make its guard inert**:
+  `add-project --harness` claimed the "registry default" while an omitted flag
+  actually takes `settings.default_worker_harness`. Typer wraps a long help string
+  across panel rows and draws a border on each, so the rendered text is
+  `use the registry | | default` and a plain `" ".join(output.split())` never
+  matches it. Strip the box glyphs BEFORE collapsing whitespace (the safe direction:
+  it can only make a bad string easier to find).
 - **The CLI forces UTF-8 on stdout/stderr** (`cli.main._force_utf8_stdout`). Without
   it, Windows redirected output falls back to cp1252, rich's truncation ellipsis
   becomes the byte `0x85`, and `praxis tasks | grep` answers "Binary file (standard

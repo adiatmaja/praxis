@@ -1433,3 +1433,35 @@ as a newcomer, not by reading it.
   a reconfigured planner inherits the previous model's verdict. And a `local`
   planner is AMBER, not red: it is a working, supported planner with no binary
   anywhere, so probing PATH for it invents a red about a correct install.
+
+- **A copyable line printed only SOMETIMES reads as a working one.** Run #8
+  fixed the folded uuid in `praxis tasks` and `praxis pending` and left
+  `praxis plans` behind, and the reason it went unnoticed for two more runs is
+  the interesting part: `plans` DID print a copyable line, but only for a plan
+  with an open integration PR. A pending, active or already-integrated plan
+  got none, and its uuid folded across two rows at 80 columns. The surface
+  looked fixed in exactly the state you check it in after fixing it, and was
+  useless in the three states you actually meet first. `tasks` even carried a
+  comment asserting that `plans` "already does" this. When a fix is conditional,
+  the test needs one scenario per branch of the condition, or the passing branch
+  masks the rest.
+
+- **Help text is a status line too.** `praxis add-project --harness` said "Omit
+  to use the registry default". `POST /api/projects` resolves
+  `body.harness or settings.default_worker_harness`, so with the shipped
+  `gemini-agy` preset an omitted flag yields `agy` while `default_harness_id()`
+  is `opencode`: the help named the wrong one of the two available answers. It
+  is the same family as a false status line, and it costs more than it looks
+  like, because the operator only discovers the disagreement after a worker has
+  run in a harness they did not choose.
+
+  The guard for this one was itself inert on the first attempt, which is worth
+  recording. `runner.invoke(app, ["add-project", "--help"])` renders through
+  rich, which WRAPS a long option help string across panel rows and draws a
+  border on each row, so the rendered text of "use the registry default" is
+  literally `use the registry | | default`. A plain
+  `" ".join(output.split())` leaves the borders in, the phrase never matches,
+  and the assertion passes whether the help is right or wrong. Strip the
+  box-drawing glyphs before collapsing whitespace. This is the SAFE direction
+  of the strip-vs-keep rule: removing borders can only make a bad string easier
+  to find, and cannot let prose satisfy a check that should have failed.

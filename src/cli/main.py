@@ -307,8 +307,9 @@ def add_project(
         "--harness",
         help=(
             "Coding harness this project's worker runs in, e.g. 'opencode' or "
-            "'agy'. Omit to use the registry default. The server rejects an "
-            "unknown value and names the allowed set."
+            "'agy'. Omit to use the harness from the configured worker preset, "
+            "which is what `praxis presets` shows as the default. The server "
+            "rejects an unknown value and names the allowed set."
         ),
     ),
 ) -> None:
@@ -445,26 +446,34 @@ def plans(project_id: str = typer.Argument(..., help="Project ID")) -> None:
     with _client() as client:
         data = _check_list(client.get(f"/api/projects/{project_id}/plans"))
     table = Table(title="Plans")
-    table.add_column("ID", style="dim", max_width=36, overflow="fold")
+    # No ID column, for the reason spelled out in `tasks`: `max_width=36` is a
+    # MAXIMUM, so with four columns on an 80-column console rich shrank the id
+    # and folded each uuid across two rows, and every consumer looks a plan up
+    # by exact match. This surface kept the defect two runs longer than `tasks`
+    # did because it DID print a copyable line, but only for a plan with an
+    # open integration PR: a pending, active, or already-integrated plan got
+    # none at all, which is the majority of them. A conditional copyable line
+    # reads as a working one right up until you need the id it withheld.
     table.add_column("Spec", max_width=40)
     table.add_column("Source")
     table.add_column("Status")
     for plan in data:
         spec_display = (plan.get("spec_path") or "")[:40]
         table.add_row(
-            plan["id"],
             spec_display,
             plan["source"],
             _status_cell(plan),
         )
     console.print(table)
-    console.print()
-    for plan in data:
-        if plan.get("integration_pr_url") and not plan.get("integration_merged_at"):
-            console.print(
-                f"praxis merge-plan {plan['id']}   # integrate onto the base branch"
-            )
-            console.print(f"  PR: {plan['integration_pr_url']}")
+    if data:
+        console.print()
+        for plan in data:
+            console.print(f"praxis tasks {plan['id']}   # {_status_cell(plan)}")
+            if plan.get("integration_pr_url") and not plan.get("integration_merged_at"):
+                console.print(
+                    f"praxis merge-plan {plan['id']}   # integrate onto the base branch"
+                )
+                console.print(f"  PR: {plan['integration_pr_url']}")
 
 
 def _status_cell(plan: dict[str, Any]) -> str:

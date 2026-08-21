@@ -2041,3 +2041,111 @@ shape and confirming the URL now appears; `pending` was checked by restoring a
 proposal to PENDING in the container's SQLite; `--harness` was checked by
 creating a project with it and flipping it with `configure`; and the pipe fix
 was checked by grepping real CLI output.
+
+# Run #9, 2026-08-21
+
+Fresh clone at product commit **`4e71813`**, which is the commit that closed
+all seven items carried into this session. The previous install was binned
+first (`docker compose down -v`, directory deleted). Warm `uv` cache; the
+Docker layer cache turned out to be colder than in recent runs, which is the
+one timing surprise below.
+
+**Score: 9/10.** Every one of the seven carried defects is closed and verified
+against the live install, the full loop closed end to end on the first attempt,
+the improvement loop fired unaided, and there was no HIGH, no silent work loss
+and no unread-context path. The tenth point comes off for the same reason it
+did in run #8, and that is the honest result: **two new instances of the
+false-report class turned up**, one of them the very defect run #8 fixed,
+surviving in the single surface run #8 did not touch.
+
+## What was verified live, not just in the suite
+
+Each of the seven fixes was exercised against the running install rather than
+only the test suite, because a green suite has shipped an inert fix four times
+in this project.
+
+| Item | How it was proved live |
+|------|------------------------|
+| Blank `verify_cmd` reports `passed` | `POST /api/projects` with `"   "` returned **422** naming the fix; `""` still returned 201 (it means "not configured"). In the deployed image, `normalize_verify_cmd("   ")` returns `None` and `run_verify` raises rather than shelling it. During the real plan, all three gate sites logged `verify gate skipped: no verify_cmd configured`, never `passed`. |
+| `loop_interval` never reaches `run_loop` | Set to `0` in the mounted YAML, restarted, and the container logged `loop_interval 0 is not positive; using a 1.0s floor`. Only `run_loop` clamps and logs, so the warning is proof the configured value arrived. Silence again at 5. |
+| Doctor probes the CLI default model | The doctor row now reads `planner claude/claude-sonnet-4-6`, naming the configured planner. The round trip is real and in-container, which also closed the one assumption no test could cover (the prompt now goes in on stdin, matching `LLMRouter._execute_one`). |
+| No `--file` on `submit` | A 2 KB spec submitted with `--file` created the plan. Both-args exits 2, neither exits 2, missing file exits 1, and none of the three created a plan. |
+| No command lists preset names | `praxis presets` ran before `init`, with no server and no token, and listed all three. |
+| DELETE project 500s on FK | Deleted a project carrying 2 plans, 6 tasks and 2 agent runs: **204**, zero orphans, doctor still green. |
+| `execute_plan` harness default | In the deployed image: omitted harness with the agy worker configured yields `agy`, falls back to `opencode` only with no worker configured, explicit value still wins. |
+
+## The loop, end to end
+
+Spec (`--file`, 2079 bytes) to plan to two tasks to two merged PRs to an
+integration PR merged onto `main`, with no intervention beyond the two merge
+gates. `slugify.py` and `test_slugify.py` are on `adiatmaja/playground` `main`
+at `7dfabc44`. Nothing was lost: the pre-existing helpers under
+`src/playground/` were untouched.
+
+Task 1 wrote task 2's file again, which is now **eight of eight plans**. Task 2
+did not come back `no_changes` this time, and correctly so: it had real work to
+do, adding the spec's `"a -- b"` case and the truncation cases that task 1 had
+skipped.
+
+The improvement loop fired unaided about three minutes after integration and
+parked at the approval gate, and `praxis pending` surfaced it with copyable
+`approve` and `reject` verbs. Run #8's fix to that surface holds.
+
+## The two new false-report instances
+
+**1. `praxis plans` withheld the plan id, and the docs said it did not.** At 80
+columns the uuid folded across two rows, and there was no copyable line. The
+detail that made this survive two runs past the `tasks` fix is that `plans` DID
+print a copyable line, but only for a plan with an open integration PR. A
+pending, active or already-integrated plan got nothing. So the surface looked
+correct in exactly the state you inspect after fixing it and was useless in the
+three states a newcomer meets first. `tasks` even carried a comment asserting
+that `plans` "already does" this, and CLAUDE.md claimed all three surfaces
+print one.
+
+Fixed the same way `tasks` was: the ID column is gone and every plan gets a
+`praxis tasks <id>` line below the table, with the `merge-plan` line and PR url
+still added for a plan awaiting integration. Guarded by one scenario per branch
+of the old condition, because a single-status test would have been satisfied by
+the one branch that already worked.
+
+**2. `add-project --harness` help named the wrong default.** It said "Omit to
+use the registry default". `POST /api/projects` resolves
+`body.harness or settings.default_worker_harness`, so under the shipped
+`gemini-agy` preset an omitted flag yields `agy` while `default_harness_id()`
+is `opencode`. Measured, not reasoned: `praxis add-project` with no `--harness`
+produced a project with `harness = agy`.
+
+The guard for this one was **inert on the first attempt**, which is the more
+useful finding. Typer renders help through rich, which wraps a long option
+string across panel rows and draws a border on each row, so the rendered text
+of "use the registry default" is literally `use the registry | | default`. The
+obvious `" ".join(output.split())` leaves the borders in place, the phrase
+never matches, and the assertion passes whether the help is right or wrong. It
+was caught only by reverting the fix and watching the test stay green. Strip
+the box-drawing glyphs before collapsing whitespace.
+
+## Smaller friction, not fixed
+
+- **A `.env` key that also exists in the settings YAML is silently overridden
+  by the YAML.** A real environment variable still wins, so the documented
+  `env > YAML > default` precedence holds for anything compose forwards. But
+  `LOOP_INTERVAL` is not in the compose `environment:` list, so putting it in
+  `.env` does nothing and says nothing. The YAML is the documented home for
+  that key and works, so this is friction rather than a false report, but it is
+  the same shape.
+- **`praxis init` took about ten minutes**, against the 2m03s measured in run
+  #7. Both agent images rebuilt from a colder layer cache. Not a defect, but the
+  wizard says nothing about how long an image build will take.
+- **The killswitch remedy edits a git-tracked file.** Following the doctor's
+  red means adding a literal to `docker-compose.yml`, which leaves a permanent
+  local diff in a fresh clone. The remedy is correct and worked in about thirty
+  seconds; the residue is the annoyance.
+
+## Confirmed still fixed from earlier runs
+
+`praxis pending` shows both gate stages and the autonomous proposals; `tasks`
+prints contiguous copyable ids; redirected CLI output is valid UTF-8 (checked
+through `cat -A`); the integration PR is visible to the CLI; the spec carried
+intact from `submit` to a committed spec doc; the merge gate parks rather than
+auto-merging, at both stages.
