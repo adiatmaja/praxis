@@ -172,7 +172,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     app.state.orchestration_stop_event = asyncio.Event()
     app.state.orchestration_task = asyncio.create_task(
-        app.state.orchestrator.run_loop(app.state.orchestration_stop_event)
+        app.state.orchestrator.run_loop(
+            app.state.orchestration_stop_event,
+            # Documented in the settings YAML and settable via LOOP_INTERVAL
+            # (env) or PRAXIS_LOOP_INTERVAL (YAML). Omitted, run_loop falls
+            # back to its own default and the configured value silently does
+            # nothing.
+            interval_seconds=settings.loop_interval,
+        )
     )
     logger.info("Application startup complete")
 

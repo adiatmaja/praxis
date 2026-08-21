@@ -163,7 +163,20 @@ async def update_project(
 
 @router.delete("/projects/{project_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_project(request: Request, project_id: str) -> Response:
-    """Delete a project."""
+    """Delete a project and everything that references it.
+
+    ``Database.initialize()`` runs with ``PRAGMA foreign_keys=ON``, so a bare
+    ``DELETE FROM projects`` on a project with plans/tasks/agent_runs still
+    attached raised ``sqlite3.IntegrityError`` straight into a bare 500 with
+    no indication of what was still attached. A newcomer cleaning up a
+    throwaway project hit this on the first non-empty one they tried to
+    remove, with no other verb available to detach the children first.
+    Cascading here (rather than refusing with a 409) is the option that
+    leaves the operator with something to do next instead of a dead end.
+
+    Deletes leaf-first (agent_runs, then tasks, then plans, then the project)
+    so no intermediate step trips the same foreign key constraint.
+    """
 
     db = request.app.state.db
     project = await db.fetch_one("SELECT id FROM projects WHERE id = ?", (project_id,))
@@ -172,5 +185,20 @@ async def delete_project(request: Request, project_id: str) -> Response:
             status_code=status.HTTP_404_NOT_FOUND, detail="Project not found"
         )
 
+    await db.execute(
+        """DELETE FROM agent_runs WHERE task_id IN (
+               SELECT id FROM tasks WHERE plan_id IN (
+                   SELECT id FROM plans WHERE project_id = ?
+               )
+           )""",
+        (project_id,),
+    )
+    await db.execute(
+        """DELETE FROM tasks WHERE plan_id IN (
+               SELECT id FROM plans WHERE project_id = ?
+           )""",
+        (project_id,),
+    )
+    await db.execute("DELETE FROM plans WHERE project_id = ?", (project_id,))
     await db.execute("DELETE FROM projects WHERE id = ?", (project_id,))
     return Response(status_code=status.HTTP_204_NO_CONTENT)

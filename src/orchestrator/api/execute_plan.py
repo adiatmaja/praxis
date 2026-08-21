@@ -47,7 +47,12 @@ __all__ = ["_normalize_slugs"]
 
 
 async def _create_or_reuse_project(
-    db: Any, repo_url: str, name: str | None, model: str, harness: str | None
+    db: Any,
+    repo_url: str,
+    name: str | None,
+    model: str,
+    harness: str | None,
+    default_worker: dict[str, str] | None = None,
 ) -> str:
     """Return an existing project id for the repo, or create one. Mirrors dispatch.
 
@@ -56,6 +61,15 @@ async def _create_or_reuse_project(
     project falls back to the registry default. Defaulting eagerly used to
     re-point an agy project at opencode on every plan submitted without the
     field, which made "which harness ran this" unanswerable.
+
+    ``default_worker`` is the deployment's configured default worker (see
+    ``EffectiveSettings.auto_delegate_worker()``), only consulted for a NEW
+    project: an omitted harness on a brand-new project should get whatever
+    worker this install is actually set up to run, the same way
+    ``POST /api/projects`` already does, rather than always landing on
+    ``default_harness_id()``'s hardcoded "opencode". It is optional and
+    defaults to None so existing callers that pre-date this parameter keep
+    their old behavior (registry default) unchanged.
     """
     user = await db.fetch_one("SELECT id FROM users LIMIT 1")
     if user is None:
@@ -76,6 +90,18 @@ async def _create_or_reuse_project(
         )
         return str(project_id)
 
+    # A default worker is only "configured" (as opposed to merely present as
+    # a field default) when its model is set — the same convention
+    # api/projects.py already uses ("model_name is required and no
+    # default_worker_model is configured"). Without this check,
+    # default_worker_harness's own field default ("opencode") would be
+    # indistinguishable from default_harness_id(), silently masking whether
+    # a worker was ever actually configured.
+    new_project_harness = harness
+    if new_project_harness is None and default_worker and default_worker.get("model"):
+        new_project_harness = default_worker.get("harness") or None
+    new_project_harness = new_project_harness or default_harness_id()
+
     project_id = str(uuid.uuid4())
     await db.execute(
         """INSERT INTO projects
@@ -90,7 +116,7 @@ async def _create_or_reuse_project(
             "main",
             False,
             model,
-            harness or default_harness_id(),
+            new_project_harness,
         ),
     )
     return project_id
@@ -180,7 +206,12 @@ async def execute_plan(request: Request, body: ExecutePlanRequest) -> dict[str, 
             ) from exc
 
     project_id = await _create_or_reuse_project(
-        db, body.repo_url, None, body.model, body.harness
+        db,
+        body.repo_url,
+        None,
+        body.model,
+        body.harness,
+        default_worker=state.effective_settings.auto_delegate_worker(),
     )
     branch_name = body.branch or f"plan/execute-{branch_slug(body.plan)}"
     pending_input = json.dumps(

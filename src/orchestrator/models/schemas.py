@@ -11,6 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from orchestrator.core.harnesses import REGISTRY, default_harness_id
 from orchestrator.core.repo_url_policy import validate_repo_url as _validate_repo_url
+from orchestrator.core.verify_gate import normalize_verify_cmd
 
 
 if version_info < (3, 12):
@@ -55,6 +56,45 @@ def sanitize_branch_ref(value: str | None) -> str | None:
         msg = "branch contains illegal characters or an unsafe ref pattern"
         raise ValueError(msg)
     return candidate
+
+
+def validate_verify_cmd(value: str | None) -> str | None:
+    """Refuse a ``verify_cmd`` that looks configured but contains no command.
+
+    Shared by ``ProjectCreate`` and ``ProjectUpdate``. ``None`` and ``""`` are
+    accepted UNCHANGED and keep their existing meaning of "not configured":
+    ``None`` is the create-time default and, on a PATCH, is the "leave this
+    field alone" signal (``update_project`` dumps with ``exclude_none=True``),
+    while ``""`` is the only way an operator can clear a command that is
+    already set. Rejecting either would break both flows.
+
+    A non-empty, whitespace-only value is different in kind. It is not a way of
+    saying "unconfigured", it is a value that reads as configured everywhere it
+    is displayed and executes as nothing when run. A 422 naming the problem is
+    the honest answer, and it stops the bad row ever reaching the database.
+
+    Args:
+        value: The submitted ``verify_cmd``.
+
+    Returns:
+        ``value`` unchanged when it is ``None``, ``""``, or a real command.
+
+    Raises:
+        ValueError: If the value is non-empty but has no non-whitespace
+            character in it.
+    """
+    if value is None or value == "":
+        return value
+    # Same predicate the runtime gate uses, so the boundary can never disagree
+    # with what the three read sites treat as "not configured".
+    if normalize_verify_cmd(value) is None:
+        msg = (
+            "verify_cmd must contain a command; a whitespace-only value runs "
+            "nothing and would report the verify gate as passed. Use an empty "
+            "string to clear it, or omit the field to leave it unset."
+        )
+        raise ValueError(msg)
+    return value
 
 
 class TaskStatus(StrEnum):
@@ -290,6 +330,12 @@ class ProjectCreate(BaseModel):
             raise ValueError(msg)
         return trimmed
 
+    @field_validator("verify_cmd")
+    @classmethod
+    def validate_create_verify_cmd(cls, value: str | None) -> str | None:
+        """Apply the shared policy (:func:`validate_verify_cmd`)."""
+        return validate_verify_cmd(value)
+
 
 class ProjectUpdate(BaseModel):
     """Request payload for updating a project."""
@@ -334,6 +380,17 @@ class ProjectUpdate(BaseModel):
             msg = "value must not be empty"
             raise ValueError(msg)
         return trimmed
+
+    @field_validator("verify_cmd")
+    @classmethod
+    def validate_update_verify_cmd(cls, value: str | None) -> str | None:
+        """Apply the shared policy (:func:`validate_verify_cmd`).
+
+        Deliberately NOT folded into ``validate_optional_nonempty`` above:
+        that one rejects ``""`` too, and ``""`` is the only way to clear an
+        already-configured verify command.
+        """
+        return validate_verify_cmd(value)
 
 
 class PlanCreate(BaseModel):

@@ -25,6 +25,7 @@ from orchestrator.core.plan_graph import (
 from orchestrator.core.progress_handover import ChecklistItem, render_handover
 from orchestrator.core.session_resume import resolve_resume_session
 from orchestrator.core.token_budget import ContextBudgetExceeded
+from orchestrator.core.verify_gate import normalize_verify_cmd
 from orchestrator.core.worker_bible import BibleSources, build_bible
 from orchestrator.models.schemas import TaskStatus
 
@@ -351,7 +352,16 @@ class DispatchMixin:
         """
         # Bench condition C disables the mechanical gate at every level; see
         # core/bench_mode.py.
-        verify_cmd = None if verify_gate_disabled() else project.get("verify_cmd")
+        #
+        # ``normalize_verify_cmd`` is what makes the falsy check below honest:
+        # an all-whitespace command is truthy, so it used to reach the shell,
+        # exit 0, and memoize this wave as verified against a command that ran
+        # nothing.
+        verify_cmd = (
+            None
+            if verify_gate_disabled()
+            else normalize_verify_cmd(project.get("verify_cmd"))
+        )
         if not verify_cmd:
             return True
 
@@ -475,7 +485,18 @@ class DispatchMixin:
         # by ``build_bible`` stating the project command alongside whatever wins
         # this slot, so the command is never invisible.
         leaf_check = _normalize_verification(plan_task.get("verification"))
-        project_check = project.get("verify_cmd")
+        # Normalized for the same reason the gate is: ``acceptance = leaf_check
+        # or project_check`` treats an all-whitespace command as a real one, so
+        # a blank column could win the worker's acceptance slot and be handed
+        # over as the leaf's entire definition of done.
+        project_check = normalize_verify_cmd(project.get("verify_cmd"))
+        # Declared, because normalizing gave ``project_check`` a real type and
+        # so exposed what the untyped ``project.get`` had been hiding: with no
+        # leaf check and no project command, this slot is genuinely None. It
+        # always was at runtime, and both consumers below
+        # (``is_runnable_verification`` and ``BibleSources.acceptance``) have
+        # always accepted None.
+        acceptance: str | None
         if leaf_check and not is_runnable_verification(leaf_check):
             if project_check:
                 logger.warning(
@@ -511,6 +532,6 @@ class DispatchMixin:
                 # are still folded in separately by the entrypoint --read.
                 repo_memory=plan_task.get("repo_memory"),
                 review_feedback=task.get("review_feedback"),
-                verify_cmd=project.get("verify_cmd"),
+                verify_cmd=project_check,
             )
         )

@@ -1,5 +1,10 @@
 # Global Praxis orchestrator settings. PRAXIS_<KEY> env vars override these.
-loop_interval: 30      # seconds between orchestration loop passes
+loop_interval: 5       # seconds between orchestration loop passes. Until this
+                       # key was wired through it did nothing and the loop ran
+                       # at a hardcoded 5s, so 5 is the only value that has
+                       # ever been exercised; it is kept as the shipped default
+                       # for that reason. Raise it for a gentler loop, at the
+                       # cost of that much added latency per state transition.
 callback_grace: 5      # seconds to wait before reconciling a missing callback
 
 # How often the approvals digest event may fire, in hours. Parked work is

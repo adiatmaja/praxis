@@ -49,7 +49,7 @@ from orchestrator.core.plan_graph import (
     resolve_task_slug,
     slug_to_graph_task,
 )
-from orchestrator.core.verify_gate import run_verify
+from orchestrator.core.verify_gate import normalize_verify_cmd, run_verify
 from orchestrator.models.schemas import TaskStatus, TriageDecision
 
 
@@ -278,7 +278,16 @@ class ReviewMixin:
             # isolate whether the measured effect is decomposition or
             # verification. Double-gated; see core/bench_mode.py.
             bench_disabled = verify_gate_disabled()
-            verify_cmd = None if bench_disabled else project.get("verify_cmd")
+            # An all-whitespace command is truthy, so without normalizing it
+            # the branch below shells a blank command, gets exit 0, and logs
+            # "verify gate passed" for a gate that ran nothing.  Normalized, it
+            # falls through to the _SKIP_NO_VERIFY_CMD arm, which is the honest
+            # report and the one this project already means by "" and None.
+            verify_cmd = (
+                None
+                if bench_disabled
+                else normalize_verify_cmd(project.get("verify_cmd"))
+            )
             review: dict[str, Any] | None = None
             if verify_cmd and checkout is not None:
                 passed, gate_output = await run_verify(checkout, verify_cmd)
@@ -1174,12 +1183,23 @@ class ReviewMixin:
         Args:
             repo_url: The project's repository URL or local bare-repo path.
             plan_branch: The accumulated plan branch to verify.
-            verify_cmd: The project's configured verification command.
+            verify_cmd: The project's configured verification command. Raw as
+                read from the project row; normalized here rather than at the
+                callers because this method is the single funnel for both of
+                them (``resolve_no_change_run`` and ``on_plan_completed``), so
+                one normalization cannot leave the other caller behind.
 
         Returns:
             The gate verdict.
         """
-        if not verify_cmd:
+        # ``""`` and ``None`` were already caught by the falsy check below.
+        # ``"   "`` was not: it is truthy, so it reached the shell, exited 0,
+        # and came back ``passed``.  For ``resolve_no_change_run`` that is the
+        # worst shape of all, because a ``passed`` there closes a leaf with the
+        # evidence string "verify passed on <branch>" for a command that never
+        # ran.  Normalized, it reports ``skipped`` and says so.
+        verify_cmd = normalize_verify_cmd(verify_cmd)
+        if verify_cmd is None:
             logger.info(
                 "verify gate skipped: %s (branch=%s)", _SKIP_NO_VERIFY_CMD, plan_branch
             )

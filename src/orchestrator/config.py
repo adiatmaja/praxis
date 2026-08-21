@@ -44,7 +44,7 @@ class Settings(BaseSettings):
     docs_root: str = "docs"
     brainstorm_workspace: str = _default_brainstorm_workspace()
     memory_md_path: str = "docs/MEMORY.md"
-    loop_interval: int = 30
+    loop_interval: int = 5
     callback_grace: int = 5
     # URL agent containers POST their completion callback to. Reachable from
     # inside a container, so it uses host.docker.internal and must match the

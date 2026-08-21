@@ -16,7 +16,11 @@ from fastapi import APIRouter, Depends, Request
 from orchestrator.api.auth import verify_token
 from orchestrator.core.bench_mode import bench_mode, verify_gate_disabled
 from orchestrator.core.build_info import build_stamp
-from orchestrator.core.llm_router import LOGIN_HINTS
+from orchestrator.core.llm_router import (
+    LOGIN_HINTS,
+    UnknownProviderError,
+    build_argv,
+)
 from orchestrator.core.opus_bridge import is_rate_limited
 from orchestrator.models.schemas import OpusStateResponse
 
@@ -47,6 +51,42 @@ _provider_probe_cache: dict[str, tuple[float, dict[str, Any]]] = {}
 
 
 @dataclass(frozen=True)
+class PlannerTarget:
+    """The ``{provider, model, effort}`` one brain call-site resolves to.
+
+    Frozen and hashable so it can key the round-trip cache: keyed by provider
+    NAME alone, the cache answers for a model that was never probed, which is a
+    green about the wrong thing that outlives the reconfiguration that caused
+    it.
+
+    An empty ``model`` means "whatever the CLI defaults to", which is a real
+    configuration (the ``local`` registry entry ships that way) and is reported
+    as such rather than silently printed as a model name.
+    """
+
+    provider: str
+    model: str = ""
+    effort: str | None = None
+
+
+def planner_provider_is_cli(provider: str) -> bool:
+    """True when this provider is driven by a CLI binary on PATH.
+
+    Decided by asking ``build_argv``, the same builder ``LLMRouter`` uses, so
+    the doctor cannot hold an opinion about what a provider IS that disagrees
+    with what the loop will actually run.  ``local`` is the case that matters:
+    it is a working planner provider with no binary anywhere, so probing PATH
+    for it renders "planner CLI not found", an invented red about a correctly
+    configured install.
+    """
+    try:
+        build_argv(provider, "", None)
+    except UnknownProviderError:
+        return False
+    return True
+
+
+@dataclass(frozen=True)
 class RoundTripResult:
     """What one planner round trip established, unpacked by ``api/doctor``.
 
@@ -61,10 +101,14 @@ class RoundTripResult:
     error: str = ""
 
 
-# Round-trip probe cache: name -> (monotonic_ts, result). Separate from
+# Round-trip probe cache: target -> (monotonic_ts, result). Separate from
 # _provider_probe_cache because this one costs a real model call, so it is
 # called ONLY from /api/doctor, never from the 5s-polled /api/status.
-_roundtrip_probe_cache: dict[str, tuple[float, RoundTripResult]] = {}
+#
+# Keyed by the whole PlannerTarget, not by provider name: the probe's answer is
+# only about the model and effort it actually ran, so a reconfigured planner
+# must miss the cache instead of inheriting the previous model's verdict.
+_roundtrip_probe_cache: dict[PlannerTarget, tuple[float, RoundTripResult]] = {}
 _ROUNDTRIP_PROMPT = "reply with exactly: PONG"
 _ROUNDTRIP_SENTINEL = "PONG"  # nosec B105 - a sentinel string, not a credential
 #: 20s, down from the 25s this shipped with.  ``/api/doctor`` gathers its facts
@@ -152,18 +196,28 @@ def _first_line(text: str, limit: int = 160) -> str:
     return ""
 
 
-async def _claude_roundtrip() -> RoundTripResult:
-    """One uncached ``claude -p`` round trip. See ``probe_provider_roundtrip``."""
-    resolved = shutil.which("claude")
+async def _claude_roundtrip(target: PlannerTarget) -> RoundTripResult:
+    """One uncached ``claude -p`` round trip. See ``probe_provider_roundtrip``.
+
+    The argv comes from ``llm_router.build_argv`` and the prompt goes in on
+    stdin, which is exactly how ``LLMRouter._execute_one`` runs every real brain
+    call.  Reusing that builder is the point: it is what puts the RESOLVED
+    ``--model`` (and ``--effort``, which is the flag's real name) on the command
+    line, so the probe exercises the model the loop will call instead of
+    whatever the subscription CLI defaults to.
+    """
+    argv = build_argv(target.provider, target.model, target.effort)
+    # Resolve argv[0] to its full path: on Windows these CLIs are .CMD/.EXE
+    # shims that bare create_subprocess_exec cannot launch (WinError 2).
+    resolved = shutil.which(argv[0])
     if resolved is None:
-        return RoundTripResult(ok=False, error="claude not found on PATH")
+        return RoundTripResult(ok=False, error=f"{argv[0]} not found on PATH")
+    argv[0] = resolved
 
     try:
         proc = await asyncio.create_subprocess_exec(
-            resolved,
-            "-p",
-            _ROUNDTRIP_PROMPT,
-            stdin=asyncio.subprocess.DEVNULL,
+            *argv,
+            stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
@@ -173,7 +227,8 @@ async def _claude_roundtrip() -> RoundTripResult:
 
     try:
         stdout, stderr = await asyncio.wait_for(
-            proc.communicate(), timeout=_ROUNDTRIP_TIMEOUT
+            proc.communicate(input=_ROUNDTRIP_PROMPT.encode()),
+            timeout=_ROUNDTRIP_TIMEOUT,
         )
     except TimeoutError:
         # wait_for cancels the AWAIT, not the child.  Without this kill the
@@ -219,8 +274,8 @@ async def _claude_roundtrip() -> RoundTripResult:
     return RoundTripResult(ok=False, error=_first_line(err) or _first_line(out))
 
 
-async def probe_provider_roundtrip(name: str) -> RoundTripResult:
-    """Run one real, minimal prompt through a provider CLI.
+async def probe_provider_roundtrip(target: str | PlannerTarget) -> RoundTripResult:
+    """Run one real, minimal prompt through the CONFIGURED planner.
 
     Checking the OUTPUT rather than only the exit code is deliberate: a hook
     that refuses a prompt can still exit 0, which is exactly how a blocked
@@ -229,20 +284,34 @@ async def probe_provider_roundtrip(name: str) -> RoundTripResult:
     Costs a real model call, so it is cached and must only ever be reached from
     ``/api/doctor``, never from the 5s-polled ``/api/status``.
 
+    Args:
+        target: The resolved planner, as a ``PlannerTarget``.  A bare provider
+            NAME is still accepted and means "this provider on the CLI's own
+            default model", which is what this probe used to do unconditionally
+            and is precisely what ``/api/doctor`` must never ask for again.
+
     Returns:
         A ``RoundTripResult``.  ``ok`` is True when the CLI answered, False
         when it did not, and None when no round trip was possible at all: a
-        provider with none defined, or a rate-limited subscription.
+        rate-limited subscription, or a provider with no round trip defined.
+        Only ``claude`` has one.  ``codex`` is wired but its session needs a
+        ``codex login`` this probe must not spend a call discovering, and
+        ``agy``'s ``--print`` renders only to an interactive TTY, so a
+        non-interactive probe reads its empty stdout as a refusal and paints a
+        red on a provider that is merely uncapturable here.  Both stay "not
+        probed", so the install-plus-auth verdict stands rather than a verdict
+        nobody obtained.
     """
-    if name != "claude":
+    spec = PlannerTarget(target) if isinstance(target, str) else target
+    if spec.provider != "claude":
         return RoundTripResult()
     now = time.monotonic()
-    cached = _roundtrip_probe_cache.get(name)
+    cached = _roundtrip_probe_cache.get(spec)
     if cached is not None and now - cached[0] < _CLAUDE_PROBE_TTL:
         return cached[1]
 
-    result = await _claude_roundtrip()
-    _roundtrip_probe_cache[name] = (now, result)
+    result = await _claude_roundtrip(spec)
+    _roundtrip_probe_cache[spec] = (now, result)
     return result
 
 

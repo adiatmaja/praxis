@@ -1357,3 +1357,79 @@ as a newcomer, not by reading it.
   comments in a gate only when prose could SATISFY it (a false negative, which
   is dangerous), never when prose merely TRIPS it (a false positive, which is
   safe).
+
+- **A whitespace-only `verify_cmd` reported `passed` having executed nothing.**
+  The worst member of this family, because the thing it lied about was the
+  evidence itself. Every read site guarded with a falsy check, which correctly
+  collapses `""` and `None` onto "not configured". But `"   "` is TRUTHY: it
+  slipped all of them, reached `asyncio.create_subprocess_shell`, and a blank
+  shell command exits 0. Measured directly before the fix,
+  `run_verify(d, "   ")` returned `(True, "")`. The gate then logged
+  `verify gate passed`, and on the no-changes path it wrote the permanent,
+  specific, false sentence *"the repository already satisfied this task (verify
+  passed on plan/x)"* onto the task.
+
+  `core/verify_gate.normalize_verify_cmd` is now the single source of truth,
+  and the API refuses the value outright with a 422 so it cannot enter a new
+  database. The placement of the runtime half is the part worth remembering:
+  there were FOUR raw reads, not the three that are easy to find by grepping
+  for `project.get("verify_cmd")`. The fourth is `on_plan_completed`. Both it
+  and the named whole-plan read funnel through `_verify_plan_branch`, so
+  normalizing inside that funnel is what makes it impossible to leave one
+  caller behind. Normalizing the three obvious sites would have left the
+  integration gate still lying.
+
+  A blank value had a second victim in the same family: `acceptance =
+  leaf_check or project_check` in the dispatch mixin treated `"   "` as a real
+  check, so a blank column could win the acceptance slot and be handed to the
+  worker as the leaf's entire definition of done.
+
+  `run_verify` now raises `ValueError` rather than shell a blank command. That
+  is deliberate and it is not defensive clutter: all callers normalize first,
+  so it can never fire in production, and it exists so a FUTURE call site that
+  forgets to normalize fails loudly instead of quietly reporting a pass. It was
+  not downgraded to `(False, ...)`, which would report a Praxis bug as a failing
+  verification and burn the task's retry budget.
+
+- **`loop_interval` was a documented, settable key that had never done
+  anything.** `main.py` started the loop with `run_loop(stop_event)` and no
+  interval, so the configured value never arrived and every install ran at
+  `run_loop`'s own hardcoded 5s. A knob that silently does nothing is the same
+  lie as a false status line, just in configuration form. The tell was visible
+  in the source the whole time: the settings layer said 30 and `run_loop` said
+  5, two different answers to one question, and neither was reachable by
+  configuring it.
+
+  The three were reconciled on **5**, not on the 30 the settings layer claimed.
+  This is the judgement worth recording. The purpose of the fix was to stop a
+  knob lying, and 5s is the only value any install has ever actually run, across
+  eight newcomer walkthroughs. Adopting 30 would have shipped a silent sixfold
+  increase in dispatch, review and merge-gate latency as a side effect of a
+  transparency fix, which is a performance regression nobody asked for and
+  nobody had measured. A non-positive configured value is floored with a warning
+  rather than honoured, because passing 0 to `asyncio.wait_for` busy-spins the
+  loop.
+
+- **The doctor spent a real model call proving something other than what the
+  loop runs.** The planner check hardcoded the provider name `"claude"` and ran
+  `claude -p` with no `--model`, so the subscription CLI answered on its own
+  default. The row then went green about a model the loop would never call. It
+  is a particularly expensive member of the family: the check costs money, and
+  the operator reads it as the authoritative answer to "is my planner working".
+
+  It now resolves `plan_spec` through `EffectiveSettings.call_site_chain`, the
+  exact bound method `main.py` hands `LLMRouter`, so doctor and loop cannot hold
+  different opinions about what the planner is. It executes through
+  `llm_router.build_argv`, so the flags the probe runs are the flags the loop
+  runs, including `--effort` (which is the flag's real name). Resolution must go
+  through `call_site_chain` and not `call_site_config`: only the chain honours
+  the YAML role chain shadowing `CALL_SITE_DEFAULTS`, and a probe built on the
+  defaults map reports on `claude-sonnet-4-6` no matter what the operator
+  configured.
+
+  Three consequences to keep. The row NAMES the provider and model it probed,
+  because a green that does not say what it checked is how this survived. The
+  cache is keyed by the whole resolved target rather than the provider name, or
+  a reconfigured planner inherits the previous model's verdict. And a `local`
+  planner is AMBER, not red: it is a working, supported planner with no binary
+  anywhere, so probing PATH for it invents a red about a correct install.

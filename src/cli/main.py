@@ -14,8 +14,9 @@ from rich.console import Console
 from rich.table import Table
 
 from cli.doctor import doctor as _doctor
+from cli.init import _fetch_presets_or_defaults, parse_env
 from cli.init import init as _init
-from cli.init import parse_env
+from orchestrator.core.settings_file import config_file_path
 
 
 def _force_utf8_stdout() -> None:
@@ -166,6 +167,48 @@ def _client(timeout: float = _DEFAULT_TIMEOUT) -> httpx.Client:
         headers={"Authorization": f"Bearer {_auth_token()}"},
         timeout=timeout,
     )
+
+
+def _token_available() -> bool:
+    """Report whether a token can be resolved, without `_auth_token()`'s
+    own error message.
+
+    `praxis presets` needs to try a live call and fall back quietly; a
+    newcomer who has not run `praxis init` yet has no token at all, and that
+    is not a fault worth printing, only a reason to read the local config
+    instead.
+    """
+    if os.environ.get("AUTH_TOKEN") or os.environ.get("ORCHESTRATOR_TOKEN"):
+        return True
+    _path, values = _env_file_values()
+    return bool(values.get("AUTH_TOKEN") or values.get("ORCHESTRATOR_TOKEN"))
+
+
+#: Short: this is a best-effort probe on the way to a graceful fallback, not
+#: a command an operator is waiting on. A down orchestrator should read as
+#: "unreachable, falling back" almost instantly, not hang for 60s first.
+_PRESETS_PROBE_TIMEOUT = 5.0
+
+
+def _live_presets() -> list[dict[str, Any]] | None:
+    """Fetch worker presets from a running orchestrator, or None.
+
+    None covers both "no token resolved yet" and "orchestrator unreachable
+    or answered with an error"; the caller has exactly one fallback branch
+    instead of two, and neither case prints anything on its way here.
+    """
+    if not _token_available():
+        return None
+    try:
+        with _client(_PRESETS_PROBE_TIMEOUT) as client:
+            response = client.get("/api/settings/presets")
+    except httpx.RequestError:
+        return None
+    if response.status_code != 200:
+        return None
+    data = response.json()
+    presets = data.get("presets")
+    return presets if isinstance(presets, list) else None
 
 
 def _abandoned_merge(exc: httpx.RequestError) -> NoReturn:
@@ -332,13 +375,65 @@ def configure(
 @app.command()
 def submit(
     project_id: str = typer.Argument(..., help="Project ID"),
-    spec: str = typer.Argument(..., help="Specification text"),
+    spec: str | None = typer.Argument(
+        None,
+        help=(
+            "Specification text. Omit this and use --file for anything long: "
+            "Git Bash truncates a bash -c argument at 8192 bytes and reports "
+            "it as a syntax error in your OWN script, not as 'too long'."
+        ),
+    ),
+    file: Path | None = typer.Option(
+        None,
+        "--file",
+        "-f",
+        help=(
+            "Read the specification from this file (UTF-8) instead of the "
+            "spec argument. Pass '-' to read the specification from stdin."
+        ),
+    ),
 ) -> None:
     """Submit a specification for planning."""
 
+    if spec is not None and file is not None:
+        console.print(
+            "[red]Pass the spec as an argument or with --file, not both.[/red]"
+        )
+        raise typer.Exit(2)
+    if spec is None and file is None:
+        console.print(
+            "[red]Missing specification.[/red] Pass it as an argument, or "
+            "--file <path> to read it from a file (a real spec runs long "
+            "enough that the inline form breaks in Git Bash)."
+        )
+        raise typer.Exit(2)
+
+    if file is not None:
+        if str(file) == "-":
+            # UTF-8 explicit, via the raw byte stream rather than the text
+            # stdin: on Windows the console default is cp1252, and this
+            # command exists specifically to stop the encoding from being
+            # left to guesswork.
+            spec_text = sys.stdin.buffer.read().decode("utf-8")
+        else:
+            try:
+                spec_text = file.read_text(encoding="utf-8")
+            except OSError as exc:
+                # soft_wrap=True: a narrow console (this project's own test
+                # suite runs at COLUMNS=80) would otherwise word-wrap the
+                # path mid-token, the exact defect class `pending`/`tasks`
+                # already had to fix for uuids.
+                console.print(
+                    f"[red]Cannot read spec file {file}:[/red] {exc}",
+                    soft_wrap=True,
+                )
+                raise typer.Exit(1) from exc
+    else:
+        spec_text = spec
+
     with _client() as client:
         data = _check_dict(
-            client.post(f"/api/projects/{project_id}/plans", json={"spec": spec})
+            client.post(f"/api/projects/{project_id}/plans", json={"spec": spec_text})
         )
     console.print(f"[green]Plan created:[/green] {data['id']} ({data['status']})")
 
@@ -866,6 +961,53 @@ def config_refresh_capabilities() -> None:
     with _client() as client:
         data = _check_dict(client.post("/api/settings/capabilities/refresh"))
     console.print(f"[yellow]{data.get('status')}[/yellow]: {data.get('detail')}")
+
+
+@app.command()
+def presets() -> None:
+    """List the worker presets `praxis init --preset <name>` accepts.
+
+    Nothing else in the CLI names these values: `praxis config show` lists
+    the model registry and role chains, not presets, and no other verb
+    covers them either. Tries the running orchestrator first, since that is
+    the configuration actually in effect; falls back to reading the settings
+    YAML directly when the orchestrator is unreachable or no token has been
+    set up yet, which is exactly the moment a newcomer running `praxis init`
+    for the first time needs this list the most. Both sources read the same
+    underlying preset records, so the fallback is never a degraded view, only
+    a different path to identical data.
+    """
+    data = _live_presets()
+    source = "the running orchestrator"
+    if data is None:
+        data = _fetch_presets_or_defaults()
+        # The resolved path, not a literal: PRAXIS_CONFIG_PATH can move this
+        # file, and naming the wrong one sends the reader to edit a file the
+        # process never reads.
+        source = f"{config_file_path()} (orchestrator unreachable or not set up yet)"
+
+    table = Table(title="Worker Presets")
+    table.add_column("Name")
+    table.add_column("Harness")
+    table.add_column("Model")
+    table.add_column("Needs")
+    table.add_column("Default")
+    for preset in data:
+        requires = preset.get("requires") or []
+        table.add_row(
+            str(preset.get("name") or ""),
+            str(preset.get("harness") or ""),
+            str(preset.get("model") or "") or "-",
+            ", ".join(str(r) for r in requires) if requires else "-",
+            "yes" if preset.get("default") else "",
+        )
+    console.print(table)
+    console.print(f"[dim]Source: {source}[/dim]")
+    if data:
+        console.print()
+        for preset in data:
+            name = preset.get("name") or ""
+            console.print(f"praxis init --non-interactive --preset {name}")
 
 
 @app.command("env")

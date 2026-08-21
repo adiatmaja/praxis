@@ -34,8 +34,10 @@ from fastapi import APIRouter, Depends, Request
 import docker
 from orchestrator.api.auth import verify_token
 from orchestrator.api.system import (
+    PlannerTarget,
     RoundTripResult,
     _probe_provider,
+    planner_provider_is_cli,
     probe_provider_roundtrip,
 )
 from orchestrator.core import doctor_probes as probes
@@ -404,6 +406,53 @@ async def _probe_lm_studio(url: str) -> tuple[bool, list[str]]:
         return False, []
 
 
+#: The call site the planner row is about.  Planning from a spec is the first
+#: brain call every plan makes, and ``core/roles.py`` maps it to the ``plan``
+#: role, so this is the seat a YAML role chain configures.
+_PLANNER_CALL_SITE = "plan_spec"
+
+
+async def _resolve_planner(es: Any) -> PlannerTarget:
+    """Resolve the configured planner through the LOOP's own resolution seam.
+
+    ``main.py`` builds the router as
+    ``LLMRouter(resolve_chain=effective_settings.call_site_chain, ...)``, so
+    calling that same bound method here is what makes it impossible for the row
+    to describe a planner the loop will not use.  Re-deriving the triple from
+    ``CALL_SITE_DEFAULTS`` would be wrong on this repo's own shipped config: a
+    YAML role chain SHADOWS the call-site default, and the default is only
+    reached when the chain resolves to nothing.
+
+    The HEAD of the chain is the planner: ``LLMRouter.run`` executes entries in
+    order and only moves on when one is unavailable, so the head is what a
+    healthy machine calls and the rest are the fallbacks a probe cannot
+    meaningfully exercise.
+
+    Raises:
+        RuntimeError: When nothing usable resolves.  The caller turns that into
+            an amber naming the failure, never a verdict about a planner nobody
+            identified.
+    """
+    if es is None:
+        message = "effective settings are unavailable on this app"
+        raise RuntimeError(message)
+    chain = await es.call_site_chain(_PLANNER_CALL_SITE, None)
+    if not chain:
+        message = f"no model resolved for the {_PLANNER_CALL_SITE} call site"
+        raise RuntimeError(message)
+    head = chain[0]
+    provider = str(head.get("provider") or "")
+    if not provider:
+        message = f"the resolved {_PLANNER_CALL_SITE} config names no provider"
+        raise RuntimeError(message)
+    effort = head.get("effort")
+    return PlannerTarget(
+        provider=provider,
+        model=str(head.get("model") or ""),
+        effort=str(effort) if effort else None,
+    )
+
+
 async def _is_local_mode(db: Any) -> bool:
     """True when no configured project needs a real GitHub credential.
 
@@ -505,15 +554,26 @@ async def _build_probes(request: Request) -> dict[str, Any]:
     )
 
     no_provider: dict[str, Any] = {"cli_available": False, "authenticated": False}
-    provider, provider_error = await _safe(
-        "planner_cli", lambda: _probe_provider("claude"), no_provider
-    )
     no_roundtrip = RoundTripResult()
-    roundtrip, roundtrip_error = await _safe(
-        "planner_cli_roundtrip",
-        lambda: probe_provider_roundtrip("claude"),
-        no_roundtrip,
+    planner, planner_error = await _safe(
+        "planner_target", lambda: _resolve_planner(es), PlannerTarget(provider="")
     )
+    # Nothing is probed until the planner is known.  Falling back to "claude"
+    # here would answer about a provider the operator never configured, which
+    # is the same silent lie as probing the CLI's default model.
+    planner_is_cli = not planner_error and planner_provider_is_cli(planner.provider)
+    if planner_is_cli:
+        provider, provider_error = await _safe(
+            "planner_cli", lambda: _probe_provider(planner.provider), no_provider
+        )
+        roundtrip, roundtrip_error = await _safe(
+            "planner_cli_roundtrip",
+            lambda: probe_provider_roundtrip(planner),
+            no_roundtrip,
+        )
+    else:
+        provider, provider_error = no_provider, ""
+        roundtrip, roundtrip_error = no_roundtrip, ""
 
     # In a thread: a hung `git` would otherwise stall the event loop for the
     # subprocess timeout on every /api/doctor call, blocking other in-flight
@@ -589,7 +649,11 @@ async def _build_probes(request: Request) -> dict[str, Any]:
             configured=has_git_creds, local_mode=local_mode
         )
 
-    if provider_error:
+    if planner_error:
+        result_map["planner_cli"] = _degraded(
+            "planner_cli", "the configured planner", planner_error
+        )
+    elif provider_error:
         result_map["planner_cli"] = _degraded(
             "planner_cli", "the planner CLI's state", provider_error
         )
@@ -602,6 +666,11 @@ async def _build_probes(request: Request) -> dict[str, Any]:
             prompt_ok=None if roundtrip_error else roundtrip.ok,
             rate_limited=not roundtrip_error and roundtrip.rate_limited,
             prompt_error="" if roundtrip_error else roundtrip.error,
+            # What was actually resolved and probed, so the row names it.
+            provider=planner.provider,
+            model=planner.model,
+            effort=planner.effort,
+            provider_is_cli=planner_is_cli,
         )
 
     worker_config_error = lm_url_error or worker_cfg_error

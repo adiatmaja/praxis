@@ -22,6 +22,47 @@ from orchestrator.models.schemas import PlanStatus, TaskStatus
 
 logger = logging.getLogger(__name__)
 
+# Matches Settings.loop_interval's own field default (src/orchestrator/config.py)
+# and the settings YAML's shipped value, so a caller that omits
+# interval_seconds gets the same answer the configured default would have
+# given. Until this was wired up, run_loop's hardcoded 5.0 was a second,
+# unconfigurable answer to a question the settings layer already answered.
+#
+# The three were reconciled ON 5, not on the 30 the settings layer used to
+# claim, deliberately: 5s is the only value any install has ever actually
+# run, so adopting 30 would have shipped a silent sixfold increase in
+# dispatch, review and merge-gate latency as a side effect of a fix whose
+# entire purpose was to stop a knob from lying. Raise it if you want a
+# gentler loop; that is now a real choice rather than a dead one.
+_DEFAULT_LOOP_INTERVAL_SECONDS = 5.0
+
+# Floor applied to a configured interval of 0 or less. A non-positive value
+# is refused rather than honored: passed straight to asyncio.wait_for it
+# would busy-spin the orchestration loop instead of idling between passes.
+_MIN_LOOP_INTERVAL_SECONDS = 1.0
+
+
+def _clamp_loop_interval(interval_seconds: float) -> float:
+    """Return a safe wait interval, refusing a non-positive configured value.
+
+    Args:
+        interval_seconds: The configured (or default) loop interval, in
+            seconds.
+
+    Returns:
+        ``interval_seconds`` unchanged when positive, otherwise
+        ``_MIN_LOOP_INTERVAL_SECONDS``.
+    """
+    if interval_seconds <= 0:
+        logger.warning(
+            "loop_interval %s is not positive; using a %.1fs floor instead "
+            "of busy-spinning the orchestration loop",
+            interval_seconds,
+            _MIN_LOOP_INTERVAL_SECONDS,
+        )
+        return _MIN_LOOP_INTERVAL_SECONDS
+    return interval_seconds
+
 
 class Orchestrator(DispatchMixin, ReviewMixin, ReconcileMixin, ImprovementMixin):
     """Coordinate the task queue, agents, Claude review, and GitHub actions."""
@@ -413,9 +454,11 @@ class Orchestrator(DispatchMixin, ReviewMixin, ReconcileMixin, ImprovementMixin)
     async def run_loop(
         self,
         stop_event: asyncio.Event,
-        interval_seconds: float = 5.0,
+        interval_seconds: float = _DEFAULT_LOOP_INTERVAL_SECONDS,
     ) -> None:
         """Run orchestration until the application shuts down."""
+
+        interval_seconds = _clamp_loop_interval(interval_seconds)
 
         while not stop_event.is_set():
             try:

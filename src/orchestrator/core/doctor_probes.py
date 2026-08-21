@@ -218,14 +218,35 @@ def probe_git_credential(configured: bool, local_mode: bool) -> CheckResult:
     )
 
 
+def planner_label(provider: str, model: str, effort: str | None = None) -> str:
+    """Name the resolved planner for a row's detail text.
+
+    A green that does not say WHAT it checked is how the wrong-model probe
+    survived: the row read "planner CLI installed, authenticated, and answering
+    prompts" while the call it made went to the subscription CLI's own default
+    model rather than the one the loop resolves.
+
+    An empty ``model`` is spelled out rather than left blank, because "no
+    ``--model`` flag" is itself the configuration being reported.
+    """
+    if not provider:
+        return ""
+    named = f"{provider}/{model}" if model else f"{provider} (the CLI's default model)"
+    return f"{named} at effort {effort}" if effort else named
+
+
 def probe_planner_cli(
     cli_available: bool,
     authenticated: bool,
     prompt_ok: bool | None = None,
     rate_limited: bool = False,
     prompt_error: str = "",
+    provider: str = "",
+    model: str = "",
+    effort: str | None = None,
+    provider_is_cli: bool = True,
 ) -> CheckResult:
-    """Green only when the planner CLI is installed, authenticated, and answering.
+    """Green only when the CONFIGURED planner is installed, authenticated, and answering.
 
     Args:
         cli_available: The CLI binary resolved on PATH.
@@ -240,25 +261,54 @@ def probe_planner_cli(
             here would fail a correct install over a state that fixes itself.
         prompt_error: First line of what the CLI actually said, so a red is
             diagnosable without going to the logs.
+        provider: The provider the ``plan_spec`` call site resolved to, named
+            in every detail below.  Empty only for callers with no resolution
+            to report, which then read exactly as they did before.
+        model: The model that resolution named, likewise echoed into the row.
+        effort: The effort that resolution named, if any.
+        provider_is_cli: Whether the resolved provider is driven by a binary on
+            PATH at all.  False for ``local``, a working planner provider with
+            no CLI: reporting "not found on PATH" for it would be a red about a
+            correctly configured install, so the row is an honest amber.
     """
+    label = planner_label(provider, model, effort)
+    who = f"planner {label}" if label else "planner CLI"
+    named = f" for {label}" if label else ""
+    if not provider_is_cli:
+        return CheckResult(
+            check_id="planner_cli",
+            status=CheckStatus.AMBER,
+            detail=(
+                f"not checked: the configured planner {label or 'provider'} is "
+                "not a CLI provider, so there is no binary to probe and no "
+                "test prompt was made"
+            ),
+            # The registry hint says to install the CLI and log in, which is
+            # the one thing that cannot help a provider that has no CLI.
+            hint=(
+                "nothing to fix if that is deliberate: this planner is an "
+                "OpenAI-compatible endpoint, and the worker_endpoint row "
+                "covers whether that endpoint answers"
+            ),
+        )
     if not cli_available:
         return CheckResult(
             check_id="planner_cli",
             status=CheckStatus.RED,
-            detail="planner CLI not found on PATH",
+            detail=f"planner CLI not found on PATH{named}",
         )
     if not authenticated:
         return CheckResult(
             check_id="planner_cli",
             status=CheckStatus.RED,
-            detail="planner CLI installed but not authenticated",
+            detail=f"planner CLI installed but not authenticated{named}",
         )
     if rate_limited:
         return CheckResult(
             check_id="planner_cli",
             status=CheckStatus.AMBER,
             detail=(
-                "planner CLI is installed and authenticated; the subscription "
+                f"{who} is installed and authenticated; the subscription "
                 "is rate limited right now, so no test prompt was possible"
                 + (f" [{prompt_error}]" if prompt_error else "")
             ),
@@ -272,7 +322,7 @@ def probe_planner_cli(
             check_id="planner_cli",
             status=CheckStatus.RED,
             detail=(
-                "planner CLI is installed and authenticated but a test prompt "
+                f"{who} is installed and authenticated but a test prompt "
                 "did not complete; a hook or policy may be blocking it"
                 + (f" [{prompt_error}]" if prompt_error else "")
             ),
@@ -305,12 +355,15 @@ def probe_planner_cli(
         return CheckResult(
             check_id="planner_cli",
             status=CheckStatus.GREEN,
-            detail="planner CLI installed, authenticated, and answering prompts",
+            detail=f"{who} installed, authenticated, and answering prompts",
         )
     return CheckResult(
         check_id="planner_cli",
         status=CheckStatus.GREEN,
-        detail="planner CLI installed and authenticated",
+        # "no test prompt was made" is load bearing: this is the ONE green that
+        # was not earned by a round trip, and a reader cannot tell it from the
+        # one above without being told.
+        detail=f"{who} installed and authenticated; no test prompt was made",
     )
 
 

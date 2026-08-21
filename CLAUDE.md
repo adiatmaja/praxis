@@ -109,6 +109,11 @@ The rest of `core/`, grouped by concern:
 # Setup (one command, idempotent, ends by verifying)
 uv run praxis init
 uv run praxis init --non-interactive --preset <name>   # scriptable, never prompts
+uv run praxis presets           # the names --preset accepts; works with the server down
+
+# Submit a spec (use --file: Git Bash truncates a bash -c argument at 8 KB)
+uv run praxis submit <project-id> --file spec.md
+cat spec.md | uv run praxis submit <project-id> --file -
 
 # Diagnose (read-only against repo and DB, but spends one planner call per
 # run, cached 60s; exits non-zero on any red, and a rate limit is amber)
@@ -297,6 +302,12 @@ in both directions and then gets cited as authority.)
 - **`praxis doctor` is the front door to every problem**: twelve checks, read-only against
   your repo and database but spending one planner call per run; pure decision logic in
   `core/doctor_probes.py`, live fact gathering in `api/doctor.py`.
+- **The planner check probes the CONFIGURED planner, not the CLI default**: the model
+  `plan_spec` resolves to through `EffectiveSettings.call_site_chain` (the same bound
+  method `main.py` hands the router, so the two cannot drift), executed through
+  `llm_router.build_argv` so the probe runs the flags the loop runs. The row NAMES the
+  provider and model it probed. A `local` planner is AMBER (no binary to probe), never
+  a red; `codex` and `agy` stay "not probed" for the reasons in `probe_provider_roundtrip`.
 - **An unrecognised key in `.env` is IGNORED, not rejected**: `./.env` is mounted
   into the container and parsed whole, so `extra="forbid"` used to abort startup.
   The cost is that a typo in a real key is now silent and NOTHING catches it;
@@ -309,6 +320,18 @@ in both directions and then gets cited as authority.)
 
 - **Merge is gated by default**: a review PASS parks at `PASSED` and never auto-merges
   (`core/merge_policy.py`); protected branches never auto-merge at all.
+- **A blank `verify_cmd` is "not configured", never a pass**: `"   "` is TRUTHY, so it
+  slipped every falsy guard, reached the shell, and a blank shell command exits 0, so the
+  gate reported `passed` having run nothing. `core/verify_gate.normalize_verify_cmd` is the
+  SSoT, applied at the per-task gate, the wave gate, and inside `_verify_plan_branch` (the
+  funnel, because `on_plan_completed` is a FOURTH raw read that normalizing the named three
+  would have left lying). The API rejects it 422; `run_verify` raises rather than shell it.
+- **`loop_interval` reaches `run_loop` now, and the shipped default is 5**: `main.py` used
+  to call `run_loop(stop_event)` with no interval, so the key was inert and every install
+  ran at a hardcoded 5s. The settings layer, the YAML and `run_loop` were reconciled ON 5
+  rather than on the 30 the settings layer claimed, because 5 is the only value any install
+  has ever run; adopting 30 would have been a silent sixfold latency increase. A
+  non-positive value is floored, not honoured, so it cannot busy-spin the loop.
 - **Brain prompts go via stdin, never argv** (argv overflows the OS limit; Windows `WinError 206`).
 - **`gh pr` calls need `--repo <owner/name>`** or they target the orchestrator's own cwd.
 - **A PR may be reused only on a POSITIVE open-state hit**: `gh pr view <branch>` resolves a

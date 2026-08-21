@@ -517,10 +517,17 @@ async def test_the_suite_never_spends_a_live_planner_round_trip(
     every check would still pass while the suite quietly spent a real
     subscription call on every doctor request.
 
-    The DETAIL is asserted, not just the status: "installed and authenticated"
-    is the pre-round-trip verdict and is reachable only from `prompt_ok=None`.
+    The DETAIL is asserted, not just the status: "no test prompt was made" is
+    the pre-round-trip verdict and is reachable only from `prompt_ok=None`.
     `True` would say "answering prompts" and `False` would go red, so this one
     assertion pins the fixture to exactly "not probed".
+
+    The row now also names the planner it resolved, which is the whole point of
+    the configured-planner probe, so the assertion is a suffix match rather than
+    an equality: pinning the resolved model string here would re-pin
+    `config/praxis.yaml`'s role chain in a test about the fixture.
+    `tests/test_doctor_probes_configured_planner.py` is where the naming itself
+    is pinned.
     """
     from orchestrator.api import doctor as doctor_api
 
@@ -533,4 +540,7 @@ async def test_the_suite_never_spends_a_live_planner_round_trip(
 
     check = next(c for c in response.json()["checks"] if c["check_id"] == "planner_cli")
     assert check["status"] == "green"
-    assert check["detail"] == "planner CLI installed and authenticated"
+    assert check["detail"].endswith(
+        "installed and authenticated; no test prompt was made"
+    )
+    assert check["detail"].startswith("planner claude/")
