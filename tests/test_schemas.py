@@ -246,6 +246,7 @@ def test_status_enums_have_expected_values() -> None:
         "merged",
         "needs_clarification",
         "superseded",
+        "no_changes",
     ]
     assert PlanStatus.PENDING.value == "pending"
     assert PlanStatus.ACTIVE.value == "active"

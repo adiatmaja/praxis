@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import os
+from functools import lru_cache
+from pathlib import Path
 from typing import Any, NoReturn
 
 import httpx
@@ -12,6 +14,7 @@ from rich.table import Table
 
 from cli.doctor import doctor as _doctor
 from cli.init import init as _init
+from cli.init import parse_env
 
 
 app = typer.Typer(name="orchestrator-cli", help="Praxis CLI")
@@ -20,18 +23,94 @@ app.command("doctor")(_doctor)
 app.command("init")(_init)
 
 
+#: How far up from the working directory to look for a `.env`. Bounded so a
+#: CLI run from a deep path cannot walk to the filesystem root and adopt some
+#: unrelated project's token.
+_ENV_SEARCH_DEPTH = 6
+
+#: The compose-mapped port `praxis init` writes. The old default here was
+#: 8080, the bare-uvicorn port, which is not where a normal install answers.
+_DEFAULT_PORT = 12323
+
+
+def _find_env_file(start: Path | None = None) -> Path | None:
+    """Locate the `.env` of the Praxis install the operator is standing in.
+
+    Walks up from the working directory, nearest first, so running from
+    ``praxis/src`` finds the same file as running from ``praxis/``.
+
+    Returns:
+        The first ``.env`` found, or None.
+    """
+    here = (start or Path.cwd()).resolve()
+    for directory in (here, *here.parents)[:_ENV_SEARCH_DEPTH]:
+        candidate = directory / ".env"
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+@lru_cache(maxsize=1)
+def _env_file_values() -> tuple[Path | None, dict[str, str]]:
+    """Read the nearest `.env`, parsed exactly as the product parses it.
+
+    Cached for the process: every verb resolves the URL and the token, and
+    re-reading the file per call would let two halves of one command disagree
+    if the file changed underneath them.
+
+    An unreadable file yields no values rather than an error. The point of
+    this fallback is to rescue an operator whose environment is empty; making
+    it a new way to fail would defeat it.
+    """
+    path = _find_env_file()
+    if path is None:
+        return None, {}
+    try:
+        return path, parse_env(path.read_text(encoding="utf-8"))
+    except OSError:
+        return path, {}
+
+
 def _api_url() -> str:
-    return os.environ.get("ORCHESTRATOR_URL", "http://localhost:12323")
+    """Resolve the orchestrator's base URL: env var, then `.env`, then default."""
+    from_env = os.environ.get("ORCHESTRATOR_URL")
+    if from_env:
+        return from_env
+    _path, values = _env_file_values()
+    port = (values.get("PORT") or "").strip()
+    if port.isdigit():
+        return f"http://localhost:{port}"
+    return f"http://localhost:{_DEFAULT_PORT}"
 
 
 def _auth_token() -> str:
-    # AUTH_TOKEN is the name .env / .env.example / the dashboard document;
-    # ORCHESTRATOR_TOKEN is kept as a fallback so an existing user who only
-    # set the CLI's original var name (including praxis init's own printed
-    # cli_env_exports) is not broken.
+    """Resolve the auth token: env vars first, then the install's own `.env`.
+
+    ``AUTH_TOKEN`` is the name `.env`, `.env.example` and the dashboard all
+    document; ``ORCHESTRATOR_TOKEN`` is kept as a fallback so an existing user
+    who only set the CLI's original var name (including `praxis init`'s own
+    printed ``cli_env_exports``) is not broken.
+
+    The `.env` fallback exists because neither of those names appears anywhere
+    in ``README.md`` or ``docs/deployment.md``. A returning operator standing
+    in the repo root, with a working install and ``AUTH_TOKEN`` right there in
+    `.env`, was told to set an environment variable named nowhere in the docs,
+    and the only documented recovery was re-running the whole wizard.
+    """
     token = os.environ.get("AUTH_TOKEN") or os.environ.get("ORCHESTRATOR_TOKEN", "")
     if not token:
-        console.print("[red]Set AUTH_TOKEN (or ORCHESTRATOR_TOKEN) env var[/red]")
+        _path, values = _env_file_values()
+        token = values.get("AUTH_TOKEN", "") or values.get("ORCHESTRATOR_TOKEN", "")
+    if not token:
+        console.print(
+            "[red]No auth token found.[/red] Looked at: the AUTH_TOKEN and "
+            "ORCHESTRATOR_TOKEN environment variables, then AUTH_TOKEN in the "
+            "nearest .env walking up from the current directory."
+        )
+        console.print(
+            "Run [cyan]praxis env[/cyan] from your Praxis install to see what "
+            "the CLI resolved, or [cyan]praxis init[/cyan] to set one up."
+        )
         raise typer.Exit(1)
     return token
 
@@ -214,8 +293,44 @@ def plans(project_id: str = typer.Argument(..., help="Project ID")) -> None:
     table.add_column("Status")
     for plan in data:
         spec_display = (plan.get("spec_path") or "")[:40]
-        table.add_row(plan["id"], spec_display, plan["source"], plan["status"])
+        table.add_row(
+            plan["id"],
+            spec_display,
+            plan["source"],
+            _status_cell(plan),
+        )
     console.print(table)
+    console.print()
+    for plan in data:
+        if plan.get("integration_pr_url") and not plan.get("integration_merged_at"):
+            console.print(
+                f"praxis merge-plan {plan['id']}   # integrate onto the base branch"
+            )
+            console.print(f"  PR: {plan['integration_pr_url']}")
+
+
+def _status_cell(plan: dict[str, Any]) -> str:
+    """Render a plan's status with what actually happened to its work.
+
+    "completed" alone answers the wrong question. It means every task merged
+    onto the PLAN branch, which a reader hears as "landed on main". The suffix
+    says which of the three it really is: integrated, waiting on an open PR,
+    or completed with no PR at all (the best-effort `gh pr create` failed,
+    which is a reportable state, not a dash).
+
+    Deliberately a suffix rather than a fifth column. The ID column has to
+    stay wide enough to print a uuid contiguously, since every other verb
+    looks a plan up by exact match, and a narrow console splits a folded id
+    across border characters.
+    """
+    status_text = str(plan.get("status") or "")
+    if plan.get("integration_merged_at"):
+        return f"{status_text} (integrated)"
+    if plan.get("integration_pr_url"):
+        return f"{status_text} (PR open)"
+    if status_text == "completed":
+        return f"{status_text} (no PR)"
+    return status_text
 
 
 @app.command()
@@ -332,36 +447,62 @@ def mode(action: str = typer.Argument(..., help="on | off | status")) -> None:
 
 @app.command()
 def pending() -> None:
-    """List tasks parked at the human merge gate."""
+    """List tasks and completed plans parked at the human merge gate."""
     with _client() as client:
         data = _check_dict(client.get("/api/approvals/pending"))
     if not data["count"]:
         console.print("[green]Nothing awaiting approval.[/green]")
         return
-    table = Table(title=f"{data['count']} awaiting approval")
-    table.add_column("Age")
-    table.add_column("Task", max_width=40)
-    table.add_column("Branch", overflow="fold")
-    for task in data["tasks"]:
-        table.add_row(
-            f"{int(task['age_hours'])}h",
-            task["title"] or task["task_id"],
-            task["branch"] or "",
-        )
-    console.print(table)
+    tasks = data.get("tasks") or []
+    plans_awaiting = data.get("plans") or []
+
+    if tasks:
+        table = Table(title=f"{len(tasks)} task(s) awaiting approval")
+        table.add_column("Age")
+        table.add_column("Task", max_width=40)
+        table.add_column("Branch", overflow="fold")
+        for task in tasks:
+            table.add_row(
+                f"{int(task['age_hours'])}h",
+                task["title"] or task["task_id"],
+                task["branch"] or "",
+            )
+        console.print(table)
+
+    if plans_awaiting:
+        plan_table = Table(title=f"{len(plans_awaiting)} plan(s) awaiting integration")
+        plan_table.add_column("Age")
+        plan_table.add_column("Plan branch", overflow="fold")
+        for plan in plans_awaiting:
+            plan_table.add_row(
+                f"{int(plan['age_hours'])}h",
+                plan["branch"] or plan["plan_id"],
+            )
+        console.print(plan_table)
+
     console.print()
     # A bordered table wraps unpredictably once it leaves this terminal
     # (docker logs, CI log viewers, less, older SSH clients all hard-wrap at
     # a fixed column), which can split a uuid or a url mid-value across
-    # cells. Print one plain, copy-pasteable line per task instead: rich's
+    # cells. Print one plain, copy-pasteable line per item instead: rich's
     # default word-wrap only breaks on whitespace, so a token with none (a
     # uuid, a url) survives contiguous at any width.
-    for task in data["tasks"]:
+    for task in tasks:
         console.print(
             f"praxis merge {task['task_id']}   # {task['title'] or task['task_id']}"
         )
         if task["pr_url"]:
             console.print(f"  PR: {task['pr_url']}")
+    for plan in plans_awaiting:
+        # The plan line names the same verb the per-task line does, because
+        # `merge-plan` is one command that covers both stages: it drains
+        # whatever is still parked, then merges the integration PR. A plan
+        # reaching this list means stage one is already done.
+        console.print(
+            f"praxis merge-plan {plan['plan_id']}   # integrate onto the base branch"
+        )
+        if plan["pr_url"]:
+            console.print(f"  PR: {plan['pr_url']}")
 
 
 @app.command()
@@ -383,7 +524,12 @@ def merge(
 def merge_plan(
     plan_id: str = typer.Argument(..., help="Plan ID from `praxis plans`"),
 ) -> None:
-    """Approve every review-passed task parked in one plan."""
+    """Merge a plan's parked tasks, then integrate the plan onto the base branch.
+
+    Both stages, because a plan is only landed when both have run: the tasks
+    merge onto the plan branch, and the plan's integration PR merges onto the
+    project's base branch.
+    """
 
     with _client(_MERGE_TIMEOUT) as client:
         try:
@@ -393,7 +539,35 @@ def merge_plan(
         data = _check_dict(response)
     approved = int(data.get("approved") or 0)
     errors = data.get("errors") or []
-    console.print(f"[green]Merged:[/green] {approved} task(s)")
+    integration = data.get("integration") or {}
+    integration_status = str(integration.get("status") or "none")
+
+    if approved:
+        console.print(f"[green]Merged:[/green] {approved} task(s)")
+
+    # Every branch below names what state the plan is actually in. The version
+    # this replaces printed `Merged: 0 task(s)` and exited 0 against a finished
+    # plan whose integration PR was open and unmentioned, which reads as "all
+    # done" when the work is not on the base branch at all.
+    if integration_status == "merged":
+        console.print("[green]Integrated:[/green] plan merged to its base branch")
+        if integration.get("pr_url"):
+            console.print(f"  PR: {integration['pr_url']}")
+    elif integration_status == "already_merged":
+        console.print("[green]Already integrated:[/green] nothing left to merge")
+        if integration.get("pr_url"):
+            console.print(f"  PR: {integration['pr_url']}")
+    elif integration_status == "not_ready" and not errors:
+        console.print(
+            f"[yellow]Not integrated:[/yellow] {integration.get('reason') or 'plan is not finished'}"
+        )
+    elif integration_status == "none" and not approved and not errors:
+        console.print(
+            f"[yellow]Nothing to merge[/yellow] for plan {plan_id}: "
+            f"{integration.get('reason') or 'no parked tasks and no integration PR'}"
+        )
+        console.print("Run 'praxis tasks <plan-id>' to see where the plan stopped.")
+
     for failure in errors:
         console.print(
             f"[red]Failed:[/red] {failure.get('task_id', '?')}: "
@@ -489,6 +663,58 @@ def config_refresh_capabilities() -> None:
     with _client() as client:
         data = _check_dict(client.post("/api/settings/capabilities/refresh"))
     console.print(f"[yellow]{data.get('status')}[/yellow]: {data.get('detail')}")
+
+
+@app.command("env")
+def env() -> None:
+    """Show where the CLI is pointing, and print the exports to make it explicit.
+
+    The fallback that reads `.env` is deliberately quiet on every other verb,
+    so this is the one place that says out loud which file it read and which
+    token source won. A CLI that silently picked up the wrong install is worse
+    than one that could not find any.
+    """
+    path, values = _env_file_values()
+
+    if os.environ.get("ORCHESTRATOR_URL"):
+        url_source = "ORCHESTRATOR_URL environment variable"
+    elif (values.get("PORT") or "").strip().isdigit():
+        url_source = f"PORT in {path}"
+    else:
+        url_source = f"built-in default (port {_DEFAULT_PORT})"
+
+    if os.environ.get("AUTH_TOKEN"):
+        token_source = "AUTH_TOKEN environment variable"
+    elif os.environ.get("ORCHESTRATOR_TOKEN"):
+        token_source = "ORCHESTRATOR_TOKEN environment variable"
+    elif values.get("AUTH_TOKEN") or values.get("ORCHESTRATOR_TOKEN"):
+        token_source = f"AUTH_TOKEN in {path}"
+    else:
+        token_source = "not found"
+
+    console.print(f"URL:   {_api_url()}")
+    console.print(f"       from {url_source}")
+    console.print(f"Token: {token_source}")
+    if path is None:
+        console.print(
+            "\n[yellow]No .env found[/yellow] walking up from the current "
+            "directory. Run this from your Praxis install directory."
+        )
+    if token_source == "not found":
+        raise typer.Exit(1)
+
+    # The token is never printed above, only its source. It IS printed here,
+    # because this block exists to be pasted into another shell and half an
+    # export block is not usable. Anyone who can run this can already read
+    # the same value out of `.env`.
+    console.print("\nTo make this explicit in another shell:\n")
+    console.print(f"  export ORCHESTRATOR_URL={_api_url()}", highlight=False)
+    console.print(f"  export ORCHESTRATOR_TOKEN={_auth_token()}", highlight=False)
+    console.print(
+        f'  (PowerShell: $env:ORCHESTRATOR_URL="{_api_url()}"; '
+        f'$env:ORCHESTRATOR_TOKEN="{_auth_token()}")',
+        highlight=False,
+    )
 
 
 @app.command()

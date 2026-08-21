@@ -14,6 +14,7 @@ from orchestrator.api.auth import verify_token
 from orchestrator.core.markdown_utils import extract_frontmatter_field
 from orchestrator.core.plan_derive import PlanDeriveError, derive_opus_plan
 from orchestrator.core.spec_docs import render_spec_doc, spec_doc_path
+from orchestrator.core.status_vocab import SATISFIED_STATUSES
 from orchestrator.models.schemas import (
     PlanCreate,
     PlanResponse,
@@ -224,7 +225,21 @@ async def promote_plan(request: Request, body: PromoteRequest) -> dict[str, Any]
 
 @router.post("/plans/{plan_id}/approve-merges")
 async def approve_merges(request: Request, plan_id: str) -> dict[str, Any]:
-    """Approve and merge every review-passed task in a plan."""
+    """Approve and merge every review-passed task in a plan, then integrate it.
+
+    A plan reaches the gate in two stages and this verb has to cover both, or
+    it reports success while the work sits somewhere the operator did not ask
+    for it:
+
+    1. Each review-passed task merges onto the plan branch.
+    2. When nothing is left parked, the plan's own integration PR merges onto
+       the project's base branch.
+
+    Running this against a finished plan used to return ``approved: 0`` and
+    exit clean while an integration PR sat open, which is why the response now
+    carries an explicit ``integration`` block: the caller can tell "there was
+    nothing to do" apart from "I did the last step".
+    """
     queue = request.app.state.task_queue
     db = request.app.state.db
     orchestrator = request.app.state.orchestrator
@@ -265,4 +280,81 @@ async def approve_merges(request: Request, plan_id: str) -> dict[str, Any]:
                     "error": "Failed to approve task merge due to an internal error",
                 }
             )
-    return {"plan_id": plan_id, "approved": approved, "errors": errors}
+
+    integration = await _integrate_plan(orchestrator, queue, plan_id, project, errors)
+    return {
+        "plan_id": plan_id,
+        "approved": approved,
+        "integration": integration,
+        "errors": errors,
+    }
+
+
+async def _integrate_plan(
+    orchestrator: Any,
+    queue: Any,
+    plan_id: str,
+    project: dict[str, Any],
+    errors: list[dict[str, str]],
+) -> dict[str, Any]:
+    """Merge the plan's integration PR when the plan is finished and clean.
+
+    Returns a status block rather than a bare bool so the CLI can say which of
+    the several "nothing happened" cases it is looking at. The three that are
+    NOT failures:
+
+    - ``not_ready``: tasks are still parked or in flight. Integrating now
+      would carry a partial plan onto the base branch.
+    - ``none``: the plan completed but no integration PR exists (best-effort
+      creation failed, or the plan is not complete at all).
+    - ``already_merged``: someone already integrated it.
+
+    A merge that is attempted and fails appends to ``errors``, so the caller
+    still exits non-zero. Task-merge errors earlier in the same request
+    suppress the attempt entirely: those tasks are not on the plan branch, so
+    integrating would land an incomplete plan.
+    """
+    if errors:
+        return {"status": "not_ready", "reason": "task merges failed"}
+
+    plan = await queue.get_plan(plan_id)
+    if plan is None:
+        return {"status": "none", "reason": "plan not found"}
+    if plan.get("integration_merged_at"):
+        return {
+            "status": "already_merged",
+            "pr_url": plan.get("integration_pr_url"),
+        }
+    if not plan.get("integration_pr_url"):
+        return {"status": "none", "reason": "no integration PR for this plan"}
+
+    # SATISFIED_STATUSES, not a literal pair: a NO_CHANGES leaf is finished
+    # with (its work was already present) and a plan full of them would
+    # otherwise never be integrable.
+    remaining = [
+        t
+        for t in await queue.get_tasks_for_plan(plan_id)
+        if t["status"] not in SATISFIED_STATUSES
+    ]
+    if remaining:
+        return {
+            "status": "not_ready",
+            "reason": f"{len(remaining)} task(s) not merged yet",
+        }
+
+    try:
+        pr_url = await orchestrator.approve_plan_integration(plan_id, project)
+    except ValueError as exc:
+        msg = exc.args[0] if exc.args else "Validation error"
+        errors.append({"task_id": plan_id, "error": msg})
+        return {"status": "failed", "reason": msg}
+    except Exception:  # noqa: BLE001 - collect, mirror the task-merge path
+        logger.exception("Failed to merge integration PR for plan %s", plan_id)
+        errors.append(
+            {
+                "task_id": plan_id,
+                "error": "Failed to merge the integration PR due to an internal error",
+            }
+        )
+        return {"status": "failed", "reason": "internal error"}
+    return {"status": "merged", "pr_url": pr_url}

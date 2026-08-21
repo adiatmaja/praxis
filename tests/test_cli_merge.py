@@ -92,7 +92,12 @@ def test_merge_plan_posts_batch_and_reports_counts(monkeypatch) -> None:
 
 
 def test_merge_plan_reports_zero_without_crashing(monkeypatch) -> None:
-    """The all-quiet case must not depend on falsy fallbacks to survive."""
+    """The all-quiet case must not depend on falsy fallbacks to survive.
+
+    It must also not read as success. `Merged: 0 task(s)` on its own was the
+    exact output a finished plan produced while its integration PR sat open,
+    so the genuinely-empty case now has to SAY it did nothing.
+    """
 
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(
@@ -103,7 +108,98 @@ def test_merge_plan_reports_zero_without_crashing(monkeypatch) -> None:
     result = runner.invoke(app, ["merge-plan", "plan-9"])
 
     assert result.exit_code == 0
-    assert "0" in result.stdout
+    assert "Nothing to merge" in result.stdout
+    assert "Merged:" not in result.stdout
+
+
+def test_merge_plan_reports_the_integration_merge(monkeypatch) -> None:
+    """A finished plan's last step must be named, with its PR URL."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "plan_id": "plan-9",
+                "approved": 0,
+                "integration": {
+                    "status": "merged",
+                    "pr_url": "https://github.com/o/r/pull/48",
+                },
+                "errors": [],
+            },
+        )
+
+    _patch_client(monkeypatch, handler)
+    result = runner.invoke(app, ["merge-plan", "plan-9"])
+
+    assert result.exit_code == 0
+    assert "Integrated" in result.stdout
+    assert "https://github.com/o/r/pull/48" in result.stdout
+    assert "Nothing to merge" not in result.stdout
+
+
+def test_merge_plan_says_when_the_plan_is_not_ready(monkeypatch) -> None:
+    """An unfinished plan must not report an integration that did not happen."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "plan_id": "plan-9",
+                "approved": 1,
+                "integration": {
+                    "status": "not_ready",
+                    "reason": "2 task(s) not merged yet",
+                },
+                "errors": [],
+            },
+        )
+
+    _patch_client(monkeypatch, handler)
+    result = runner.invoke(app, ["merge-plan", "plan-9"])
+
+    assert result.exit_code == 0
+    assert "Merged:" in result.stdout
+    assert "Not integrated" in result.stdout
+    assert "2 task(s) not merged yet" in result.stdout
+
+
+def test_pending_lists_a_plan_awaiting_integration(monkeypatch) -> None:
+    """The integration PR must reach the operator, copyable, from `pending`.
+
+    This is the run #5 blocker in one assertion: with an integration PR open,
+    `pending` printed "Nothing awaiting approval." and the URL existed only in
+    the orchestrator's log.
+    """
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "count": 1,
+                "task_count": 0,
+                "plan_count": 1,
+                "oldest_hours": 3.0,
+                "tasks": [],
+                "plans": [
+                    {
+                        "plan_id": FULL_PLAN_ID,
+                        "project_id": "proj-1",
+                        "branch": "plan/2026-08-21-add-slugify-helper",
+                        "pr_url": "https://github.com/o/r/pull/48",
+                        "age_hours": 3.0,
+                    }
+                ],
+            },
+        )
+
+    _patch_client(monkeypatch, handler)
+    result = runner.invoke(app, ["pending"])
+
+    assert result.exit_code == 0
+    assert "Nothing awaiting approval" not in result.stdout
+    assert f"praxis merge-plan {FULL_PLAN_ID}" in result.stdout
+    assert "https://github.com/o/r/pull/48" in result.stdout
 
 
 FULL_PLAN_ID = "11111111-2222-3333-4444-555555555555"

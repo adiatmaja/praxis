@@ -40,6 +40,7 @@ def test_task_status_has_all_expected_members() -> None:
         "merged",
         "needs_clarification",
         "superseded",
+        "no_changes",
     }
     actual = {s.value for s in TaskStatus}
     assert actual == expected
@@ -95,13 +96,33 @@ def test_gated_statuses_contains_passed_and_alias() -> None:
 
 
 def test_terminal_statuses_includes_superseded() -> None:
-    """TERMINAL_STATUSES includes failed, merged, and superseded."""
+    """TERMINAL_STATUSES includes failed, merged, superseded, and no_changes."""
     from orchestrator.core.status_vocab import TERMINAL_STATUSES
 
     assert isinstance(TERMINAL_STATUSES, frozenset)
     assert "failed" in TERMINAL_STATUSES
     assert "merged" in TERMINAL_STATUSES
     assert "superseded" in TERMINAL_STATUSES
+    assert "no_changes" in TERMINAL_STATUSES
+
+
+def test_satisfied_statuses_are_terminal_but_not_failures() -> None:
+    """SATISFIED_STATUSES is what lets a plan finish and dependents dispatch.
+
+    Every member is a way for a leaf's work to be present without that leaf
+    ever reaching MERGED. Dropping one deadlocks every dependent of it, which
+    is silent: the plan simply never completes. ``failed`` is terminal but NOT
+    satisfying, and confusing the two would complete plans that did not land.
+    """
+    from orchestrator.core.status_vocab import (
+        SATISFIED_STATUSES,
+        TERMINAL_STATUSES,
+    )
+
+    assert set(SATISFIED_STATUSES) == {"merged", "superseded", "no_changes"}
+    assert SATISFIED_STATUSES < TERMINAL_STATUSES
+    assert "failed" not in SATISFIED_STATUSES
+    assert "passed" not in SATISFIED_STATUSES
 
 
 def test_mcp_status_maps_passed() -> None:

@@ -1138,6 +1138,40 @@ class TestContextSyncOnPlanCompletion:
         assert evt["pr_url"] == "https://github.com/u/a/pull/5"
         assert "context_draft_ready" not in types
 
+    async def test_on_plan_completed_persists_the_integration_pr(
+        self, db: Database
+    ) -> None:
+        """Delete the persistence call and every read-only surface goes blind.
+
+        The event above fires once, to whoever happens to be subscribed. The
+        stored URL is what `praxis pending`, `praxis plans` and `merge-plan`
+        read minutes or days later.
+        """
+        task_queue, plan_id, task_id = await _setup(db)
+        await task_queue.update_task_status(task_id, TaskStatus.MERGED)
+
+        mock_git = AsyncMock()
+        mock_git.open_integration_pr = AsyncMock(
+            return_value="https://github.com/u/a/pull/5"
+        )
+        mock_git.repo_slug = MagicMock(return_value="u/a")
+
+        orch = Orchestrator(
+            task_queue=task_queue,
+            agent_manager=MagicMock(),
+            opus_bridge=AsyncMock(),
+            git_ops=mock_git,
+            event_bus=EventBus(),
+            context_sync=None,
+        )
+
+        await orch.on_plan_completed(plan_id=plan_id)
+
+        plan = await task_queue.get_plan(plan_id)
+        assert plan is not None
+        assert plan["integration_pr_url"] == "https://github.com/u/a/pull/5"
+        assert plan["integration_merged_at"] is None
+
     async def test_on_plan_completed_integration_pr_failure_is_best_effort(
         self, db: Database
     ) -> None:

@@ -16,12 +16,17 @@ router = APIRouter(tags=["approvals"], dependencies=[Depends(verify_token)])
 
 @router.get("/approvals/pending")
 async def get_pending_approvals(request: Request) -> dict[str, Any]:
-    """Summarize every task parked at the merge gate, across all projects.
+    """Summarize everything parked at the merge gate, across all projects.
 
-    Filters on ``GATED_STATUSES`` (the single source of truth for what
-    "parked" means) rather than a hardcoded ``'passed'`` literal, so this
-    endpoint and the loop's rate-limited digest can never disagree about
-    which tasks count.
+    Two kinds of work park here, and reporting only the first is what made
+    the loop's last step invisible:
+
+    - Tasks in ``GATED_STATUSES`` (the single source of truth for what
+      "parked" means, rather than a hardcoded ``'passed'`` literal, so this
+      endpoint and the loop's rate-limited digest can never disagree).
+    - Completed plans whose integration PR is open. Once the last task
+      merges, the work is on the plan branch and NOT on the base branch; the
+      integration PR is the only thing standing between the two.
     """
     db = request.app.state.db
     placeholders = ", ".join("?" for _ in GATED_STATUSES)
@@ -31,4 +36,8 @@ async def get_pending_approvals(request: Request) -> dict[str, Any]:
         f"SELECT * FROM tasks WHERE status IN ({placeholders})",  # nosec B608
         tuple(GATED_STATUSES),
     )
-    return summarize_pending(rows)
+    plan_rows = await db.fetch_all(
+        "SELECT * FROM plans WHERE integration_pr_url IS NOT NULL "
+        "AND integration_merged_at IS NULL"
+    )
+    return summarize_pending(rows, plan_rows)

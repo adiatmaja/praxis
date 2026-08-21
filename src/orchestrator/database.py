@@ -280,6 +280,32 @@ async def _migration_0008_run_tokens(connection: aiosqlite.Connection) -> None:
         await connection.execute("ALTER TABLE agent_runs ADD COLUMN tokens_source TEXT")
 
 
+async def _migration_0009_plan_integration(connection: aiosqlite.Connection) -> None:
+    """Add plans.integration_pr_url / integration_merged_at.
+
+    The integration PR is the last link in the loop and it used to exist in
+    exactly two places, neither of which a user can reach: an SSE event that
+    has already fired by the time anybody looks, and one INFO line in the
+    orchestrator's own log. ``praxis pending`` reported "Nothing awaiting
+    approval" with integration PRs open, because the URL was never written
+    down. Persisting it is what lets every read-only surface answer the
+    question "where did my work go".
+
+    ``integration_merged_at`` is what stops the answer from becoming a
+    different lie once the PR is merged: without it the plan would sit in
+    ``pending`` forever. It is set when Praxis merges the PR, and by the
+    reconcile sweep when someone merged it on GitHub instead.
+    """
+    cursor = await connection.execute("PRAGMA table_info(plans)")
+    cols = {row[1] for row in await cursor.fetchall()}
+    if "integration_pr_url" not in cols:
+        await connection.execute("ALTER TABLE plans ADD COLUMN integration_pr_url TEXT")
+    if "integration_merged_at" not in cols:
+        await connection.execute(
+            "ALTER TABLE plans ADD COLUMN integration_merged_at TEXT"
+        )
+
+
 MIGRATIONS: list[Migration] = [
     Migration(1, "baseline: schema as of 2026-07-02", _migration_0001_baseline),
     Migration(
@@ -316,6 +342,11 @@ MIGRATIONS: list[Migration] = [
         8,
         "add agent_runs token telemetry (tokens_used, tokens_source)",
         _migration_0008_run_tokens,
+    ),
+    Migration(
+        9,
+        "add plans integration PR columns (integration_pr_url, integration_merged_at)",
+        _migration_0009_plan_integration,
     ),
 ]
 

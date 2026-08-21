@@ -166,6 +166,80 @@ async def test_failed_callback_marks_failed_when_budget_exhausted(
 
 
 @pytest.mark.integration
+async def test_no_changes_callback_closes_the_task_as_a_no_op(
+    client: AsyncClient,
+    db: Database,
+    auth_headers: dict[str, str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The seam: a `no_changes` callback must not land in the retry branch.
+
+    Both halves are correct on their own and the wiring between them is
+    invisible. A worker reporting a status the router does not know silently
+    falls through to retry/fail, which is exactly the defect being fixed.
+    """
+    task_id, run_id = await _seed_in_progress_task(
+        client, db, auth_headers, attempt=1, max_retries=3
+    )
+    queue: TaskQueue = client.app.state.task_queue  # type: ignore[attr-defined]
+
+    async def _accept(task_id_arg: str, project: dict, plan: dict | None) -> bool:
+        await queue.mark_no_changes(task_id_arg, "already satisfied")
+        return True
+
+    monkeypatch.setattr(client.app.state.orchestrator, "resolve_no_change_run", _accept)
+
+    resp = await client.post(
+        "/api/internal/agent-done",
+        headers={"X-Praxis-Callback-Token": "test-auth"},
+        json={"task_id": task_id, "run_id": run_id, "status": "no_changes"},
+    )
+    assert resp.status_code == 200
+
+    task = await queue.get_task(task_id)
+    assert task["status"] == TaskStatus.NO_CHANGES
+    assert int(task["attempt"]) == 1, "a no-op must not consume a retry"
+
+
+@pytest.mark.integration
+async def test_a_rejected_no_changes_callback_falls_through_to_the_failure_path(
+    client: AsyncClient,
+    db: Database,
+    auth_headers: dict[str, str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A no-op is terminal with no PR and no review, so it needs a POSITIVE yes.
+
+    Anything else, including the resolver raising, has to reach the ordinary
+    retry path. Invert this and a worker that produced nothing when something
+    was needed closes its leaf clean and the plan reports success.
+    """
+    task_id, run_id = await _seed_in_progress_task(
+        client, db, auth_headers, attempt=1, max_retries=3
+    )
+    queue: TaskQueue = client.app.state.task_queue  # type: ignore[attr-defined]
+
+    async def _explode(task_id_arg: str, project: dict, plan: dict | None) -> bool:
+        msg = "verify blew up"
+        raise RuntimeError(msg)
+
+    monkeypatch.setattr(
+        client.app.state.orchestrator, "resolve_no_change_run", _explode
+    )
+
+    resp = await client.post(
+        "/api/internal/agent-done",
+        headers={"X-Praxis-Callback-Token": "test-auth"},
+        json={"task_id": task_id, "run_id": run_id, "status": "no_changes"},
+    )
+    assert resp.status_code == 200
+
+    task = await queue.get_task(task_id)
+    assert task["status"] == TaskStatus.PENDING
+    assert int(task["attempt"]) == 2
+
+
+@pytest.mark.integration
 async def test_agent_done_needs_clarification_parks_task(
     client: AsyncClient,
     db: Database,

@@ -287,6 +287,160 @@ async def test_approve_merges_batch(
 
 
 @pytest.mark.integration
+async def test_approve_merges_integrates_a_finished_plan(
+    client: AsyncClient,
+    db: Database,
+    auth_headers: dict[str, str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The last link: once every task is merged, the plan merges to its base.
+
+    Run #5's blocker in one test. Before this, `approve-merges` against a
+    finished plan returned ``approved: 0`` and stopped, leaving the work on
+    the plan branch and the integration PR unmentioned anywhere a user looks.
+    """
+    integrated: list[str] = []
+
+    async def fake_integrate(plan_id: str, project: dict) -> str:
+        integrated.append(plan_id)
+        return "https://github.com/u/a/pull/48"
+
+    plan_id, task_ids = await _seed_plan_with_passed_tasks(
+        client, db, auth_headers, n=2
+    )
+    queue = client.app.state.task_queue  # type: ignore[attr-defined]
+    for task_id in task_ids:
+        await queue.mark_merged(task_id)
+    await queue.set_plan_integration_pr(plan_id, "https://github.com/u/a/pull/48")
+    monkeypatch.setattr(
+        client.app.state.orchestrator, "approve_plan_integration", fake_integrate
+    )
+
+    resp = await client.post(
+        f"/api/plans/{plan_id}/approve-merges", headers=auth_headers
+    )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["approved"] == 0
+    assert body["integration"]["status"] == "merged"
+    assert body["integration"]["pr_url"] == "https://github.com/u/a/pull/48"
+    assert integrated == [plan_id]
+
+
+@pytest.mark.integration
+async def test_approve_merges_refuses_to_integrate_an_unfinished_plan(
+    client: AsyncClient,
+    db: Database,
+    auth_headers: dict[str, str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Delete the remaining-task check and a partial plan lands on the base branch.
+
+    The tasks here stay PASSED (parked, never merged) because the approve
+    stub does not merge them, so the plan branch does not carry their work.
+    """
+    integrated: list[str] = []
+
+    async def fake_approve(task_id: str, project: dict) -> None:
+        return None
+
+    async def fake_integrate(plan_id: str, project: dict) -> str:
+        integrated.append(plan_id)
+        return "https://github.com/u/a/pull/48"
+
+    plan_id, _ = await _seed_plan_with_passed_tasks(client, db, auth_headers, n=2)
+    queue = client.app.state.task_queue  # type: ignore[attr-defined]
+    await queue.set_plan_integration_pr(plan_id, "https://github.com/u/a/pull/48")
+    monkeypatch.setattr(
+        client.app.state.orchestrator, "approve_task_merge", fake_approve
+    )
+    monkeypatch.setattr(
+        client.app.state.orchestrator, "approve_plan_integration", fake_integrate
+    )
+
+    resp = await client.post(
+        f"/api/plans/{plan_id}/approve-merges", headers=auth_headers
+    )
+
+    assert resp.status_code == 200
+    assert resp.json()["integration"]["status"] == "not_ready"
+    assert integrated == []
+
+
+@pytest.mark.integration
+async def test_approve_merges_does_not_integrate_when_a_task_merge_failed(
+    client: AsyncClient,
+    db: Database,
+    auth_headers: dict[str, str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failed task merge must suppress integration, not be papered over by it."""
+    integrated: list[str] = []
+
+    async def fake_approve_raises(task_id: str, project: dict) -> None:
+        msg = "merge exploded"
+        raise RuntimeError(msg)
+
+    async def fake_integrate(plan_id: str, project: dict) -> str:
+        integrated.append(plan_id)
+        return "https://github.com/u/a/pull/48"
+
+    plan_id, _ = await _seed_plan_with_passed_tasks(client, db, auth_headers, n=1)
+    queue = client.app.state.task_queue  # type: ignore[attr-defined]
+    await queue.set_plan_integration_pr(plan_id, "https://github.com/u/a/pull/48")
+    monkeypatch.setattr(
+        client.app.state.orchestrator, "approve_task_merge", fake_approve_raises
+    )
+    monkeypatch.setattr(
+        client.app.state.orchestrator, "approve_plan_integration", fake_integrate
+    )
+
+    resp = await client.post(
+        f"/api/plans/{plan_id}/approve-merges", headers=auth_headers
+    )
+
+    assert resp.status_code == 200
+    assert resp.json()["integration"]["status"] == "not_ready"
+    assert integrated == []
+
+
+@pytest.mark.integration
+async def test_pending_approvals_lists_a_plan_awaiting_integration(
+    client: AsyncClient,
+    db: Database,
+    auth_headers: dict[str, str],
+) -> None:
+    """`GET /api/approvals/pending` must name the integration PR.
+
+    The CLI, the dashboard and the loop digest all read this one endpoint, so
+    a plan missing here is a plan missing from every surface a user polls.
+    """
+    plan_id, task_ids = await _seed_plan_with_passed_tasks(
+        client, db, auth_headers, n=1
+    )
+    queue = client.app.state.task_queue  # type: ignore[attr-defined]
+    for task_id in task_ids:
+        await queue.mark_merged(task_id)
+    await queue.update_plan_status(plan_id, "completed")
+    await queue.set_plan_integration_pr(plan_id, "https://github.com/u/a/pull/48")
+
+    resp = await client.get("/api/approvals/pending", headers=auth_headers)
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["count"] == 1
+    assert body["plan_count"] == 1
+    assert body["plans"][0]["plan_id"] == plan_id
+    assert body["plans"][0]["pr_url"] == "https://github.com/u/a/pull/48"
+
+    # ...and drops out again the moment it lands.
+    await queue.mark_plan_integrated(plan_id)
+    after = await client.get("/api/approvals/pending", headers=auth_headers)
+    assert after.json()["count"] == 0
+
+
+@pytest.mark.integration
 async def test_get_plan_returns_error_reason(
     client: AsyncClient,
     db: Database,

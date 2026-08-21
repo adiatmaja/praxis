@@ -387,7 +387,15 @@ class Orchestrator(DispatchMixin, ReviewMixin, ReconcileMixin, ImprovementMixin)
                 f"SELECT * FROM tasks WHERE status IN ({placeholders})",  # nosec B608
                 tuple(GATED_STATUSES),
             )
-            summary = summarize_pending(rows)
+            # Plans too, on the same terms as the API surface: a completed
+            # plan whose integration PR is open is unapproved work, and a
+            # digest that omitted it would go quiet exactly when the last
+            # step of the loop is the one waiting on a human.
+            plan_rows = await self._tq._db.fetch_all(
+                "SELECT * FROM plans WHERE integration_pr_url IS NOT NULL "
+                "AND integration_merged_at IS NULL"
+            )
+            summary = summarize_pending(rows, plan_rows)
             interval_h = 6.0
             if self._effective_settings is not None:
                 interval_h = (

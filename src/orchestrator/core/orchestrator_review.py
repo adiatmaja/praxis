@@ -830,6 +830,156 @@ class ReviewMixin:
             }
         )
 
+    async def resolve_no_change_run(
+        self,
+        task_id: str,
+        project: dict[str, Any],
+        plan: dict[str, Any] | None,
+    ) -> bool:
+        """Decide whether a worker's empty diff is a no-op or a real failure.
+
+        A worker that produces no diff is reporting a FACT, not a verdict:
+        "the tree already satisfies this leaf". Deciding what that means is
+        governance, so it happens here and not in the container.
+
+        The measured shape this exists for: with a plan decomposed into "write
+        the module" and "write its tests", task 1 routinely writes both files.
+        Task 2 then has nothing to change, says so correctly, and used to be
+        called ``failed``, retried three times to the identical correct answer,
+        and take the whole plan down with the repository already in the state
+        the spec asked for. That boundary crossing fired in four of four plans
+        across both harnesses in run #5; the three that survived did so only
+        because their workers happened to expand an existing file.
+
+        The evidence used is the project's own verify command, run against the
+        branch the leaf was cut FROM. If the tree there already passes, the
+        leaf is genuinely a no-op. A failure or an infra error is treated as a
+        real failure and falls through to the normal retry path, so this can
+        never green a leaf whose work is actually missing.
+
+        A ``skipped`` gate (no ``verify_cmd`` configured) also closes the leaf.
+        That is deliberate and it is the weakest link here: with no command
+        there is no independent evidence, only the harness's clean exit. The
+        alternative is worse and was measured, not guessed: retrying to the
+        same answer and failing a plan whose work is already done. An install
+        that wants the evidence configures ``verify_cmd``.
+
+        Args:
+            task_id: The task whose run produced no diff.
+            project: Project dict (needs ``repo_url``, ``verify_cmd``).
+            plan: The task's plan, for the branch it was cut from. ``None``
+                falls back to the project's default branch.
+
+        Returns:
+            True when the leaf was closed as a no-op; False when the caller
+            should treat the run as a normal failure.
+        """
+        repo_url = project.get("repo_url")
+        base_branch = (plan or {}).get("plan_branch_name") or project.get(
+            "default_branch"
+        )
+        if not repo_url or not base_branch:
+            logger.warning(
+                "Task %s reported no changes but its base branch could not be "
+                "resolved (repo_url=%r, branch=%r); treating as a failure",
+                task_id,
+                repo_url,
+                base_branch,
+            )
+            return False
+
+        verify_cmd = None if verify_gate_disabled() else project.get("verify_cmd")
+        verdict = await self._verify_plan_branch(repo_url, base_branch, verify_cmd)
+        if verdict.status not in ("passed", "skipped"):
+            logger.warning(
+                "Task %s reported no changes, but %s does not verify clean "
+                "(%s); treating as a failure",
+                task_id,
+                base_branch,
+                verdict.status,
+            )
+            return False
+
+        evidence = (
+            f"verify passed on {base_branch}"
+            if verdict.status == "passed"
+            else f"no verify_cmd configured; harness exited clean on {base_branch}"
+        )
+        reason = (
+            "No changes needed: the repository already satisfied this task "
+            f"({evidence})."
+        )
+        await self._tq.mark_no_changes(task_id, reason)
+        self._bus.publish(
+            {
+                "type": "task_no_changes",
+                "task_id": task_id,
+                "base_branch": base_branch,
+                "verify_status": verdict.status,
+                "reason": reason,
+            }
+        )
+        logger.info("Task %s closed as a no-op: %s", task_id, reason)
+        return True
+
+    async def approve_plan_integration(
+        self, plan_id: str, project: dict[str, Any]
+    ) -> str:
+        """Merge the integration PR that carries a completed plan onto its base.
+
+        This is the last link in the loop. Every task can be reviewed, merged
+        to the plan branch and reported clean, and the change still not be on
+        the base branch: the integration PR is what closes that gap, and until
+        this existed nothing but a human with a browser could close it.
+
+        Idempotent by design. Re-running against an already-integrated plan
+        returns its URL rather than raising: "already done" must never read as
+        an error, the same rule ``_abandoned_merge`` follows in the CLI.
+
+        Args:
+            plan_id: The completed plan to integrate.
+            project: Project dict (needs ``repo_url``).
+
+        Returns:
+            The integration PR URL that was merged (or already merged).
+
+        Raises:
+            ValueError: If the plan is missing, has no integration PR, or
+                carries a ``pr_url`` no backend can parse. Like task approval,
+                this path is operator-driven and must never silently no-op.
+        """
+        plan = await self._tq.get_plan(plan_id)
+        if plan is None:
+            msg = f"Plan {plan_id} not found"
+            raise ValueError(msg)
+        pr_url = plan.get("integration_pr_url")
+        if not pr_url:
+            msg = (
+                f"Plan {plan_id} has no integration PR "
+                "(it has not completed, or the PR could not be opened)"
+            )
+            raise ValueError(msg)
+        if plan.get("integration_merged_at"):
+            return str(pr_url)
+
+        backend = self._resolve_backend(project["repo_url"])
+        try:
+            ref = PullRequestRef.from_url(str(pr_url))
+        except ValueError as exc:
+            msg = f"Plan {plan_id} has an unparseable integration PR url {pr_url!r}"
+            raise ValueError(msg) from exc
+        await backend.merge(ref)
+        await self._tq.mark_plan_integrated(plan_id)
+        self._bus.publish(
+            {
+                "type": "plan_integrated",
+                "plan_id": plan_id,
+                "project_id": project["id"],
+                "pr_url": pr_url,
+            }
+        )
+        return str(pr_url)
+
     async def reject_task_merge(
         self,
         task_id: str,
@@ -1272,6 +1422,22 @@ class ReviewMixin:
                 except Exception as exc:  # noqa: BLE001
                     logger.warning(
                         "Integration PR open failed for %s: %s", plan_id, exc
+                    )
+
+            if pr_url:
+                # Persist BEFORE publishing: the SSE event below is consumed
+                # only by whoever is watching at that instant, and the log line
+                # inside open_integration_pr is not a surface any user reaches.
+                # The stored URL is what `praxis pending` and `merge-plan` read,
+                # so a failure to store it must not be silent.
+                try:
+                    await self._tq.set_plan_integration_pr(plan_id, pr_url)
+                except Exception as exc:  # noqa: BLE001 - never wedge the loop
+                    logger.warning(
+                        "Failed to record integration PR %s for plan %s: %s",
+                        pr_url,
+                        plan_id,
+                        exc,
                     )
 
             if verify_status.status in ("failed", "error"):

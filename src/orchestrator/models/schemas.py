@@ -68,6 +68,13 @@ class TaskStatus(StrEnum):
     MERGED = "merged"
     NEEDS_CLARIFICATION = "needs_clarification"
     SUPERSEDED = "superseded"
+    #: The leaf's work was already present, so the worker correctly produced no
+    #: diff. Terminal, and neither a success nor a failure: there is no PR to
+    #: review and nothing to merge, but the repository IS in the state the leaf
+    #: asked for. Distinct from SUPERSEDED, which means "replaced by split
+    #: children" and would credit this leaf's outcome to a split that never
+    #: happened.
+    NO_CHANGES = "no_changes"
 
 
 class PlanStatus(StrEnum):
@@ -380,6 +387,12 @@ class PlanResponse(BaseModel):
     error: str | None = None
     spec_path: str | None = None
     plan_path: str | None = None
+    #: The PR that carries this plan from its plan branch onto the project's
+    #: base branch, and the time it landed. Exposed because a plan reported
+    #: `completed` with no URL anywhere is indistinguishable, from the outside,
+    #: from a plan whose work reached the base branch.
+    integration_pr_url: str | None = None
+    integration_merged_at: str | None = None
     created_at: str
 
 

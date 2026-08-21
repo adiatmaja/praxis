@@ -14,17 +14,26 @@ anything not printed here is gone for good: observed live 2026-08-14, three
 consecutive attempts each printed ``[PRAXIS PHASE] understanding`` and then one
 bare sentence, and nothing anywhere recorded which of the three shapes it was.
 
-This evidence does NOT currently reach the orchestrator's data model. A
-no-change run reports ``STATUS=failed`` to ``/api/internal/agent-done``, which
-routes any non-``completed`` status straight to the retry/fail branch
-(``api/internal.py``) without ever moving the task to ``REVIEWING``. That means
-``orchestrator_review.review_task`` -- the only place a ``FailureClass`` is
-assigned and the only caller of ``record_outcome`` -- never runs for this run,
-so no ``task_outcomes`` row and no ``failure_class`` is ever produced for it
-either way. The container's stdout is the only place this evidence exists at
-all (it reaches ``agent_runs.logs``); printing it here is worth doing for that
-reason alone, not because ``core.failure_taxonomy`` consumes it -- it does not,
-yet.
+Since run #5 the entrypoint also SPLITS that evidence into two outcomes,
+because they are not the same event and calling both ``failed`` broke plans:
+
+- Transcript non-empty: the harness ran and the tree already satisfied the
+  task. Reported as ``no_changes``, exit 0. The orchestrator then decides
+  whether that is a legitimate no-op by running the project's verify command
+  against the base branch; the container never makes that call itself.
+- Transcript empty: nothing ran. Still ``failed``, exit 1. Without this half,
+  a dead worker would silently close every leaf it touched.
+
+The first case is the one that mattered: with a plan split into "write the
+module" and "write its tests", task 1 routinely writes both files, task 2
+correctly has nothing to change, and the old branch retried it three times to
+the identical correct answer before failing the whole plan with the repository
+already in the state the spec asked for. Measured in 4 of 4 plans across BOTH
+harnesses.
+
+Note what a unit test cannot see here: "empty diff -> failed" passes both
+before the fix and after a bad one. The assertions below are on the STATUS
+carried to the callback, per case, which is the thing that actually changed.
 
 A `rev-list` failure while counting commits ahead of ``BASE_BRANCH`` must not
 make this silent failure worse: a bare assignment there aborts the whole
@@ -218,6 +227,13 @@ def _run_no_change(
         'BASE_BRANCH="plan/2026-08-14-diagnostics"',
         'STATUS="completed"',
         'trap \'printf "__PRAXIS_STATUS__=%s\\n" "${STATUS}"\' EXIT',
+        # The no-op path reports through send_callback and then CLEARS the
+        # trap, exactly as the clarification path above it does, so the trap
+        # marker cannot see it. The stub is what proves the callback was sent
+        # AND which status it carried, which is the real contract: an
+        # entrypoint that set STATUS and exited without calling this would
+        # leave the orchestrator to reconcile an orphan.
+        'send_callback() { printf "__PRAXIS_CALLBACK__=%s\\n" "${STATUS}"; }',
         f'OUTPUT_LOG="{_to_posix(output_log)}"',
         f"{HARNESSES[harness]['rc_var']}={rc}",
         f'report_status="{report_status}"',
@@ -234,7 +250,24 @@ def _run_no_change(
     env["PRAXIS_GIT_REV_LIST_EXIT"] = rev_list_exit
     env["PRAXIS_GIT_REV_LIST_STDERR"] = rev_list_stderr
     env["PRAXIS_GIT_REV_LIST_WARN"] = rev_list_warn
-    return subprocess.run([bash, "-c", script], capture_output=True, text=True, env=env)
+    # The script goes in on STDIN, never as a `bash -c` argument. Git Bash's
+    # MSYS layer silently TRUNCATES a single argument at 8192 bytes: the agy
+    # region crossed that ceiling and every agy case started failing with
+    # "syntax error: unexpected end of file", which reads as a broken
+    # entrypoint. It was not. The same script parsed clean as a file, and
+    # echoing argv back showed 9507 bytes sent and 8186 received.
+    #
+    # Do NOT revert this to `-c` to "simplify". The ceiling is invisible until
+    # crossed and it reports itself as the product's fault. This is the same
+    # class as the brain's own argv limit (see docs/gotchas.md); nothing here
+    # reads stdin, so `-s` costs nothing.
+    return subprocess.run(
+        [bash, "-s"],
+        input=script,
+        capture_output=True,
+        text=True,
+        env=env,
+    )
 
 
 @pytest.mark.integration
@@ -250,10 +283,12 @@ def test_no_change_path_reports_rc_size_status_and_a_tail(harness, tmp_path):
     result = _run_no_change(harness, tmp_path)
 
     assert "unbound variable" not in result.stderr, result.stderr
-    assert result.returncode == 1, (
-        f"the no-change path must still fail; stdout={result.stdout!r}"
+    assert result.returncode == 0, (
+        f"a harness that ran and found nothing to do is not a failure; "
+        f"stdout={result.stdout!r} stderr={result.stderr!r}"
     )
-    assert "__PRAXIS_STATUS__=failed" in result.stdout, result.stdout
+    assert "__PRAXIS_CALLBACK__=no_changes" in result.stdout, result.stdout
+    assert "__PRAXIS_CALLBACK__=failed" not in result.stdout, result.stdout
     assert HARNESSES[harness]["sentence"] in result.stdout
 
     assert "harness_rc=0" in result.stdout, f"no harness rc reported: {result.stdout!r}"
@@ -287,7 +322,7 @@ def test_a_parsed_status_is_reported_verbatim(harness, tmp_path):
     """
     result = _run_no_change(harness, tmp_path, report_status="DONE")
 
-    assert result.returncode == 1, result.stdout
+    assert result.returncode == 0, result.stdout
     assert "report_status=DONE" in result.stdout, result.stdout
     assert "report_status=none" not in result.stdout
 
@@ -305,7 +340,7 @@ def test_the_reported_rc_is_read_not_hardcoded(harness, tmp_path):
     """
     result = _run_no_change(harness, tmp_path, rc=7)
 
-    assert result.returncode == 1, result.stdout
+    assert result.returncode == 0, result.stdout
     assert "harness_rc=7" in result.stdout, (
         f"the rc must be read from the harness variable: {result.stdout!r}"
     )
@@ -448,13 +483,66 @@ def test_rev_list_success_with_non_numeric_output_does_not_abort(harness, tmp_pa
 
 @pytest.mark.integration
 @pytest.mark.parametrize("harness", list(HARNESSES))
-def test_an_empty_transcript_is_reported_as_zero_bytes(harness, tmp_path):
-    """ "The harness emitted nothing" is the shape the whole task is about."""
+def test_an_empty_transcript_stays_a_failure(harness, tmp_path):
+    """A harness that emitted nothing did not run, so it is not a no-op.
+
+    This is the half that stops the fix from being a blanket "empty diff is
+    fine". Delete the ``output_bytes -gt 0`` condition and a dead worker
+    silently closes every leaf it is handed, with the plan reporting success.
+    """
     result = _run_no_change(harness, tmp_path, log_text="")
 
     assert result.returncode == 1, result.stdout
+    assert "__PRAXIS_STATUS__=failed" in result.stdout, result.stdout
+    assert "__PRAXIS_CALLBACK__=no_changes" not in result.stdout, result.stdout
     assert "output_log_bytes=0" in result.stdout, result.stdout
     assert "report_status=none" in result.stdout, result.stdout
+
+
+# The three shapes in which the commit count cannot be trusted. Each is a
+# separate case because `_run_no_change` owns its tmp_path, and because a
+# single test that stopped at the first one would silently stop covering the
+# rest.
+_UNTRUSTWORTHY_COUNTS = {
+    "rev_list_failed": {"rev_list_exit": "128"},
+    "stray_stderr": {"ahead": "3", "rev_list_warn": "warning: unable to access"},
+    "non_numeric": {"ahead": "not-a-number"},
+}
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("harness", list(HARNESSES))
+@pytest.mark.parametrize("shape", list(_UNTRUSTWORTHY_COUNTS))
+def test_an_untrustworthy_commit_count_is_never_reported_as_a_no_op(
+    harness, shape, tmp_path
+):
+    """A rev-list we could not read does not prove the worker produced nothing.
+
+    It may have committed work this run cannot see, and closing the leaf would
+    discard it permanently: a no-op is terminal, with no PR and no review.
+    Drop ``rev_list_error`` from the no-op condition and every one of these
+    goes red.
+    """
+    result = _run_no_change(harness, tmp_path, **_UNTRUSTWORTHY_COUNTS[shape])
+
+    assert result.returncode == 1, result.stdout
+    assert "__PRAXIS_CALLBACK__=no_changes" not in result.stdout, result.stdout
+    assert "__PRAXIS_STATUS__=failed" in result.stdout, result.stdout
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("harness", list(HARNESSES))
+def test_a_worker_that_committed_its_own_work_is_untouched(harness, tmp_path):
+    """The no-op path must not swallow the committed-work path beside it."""
+    result = _run_no_change(harness, tmp_path, ahead="2")
+
+    assert result.returncode == 0, result.stdout
+    assert "Worker committed its own work (2 commit(s)" in result.stdout
+    assert HARNESSES[harness]["sentence"] not in result.stdout
+    assert "__PRAXIS_CALLBACK__" not in result.stdout, (
+        "the committed-work path continues to the push/PR block; it must not "
+        "short-circuit into a callback here"
+    )
 
 
 @pytest.mark.integration
@@ -462,7 +550,7 @@ def test_agy_reports_its_envelope_status_and_turn_count(tmp_path):
     """agy has an envelope; opencode does not. Only agy is asked for it."""
     result = _run_no_change("agy", tmp_path)
 
-    assert result.returncode == 1, result.stdout
+    assert result.returncode == 0, result.stdout
     assert "envelope_status=completed" in result.stdout, result.stdout
     assert "envelope_num_turns=7" in result.stdout, result.stdout
 
@@ -472,12 +560,20 @@ def test_agy_survives_an_unparseable_envelope(tmp_path):
     """The fallback path really does reach here with no JSON at all.
 
     The diagnostic must not trip ``set -e`` (that would skip its own tail and
-    the ``exit 1``) and must say so explicitly rather than print a blank.
+    the outcome branch below it) and must say so explicitly rather than print
+    a blank.
+
+    It also pins that the envelope is EVIDENCE, not the condition: an
+    unparseable envelope still reaches the no-op decision. Gating the outcome
+    on ``envelope_status`` is a separate, tracked change; smuggling it in here
+    would make the two entrypoints diverge on a defect that is not
+    agy-specific, and would silently re-fail the exact runs this fixes.
     """
     result = _run_no_change("agy", tmp_path, envelope=_BAD_ENVELOPE)
 
     assert "unbound variable" not in result.stderr, result.stderr
-    assert result.returncode == 1, result.stdout
+    assert result.returncode == 0, result.stdout
+    assert "__PRAXIS_CALLBACK__=no_changes" in result.stdout, result.stdout
     assert "envelope_status=unparseable" in result.stdout, result.stdout
     assert "envelope_num_turns=unknown" in result.stdout, result.stdout
     assert "line-040" in result.stdout, "the tail must still print"

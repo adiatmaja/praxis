@@ -10,6 +10,7 @@ from typing import Any
 
 from orchestrator.core.clarification_states import ASKED
 from orchestrator.core.leaf_split import rewire_plan_for_split
+from orchestrator.core.status_vocab import SATISFIED_STATUSES
 from orchestrator.database import Database
 from orchestrator.models.schemas import LeafTask, PlanStatus, TaskStatus
 
@@ -149,6 +150,32 @@ class TaskQueue:
         await self._db.execute(
             "UPDATE plans SET status = ? WHERE id = ?",
             (status, plan_id),
+        )
+
+    async def set_plan_integration_pr(self, plan_id: str, pr_url: str) -> None:
+        """Record the integration PR that carries a completed plan to its base.
+
+        Written the moment the PR is opened (or an existing one is reused), so
+        that every read-only surface can name it. Before this existed the URL
+        lived only in an SSE event and one log line, and ``praxis pending``
+        answered "Nothing awaiting approval" with the PR open.
+        """
+        await self._db.execute(
+            "UPDATE plans SET integration_pr_url = ? WHERE id = ?",
+            (pr_url, plan_id),
+        )
+
+    async def mark_plan_integrated(self, plan_id: str) -> None:
+        """Stamp the plan as landed on its base branch.
+
+        This is what takes the plan back OUT of the pending list. Without it
+        an integration PR would be reported as awaiting approval forever,
+        which is the same class of lie as never reporting it at all.
+        """
+        now = datetime.now(UTC).isoformat()
+        await self._db.execute(
+            "UPDATE plans SET integration_merged_at = ? WHERE id = ?",
+            (now, plan_id),
         )
 
     async def set_plan_error(self, plan_id: str, error: str) -> None:
@@ -306,6 +333,28 @@ class TaskQueue:
                    worker_session_id = NULL, worker_session_harness = NULL
                WHERE id = ?""",
             (TaskStatus.SUPERSEDED, decision, reason, now, task_id),
+        )
+
+    async def mark_no_changes(self, task_id: str, reason: str) -> None:
+        """Close a leaf whose work was already present in the repository.
+
+        Terminal, and deliberately not FAILED. The worker ran, the harness
+        exited clean, and the tree already satisfied the leaf, so there is
+        nothing to commit, nothing to review, and nothing to merge. Calling
+        that a failure re-dispatched the leaf up to three times to the same
+        correct answer and then failed the whole plan, with the repository
+        already in the state the spec asked for.
+
+        The worker session handle is dropped for the same reason it is on any
+        other terminal transition: it can only ever be stale from here.
+        """
+        now = datetime.now(UTC).isoformat()
+        await self._db.execute(
+            """UPDATE tasks
+               SET status = ?, review_feedback = ?, updated_at = ?,
+                   worker_session_id = NULL, worker_session_harness = NULL
+               WHERE id = ?""",
+            (TaskStatus.NO_CHANGES, reason, now, task_id),
         )
 
     async def insert_split_children(
@@ -500,27 +549,31 @@ class TaskQueue:
             if task is None or task["status"] != TaskStatus.PENDING:
                 continue
             dependencies = task_data.get("depends_on", [])
-            # A SUPERSEDED dependency is satisfied, not outstanding: it was
-            # replaced by split children and will never reach MERGED, so
-            # requiring MERGED alone deadlocks every dependent of it.
+            # A SUPERSEDED or NO_CHANGES dependency is satisfied, not
+            # outstanding: neither will ever reach MERGED (one was replaced by
+            # split children, the other found its work already present), so
+            # requiring MERGED alone deadlocks every dependent of it. The set
+            # is named once in status_vocab so this and all_tasks_done cannot
+            # drift apart.
             if all(
-                slug_to_task.get(dep, {}).get("status")
-                in (TaskStatus.MERGED, TaskStatus.SUPERSEDED)
+                slug_to_task.get(dep, {}).get("status") in SATISFIED_STATUSES
                 for dep in dependencies
             ):
                 dispatchable.append(task)
         return dispatchable
 
     async def all_tasks_done(self, plan_id: str) -> bool:
-        """True when every task is MERGED or SUPERSEDED.
+        """True when every task reached a status that satisfies the plan.
 
-        A SUPERSEDED parent was replaced by its split children; it will never
-        reach MERGED, so treating it as outstanding would stop every split plan
+        A SUPERSEDED parent was replaced by its split children and a
+        NO_CHANGES leaf found its work already present; neither will ever
+        reach MERGED, so treating either as outstanding would stop the plan
         from ever completing.
         """
         tasks = await self.get_tasks_for_plan(plan_id)
-        done = {TaskStatus.MERGED, TaskStatus.SUPERSEDED}
-        return bool(tasks) and all(task["status"] in done for task in tasks)
+        return bool(tasks) and all(
+            task["status"] in SATISFIED_STATUSES for task in tasks
+        )
 
     async def create_agent_run(self, task_id: str, container_id: str) -> str:
         run_id = str(uuid.uuid4())

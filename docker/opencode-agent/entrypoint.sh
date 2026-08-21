@@ -440,18 +440,7 @@ if git diff --cached --quiet; then
         # Explain the run instead of merely asserting it. This container is
         # destroyed seconds from now, so anything not printed here is gone
         # for good, including whether the harness said something, said
-        # nothing, or refused. This evidence does NOT currently reach the
-        # orchestrator's data model: a no-change run reports STATUS=failed to
-        # /api/internal/agent-done, which routes a non-"completed" status
-        # straight to the retry/fail branch (api/internal.py) without ever
-        # moving the task to REVIEWING, so orchestrator_review.review_task --
-        # the only place a FailureClass is assigned and the only caller of
-        # record_outcome -- never runs for this run, and no task_outcomes row
-        # or failure_class is ever produced for it. Printing this here is
-        # still worth doing: it is the only place this evidence exists at
-        # all, the container log that reaches agent_runs.logs. Nobody should
-        # build on the claim that it reaches failure_taxonomy; it does not,
-        # yet.
+        # nothing, or refused.
         #
         # harness_rc is ALWAYS 0 here: a non-zero harness rc exits far above,
         # long before the commit block. Printing it is still correct and
@@ -472,6 +461,42 @@ if git diff --cached --quiet; then
         echo "--- last 30 lines of harness output ---"
         tail -n 30 "${OUTPUT_LOG}" 2>/dev/null || echo "  (no harness output captured)"
         echo "--- end of harness output ---"
+
+        # An empty diff is a FACT, not a verdict. Two different runs produce
+        # it and they are not the same event:
+        #
+        #  - The harness ran, worked, and found the tree already satisfied
+        #    the task. That is a no-op. Reporting it as `failed` re-dispatched
+        #    the task up to three times to the identical correct answer and
+        #    then failed the whole plan, with the repo already in the state
+        #    the spec asked for. Measured in 4 of 4 plans across BOTH
+        #    harnesses; the survivors got lucky, not correct.
+        #  - The harness produced literally no output at all. Nothing ran.
+        #    That is a broken run and must stay a failure, or a dead worker
+        #    silently closes every leaf it touches.
+        #
+        # The orchestrator makes the governance call (it runs the project's
+        # verify command against the base branch before accepting a no-op);
+        # this only reports which of the two shapes happened.
+        # rev_list_error is part of the condition, not just the diagnostic.
+        # When the commit count could not be trusted we do NOT know that the
+        # worker produced nothing; it may have committed work this run cannot
+        # see. Closing the leaf then would discard real, unpushed work. An
+        # undeterminable count stays a failure, which is the conservative
+        # direction and the behaviour that shipped before.
+        if [ "${output_bytes}" -gt 0 ] && [ -z "${rev_list_error}" ]; then
+            echo "Reporting no_changes: the harness ran and the tree already satisfied this task."
+            echo "The orchestrator decides whether that is a no-op; it verifies ${BASE_BRANCH} first."
+            STATUS="no_changes"
+            send_callback
+            trap - EXIT
+            exit 0
+        fi
+        if [ -n "${rev_list_error}" ]; then
+            echo "Commit count was untrustworthy, so no-op cannot be established; failing."
+        else
+            echo "Harness produced no output at all; this is a failed run, not a no-op."
+        fi
         STATUS="failed"
         exit 1
     fi

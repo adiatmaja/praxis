@@ -7,6 +7,7 @@ import pytest
 
 from orchestrator.core.approvals import (
     digest_line,
+    plan_awaits_integration,
     should_publish_digest,
     summarize_pending,
 )
@@ -55,6 +56,85 @@ def test_an_empty_queue_summarizes_to_zero_not_to_an_error():
     assert summary["count"] == 0
     assert summary["oldest_hours"] == 0.0
     assert summary["tasks"] == []
+
+
+def _plan(hours_old: float, **overrides) -> dict:
+    base = {
+        "id": "plan-1",
+        "project_id": "proj-1",
+        "status": "completed",
+        "plan_branch_name": "plan/2026-08-21-add-slugify-helper",
+        "integration_pr_url": "https://github.com/o/r/pull/48",
+        "integration_merged_at": None,
+        "created_at": (datetime.now(UTC) - timedelta(hours=hours_old)).isoformat(),
+    }
+    base.update(overrides)
+    return base
+
+
+@pytest.mark.unit
+def test_a_completed_plan_with_an_open_integration_pr_awaits_approval():
+    """The run #5 blocker: this work is NOT on the base branch."""
+    assert plan_awaits_integration(_plan(2)) is True
+
+
+@pytest.mark.unit
+def test_an_integrated_plan_no_longer_awaits_approval():
+    """Delete the integration_merged_at check and this goes red.
+
+    Without it the gate would report a merged plan as pending forever, which
+    is the same defect as never reporting it, wearing the opposite sign.
+    """
+    merged = _plan(2, integration_merged_at=datetime.now(UTC).isoformat())
+    assert plan_awaits_integration(merged) is False
+
+
+@pytest.mark.unit
+def test_a_plan_with_no_integration_pr_is_not_listed():
+    """Nothing to open means nothing to approve; listing it sends the operator hunting."""
+    assert plan_awaits_integration(_plan(2, integration_pr_url=None)) is False
+
+
+@pytest.mark.unit
+def test_a_failed_plan_is_never_offered_for_integration():
+    """A FAILED plan never opens an integration PR, so a URL on one is stale.
+
+    Delete the status check and a plan that did not finish becomes something
+    the operator is invited to merge onto the base branch.
+    """
+    assert plan_awaits_integration(_plan(2, status="failed")) is False
+
+
+@pytest.mark.unit
+def test_summarize_counts_plans_alongside_tasks():
+    summary = summarize_pending([_task(1)], [_plan(2), _plan(3, id="plan-2")])
+    assert summary["count"] == 3
+    assert summary["task_count"] == 1
+    assert summary["plan_count"] == 2
+
+
+@pytest.mark.unit
+def test_summarize_lists_each_plan_with_its_integration_pr():
+    summary = summarize_pending([], [_plan(2)])
+    entry = summary["plans"][0]
+    assert entry["plan_id"] == "plan-1"
+    assert entry["pr_url"] == "https://github.com/o/r/pull/48"
+    assert entry["branch"] == "plan/2026-08-21-add-slugify-helper"
+
+
+@pytest.mark.unit
+def test_the_oldest_age_spans_plans_too():
+    """A plan waiting longer than any task must set oldest_hours."""
+    summary = summarize_pending([_task(2)], [_plan(30)])
+    assert 29.5 < summary["oldest_hours"] < 30.5
+
+
+@pytest.mark.unit
+def test_summarize_still_works_with_task_rows_alone():
+    """Callers holding only task rows must keep working unchanged."""
+    summary = summarize_pending([_task(1)])
+    assert summary["count"] == 1
+    assert summary["plans"] == []
 
 
 @pytest.mark.unit

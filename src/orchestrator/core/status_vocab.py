@@ -33,6 +33,19 @@ TERMINAL_STATUSES: frozenset[str] = frozenset(
         TaskStatus.FAILED.value,
         TaskStatus.MERGED.value,
         TaskStatus.SUPERSEDED.value,
+        TaskStatus.NO_CHANGES.value,
+    }
+)
+
+# Statuses that satisfy a dependent leaf and let a plan finish: the work this
+# leaf was responsible for is present, whoever put it there. MERGED did it
+# itself, SUPERSEDED handed it to split children, NO_CHANGES found it already
+# done. Leaving any of these out deadlocks every dependent of such a leaf.
+SATISFIED_STATUSES: frozenset[str] = frozenset(
+    {
+        TaskStatus.MERGED.value,
+        TaskStatus.SUPERSEDED.value,
+        TaskStatus.NO_CHANGES.value,
     }
 )
 

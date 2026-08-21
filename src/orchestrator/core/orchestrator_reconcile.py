@@ -245,8 +245,24 @@ class ReconcileMixin:
                 open_pr_rows = await self._tq._db.fetch_all(
                     "SELECT branch_name FROM tasks WHERE pr_url IS NOT NULL AND pr_url != '' AND status NOT IN ('failed', 'merged')"
                 )
+                # A plan branch with an unmerged integration PR bears an open
+                # PR just as literally as a task branch does, and this is the
+                # veto that wins outright. Stated explicitly rather than left
+                # to the merged_plan query alone: two independent signals have
+                # to agree before that branch can be deleted, and deleting it
+                # would close the integration PR based on it.
+                integration_pr_rows = await self._tq._db.fetch_all(
+                    "SELECT plan_branch_name FROM plans "
+                    "WHERE integration_pr_url IS NOT NULL "
+                    "AND integration_merged_at IS NULL "
+                    "AND plan_branch_name IS NOT NULL AND plan_branch_name != ''"
+                )
                 open_pr_branches = {
                     row["branch_name"] for row in open_pr_rows if row.get("branch_name")
+                } | {
+                    row["plan_branch_name"]
+                    for row in integration_pr_rows
+                    if row.get("plan_branch_name")
                 }
 
                 tf_task_rows = await self._tq._db.fetch_all(
@@ -263,8 +279,26 @@ class ReconcileMixin:
                     if row.get("plan_branch_name")
                 }
 
+                # "completed" does NOT mean the plan branch is reclaimable. It
+                # means every task merged ONTO that branch; the work then sits
+                # there, off the base branch, until the integration PR is
+                # merged. Treating completed-with-an-open-PR as merged_plan
+                # classified a branch carrying the whole plan's work as dead,
+                # and deleting it would also have closed the integration PR
+                # based on it (docs/gotchas.md). So the branch is reclaimable
+                # only once integration actually landed.
+                #
+                # The delete path is separately broken (it shells `git push`
+                # with no repository and is refused unconditionally), which is
+                # the only reason this misclassification never destroyed
+                # anything. Fixing the classification first is deliberate: the
+                # order the other way round arms a deleter whose opening move
+                # is a merged plan branch.
                 mp_rows = await self._tq._db.fetch_all(
-                    "SELECT plan_branch_name FROM plans WHERE status IN ('completed', 'merged') AND plan_branch_name IS NOT NULL AND plan_branch_name != ''"
+                    "SELECT plan_branch_name FROM plans "
+                    "WHERE (status = 'merged' OR "
+                    "       (status = 'completed' AND integration_merged_at IS NOT NULL)) "
+                    "AND plan_branch_name IS NOT NULL AND plan_branch_name != ''"
                 )
                 merged_plan = {
                     row["plan_branch_name"]

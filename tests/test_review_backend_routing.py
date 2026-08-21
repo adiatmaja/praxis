@@ -342,6 +342,84 @@ async def test_review_gives_up_on_an_unparseable_pr_url_once_retries_run_out(
     ]
 
 
+async def _plan_id_of(orch: Orchestrator, task_id: str) -> str:
+    task = await orch._tq.get_task(task_id)
+    assert task is not None
+    return str(task["plan_id"])
+
+
+@pytest.mark.unit
+async def test_plan_integration_merges_through_the_backend(
+    orchestrator_fixture: tuple[Orchestrator, str, dict[str, Any]],
+    tmp_path: Any,
+) -> None:
+    """The integration PR merges over the same seam a task PR does.
+
+    Pins the exact ref, for the reason this whole file exists: a rewritten
+    base merges a whole plan into the wrong branch and git reports success.
+    """
+    orch, task_id, project = orchestrator_fixture
+    local = dict(project)
+    local["repo_url"] = str(tmp_path / "repo.git")
+    plan_id = await _plan_id_of(orch, task_id)
+    await orch._tq.set_plan_integration_pr(plan_id, _LOCAL_PR_URL)
+
+    backend = _local_backend()
+    orch._resolve_backend = lambda _repo_url: backend  # type: ignore[method-assign]
+
+    merged_url = await orch.approve_plan_integration(plan_id, local)
+
+    backend.merge.assert_awaited_once_with(_LOCAL_REF)
+    assert merged_url == _LOCAL_PR_URL
+    plan = await orch._tq.get_plan(plan_id)
+    assert plan is not None
+    assert plan["integration_merged_at"] is not None
+
+
+@pytest.mark.unit
+async def test_integrating_an_already_integrated_plan_is_a_no_op(
+    orchestrator_fixture: tuple[Orchestrator, str, dict[str, Any]],
+    tmp_path: Any,
+) -> None:
+    """ "Already done" must never read as an error, and must never merge twice."""
+    orch, task_id, project = orchestrator_fixture
+    local = dict(project)
+    local["repo_url"] = str(tmp_path / "repo.git")
+    plan_id = await _plan_id_of(orch, task_id)
+    await orch._tq.set_plan_integration_pr(plan_id, _LOCAL_PR_URL)
+    await orch._tq.mark_plan_integrated(plan_id)
+
+    backend = _local_backend()
+    orch._resolve_backend = lambda _repo_url: backend  # type: ignore[method-assign]
+
+    assert await orch.approve_plan_integration(plan_id, local) == _LOCAL_PR_URL
+    backend.merge.assert_not_awaited()
+
+
+@pytest.mark.unit
+async def test_integrating_a_plan_with_no_pr_raises(
+    orchestrator_fixture: tuple[Orchestrator, str, dict[str, Any]],
+) -> None:
+    """An operator's integrate must error, never silently do nothing."""
+    orch, task_id, project = orchestrator_fixture
+    plan_id = await _plan_id_of(orch, task_id)
+
+    with pytest.raises(ValueError, match="no integration PR"):
+        await orch.approve_plan_integration(plan_id, project)
+
+
+@pytest.mark.unit
+async def test_integrating_a_plan_with_an_unparseable_pr_url_raises(
+    orchestrator_fixture: tuple[Orchestrator, str, dict[str, Any]],
+) -> None:
+    orch, task_id, project = orchestrator_fixture
+    plan_id = await _plan_id_of(orch, task_id)
+    await orch._tq.set_plan_integration_pr(plan_id, "not-a-pull-request")
+
+    with pytest.raises(ValueError, match="integration PR url"):
+        await orch.approve_plan_integration(plan_id, project)
+
+
 @pytest.mark.unit
 async def test_approve_raises_on_an_unparseable_pr_url(
     orchestrator_fixture: tuple[Orchestrator, str, dict[str, Any]],

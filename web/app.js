@@ -28,7 +28,7 @@
     // Work parked at the human merge gate, across all projects. Refreshed once
     // on load and again whenever the rate-limited approvals_digest SSE event
     // fires; the header badge must be correct before the first event arrives.
-    let pendingApprovals = { count: 0, oldest_hours: 0, tasks: [] };
+    let pendingApprovals = { count: 0, oldest_hours: 0, tasks: [], plans: [] };
 
     initTheme();
 
@@ -1190,7 +1190,11 @@
 
     function renderSwimLane(plan) {
       const tasks = (dashboardTasks[plan.id] || []).slice();
-      const statusOrder = { merged: 0, passed: 1, reviewing: 2, in_progress: 3, failed: 4, superseded: 5, pending: 6 };
+      // no_changes sits beside merged: the leaf is done and its work is in
+      // the tree, it just did not need a commit to get there. An unlisted
+      // status sorts to 99 and lands below `pending`, which would bury a
+      // finished leaf under unstarted ones.
+      const statusOrder = { merged: 0, no_changes: 1, passed: 2, reviewing: 3, in_progress: 4, failed: 5, superseded: 6, pending: 7 };
       tasks.sort((a, b) => (statusOrder[a.status] ?? 99) - (statusOrder[b.status] ?? 99));
       const isSpecExpanded = expandedSpecs.has(plan.id);
       const specPreview = esc(planLabel(plan)).slice(0, 80);
@@ -1803,6 +1807,11 @@
       currentTasks = pendingApprovals.tasks.map(t => ({
         id: t.task_id, title: t.title, branch_name: t.branch, status: "passed", pr_url: t.pr_url
       }));
+      // Completed plans whose integration PR is still open belong here too:
+      // the work is on the plan branch and NOT on the base branch, so it is
+      // every bit as unapproved as a parked task. Listing only tasks is what
+      // let the dashboard agree with a CLI that was also wrong.
+      const awaitingPlans = pendingApprovals.plans || [];
       const container = document.getElementById("view-container");
       container.innerHTML =
         '<div class="master-panel">' +
@@ -1811,13 +1820,22 @@
           '<div class="master-list" id="tasks-master-list"></div>' +
         '</div><div class="detail-panel" id="task-detail-panel"><div class="detail-empty">Select a task</div></div>';
       const list = document.getElementById("tasks-master-list");
-      list.innerHTML = currentTasks.map(task =>
+      const taskRows = currentTasks.map(task =>
         '<button class="master-row' + (selectedTaskId === task.id ? ' selected' : '') +
         '" type="button" onclick="selectTask(\'' + esc(task.id) + '\')">' +
           '<div class="row-main"><div class="row-name">' + esc(task.title || task.id) + '</div>' +
           '<div class="row-meta">' + esc(task.branch_name) + '</div></div>' + badge(task.status) +
         '</button>'
-      ).join("") || '<div class="empty-list">Nothing awaiting approval</div>';
+      ).join("");
+      const planRows = awaitingPlans.map(plan =>
+        '<div class="master-row">' +
+          '<div class="row-main"><div class="row-name">Integrate ' + esc(plan.branch || plan.plan_id) + '</div>' +
+          '<div class="row-meta">' +
+            (plan.pr_url ? '<a href="' + esc(plan.pr_url) + '" target="_blank" rel="noopener">' + esc(plan.pr_url) + '</a>' : esc(plan.plan_id)) +
+          '</div></div>' + badge("passed") +
+        '</div>'
+      ).join("");
+      list.innerHTML = (taskRows + planRows) || '<div class="empty-list">Nothing awaiting approval</div>';
     }
 
     async function pollStatus() {

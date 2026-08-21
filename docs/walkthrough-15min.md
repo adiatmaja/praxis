@@ -1045,3 +1045,395 @@ the `.env` extras crash, merge idempotency under a 504, and the imported-hook
 trap. The non-interactive `praxis init` surface is still captured but not built,
 though note this run drove the wizard end to end with piped stdin, so the
 defaults path is more usable than "TTY only" suggested.
+
+# Run #5, 2026-08-21
+
+Product commit **`c0545fe`** (`main` == `origin/main`, clean), the merged
+walkthrough-4 blockers plan. Previous scores **5/10**, **7/10**, **6/10**,
+**7/10**.
+
+Run #4 answered its question NO: the merge gate had no CLI verb, so the loop
+could not be closed without `curl`. Run #5 measures whether that repair holds.
+
+## The question this run existed to answer, in two halves
+
+**First: can a newcomer take a spec from `praxis submit` all the way to a merged
+PR using only the CLI, never reaching for `curl`?**
+
+**Almost, and the gap is one specific step.** Everything through the per-task
+merge gate now works on the CLI and works well: `submit`, `plans`, `tasks`,
+`pending`, `merge`. No `curl` was needed for any of it, in either arm, across
+four plans. But when the last task merges, Praxis opens an **integration PR to
+`main`** and the CLI never mentions it. `praxis pending` says
+`Nothing awaiting approval.` while two integration PRs sit open on GitHub.
+`praxis plans` shows `completed` with no URL. `praxis merge-plan` against the
+finished plan returns `Merged: 0 task(s)` and exits **0**. The PR URL exists in
+exactly one place, the orchestrator's own log:
+
+```
+2026-08-21 03:40:01,881 INFO [orchestrator.core.git_ops] Opened integration PR:
+  https://github.com/adiatmaja/playground/pull/48
+```
+
+So the newcomer's spec reaches a plan branch and stops there. The work is not on
+`main`, and nothing the product prints says where it went. Run #4's fix moved the
+wall one step later rather than removing it.
+
+**Second: can they close the terminal, come back the next day, and do it again?**
+
+**No, and this is the sharper failure of the two.** In a shell without the
+exported variables, every CLI command dies on one line:
+
+```
+$ uv run praxis projects
+Set AUTH_TOKEN (or ORCHESTRATOR_TOKEN) env var
+```
+
+That is standing in the repo root, with `AUTH_TOKEN` sitting in `.env` two feet
+away and the port declared in `docker-compose.yml`. The CLI reads neither.
+Worse, **`README.md` and `docs/deployment.md` contain zero occurrences of
+`ORCHESTRATOR_TOKEN` or `ORCHESTRATOR_URL`** (checked by grep). Those names were
+printed exactly once, by `praxis init`, into the terminal that is now closed.
+
+The only recovery the product offers is to re-run the entire wizard, which does
+reprint them and took **27 s** but also rebuilds the container, re-prompts for a
+GitHub token, and re-asks the agy credential confirmation. It works. It is the
+wrong instrument, and a newcomer has no way to know it is the one that works.
+
+## Method
+
+Identical to runs #2, #3 and #4. Fresh `git clone` into
+`C:\working-space\praxis-newcomer`, no `.env` copied, data volume removed between
+arms, `opencode-agent:latest` and `agy-agent:latest` deleted first. Treated as
+available: `README.md`, the docs it links, `.env.example`, and the running
+product's own output. Everything else out of bounds and logged as a leak.
+
+Target `adiatmaja/playground`, reset to a single `main` before the clock. Two
+specs per arm's worth of work, all small and verifiable by running the repo's
+own suite.
+
+**Caches were warm** (Docker layers and `uv`), so every build number is a floor.
+The 2026-08-14 cold-machine measurement was **+19 minutes**.
+
+### Prerequisites, confirmed with real calls before the clock
+
+Every one by a real call, never an existence check:
+
+- Docker Desktop **29.6.1** up.
+- LM Studio at `https://pcllm.sigmasolusi.com` answered a real
+  `POST /v1/chat/completions` on `qwen3.8-27b`, generating tokens.
+- `praxis-gemini-creds` seeded: the documented `agy -p` returned **`PONG`**.
+- Host `claude -p` reachable.
+
+### Pre-clock teardown, and one finding it handed over free
+
+Run #4's leftovers were still present and had to be removed: the compose project,
+its data volume, both agent images, the clone, and **four branches on the target
+repo** (`agent/implement-roman-converter`, `agent/write-roman-tests`,
+`plan/2026-08-20-implement-initials-helper`,
+`plan/2026-08-20-roman-numeral-converter`). All four had been merged a day
+earlier and none had been swept. That is the known "merged branch is swept by
+nothing" item, confirmed by observation rather than by reading code, and this run
+later found *why* (see defect 4).
+
+## Phase timings, unrounded
+
+Clock started **10:10:02** with both agent images deleted.
+
+| Phase | Elapsed |
+|---|---|
+| `git clone` | 3 s |
+| `uv venv && uv sync --extra dev` | 4 s |
+| `praxis init`, Enter-only | 1 s, stops by design, exit 1 |
+| `praxis init`, Arm A, both images + orchestrator + doctor | 51 s |
+| VPN killswitch: diagnose from doctor output, patch compose, verify | **17 s** |
+| `praxis doctor`, all green | 6 s |
+| Arm A: `add-project` / `configure --verify-cmd` / `submit` | 3 s / 1 s / 5 s |
+| Arm A: plan activated | 13 s |
+| Arm A: task 1 dispatch to parked at gate | 91 s |
+| Arm A: `praxis merge` task 1 | 5 s |
+| Arm A: task 2, three attempts, **plan failed** | 184 s |
+| Arm A run 2: submit to parked at gate | 124 s |
+| Arm A run 2: merge, task 2, merge, plan completed | 4 s / 110 s / 5 s / 3 s |
+| **Returning operator: clean shell** | **blocked outright** |
+| Returning operator: recover by re-running `praxis init` | 27 s |
+| Arm B: `praxis init` preset 2 (worker endpoint FAIL) | 17 s |
+| Arm B: set `LM_STUDIO_URL`, `up -d`, doctor green | 16 s |
+| Arm B: `add-project` / `configure` + `submit` | 2 s / 4 s |
+| Arm B: task 1 dispatch to parked at gate | 137 s |
+| Arm B: merge, task 2, merge, plan completed | 6 s / 293 s / 5 s / 7 s |
+
+**Clock start to an all-green `praxis doctor` on a fresh clone: 3 m 40 s.**
+Of that, 83 s was command time and the rest was reading the doctor's own output.
+
+**Arm A, clean plan, submit to integration PR: 5 m 00 s.**
+**Arm B, submit to integration PR: 8 m 04 s.**
+
+The 15-minute target is met comfortably on the documented path in both arms. It
+is the two questions above, not the clock, that this run fails.
+
+## The killswitch cost 17 seconds instead of 8 m 34 s
+
+This is the clearest single improvement since run #4, and it is worth stating
+precisely because it is the payoff of a fix that looked cosmetic.
+
+Run #4 lost **8 m 34 s** to the VPN killswitch, because the old `planner_cli`
+check went green whenever the binary existed and the failure surfaced minutes
+later, mid-plan, as `ValueError: Could not extract JSON from response`. The
+rewritten check now runs a real round trip and reports the blocking hook's own
+words, at setup time, inside `praxis init`:
+
+```
+FAIL Planner CLI answers a test prompt: the CLI is authenticated but something
+refused the prompt. Check for a Claude Code hook in the mounted ~/.claude whose
+detector assumes the host OS; see docs/gotchas.md
+  [Operation stopped by hook: BLOCKED by VPN killswitch - OpenVPN tunnel is
+   down. Prompt not sent.]
+```
+
+That names the cause, the mechanism, and the file to read. Diagnosis to verified
+fix took 17 s.
+
+**The remedy half is still missing, though.** `docs/gotchas.md:981` confirms the
+diagnosis in detail but offers no action: it never mentions
+`CLAUDE_VPN_KILLSWITCH_OFF=1`, nor that it must be a compose literal rather than
+an `.env` key. The doctor points at a door that opens onto an explanation, not a
+fix.
+
+## Leak log
+
+| Severity | Leak | Source |
+|---|---|---|
+| HIGH | The LM Studio endpoint `https://pcllm.sigmasolusi.com`. Reproduced exactly: `local-lmstudio` defaults to `host.docker.internal:1234`, doctor FAILs with `worker endpoint did not answer a usable GET /v1/models`, and the remedy says "start the endpoint and load the configured model", which assumes the default is right. The detail line **does not print the URL it probed**, so the newcomer cannot even see what to correct, and nothing names `LM_STUDIO_URL`. | Standing leak, reproduced from runs #2 to #4 |
+| HIGH | That the killswitch has a `CLAUDE_VPN_KILLSWITCH_OFF=1` escape hatch and that it must be a compose literal. Downgraded in one half: the *diagnosis* is now fully discoverable from product output plus the doc it cites. The *remedy* is not written anywhere in the product. | Prior-run knowledge |
+| MEDIUM | Pre-seeding `praxis-gemini-creds` before the clock rather than counting interactive OAuth as a measured phase. | Method choice, matches runs #1 to #4 |
+| MEDIUM | Reading `docker/agy-agent/entrypoint.sh`, `api/internal.py` and `core/agent_manager.py` to explain the Arm A plan failure. Logged because it is out of persona; it happened only **after** the newcomer path had already dead-ended at "Agent finished with status failed", which is itself the defect. | Deliberate diagnosis |
+
+**Not leaks, checked deliberately:** the GitHub token came from `gh auth token`,
+which any newcomer has an equivalent of. The worker model strings
+`Gemini 3.7 Flash (High)` and `qwen3.8-27b` both came from the install's own
+`.env`, which is product output.
+
+## What both arms actually produced
+
+**Correct work, first try, zero retries, on every task that had work to do.**
+Verified by cloning each plan branch and running the repo's own suite, not by
+reading the diff.
+
+| Arm | Harness / model | Tasks | Result |
+|---|---|---|---|
+| A | `agy` / Gemini 3.7 Flash (High) | 2 | `truncate()`, **29 passed** |
+| B | `opencode` / qwen3.8-27b | 2 | `word_count()`, **30 passed** |
+
+Both produced full type annotations and Google-style docstrings, and both got the
+boundary conditions right unprompted (`limit < 1` raising `ValueError`;
+whitespace-only input returning an empty dict).
+
+Token telemetry reconfirmed the harness-parity split without re-measuring it: agy
+reported `total_tokens` 148,232 and 158,296 on its two runs; both opencode runs
+recorded `tokens_used=None, tokens_source=unavailable`.
+
+## Defects, ranked
+
+### 1. HIGH: the integration PR to `main` is invisible to the CLI
+
+The loop's final artifact has no CLI surface at all. `pending` reports
+`Nothing awaiting approval.` with two integration PRs open; `plans` prints
+`completed` and no URL; `merge-plan` on the completed plan returns
+`Merged: 0 task(s)` and **exits 0**, which reads as success. Reproduced in both
+arms (PR #45 and PR #48). This is the direct successor to run #4's headline and
+the reason half one of this run's question is still not a clean yes.
+
+### 2. HIGH: a returning operator cannot reach their own install
+
+Covered above. The fix is small and obvious: have the CLI fall back to the
+`AUTH_TOKEN` in `./.env` and the port in the compose file when the environment is
+empty, or add a `praxis env` that reprints the export block without rebuilding
+anything. Either would have turned a hard stop into nothing at all.
+
+### 3. HIGH: an empty diff is treated as failure, and it killed a whole plan
+
+**This is the most valuable new finding, and it needed interception to see.**
+
+Arm A's first plan decomposed into "Create slugify module" and "Create slugify
+tests". Task 1 wrote **both** files. Task 2 therefore had nothing to change. The
+worker did the right thing and said so:
+
+```
+No changes produced by agy
+  harness_rc=0
+  report_status=DONE
+  envelope_status=SUCCESS
+  envelope_num_turns=1
+...
+- Full acceptance test suite (`python -m pytest -q`): 26 passed.
+```
+
+The entrypoint's "no changes" branch turned that into `failed`. It retried three
+times, got the identical correct answer each time, exhausted retries, and
+**failed the plan** even though the repository was already in exactly the state
+the spec asked for.
+
+The boundary crossing itself is known from run #4 and reproduced in **every plan
+of both arms this run** (4/4: task 1 always wrote task 2's file too). What is new
+is the consequence: when the later leaf then declines to touch the file, the
+plan dies. Arm A run 2 and Arm B survived only because their workers chose to
+expand the existing tests, producing a diff by luck rather than by design. Arm
+B's task 2 added exactly 8 lines to an already-complete test file, confirmed from
+its captured container log. So this is a live coin flip on every multi-leaf plan,
+not an edge case.
+
+**It is not agy-specific.** `docker/opencode-agent/entrypoint.sh:464-477` has the
+same branch ending in `STATUS="failed"; exit 1`, so the fix has to land in **both**
+entrypoints. Arm B never tripped it only because its worker happened to produce a
+diff.
+
+### 4. HIGH: the stale-branch sweeper targets live plan branches, and its delete is broken
+
+Seconds after the Arm A plan failed, the reconcile loop tried to delete
+`plan/2026-08-21-add-slugify-helper`, the branch holding task 1's merged work:
+
+```
+WARNING [orchestrator.core.orchestrator_reconcile] Failed to delete dead branch
+plan/2026-08-21-add-slugify-helper ... git ... push <url> --delete <branch>
+fatal: not a git repository (or any of the parent directories): .git
+```
+
+Two defects in one line. The sweeper classified a plan branch carrying merged
+work as dead. And the delete **cannot ever succeed**: it runs `git push` with an
+explicit URL but no repository, which git refuses unconditionally. That second
+bug is why run #4's four branches survived overnight: the sweeper is inert by
+accident. Fixing the `not a git repository` bug **without** first fixing the
+classification would arm a branch-deleter that starts by destroying merged work,
+and per `docs/gotchas.md` deleting a branch also closes every PR based on it.
+These must be fixed in that order.
+
+### 5. MEDIUM: an `ERROR` from agy is recorded and ignored
+
+Captured live from the Arm A task-1 container, which Praxis then merged:
+
+```json
+{"status":"ERROR",
+ "error":"declaring permissions: cortex tool write_to_file: ...
+   /home/agent/workspace/src/playground/test_truncate.py is not a valid
+   artifact path; artifacts must be in /home/agent/.gemini/.../brain/<id>/"}
+```
+
+The entrypoint committed, pushed, opened PR #43 and reported success. Reading
+`entrypoint.sh:536-550` confirms why: `envelope_status` is parsed **only** inside
+the "no changes produced" diagnostic branch. When a diff exists, an `ERROR`
+envelope is indistinguishable from `SUCCESS`. Here the work happened to be
+complete so it passed review, which is precisely what makes it dangerous.
+
+### 6. MEDIUM: the CLI cannot show why a task failed, though Praxis stored the reason
+
+`praxis task <id>` gives the newcomer this and nothing else:
+
+```
+Status: failed | Branch: agent/create-slugify-tests | Attempt: 3
+Feedback: Agent finished with status failed
+  7aa64bc7 | failed | 2026-08-21 03:17:11
+```
+
+The real diagnosis was captured: `api/internal.py:91` calls
+`get_container_logs` and stores it on the run before the container is removed.
+MCP exposes it as `get_task_logs`. The CLI has no equivalent. Everything in
+defect 3 came from that stored text, reached over HTTP because no command
+prints it. A `praxis logs <task-id>` would have made the whole investigation a
+one-liner.
+
+### 7. LOW: `add-project` still asks for an "LM Studio model name" on the agy preset
+
+Unchanged from run #4, reproduced verbatim: the `MODEL` argument is described as
+"LM Studio model name" while on the Gemini/agy preset where LM Studio is not
+involved, and there is still no `--harness` flag.
+
+### 8. LOW: two cosmetic-but-misleading outputs
+
+On the agy preset the orchestrator warns on every single spawn:
+`Could not detect context limit from http://host.docker.internal:1234/api/v0/models`,
+probing LM Studio for a harness that does not use it. And `praxis doctor`
+truncates its own callback URL mid-value
+(`http://host.docker.internal:1232?`), hiding the digit that check exists to
+verify.
+
+### 9. LOW: an unrequested `autonomous` plan appears with a blank spec
+
+After the returning-operator recovery, `praxis plans` listed a third plan the
+operator never submitted, `source=autonomous`, `status=pending`, with an **empty
+Spec column**. It is the improvement loop doing its job, but to a newcomer it is
+an unexplained row with no description.
+
+## Confirmed fixed since run #4
+
+Every one verified by doing, not by reading:
+
+| Item | Evidence |
+|---|---|
+| Merge gate has a CLI verb | `praxis merge <task-id>` opened the gate **four times** across both arms, 4-6 s each, zero `curl` |
+| `praxis pending` prints a copyable line | `praxis merge c3e200b3-...  # Create slugify module` plus the full PR URL, at every default width |
+| Full ids everywhere | `projects`, `plans`, `tasks` all printed 36-char ids that the API accepted verbatim |
+| `--verify-cmd` on `praxis configure` | the gate ran on **every** task and every plan branch: `verify gate passed`. In run #4 it ran zero times |
+| `planner_cli` doctor check is real | caught the blocked hook at setup; 8 m 34 s down to 17 s |
+| README documents the merge gate | Quick Start lines 227-229 and step 6 name both verbs |
+| `praxis submit` carries the spec | not re-litigated; the Spec column showed the committed `docs/superpowers/specs/...` path on all four plans |
+
+## Score: 7/10, reasoning
+
+Flat against run #4, and the flatness is the point: the blocker moved rather
+than cleared.
+
+**What earned it.** Setup is now genuinely good. Clone to an all-green doctor in
+**3 m 40 s**, `praxis init` building both agent images and starting the
+orchestrator in **51 s**, and a doctor that catches a blocked planner at setup
+instead of letting it detonate mid-plan eight minutes later. The per-task loop
+closes cleanly on the CLI, exactly as promised, four times out of four. The verify
+gate went from never running to running on every task and every plan branch. Both
+arms produced correct, well-annotated, first-try work on models an order of
+magnitude apart in cost, and capability-aware decomposition visibly did its job.
+
+**What held it down.** Both halves of this run's question still answer "no". The
+spec does not reach `main` on the CLI, because the integration PR is invisible to
+every command. The returning operator is stopped dead by a missing environment
+variable whose name appears nowhere in the documentation. And a plan can now be
+killed outright by a leaf that correctly reports it has nothing to do: a defect
+that fires on a coin flip, that no unit test would catch, and that only showed up
+because the container's own output was intercepted before Docker removed it.
+
+The gap between 7 and 9 is three small changes: a `praxis logs`, an `.env`
+fallback in the CLI, and making `pending` list integration PRs.
+
+## What to fix, ranked
+
+1. **Make `pending` list integration PRs** and give `merge-plan` something to do
+   when a plan is complete. Non-zero exit and a plain URL line, same shape as the
+   per-task line that already works well.
+2. **Let the CLI find its own install.** Fall back to `./.env`'s `AUTH_TOKEN` and
+   the compose port. Failing that, `praxis env` to reprint the exports without
+   rebuilding.
+3. **Stop treating an empty diff as failure.** A worker reporting `DONE` with
+   `envelope_status=SUCCESS` and a passing suite has succeeded; the leaf is a
+   no-op and should close as such. Cheapest correct version: if the verify command
+   passes on the base branch, pass the leaf.
+4. **Fix the sweeper's classification before fixing its delete.** In that order,
+   for the reason in defect 4.
+5. **Add `praxis logs <task-id>`.** The data is already stored and already
+   exposed over MCP.
+6. **Gate on agy's `envelope_status`** outside the no-changes branch.
+7. **Print the URL the worker-endpoint check probed**, and name `LM_STUDIO_URL`
+   in its remedy. This single line would close a leak that has now stood for four
+   consecutive runs.
+
+## Follow-up this run did not close
+
+The twelve tasks of `2026-08-20-onboarding-blockers-2.md` remain unexecuted, and
+the non-interactive `praxis init` gap is now measurably worse than "TTY only"
+suggested: the wizard's **question set changes with state**. On a fresh clone it
+asks five questions; once `.env` exists it asks seven, inserting "Reuse the
+AUTH_TOKEN already in .env?" first and "Update .env?" last. A piped answer set
+that works on the first run silently misaligns on the second and aborts. That is
+the one place this run had to guess twice.
+
+Also untouched: no `praxis reject-merge`, so the gate remains one-way from the
+CLI; the all-whitespace `verify_cmd` hole; and the doctor probing the CLI default
+model rather than the configured planner.

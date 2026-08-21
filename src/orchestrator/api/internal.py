@@ -60,6 +60,31 @@ def _verify_callback_token(request: Request) -> None:
         )
 
 
+async def _resolved_as_no_op(
+    request: Request,
+    task_id: str,
+    project: dict | None,
+    plan: dict | None,
+) -> bool:
+    """Ask the orchestrator whether an empty diff was a legitimate no-op.
+
+    Kept as a guarded call rather than inlined so the ``else`` branch below
+    stays the single failure path: anything this cannot positively resolve
+    (no orchestrator, no project, the check itself raising) falls through to
+    the normal retry/fail handling, which is the safe direction. A no-op
+    closes a leaf permanently with no PR and no review, so it must be a
+    POSITIVE answer, never the residue of a failed check.
+    """
+    orchestrator = getattr(request.app.state, "orchestrator", None)
+    if orchestrator is None or project is None:
+        return False
+    try:
+        return bool(await orchestrator.resolve_no_change_run(task_id, project, plan))
+    except Exception:  # noqa: BLE001 - fall through to the failure path
+        logger.exception("no-change resolution failed for task %s", task_id)
+        return False
+
+
 @router.post("/agent-done")
 async def agent_done(request: Request, body: AgentDonePayload) -> dict[str, str]:
     """Handle completion callback from a harness agent container.
@@ -128,11 +153,24 @@ async def agent_done(request: Request, body: AgentDonePayload) -> dict[str, str]
         question = body.question or "Worker reported a blocker without details."
         await queue.mark_needs_clarification(body.task_id, question)
         logger.info("Task %s is awaiting clarification", task_id)
+    elif body.status == "no_changes" and await _resolved_as_no_op(
+        request, body.task_id, project, plan
+    ):
+        logger.info("Task %s closed as a no-op (no changes were needed)", task_id)
     else:
         from orchestrator.core.orchestrator_reconcile import ReconcileMixin
 
         max_retries = int(project["max_retries"]) if project else 0
-        feedback = body.question or f"Agent finished with status {body.status}"
+        if body.status == "no_changes":
+            # Reaching here means the no-op check ran and said no. Say which
+            # question was answered, or the operator reads a bare "finished
+            # with status no_changes" as the product not understanding it.
+            feedback = (
+                "Worker produced no changes, and the branch it was cut from "
+                "did not verify clean, so the work is genuinely missing."
+            )
+        else:
+            feedback = body.question or f"Agent finished with status {body.status}"
 
         # Transient provider/gateway errors (403/429/5xx/connection) must not
         # consume the task's retry budget. Reset to PENDING without touching attempt.

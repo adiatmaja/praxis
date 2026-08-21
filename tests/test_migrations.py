@@ -116,5 +116,28 @@ async def test_escalation_index_defaults_to_zero(tmp_path):
 
 
 @pytest.mark.unit
-def test_current_schema_version_is_eight():
-    assert CURRENT_SCHEMA_VERSION == 8
+def test_current_schema_version_is_nine():
+    assert CURRENT_SCHEMA_VERSION == 9
+
+
+@pytest.mark.unit
+async def test_migration_adds_plan_integration_columns(tmp_path):
+    """A plan must be able to record where its work went and whether it landed."""
+    db = Database(f"sqlite+aiosqlite:///{tmp_path / 'integration.db'}")
+    await db.initialize()
+    await db.execute("INSERT INTO users (id, name, token_hash) VALUES ('u1', 'U', 'h')")
+    await db.execute(
+        "INSERT INTO projects (id, user_id, name, repo_url) "
+        "VALUES ('proj1', 'u1', 'P', 'https://example.com/repo')"
+    )
+    await db.execute(
+        "INSERT INTO plans (id, project_id, source, status, integration_pr_url) "
+        "VALUES ('p1', 'proj1', 'test', 'completed', 'https://x/pull/1')"
+    )
+    row = await db.fetch_one(
+        "SELECT integration_pr_url, integration_merged_at FROM plans WHERE id = 'p1'"
+    )
+    assert row is not None
+    assert row["integration_pr_url"] == "https://x/pull/1"
+    assert row["integration_merged_at"] is None
+    await db.close()

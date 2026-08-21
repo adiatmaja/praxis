@@ -55,12 +55,27 @@ async def _seed_project(db: Database, *, default_branch: str) -> None:
 
 
 async def _seed_plan(
-    db: Database, plan_id: str, *, branch: str | None, status: str
+    db: Database,
+    plan_id: str,
+    *,
+    branch: str | None,
+    status: str,
+    integration_pr_url: str | None = None,
+    integration_merged_at: str | None = None,
 ) -> None:
     await db.execute(
-        "INSERT INTO plans (id, project_id, plan_branch_name, status) "
-        "VALUES (?, ?, ?, ?)",
-        (plan_id, "p1", branch, status),
+        "INSERT INTO plans "
+        "(id, project_id, plan_branch_name, status, integration_pr_url, "
+        " integration_merged_at) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        (
+            plan_id,
+            "p1",
+            branch,
+            status,
+            integration_pr_url,
+            integration_merged_at,
+        ),
     )
 
 
@@ -377,3 +392,104 @@ async def test_ledger_still_reclaims_a_genuinely_dead_agent_branch(
     await _ReconcileHarness(TaskQueue(db), git).reconcile_runs()
 
     assert sorted(git.deleted) == ["agent/genuinely-dead", "plan/2026-01-01-old"]
+
+
+@pytest.mark.asyncio
+async def test_a_completed_plan_with_an_open_integration_pr_is_not_dead(
+    db: Database,
+) -> None:
+    """Scenario C: the plan branch carries the whole plan's merged work.
+
+    "completed" means every task merged ONTO this branch, not that the branch
+    reached the base branch. Until the integration PR merges, this branch is
+    the only place the work exists, and deleting it also closes that PR
+    (docs/gotchas.md).
+
+    Two independent ledger signals protect it, so reverting either one alone
+    leaves this test green (measured, not assumed). The test below asserts the
+    ledger contents directly, which is what goes red for each guard on its own.
+    """
+    await _seed_project(db, default_branch="main")
+    await _seed_plan(
+        db,
+        "pl1",
+        branch="plan/2026-08-21-add-slugify-helper",
+        status="completed",
+        integration_pr_url="https://github.com/example/repo/pull/48",
+    )
+    await _seed_task(
+        db,
+        "t1",
+        "pl1",
+        branch="agent/slugify",
+        status="merged",
+    )
+
+    git = _FakeGit(["main", "plan/2026-08-21-add-slugify-helper"])
+    await _ReconcileHarness(TaskQueue(db), git).reconcile_runs()
+
+    assert git.deleted == []
+
+
+@pytest.mark.asyncio
+async def test_each_ledger_signal_separately_spares_an_unintegrated_plan_branch(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Assert the LEDGER, because the two vetoes mask each other end to end.
+
+    ``merged_plan`` excluding the branch and ``open_pr_branches`` including it
+    are co-extensive by construction: both read ``integration_pr_url`` and
+    ``integration_merged_at`` off the same row. So a whole-sweep test stays
+    green when either is reverted on its own, and neither guard is actually
+    pinned by it. Reading the ledger is the only place they are separable.
+    """
+    captured: dict[str, set[str]] = {}
+
+    async def _capture(**kwargs: Any) -> None:
+        captured.update(kwargs["ledger"])
+
+    monkeypatch.setattr(rec, "sweep_dead_branches", _capture)
+
+    await _seed_project(db, default_branch="main")
+    await _seed_plan(
+        db,
+        "pl1",
+        branch="plan/2026-08-21-add-slugify-helper",
+        status="completed",
+        integration_pr_url="https://github.com/example/repo/pull/48",
+    )
+    await _seed_task(db, "t1", "pl1", branch="agent/slugify", status="merged")
+
+    git = _FakeGit(["main", "plan/2026-08-21-add-slugify-helper"])
+    await _ReconcileHarness(TaskQueue(db), git).reconcile_runs()
+
+    branch = "plan/2026-08-21-add-slugify-helper"
+    # Guard 1: an unintegrated plan is not a merged plan.
+    assert branch not in captured["merged_plan"]
+    # Guard 2: its integration PR is an open PR, which vetoes outright.
+    assert branch in captured["open_pr_branches"]
+
+
+@pytest.mark.asyncio
+async def test_an_integrated_plan_branch_is_reclaimed(db: Database) -> None:
+    """The guard must not be bought by never reclaiming a plan branch again.
+
+    Once integration landed, the work is on the base branch and the plan
+    branch is genuinely spent. This is the counterpart that stops the fix
+    above from being widened into a blanket refusal.
+    """
+    await _seed_project(db, default_branch="main")
+    await _seed_plan(
+        db,
+        "pl1",
+        branch="plan/2026-08-21-add-slugify-helper",
+        status="completed",
+        integration_pr_url="https://github.com/example/repo/pull/48",
+        integration_merged_at="2026-08-21T10:00:00+00:00",
+    )
+    await _seed_task(db, "t1", "pl1", branch="agent/slugify", status="merged")
+
+    git = _FakeGit(["main", "plan/2026-08-21-add-slugify-helper"])
+    await _ReconcileHarness(TaskQueue(db), git).reconcile_runs()
+
+    assert git.deleted == ["plan/2026-08-21-add-slugify-helper"]

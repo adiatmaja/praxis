@@ -286,6 +286,10 @@
     .badge.pending { background: var(--badge-pending-bg); color: var(--badge-pending-text); }
     .badge.passed { background: var(--badge-passed-bg); color: var(--badge-passed-text); }
     .badge.merged { background: var(--badge-merged-bg); color: var(--badge-merged-text); }
+    /* A no-op leaf succeeded: the tree already satisfied it. Styled with
+       merged rather than left unstyled, which renders as the neutral default
+       and reads as "something went sideways here". */
+    .badge.no_changes { background: var(--badge-merged-bg); color: var(--badge-merged-text); }
     .badge.completed { background: var(--badge-completed-bg); color: var(--badge-completed-text); }
     .badge.reviewing { background: var(--badge-reviewing-bg); color: var(--badge-reviewing-text); }
     .badge.failed, .badge.rejected { background: var(--badge-failed-bg); color: var(--badge-failed-text); }
