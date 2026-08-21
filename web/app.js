@@ -152,7 +152,17 @@
       const options = { method, headers: headers() };
       if (body !== undefined) options.body = JSON.stringify(body);
       const response = await fetch(API + path, options);
-      if (!response.ok) throw new Error(await response.text());
+      if (!response.ok) {
+        // Carry the STATUS on the error. Every caller used to get only the
+        // body, so the one renderer that catches these had no way to tell a
+        // server that never answered from one that answered "your token is
+        // wrong", and it called both "Connection failed". See `switchView`'s
+        // catch: on a fresh install the first thing the dashboard says is the
+        // one thing that is not true.
+        const error = new Error(await response.text());
+        error.status = response.status;
+        throw error;
+      }
       if (response.status === 204) return null;
       return response.json();
     }
@@ -2039,8 +2049,17 @@
         setConnection("subagent", status.subagent_model, status.subagent_model.connected ? "connected" : "disconnected", status.lm_studio_url);
         updateProviderLoginBanner(status.providers);
       } catch (error) {
-        setConnection("agent", { name: "offline", connected: false }, "disconnected");
-        setConnection("subagent", { name: "offline", connected: false }, "disconnected");
+        // "offline" is a claim about the PROVIDER, and this branch establishes
+        // nothing about any provider: the status call itself did not come back.
+        // On a fresh dashboard with no token that is a 401, and both pills read
+        // "offline" while both providers were fine, which is the same
+        // fact-versus-verdict split the doctor rows were just fixed for.
+        const unreachable =
+          error.status === 401 || error.status === 403 ? "not authorized" : "unknown";
+        setConnection("agent", { name: unreachable, connected: false }, "disconnected");
+        setConnection(
+          "subagent", { name: unreachable, connected: false }, "disconnected"
+        );
       }
     }
 
@@ -3090,9 +3109,25 @@
 
     ensureToken();
     switchView("dashboard").catch(error => {
+      // "Connection failed" is only one of the two things that can happen
+      // here, and it is the wrong one for the case a newcomer actually hits.
+      // The orchestrator answering 401 means the connection WORKED and the
+      // token is wrong, and saying "connection failed" sends the reader to
+      // check whether the server is up. The remedy is a button already in the
+      // toolbar, so name it.
+      const unauthorized = error.status === 401 || error.status === 403;
+      const heading = unauthorized
+        ? "Not authorized"
+        : "Connection failed";
+      const remedy = unauthorized
+        ? 'The orchestrator answered, but rejected this token. Use the ' +
+          '<strong>API Token</strong> button above; the value is AUTH_TOKEN ' +
+          'in your install\'s .env.'
+        : "";
       document.getElementById("view-container").innerHTML =
         '<div class="detail-empty" style="padding:40px;text-align:center;">' +
-        '<div style="margin-bottom:8px;font-weight:700;">Connection failed</div>' +
+        '<div style="margin-bottom:8px;font-weight:700;">' + heading + '</div>' +
+        (remedy ? '<div style="color:var(--text-muted);font-size:12px;margin-bottom:8px;">' + remedy + '</div>' : "") +
         '<div style="color:var(--text-muted);font-size:12px;margin-bottom:16px;">' + esc(error.message) + '</div>' +
         '<button class="btn btn-primary" type="button" onclick="switchView(\'dashboard\')">Retry</button></div>';
     });
