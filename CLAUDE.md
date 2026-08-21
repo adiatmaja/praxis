@@ -98,11 +98,14 @@ The rest of `core/`, grouped by concern:
 # Setup (one command, idempotent, ends by verifying)
 uv run praxis init
 
-# Diagnose (read-only, exits non-zero on any red)
+# Diagnose (read-only against repo and DB, but spends one planner call per
+# run, cached 60s; exits non-zero on any red, and a rate limit is amber)
 uv run praxis doctor
 
-# See what is parked at the merge gate
+# See what is parked at the merge gate, and open it
 uv run praxis pending
+uv run praxis merge <task-id>        # one task
+uv run praxis merge-plan <plan-id>   # every parked task in one plan
 
 # Setup, manual equivalent of `praxis init`
 uv venv && uv sync --extra dev && cp .env.example .env
@@ -260,8 +263,16 @@ a line here only if it belongs in this shortlist.
 - **Worker preset env vars reach the container as BARE compose pass-throughs**
   (`- DEFAULT_WORKER_HARNESS`), never `${VAR:-default}`: any expansion form sets the variable
   even when unset, which silently suppresses the mounted YAML.
-- **`praxis doctor` is the front door to every problem**: twelve read-only checks; pure
-  decision logic in `core/doctor_probes.py`, live fact gathering in `api/doctor.py`.
+- **`praxis doctor` is the front door to every problem**: twelve checks, read-only against
+  your repo and database but spending one planner call per run; pure decision logic in
+  `core/doctor_probes.py`, live fact gathering in `api/doctor.py`.
+- **An unrecognised key in `.env` is IGNORED, not rejected**: `./.env` is mounted
+  into the container and parsed whole, so `extra="forbid"` used to abort startup.
+  The cost is that a typo in a real key is now silent and NOTHING catches it;
+  `env_drift` only compares keys the container actually received, so a key living
+  only in `.env` is invisible to it. `AUTH_TOKEN` is the exception, being required.
+- **`praxis doctor` spends one planner call per run** (cached 60s). It is
+  read-only against your repo and DB, not free. A rate limit is AMBER, not RED.
 
 **The loop**
 
@@ -271,6 +282,21 @@ a line here only if it belongs in this shortlist.
 - **`gh pr` calls need `--repo <owner/name>`** or they target the orchestrator's own cwd.
 - **Verify gates FAIL CLOSED and fetch the branch first**: treat `error` like `failed`, and
   only `skipped` passes through. An `error` is never memoized, so the next tick retries.
+- **`praxis merge <task-id>` / `praxis merge-plan <plan-id>` open the merge gate**;
+  `praxis approve` is for improvement PLANS and 404s on a task id. `merge-plan`
+  exits 1 if any task failed.
+- **GitHub's PR state outranks `gh`'s exit code**: `gh pr merge` can 504 AFTER the
+  merge succeeded, so `merge_pr` re-reads `gh pr view --json state` before failing.
+- **A table printing an id must fold it AND be wide enough**: `overflow="fold"` on
+  a narrow column still splits a uuid across border characters. `pending` prints a
+  plain copyable `praxis merge <id>` line instead. `plans`, `tasks`, and `projects`
+  now print the id WHOLE (36-wide folding column); an id truncated to 8 chars 404s,
+  because every consumer looks it up by exact match.
+- **The merge verbs need their own HTTP timeout**: `merge-plan` merges a plan's
+  PASSED tasks sequentially (up to `max_leaves_per_plan`), and one `merge_pr`
+  under repeated 504s is three attempts plus backoff. The CLI's read-only 60s
+  budget times out mid-merge while the orchestrator finishes correctly, so both
+  verbs use `_MERGE_TIMEOUT` and report "may still be running", never "failed".
 - **`get_dispatchable_tasks` maps `opus_plan["tasks"]` to rows BY LIST INDEX**: anything
   touching the graph (e.g. `core/leaf_split.py`) must only APPEND; supersede, never delete.
 - **Hand-built LM Studio payloads must state `reasoning_effort` explicitly**

@@ -28,6 +28,51 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+#: Substrings that identify a subscription rate limit in a CLI's own output.
+#: Read only by ``is_rate_limited`` below, which is what consumers must call:
+#: the strings alone are half the rule, and a consumer that reimplements the
+#: other half around them drifts silently.
+RATE_LIMIT_SIGNATURES: tuple[str, ...] = (
+    "rate limit",
+    "usage limit",
+    "too many requests",
+)
+
+
+def is_rate_limited(code: int, stdout: str, stderr: str) -> bool:
+    """Whether a CLI's own output says the subscription is throttled.
+
+    THE single predicate, deliberately not just the strings above.  Every
+    consumer has to reach the same verdict, because a rate limit is a normal,
+    self-healing state (``opus_state`` queues the brain call and resumes) while
+    everything else on a non-zero exit is a real fault.  ``api/system.py``'s
+    doctor round-trip once matched the signatures alone and disagreed with this
+    module on three of four real Claude wordings, reporting a throttled
+    subscription as a planner blocked by a hook and failing ``praxis init``,
+    which exits with doctor's status code.
+
+    Args:
+        code: The CLI's exit code.  Required, not optional: the second clause
+            below cannot be evaluated without it, and a caller that cannot pass
+            it is a caller that will diverge.
+        stdout: What the CLI printed to stdout.
+        stderr: What the CLI printed to stderr.
+
+    Returns:
+        True when the output names a known limit signature, or when the CLI
+        FAILED and said "limit" at all.  The second clause is the broad one on
+        purpose: the wordings vary ("5-hour limit", "weekly limit exceeded",
+        "quota limit"), and mistaking a throttle for a fault costs an operator
+        a false red, while mistaking a fault for a throttle only delays it to
+        the next tick.  It is gated on a non-zero exit so a successful answer
+        that merely discusses limits is never read as one.
+    """
+    combined = f"{stdout} {stderr}".lower()
+    return any(pattern in combined for pattern in RATE_LIMIT_SIGNATURES) or (
+        code != 0 and "limit" in combined
+    )
+
+
 PLAN_PROMPT_TEMPLATE = """You are an AI project planner. Given a specification, break it into implementation tasks.
 
 Repository: {repo_url}
@@ -197,12 +242,7 @@ class OpusBridge:
         stdout: str,
         stderr: str,
     ) -> bool:
-        combined = f"{stdout} {stderr}".lower()
-        rate_limited = any(
-            pattern in combined
-            for pattern in ("rate limit", "usage limit", "too many requests")
-        ) or (code != 0 and "limit" in combined)
-        if not rate_limited:
+        if not is_rate_limited(code, stdout, stderr):
             return False
 
         now = datetime.now(UTC)

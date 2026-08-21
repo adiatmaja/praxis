@@ -213,7 +213,8 @@ that the CLI reaches your installation. Then verify everything is working:
 uv run praxis doctor
 ```
 
-`uv run praxis doctor` is a read-only diagnostic that connects to the orchestrator API and checks
+`uv run praxis doctor` is a read-only diagnostic against your repo and database (it spends one
+planner call per run) that connects to the orchestrator API and checks
 about a dozen things (connectivity, Docker, credentials, configuration). It exits 0 when
 healthy and non-zero on any red; reds are expected in fresh installs without all credentials
 configured, so failures just point you at what to fix next.
@@ -223,6 +224,9 @@ With the orchestrator running, you can:
 - **Dashboard:** http://localhost:12323 (or your configured port)
 - **API docs:** http://localhost:12323/docs
 - **CLI:** `uv run praxis projects`, `uv run praxis add-project`, `uv run praxis submit`, etc.
+- **Merge gate:** `uv run praxis pending` lists what is parked awaiting your sign-off, and
+  `uv run praxis merge <task-id>` (or `uv run praxis merge-plan <plan-id>` for a whole plan)
+  is how you approve it. Nothing merges to your default branch without this step.
 - **Auto-delegate mode:** `uv run praxis mode on|off|status` to toggle delegation to a single
   global worker. See [auto-delegate mode](#daily-dev-auto-delegate-mode) below.
 
@@ -257,7 +261,8 @@ At a high level, one turn of the engine:
    model reviews it.
 5. The **reviewer** inspects each PR diff. Pass squash-merges into the plan branch; fail
    retries with feedback (up to 3).
-6. When all tasks land, Praxis opens an integration PR to `main`. **You** review and merge.
+6. When all tasks land, Praxis opens an integration PR to `main`. **You** review and merge:
+   `praxis pending` shows what is parked, `praxis merge <task-id>` opens the gate.
 
 A per-project approval gate can pause the loop after planning for your sign-off; leave it off
 for a fully autonomous run. Full workflow, orchestration cycle, and the swimlane diagram:

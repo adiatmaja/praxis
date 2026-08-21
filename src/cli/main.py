@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import os
-from typing import Any
+from typing import Any, NoReturn
 
 import httpx
 import typer
@@ -36,12 +36,51 @@ def _auth_token() -> str:
     return token
 
 
-def _client() -> httpx.Client:
+#: Every read-only verb answers out of SQLite in milliseconds, so 60 s is
+#: already generous and a longer wait would only make a down orchestrator feel
+#: hung.
+_DEFAULT_TIMEOUT = 60.0
+
+#: The merge verbs are different in kind: they wait on real work at GitHub.
+#: `merge-plan` merges a plan's PASSED tasks SEQUENTIALLY, bounded only by
+#: max_leaves_per_plan (24), and one `merge_pr` under repeated 504s is three
+#: `gh pr merge` attempts plus backoff plus up to four `gh pr view` calls. At
+#: the default budget a 12-task plan times out deterministically, in exactly
+#: the 504 case Task 6 taught the server to survive. 15 minutes covers the
+#: ceiling with room to spare, and the operator still gets an actionable
+#: message rather than a traceback if it is ever reached.
+_MERGE_TIMEOUT = 900.0
+
+
+def _client(timeout: float = _DEFAULT_TIMEOUT) -> httpx.Client:
     return httpx.Client(
         base_url=_api_url(),
         headers={"Authorization": f"Bearer {_auth_token()}"},
-        timeout=60.0,
+        timeout=timeout,
     )
+
+
+def _abandoned_merge(exc: httpx.RequestError) -> NoReturn:
+    """Report a merge request the CLI gave up on, without claiming it failed.
+
+    The orchestrator does not stop merging when the client stops listening, so
+    "no answer" does NOT mean "not merged"; announcing a failure here would be
+    a lie that invites a re-run. A re-run is also the wrong instruction: the
+    API answers 409 "is not awaiting merge" for work that already landed,
+    which reads as an error rather than as "already done". So point at
+    ``praxis pending``, whose absence of the task is the real proof.
+    """
+    what = (
+        "request timed out"
+        if isinstance(exc, httpx.TimeoutException)
+        else f"request failed: {exc}"
+    )
+    console.print(f"[yellow]{what}; the merge may still be running.[/yellow]")
+    console.print(
+        "Re-run 'praxis pending' to check: a task that no longer appears there "
+        "has been merged."
+    )
+    raise typer.Exit(1)
 
 
 def _check(response: httpx.Response) -> dict[str, Any] | list[dict[str, Any]]:
@@ -75,14 +114,19 @@ def projects() -> None:
     with _client() as client:
         data = _check_list(client.get("/api/projects"))
     table = Table(title="Projects")
-    table.add_column("ID", style="dim", max_width=8)
+    # A uuid, whole. `add-project` prints a full id once at creation time and
+    # nothing else ever does, while `configure`, `submit`, and `plans` all look
+    # a project up by EXACT match: a truncated id here means that from a new
+    # terminal tomorrow the documented path is unreachable without curl. `fold`
+    # wraps the value instead of cutting it when the console is narrow.
+    table.add_column("ID", style="dim", max_width=36, overflow="fold")
     table.add_column("Name")
     table.add_column("Repo")
     table.add_column("Model")
     table.add_column("Gate")
     for project in data:
         table.add_row(
-            project["id"][:8],
+            project["id"],
             project["name"],
             project["repo_url"],
             project["model_name"],
@@ -115,6 +159,14 @@ def configure(
     gate: bool | None = typer.Option(None, help="Approval gate on/off"),
     threshold: float | None = typer.Option(None, help="Confidence threshold"),
     retries: int | None = typer.Option(None, help="Max retries"),
+    verify_cmd: str | None = typer.Option(
+        None,
+        "--verify-cmd",
+        help=(
+            "Shell command the verify gate runs before review, "
+            "e.g. 'python -m pytest -q'"
+        ),
+    ),
 ) -> None:
     """Update project settings."""
 
@@ -125,6 +177,8 @@ def configure(
         body["confidence_threshold"] = threshold
     if retries is not None:
         body["max_retries"] = retries
+    if verify_cmd is not None:
+        body["verify_cmd"] = verify_cmd
     if not body:
         console.print("[yellow]No settings to update[/yellow]")
         return
@@ -154,13 +208,13 @@ def plans(project_id: str = typer.Argument(..., help="Project ID")) -> None:
     with _client() as client:
         data = _check_list(client.get(f"/api/projects/{project_id}/plans"))
     table = Table(title="Plans")
-    table.add_column("ID", style="dim", max_width=8)
+    table.add_column("ID", style="dim", max_width=36, overflow="fold")
     table.add_column("Spec", max_width=40)
     table.add_column("Source")
     table.add_column("Status")
     for plan in data:
         spec_display = (plan.get("spec_path") or "")[:40]
-        table.add_row(plan["id"][:8], spec_display, plan["source"], plan["status"])
+        table.add_row(plan["id"], spec_display, plan["source"], plan["status"])
     console.print(table)
 
 
@@ -189,14 +243,17 @@ def tasks(plan_id: str = typer.Argument(..., help="Plan ID")) -> None:
     with _client() as client:
         data = _check_list(client.get(f"/api/plans/{plan_id}/tasks"))
     table = Table(title="Tasks")
-    table.add_column("ID", style="dim", max_width=8)
+    # Same contract as the Projects and Plans tables above: `task`, `stop`, and
+    # `merge` all take a full task id by exact match, so printing eight
+    # characters hands the operator something the API will reject.
+    table.add_column("ID", style="dim", max_width=36, overflow="fold")
     table.add_column("Title")
     table.add_column("Branch")
     table.add_column("Status")
     table.add_column("Attempt")
     for task in data:
         table.add_row(
-            task["id"][:8],
+            task["id"],
             task["title"],
             task["branch_name"],
             task["status"],
@@ -282,16 +339,68 @@ def pending() -> None:
         console.print("[green]Nothing awaiting approval.[/green]")
         return
     table = Table(title=f"{data['count']} awaiting approval")
-    for column in ("Age", "Task", "Branch", "PR"):
-        table.add_column(column)
+    table.add_column("Age")
+    table.add_column("Task", max_width=40)
+    table.add_column("Branch", overflow="fold")
     for task in data["tasks"]:
         table.add_row(
             f"{int(task['age_hours'])}h",
             task["title"] or task["task_id"],
             task["branch"] or "",
-            task["pr_url"] or "",
         )
     console.print(table)
+    console.print()
+    # A bordered table wraps unpredictably once it leaves this terminal
+    # (docker logs, CI log viewers, less, older SSH clients all hard-wrap at
+    # a fixed column), which can split a uuid or a url mid-value across
+    # cells. Print one plain, copy-pasteable line per task instead: rich's
+    # default word-wrap only breaks on whitespace, so a token with none (a
+    # uuid, a url) survives contiguous at any width.
+    for task in data["tasks"]:
+        console.print(
+            f"praxis merge {task['task_id']}   # {task['title'] or task['task_id']}"
+        )
+        if task["pr_url"]:
+            console.print(f"  PR: {task['pr_url']}")
+
+
+@app.command()
+def merge(
+    task_id: str = typer.Argument(..., help="Full task ID from `praxis pending`"),
+) -> None:
+    """Approve and merge one review-passed task parked at the merge gate."""
+
+    with _client(_MERGE_TIMEOUT) as client:
+        try:
+            response = client.post(f"/api/tasks/{task_id}/approve-merge")
+        except httpx.RequestError as exc:
+            _abandoned_merge(exc)
+        data = _check_dict(response)
+    console.print(f"[green]Merged:[/green] {data['task_id']} ({data['status']})")
+
+
+@app.command("merge-plan")
+def merge_plan(
+    plan_id: str = typer.Argument(..., help="Plan ID from `praxis plans`"),
+) -> None:
+    """Approve every review-passed task parked in one plan."""
+
+    with _client(_MERGE_TIMEOUT) as client:
+        try:
+            response = client.post(f"/api/plans/{plan_id}/approve-merges")
+        except httpx.RequestError as exc:
+            _abandoned_merge(exc)
+        data = _check_dict(response)
+    approved = int(data.get("approved") or 0)
+    errors = data.get("errors") or []
+    console.print(f"[green]Merged:[/green] {approved} task(s)")
+    for failure in errors:
+        console.print(
+            f"[red]Failed:[/red] {failure.get('task_id', '?')}: "
+            f"{failure.get('error', 'unknown error')}"
+        )
+    if errors:
+        raise typer.Exit(1)
 
 
 config_app = typer.Typer(

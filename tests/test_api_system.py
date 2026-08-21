@@ -7,6 +7,11 @@ import httpx
 import pytest
 from httpx import AsyncClient
 
+# Bound at import time, BEFORE conftest's `no_live_planner_round_trip` replaces
+# the module attribute with a tripwire. These tests exercise the real body, so
+# they need the real function; `sys_mod.probe_provider_roundtrip` would raise.
+# This is the documented escape hatch from that fixture.
+from orchestrator.api.system import probe_provider_roundtrip as real_roundtrip
 from orchestrator.database import Database
 from tests.conftest import seed_user
 
@@ -29,6 +34,32 @@ def _make_proc(mocker: pytest.MonkeyPatch, returncode: int) -> object:
     proc.returncode = returncode
     proc.wait = mocker.AsyncMock(return_value=returncode)
     return proc
+
+
+def _make_roundtrip_proc(
+    mocker: pytest.MonkeyPatch,
+    returncode: int = 0,
+    stdout: bytes = b"",
+    stderr: bytes = b"",
+) -> object:
+    """A fake `claude -p` that answers with the given streams and exit code."""
+    proc = mocker.MagicMock()
+    proc.returncode = returncode
+    proc.communicate = mocker.AsyncMock(return_value=(stdout, stderr))
+    proc.wait = mocker.AsyncMock(return_value=returncode)
+    return proc
+
+
+def _install_roundtrip(mocker: pytest.MonkeyPatch, proc: object) -> None:
+    """Make the next `claude -p` spawn return this fake, cache cleared."""
+    import orchestrator.api.system as sys_mod
+
+    sys_mod._roundtrip_probe_cache.clear()
+
+    async def _fake_exec(*args: object, **kwargs: object) -> object:
+        return proc
+
+    mocker.patch("asyncio.create_subprocess_exec", new=_fake_exec)
 
 
 @pytest.mark.integration
@@ -192,6 +223,203 @@ async def test_probe_provider_agy_no_auth_cmd(mocker: pytest.MonkeyPatch) -> Non
     result = await sys_mod._probe_provider("agy")
     assert result["cli_available"] is True
     assert result["authenticated"] is True
+
+
+# ---------------------------------------------------------------------------
+# Planner round-trip probe
+#
+# This is the body that decides whether `praxis doctor` calls the planner
+# healthy. It is only ever called from /api/doctor, and conftest stubs that
+# call site, so without these tests the real code is invisible to the suite:
+# deleting the sentinel check leaves every other test green while restoring
+# the exact "a blocking hook still exits 0" false green the check exists for.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+async def test_roundtrip_true_when_the_cli_answers_the_sentinel(
+    mocker: pytest.MonkeyPatch,
+) -> None:
+    _install_roundtrip(mocker, _make_roundtrip_proc(mocker, 0, b"PONG\n"))
+
+    result = await real_roundtrip("claude")
+
+    assert result.ok is True
+    assert result.rate_limited is False
+
+
+@pytest.mark.unit
+async def test_roundtrip_false_when_a_hook_refuses_but_exits_zero(
+    mocker: pytest.MonkeyPatch,
+) -> None:
+    """The walkthrough #4 failure itself: exit 0, no answer.
+
+    A Claude Code hook mounted from the host refused every prompt and still
+    exited 0, so an exit-code-only check reported the planner healthy while no
+    brain call in the container could complete.
+    """
+    _install_roundtrip(mocker, _make_roundtrip_proc(mocker, 0, b"Blocked by policy\n"))
+
+    result = await real_roundtrip("claude")
+
+    assert result.ok is False
+    # The operator has to be able to see WHY without opening the logs.
+    assert "Blocked by policy" in result.error
+
+
+@pytest.mark.unit
+async def test_roundtrip_false_when_the_cli_echoes_the_prompt_back(
+    mocker: pytest.MonkeyPatch,
+) -> None:
+    """An echo of the INPUT must not satisfy the check on the OUTPUT.
+
+    The sentinel appears verbatim inside the prompt, so a wrapper in verbose
+    mode, or a refusal that quotes the prompt it refused, would otherwise
+    report the planner healthy without the model ever answering.
+    """
+    import orchestrator.api.system as sys_mod
+
+    echoed = f"> {sys_mod._ROUNDTRIP_PROMPT}\nrequest denied\n".encode()
+    _install_roundtrip(mocker, _make_roundtrip_proc(mocker, 0, echoed))
+
+    result = await real_roundtrip("claude")
+
+    assert result.ok is False
+
+
+@pytest.mark.unit
+async def test_roundtrip_false_when_the_cli_is_not_on_path(
+    mocker: pytest.MonkeyPatch,
+) -> None:
+    import orchestrator.api.system as sys_mod
+
+    sys_mod._roundtrip_probe_cache.clear()
+    mocker.patch("orchestrator.api.system.shutil.which", return_value=None)
+
+    result = await real_roundtrip("claude")
+
+    assert result.ok is False
+
+
+@pytest.mark.unit
+async def test_roundtrip_reports_a_rate_limit_as_not_probed(
+    mocker: pytest.MonkeyPatch,
+) -> None:
+    """A throttled subscription is normal and self-healing, never a fault.
+
+    `praxis init` ends by running doctor, so mapping this to a red would fail
+    a correct install and send the operator hunting a blocking hook that does
+    not exist.
+    """
+    _install_roundtrip(
+        mocker,
+        _make_roundtrip_proc(
+            mocker, 1, b"", b"Claude usage limit reached. Resets at 5pm.\n"
+        ),
+    )
+
+    result = await real_roundtrip("claude")
+
+    assert result.rate_limited is True
+    assert result.ok is None  # "not probed", so the old verdict stands
+    assert "usage limit reached" in result.error
+
+
+@pytest.mark.unit
+async def test_roundtrip_kills_the_child_when_the_prompt_hangs(
+    mocker: pytest.MonkeyPatch,
+) -> None:
+    """`wait_for` cancels the await, not the process.
+
+    A hung planner is exactly what this check is for, so without the kill the
+    probe leaks one live `claude` process per cache miss.
+    """
+    proc = _make_roundtrip_proc(mocker, 0)
+    proc.communicate = mocker.AsyncMock(side_effect=TimeoutError)
+    _install_roundtrip(mocker, proc)
+
+    result = await real_roundtrip("claude")
+
+    assert result.ok is False
+    assert proc.kill.called
+    assert proc.wait.await_count == 1
+
+
+@pytest.mark.unit
+async def test_roundtrip_is_not_defined_for_other_providers(
+    mocker: pytest.MonkeyPatch,
+) -> None:
+    """None means "not probed", which must not read as a refusal."""
+    import orchestrator.api.system as sys_mod
+
+    sys_mod._roundtrip_probe_cache.clear()
+
+    result = await real_roundtrip("codex")
+
+    assert result.ok is None
+    assert result.rate_limited is False
+
+
+@pytest.mark.unit
+async def test_roundtrip_false_when_the_cli_cannot_be_spawned(
+    mocker: pytest.MonkeyPatch,
+) -> None:
+    """A shim that resolves on PATH but will not exec (Windows WinError 2)."""
+    import orchestrator.api.system as sys_mod
+
+    sys_mod._roundtrip_probe_cache.clear()
+    mocker.patch(
+        "asyncio.create_subprocess_exec",
+        new=mocker.AsyncMock(side_effect=OSError("exec format error")),
+    )
+
+    result = await real_roundtrip("claude")
+
+    assert result.ok is False
+    assert "exec format error" in result.error
+
+
+@pytest.mark.unit
+async def test_roundtrip_false_when_the_pipes_break_mid_prompt(
+    mocker: pytest.MonkeyPatch,
+) -> None:
+    proc = _make_roundtrip_proc(mocker, 0)
+    proc.communicate = mocker.AsyncMock(side_effect=OSError("broken pipe"))
+    _install_roundtrip(mocker, proc)
+
+    result = await real_roundtrip("claude")
+
+    assert result.ok is False
+    assert "broken pipe" in result.error
+
+
+@pytest.mark.unit
+async def test_roundtrip_spends_only_one_call_per_cache_window(
+    mocker: pytest.MonkeyPatch,
+) -> None:
+    """The cache is a COST control, not an optimisation.
+
+    Every miss is a billed subscription call, and `/api/doctor` is reachable
+    from the dashboard, so an uncached probe would charge per page view.
+    """
+    spawns = 0
+
+    async def _counting_exec(*args: object, **kwargs: object) -> object:
+        nonlocal spawns
+        spawns += 1
+        return _make_roundtrip_proc(mocker, 0, b"PONG\n")
+
+    import orchestrator.api.system as sys_mod
+
+    sys_mod._roundtrip_probe_cache.clear()
+    mocker.patch("asyncio.create_subprocess_exec", new=_counting_exec)
+
+    first = await real_roundtrip("claude")
+    second = await real_roundtrip("claude")
+
+    assert first.ok is True
+    assert second.ok is True
+    assert spawns == 1
 
 
 @pytest.mark.integration
