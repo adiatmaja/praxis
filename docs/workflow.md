@@ -150,7 +150,7 @@ Three mechanisms make the mode work:
 
 1. **Global default worker (fallback).** The delegated worker is resolved from
    `default_worker_harness` / `default_worker_model` in `config/praxis.yaml` (reference config:
-   the `agy` harness driving `Gemini 3.6 Flash (High)`). A project registered without its own
+   the `agy` harness driving `Gemini 3.7 Flash (High)`). A project registered without its own
    `model_name` falls back to this default, so you can `praxis add-project` and start delegating
    immediately. The product default outside this mode stays OpenCode.
 2. **Single-branch discipline.** `dispatch_pending_tasks` reads

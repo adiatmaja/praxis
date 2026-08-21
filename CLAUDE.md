@@ -253,10 +253,11 @@ single caller-named work branch; dead branches are swept by the reconcile loop. 
 
 ## Gotchas
 
-**`docs/gotchas.md` is the full list (100 traps, with the narrative for each). Read the
-relevant entry there before touching a subsystem.** Below are only the ones that bite during
-ordinary edits, because each fails SILENTLY. When you learn a new one, write it there and add
-a line here only if it belongs in this shortlist.
+**`docs/gotchas.md` is the full list, with the narrative for each. Read the relevant entry
+there before touching a subsystem.** Below are only the ones that bite during ordinary edits,
+because each fails SILENTLY. When you learn a new one, write it there and add a line here only
+if it belongs in this shortlist. (No count is quoted on purpose: a number in prose goes stale
+in both directions and then gets cited as authority.)
 
 **Editing and running**
 
@@ -347,11 +348,27 @@ a line here only if it belongs in this shortlist.
   command's defaults into `OptionInfo`, so only the plain function is callable.
 - **GitHub's PR state outranks `gh`'s exit code**: `gh pr merge` can 504 AFTER the
   merge succeeded, so `merge_pr` re-reads `gh pr view --json state` before failing.
-- **A table printing an id must fold it AND be wide enough**: `overflow="fold"` on
-  a narrow column still splits a uuid across border characters. `pending` prints a
-  plain copyable `praxis merge <id>` line instead. `plans`, `tasks`, and `projects`
-  now print the id WHOLE (36-wide folding column); an id truncated to 8 chars 404s,
-  because every consumer looks it up by exact match.
+- **An id belongs on its own line, not in a table column**: rich's `max_width` is a
+  MAXIMUM, so a 36-wide uuid column still shrank to 16 and folded across THREE rows
+  once five columns competed for 80 chars; `min_width` only pushes the last columns
+  off the right edge. `pending`, `plans`, and `tasks` all print a plain copyable
+  `praxis <verb> <id>` line below the table instead. An id truncated to 8 chars
+  404s, because every consumer looks it up by exact match. Assert contiguity on ONE
+  line at 80 columns: the old guard pinned `COLUMNS=160` and flattened the output,
+  so it passed for five walkthroughs while nothing was copyable.
+- **The CLI forces UTF-8 on stdout/stderr** (`cli.main._force_utf8_stdout`). Without
+  it, Windows redirected output falls back to cp1252, rich's truncation ellipsis
+  becomes the byte `0x85`, and `praxis tasks | grep` answers "Binary file (standard
+  input) matches". Interactive output was always fine, which is what hid it.
+- **A doctor hint must name a verb that can do the job**, not merely one that exists:
+  `praxis config` is a registered GROUP, so an existence check passes while running
+  it only prints help. `tests/test_doctor_hints_name_real_verbs.py` gates this;
+  group names come off the sub-app's `info`, since `add_typer` with no explicit name
+  leaves `group.name` a `DefaultPlaceholder`.
+- **A new surface's QUERY is the seam that goes inert**: `praxis pending` hid every
+  autonomous proposal because `GET /api/approvals/pending` never selected those rows,
+  while the predicate and the renderer were both correct and 45 of 46 tests stayed
+  green. Test the layer that FETCHES, not only the one that DECIDES.
 - **The merge verbs need their own HTTP timeout**: `merge-plan` merges a plan's
   PASSED tasks sequentially (up to `max_leaves_per_plan`), and one `merge_pr`
   under repeated 504s is three attempts plus backoff. The CLI's read-only 60s

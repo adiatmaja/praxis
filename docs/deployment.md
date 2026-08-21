@@ -58,7 +58,7 @@ docker run --rm \
   -v praxis-gemini-creds:/home/agent/.gemini \
   --entrypoint bash agy-agent:latest \
   -c 'agy --dangerously-skip-permissions --mode accept-edits \
-        --model "Gemini 3.5 Flash (High)" -p "print PONG"'
+        --model "Gemini 3.7 Flash (High)" -p "print PONG"'
 ```
 
 The orchestrator mounts this volume **read-write** at `/home/agent/.gemini` in every agy

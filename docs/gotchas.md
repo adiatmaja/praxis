@@ -831,7 +831,7 @@ belongs among the everyday traps.
   stable and has inverted twice. Workers had the same hole and it was worse,
   because it differed by harness with nothing declaring so. OpenCode's generated provider
   config carried no effort at all, so every OpenCode worker silently ran at maximum, while agy
-  takes its effort baked into the Gemini model string (`"Gemini 3.5 Flash (High)"`). The same
+  takes its effort baked into the Gemini model string (`"Gemini 3.7 Flash (High)"`). The same
   task therefore ran under two different and undeclared thinking regimes depending on which
   harness picked it up, with no error, no warning and no failing test. `core/harnesses.py` now
   declares an `effort_channel` per harness (`request_option`, `model_name`, or `none`) and
@@ -1269,3 +1269,91 @@ belongs among the everyday traps.
   makes the check skip integration for EVERY plan while looking correct. It was
   measured doing precisely that against an `AsyncMock`, which returns the same
   sentinel for every call; seven existing tests went red and caught it.
+
+## Surfaces that report the wrong thing while every layer says it worked
+
+These are the traps where the code is correct, the tests are green, and the
+operator is still told something false. Each was found by walking the product
+as a newcomer, not by reading it.
+
+- **A guard can be perfect and the fix still inert, because something upstream
+  never hands it the rows.** `praxis pending` hid every autonomous improvement
+  proposal. `plan_awaits_approval` classified them correctly and the CLI
+  rendered them correctly, but `GET /api/approvals/pending` selected only plans
+  with an open integration PR, so neither ever saw one. Reverting **just that
+  `WHERE` clause** left 45 of 46 tests green. The lesson generalises: when a
+  feature spans a query, a predicate and a renderer, the query is the seam that
+  unit tests do not cover, and it is where a fix goes quietly inert. Test the
+  layer that FETCHES, not only the layer that DECIDES.
+
+  There is a second half to this one. Proposals are deliberately **not** added
+  to `summarize_pending`'s `count`. That field feeds `digest_line`, which calls
+  its items "PRs", and a proposal has no branch and no PR; folding it in would
+  fix the invisibility by making the digest announce pull requests that do not
+  exist. Two gates that both mean "a human must answer this" are still two
+  gates.
+
+- **rich's `max_width` is a MAXIMUM, not a minimum, and a table will shrink a
+  column below it.** `praxis tasks` set `max_width=36, overflow="fold"` on a
+  uuid column and still folded every id across THREE rows: with five columns
+  competing for an 80-column console, rich allocated the id 16 characters.
+  Raising it to `min_width=36` does not help either, it only moves the damage,
+  pushing Status and Attempt off the right edge entirely. The working pattern,
+  which `pending` and `plans` already used, is to keep the table narrow and
+  print the id below it on its own plain line: rich's word-wrap only breaks on
+  whitespace, so a token containing none survives contiguous at any width.
+
+  **The test that was supposed to catch this passed for five walkthroughs.** It
+  pinned `COLUMNS=160` and then joined every line before asserting, so a
+  three-way fold read as success. An id is copied a LINE at a time; assert
+  contiguity on a single line, at the width a real terminal has.
+
+- **On Windows, redirected CLI output is not UTF-8, and rich's ellipsis makes it
+  invalid.** Attached to a console, Python writes through `WriteConsoleW` and
+  the declared encoding is irrelevant, so everything looks fine interactively.
+  Redirected, it falls back to the locale encoding, which is cp1252. rich
+  truncates a too-wide cell with U+2026, cp1252 encodes that as the single byte
+  `0x85`, and `0x85` is not valid UTF-8. The symptom is that
+  `praxis tasks | grep ...` answers **"Binary file (standard input) matches"**
+  and matches nothing, so every table the CLI prints becomes unpipeable the
+  moment one value is long enough to truncate. `cli/main.py` reconfigures
+  stdout and stderr to UTF-8 at import; it is a no-op for the interactive case.
+
+- **An existence check is not a capability check.** The `worker_endpoint` red
+  told the operator to "switch preset with `praxis config`". `praxis config` is
+  a registered command GROUP, so any test asking "does this verb exist" passes.
+  Run it and it prints its own help and changes nothing; no subcommand of it can
+  change a worker preset. The rule that actually catches this is structural:
+  naming a command GROUP with no subcommand is a dead end by construction,
+  because a bare group is not runnable. `tests/test_doctor_hints_name_real_verbs.py`
+  enforces both that rule and plain verb existence, and carries two
+  guard-the-guard cases, since a regex matching nothing and an empty verb set
+  would each make the whole file pass vacuously.
+
+  Group names must be read off the sub-app's own `info`. `add_typer(config_app)`
+  with no explicit name leaves `group.name` a `DefaultPlaceholder`, not a
+  string, so reading `group.name` alone silently yields a verb set containing no
+  groups at all.
+
+- **A CLI can be stricter than the API it wraps, and the extra strictness is
+  invisible.** `praxis add-project` demanded a model as a required positional
+  argument. The API had always allowed `model_name` to be null and fall back to
+  the worker preset. Under the shipped default preset the correct value lives
+  only in the settings YAML and is printed by no command, so the newcomer was
+  ordered to supply a value they had no way to look up. The same shape applied
+  to `harness`: the API accepted and validated it on both create and update
+  since the registry landed, and the CLI simply never offered a flag, leaving
+  the setting that decides which harness does the typing reachable only by curl.
+
+  When adding an optional flag here, send an absent key as **absent**. A null in
+  the payload is not the same as an omitted one: it writes an explicit null onto
+  the project row and stops it tracking the preset.
+
+- **`test_config_path` trips on a COMMENT, and that is the correct behaviour.**
+  It greps every module under `src/` for the literal settings-YAML path, because
+  one resolver owning that path is what keeps a fixed bug fixed, and a grep
+  cannot tell a real read from prose. A comment mentioning the path fails the
+  suite. Reword the comment; never weaken the gate. The direction matters: strip
+  comments in a gate only when prose could SATISFY it (a false negative, which
+  is dangerous), never when prose merely TRIPS it (a false positive, which is
+  safe).

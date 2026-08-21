@@ -1885,3 +1885,159 @@ Seven mutants, each killed by its own dedicated test. One "survivor" turned out
 to be a broken mutant, not a missing test: `frozenset() or frozenset({...})` is
 a no-op because an empty frozenset is falsy. Mutate a member, not a constructor,
 and be suspicious of a lone survivor among killed siblings.
+
+# Run #8, 2026-08-21
+
+Fresh clone at product commit **`281c0ae`**. The previous install was binned
+first (`docker compose down -v`, directory deleted), so this was a genuine
+newcomer starting state and not a pulled-forward one. Warm Docker and `uv`
+caches, as in every run since #2.
+
+**Score: 9/10.** The best run so far. No HIGH found, no silent-work-loss path,
+no unread-context path.
+
+## Phase timings, unrounded
+
+| Phase | Elapsed |
+|---|---|
+| `git clone` | 3 s |
+| `uv venv && uv sync --extra dev` | 5 s (warm cache) |
+| `praxis init --non-interactive --github-token ... --accept-preset-requirements` | 51 s |
+| Diagnose and apply the one red (VPN killswitch), `up -d`, re-run doctor | 32 s |
+| **Clone to green doctor** | **2 min 02 s** |
+
+Matches run #7's 2 min 03 s. The single red was again solved entirely from the
+product's own inline hint, with no reference to any external note. The shipped
+default preset `gemini-agy` was selected with no `--preset` flag, as designed.
+
+## The question this run existed to answer
+
+**Does the improvement loop fire through the LOOP, unaided, and describe the
+repository it was actually pointed at?**
+
+Run #7's fix was verified behaviourally, by building the real survey and
+calling the real planner directly. What had never been observed was a plan
+completion triggering `check_improvements` on its own.
+
+**Yes, and its claims are true.** Sequence, with nothing driven by hand:
+
+1. `praxis merge-plan` integrated the user plan; the plan reached COMPLETED.
+2. About 90 seconds later a SECOND plan appeared in `praxis plans`, source
+   `autonomous`, status `pending`, carrying four tasks.
+3. All four tasks sat PENDING with **zero agent containers running**. The
+   approval gate holds.
+
+Every concrete claim checked against playground's `main`:
+
+| Claim | Verdict |
+|---|---|
+| "no `.github/workflows/` directory is present" | TRUE |
+| Six co-located `src/playground/test_*.py` named individually | TRUE, file for file, no extras and none missed |
+| Two files in `tests/`, named | TRUE |
+| "`testpaths` remains `["src", "tests"]`" | TRUE, quoted exactly |
+| slug / truncate / wordfreq specs have no implementation | TRUE, all three |
+| chunk "listed as completed plan but no chunks.py" | TRUE of `main`, since the integration PR was still open, and it HEDGED rather than asserting |
+| "`__init__.py` exists but its contents are unknown" | An honest statement of a survey bound. The file is in fact EMPTY, so "identify helpers not re-exported" was exactly right |
+
+Compare the pre-fix output, which named a Caddyfile, auth endpoints, a Database
+class and SSE token verification, none of which exist in that repository. The
+loop is confirmed end to end and this question is closed.
+
+## Defects, ranked
+
+**1. MEDIUM. `praxis pending` hid the improvement loop's entire output.**
+
+While the proposal above sat parked, `praxis pending` printed **"Nothing
+awaiting approval."** It read only `count`, which covers the MERGE gate; a
+proposal sits on the APPROVAL gate, answered by `praxis approve` / `reject`.
+The only way to find one was `praxis plans <project-id>`, which requires
+already knowing the proposal exists AND which project it belongs to. An entire
+feature's output was unreachable without curl.
+
+This is the same defect the endpoint's own docstring describes one layer up
+("reporting only the first is what made the loop's last step invisible"), now
+recurring with a third category.
+
+**The endpoint's `WHERE` clause was the real seam.** It selected only plans
+with an open integration PR, so a perfect predicate would still have surfaced
+nothing. Reverting **just that clause** leaves 45 of 46 tests green.
+
+Proposals are deliberately NOT folded into `count`: that feeds `digest_line`,
+which calls its items "PRs", and a proposal has no branch and no PR.
+
+**2. MEDIUM, and five walkthroughs old. `praxis tasks` folded every uuid across
+three rows.**
+
+`max_width=36` is a MAXIMUM, not a minimum. With five columns competing for an
+80-column console rich allocated the id 16 characters, so
+`2dbf67c0-548c-4` / `5ca-8e5e-bf7148` / `008231` had to be rejoined by hand.
+`min_width=36` does not fix it, it only moves the damage, pushing Status and
+Attempt off the right edge entirely.
+
+**The guard that should have caught this passed the whole time.** It pinned
+`COLUMNS=160` and joined every line before asserting, so a three-way fold read
+as success.
+
+**3. MEDIUM. Redirected CLI output was not valid UTF-8.**
+
+`praxis tasks | grep ...` answered **"Binary file (standard input) matches"**
+and matched nothing. On Windows a redirected stream falls back to cp1252, rich
+encodes its truncation ellipsis as the single byte `0x85`, and that is not
+valid UTF-8. Every table the CLI prints was unpipeable the moment one value was
+long enough to truncate. Interactive output was always fine, which is what hid
+it for eight runs.
+
+**4. LOW. A doctor red pointed at a verb that cannot fix it.** The
+`worker_endpoint` hint said "switch preset with `praxis config`". That group
+only shows the model registry and sets role chains; running it prints help and
+changes nothing.
+
+**5. LOW. `praxis config show` does not list preset names, and the README said
+it does.** No command does. The names live in the settings YAML.
+
+**6. LOW, carried from run #7 and now confirmed.** No `--harness` flag on
+`add-project` or `configure`; `add-project`'s help calling its third argument
+the "LM Studio model name" under an agy default; that argument being REQUIRED
+when the API has always allowed it to be null; the README's non-interactive
+example using `--preset local-lmstudio`; the doctor not naming the worker
+endpoint URL it probed.
+
+## Confirmed fixed since run #7
+
+- The merged-PR reuse fix held: no work was attached to a closed PR.
+- `no_changes` remains available on both harnesses, though this run did not
+  reach it (see below).
+- The killswitch remedy is in the product and was sufficient on its own.
+- The improvement loop reads the repository. See above.
+
+## What this run did NOT reproduce
+
+**`no_changes` did not occur.** Task 1 again wrote task 2's file, which is now
+**seven of seven plans**, but task 2 then added one more assertion rather than
+reporting an empty diff, and passed review on it. This is exactly why the
+standing advice is to force `no_changes` with a CONFIG leaf over a fixed token
+set: a code leaf always admits one more test. Not a defect, and the behaviour
+is already confirmed in production on both harnesses.
+
+## Score: 9/10, reasoning
+
+Setup is now a solved problem: two minutes, one red, self-served. The loop
+closed end to end without intervention, the approval gate held, and the
+flagship autonomous behaviour was observed working and telling the truth about
+a repository it had never been given by hand.
+
+The point comes off for a category of defect this run found twice: a surface
+that reports something false while every layer beneath it is correct.
+`pending` denied that parked work existed, and `tasks` printed an id that could
+not be copied. Both are the product misreporting its own state to the one
+person who has to act on it, and both had tests that passed.
+
+## What to fix, ranked
+
+All six defects above were fixed in the same session, in `f2fd958` and
+`bb75975`, and each was verified against the live install rather than only in
+tests: the doctor red was reproduced by switching `.env` to the local-lmstudio
+shape and confirming the URL now appears; `pending` was checked by restoring a
+proposal to PENDING in the container's SQLite; `--harness` was checked by
+creating a project with it and flipping it with `configure`; and the pipe fix
+was checked by grepping real CLI output.
