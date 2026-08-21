@@ -2149,3 +2149,90 @@ prints contiguous copyable ids; redirected CLI output is valid UTF-8 (checked
 through `cat -A`); the integration PR is visible to the CLI; the spec carried
 intact from `submit` to a committed spec doc; the merge gate parks rather than
 auto-merging, at both stages.
+
+# Run #10, 2026-08-21
+
+Fresh clone at product commit **`f54675e`**, the commit that closed the five
+items carried into this session plus roughly sixty more found by sweeping five
+user-visible surfaces rather than working the list. Previous install already
+binned. Warm Docker layer cache.
+
+**Score: 8/10.** The loop closed end to end, the merge gate was exercised in
+BOTH directions for the first time, every carried item was verified against the
+live install, and there was no silent work loss and no unread-context path. Two
+points come off, and neither is a judgement call:
+
+- **Four new instances of the false-report class**, three of them in the first
+  two commands a newcomer types. A 500 where the server knew the answer, an
+  empty table that explained nothing, a rule in the docs that was inverted, and
+  a dashboard that named the wrong failure.
+- **Two of the four were introduced by this session's own fixing.** The
+  precedence fix made a class of `.env` key reachable and thereby made the
+  documented recovery wrong; the empty-state fix landed on two of three list
+  surfaces and missed the one with the most first-time traffic.
+
+That is a better run than #9 on the loop and a worse one on discipline, and 8
+is the honest number. Fixing sixty things and introducing two is not a 10, and
+the run that finds them is not the run that gets credit for them.
+
+## What the walk found that 2686 passing tests could not
+
+| Found | Why the suite could not see it |
+|-------|-------------------------------|
+| `praxis add-project <name> https://github.com/...` printed `Error 500: Internal Server Error` on an install with no GitHub credential. `build_credential_provider` raises carrying the exact remedy, which stayed in the container log. | Nothing constructed a real unconfigured install. This is the state `praxis init` leaves when you skip GitHub, and the doctor had just called it correct. |
+| `GET /projects/{id}/git-state` had the same uncaught call, and the dashboard POLLS it, so local mode 500'd on every tick. | Same. Found by grepping the other call sites once the first one was known. |
+| `praxis projects` on a fresh install printed a bordered table with a header row, no body, nothing else. | `tasks` and `plans` were given empty states an hour earlier in the same session. A test for the surface nobody thought about does not exist by definition. |
+| "`docker compose restart` does NOT re-read `.env`; only `up -d` does" is inverted for any key compose does not forward. Measured: `LOOP_INTERVAL=11` plus `up -d` reported "Container orchestrator Running" and changed nothing; `restart` picked it up. | No test runs `docker compose`. And the claim only BECAME wrong when the dotenv layer started beating the settings file, in the commit under test. |
+| The dashboard's first screen said "Connection failed" over an orchestrator that answered 401, and both Connections pills read "offline" from a branch that had established nothing about either provider. | The suite has no browser. Found by opening the page. |
+
+CI caught two more that neither the local suite nor the walk could: rich
+colorizes typer help on the Linux runner and not on the Windows one, so ANSI
+escapes landed inside the phrases three help guards were matching; and a
+provider probe stubbed the subprocess but not `shutil.which`, so it asserted
+that `claude` and `codex` were installed on the machine running pytest. Both
+were guards measuring their environment rather than the code.
+
+## What was verified live, not just in the suite
+
+| Item | How it was proved |
+|------|-------------------|
+| `.env` key silently overridden by the settings file | `LOOP_INTERVAL=11` in `.env` against `loop_interval: 5` in the mounted YAML: the container resolved **11**, and logged `LOOP_INTERVAL is set in the dotenv file and also in /app/config/praxis.yaml; the dotenv value wins`. Run #9 measured 5 with nothing said. |
+| Killswitch remedy edits a tracked file | The doctor's red named `.env.container` with the exact command. Following it verbatim took the planner row from FAIL to `installed and answering prompts`, a real in-container round trip, and left `git status` clean. |
+| No CLI verb for `reject-merge` | Exercised for real on a parked task: attempt went 1 to 2, status returned to in_progress, the feedback was stored on the task AND posted as a comment on PR #64. The retry then passed review and merged. |
+| `praxis projects` folds its id | Contiguous `praxis plans <uuid>` at COLUMNS=80 against a real project. |
+| The doctor's amber summary | A table with two NOTE rows printed "No failures, but 2 check(s) could not be verified", not "All checks passed." |
+| Three gates, not one | `GET /api/approvals/pending` on the deployed image returns `clarification_count` and `clarifications` alongside tasks, plans and proposals. |
+| `praxis init` duration | 90 seconds warm, against the stated "about 2 minutes if Docker has these layers cached, and about 10 on a first run", printed before the first prompt. |
+| `uv sync` dirties a tracked file | Reproduced on the fresh clone (it then blocked `git pull`), fixed by regenerating the lock, and re-verified: `uv sync --extra dev` now leaves `git status` clean. |
+
+## The loop, end to end
+
+Spec submitted with `--file`, committed as a repo doc, planned into two tasks
+with a real dependency, dispatched to an agy worker in a throwaway container,
+PR opened, reviewed, parked at the gate, **rejected with feedback**,
+re-dispatched, re-reviewed, merged. Then the dependent task, its own PR and
+review, merged. Plan completed, integration PR #66 opened, `merge-plan`
+integrated it, and both files are on `main` of `adiatmaja/playground`,
+confirmed through the GitHub API rather than from the plan's own status.
+
+The rejection is the first time this gate has been exercised in the direction
+that says no, because until this session the CLI had no verb for it. It
+behaved correctly all the way through: attempt 1 to 2, status back to
+in_progress, feedback stored on the task AND posted as a comment on the PR.
+
+The improvement loop then fired unaided on plan completion and parked a
+proposal. That proposal is what verified three of this session's fixes on real
+data rather than a mock: `praxis pending` printed `approve` and `reject` on
+their own contiguous lines, and `praxis plans` offered both verbs for a pending
+autonomous plan, which is the exact state that previously offered only
+`praxis tasks` and an empty table. The proposal itself was repo-specific
+(it noticed that the new modules sit at the top of `src/` while the older
+helpers live in `src/playground/`), so the improvement loop is reading the
+repository, not the project name.
+
+## Do not re-open
+
+Everything in run #9's list, plus: the settings precedence, the killswitch
+remedy, the reject-merge verb, the doctor's amber summary and its measured-vs-
+derived wording, and the empty states on `projects`, `tasks` and `plans`. All
+verified against the running install rather than the suite.
