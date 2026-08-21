@@ -531,8 +531,26 @@ else
 # the PR body text. Left byte-identical so GitHub mode is provably unchanged.
 echo "--- Creating PR ---"
 # A previous attempt may already have opened a PR for this branch; reuse it.
-if PR_URL=$(gh pr view "${BRANCH}" --json url --jq .url 2>/dev/null) && [ -n "${PR_URL}" ]; then
-    echo "Reusing existing PR: ${PR_URL}"
+# ONLY an OPEN one, and only for this exact (head, base) pair. The old lookup
+# was `gh pr view "${BRANCH}"`, which resolves a branch to a PR REGARDLESS of
+# state; two plans built from the same spec text share slugs, so it handed back
+# the previous plan's already-MERGED PR. This run's real commit was then
+# attached to a diff that had already landed: the review fetched the old merged
+# diff and passed, `merge_pr` saw a merged PR and treated that as success, the
+# task was marked MERGED, and the work never reached the base branch, with every
+# layer reporting success.
+#
+# This is the same positive open-state lookup `_existing_integration_pr` makes
+# in core/orchestrator_review.py, for the same reason stated there: only a
+# POSITIVE open hit may skip creation. Any other answer, including a failure of
+# the lookup itself, falls through to creation, because treating a failure as
+# "already open" would hide a real gh error forever.
+#
+# The emptiness of the OUTPUT is the signal, never the exit status: `gh pr list`
+# prints nothing and still exits 0 when nothing matches.
+PR_URL=$(gh pr list --head "${BRANCH}" --base "${BASE_BRANCH}" --state open --json url --jq '.[0].url // empty' 2>/dev/null || true)
+if [ -n "${PR_URL}" ]; then
+    echo "Reusing existing open PR: ${PR_URL}"
 else
 PR_URL=$(gh pr create \
     --title "agent: ${BRANCH}" \

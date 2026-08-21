@@ -88,7 +88,11 @@ def test_pr_creation_is_guarded_by_the_backend(path):
         None,
     )
     assert pr_line is not None
-    window = "\n".join(text.splitlines()[max(pr_line - 25, 0) : pr_line])
+    # A proximity window, so it has to be wide enough to survive comments being
+    # added to the PR block above it. What it actually measures is nearness, not
+    # containment; containment is what the EXECUTED tests at the bottom of this
+    # file prove, and this stays only as the cheap early signal.
+    window = "\n".join(text.splitlines()[max(pr_line - 45, 0) : pr_line])
     assert "IS_LOCAL_BACKEND" in window, (
         "gh pr create must be inside a github-only guard"
     )
@@ -97,21 +101,26 @@ def test_pr_creation_is_guarded_by_the_backend(path):
 @pytest.mark.unit
 @pytest.mark.parametrize("path", ENTRYPOINTS, ids=lambda p: p.parent.name)
 def test_pr_reuse_lookup_is_guarded_by_the_backend(path):
-    """`gh pr view` is a gh call too, so it must be inside the same guard.
+    """The reuse lookup is a gh call too, so it must be inside the same guard.
 
-    Guarding only `gh pr create` would still shell out to `gh pr view` first,
+    Guarding only `gh pr create` would still shell out to the lookup first,
     which in local mode has no credential and no GitHub remote. It fails
-    quietly (`2>/dev/null`, `|| else`), so the run would look healthy and then
+    quietly (`2>/dev/null`, `|| true`), so the run would look healthy and then
     open a PR against a repo that does not exist.
+
+    The lookup is `gh pr list --state open`, never `gh pr view <branch>`;
+    which state it asks about is pinned in `test_entrypoint_pr_reuse`.
     """
     text = path.read_text(encoding="utf-8")
-    view_line = next(
-        (i for i, line in enumerate(text.splitlines()) if "gh pr view" in line),
+    lookup_line = next(
+        (i for i, line in enumerate(text.splitlines()) if "gh pr list" in line),
         None,
     )
-    assert view_line is not None
-    window = "\n".join(text.splitlines()[max(view_line - 25, 0) : view_line])
-    assert "IS_LOCAL_BACKEND" in window, "gh pr view must be inside a github-only guard"
+    assert lookup_line is not None
+    window = "\n".join(text.splitlines()[max(lookup_line - 40, 0) : lookup_line])
+    assert "IS_LOCAL_BACKEND" in window, (
+        "the PR reuse lookup must be inside a github-only guard"
+    )
 
 
 @pytest.mark.unit
@@ -219,14 +228,13 @@ _TEST_BRANCH = "agent/local&mode"
 _TEST_BASE = "plan/2026-08-06-bench"
 _FAKE_PR_URL = "https://github.test/owner/repo/pull/7"
 
-# `gh pr view` must exit non-zero (no PR exists yet) or `gh pr create` is never
-# reached, leaving the create path untested.
+# The reuse lookup must come back EMPTY (no open PR exists yet) or
+# `gh pr create` is never reached, leaving the create path untested. `gh pr
+# list` prints nothing and exits 0 in that case, which is what the fall-through
+# below reproduces.
 _SPY_GH = """\
 #!/usr/bin/env bash
 printf '%s\\n' "gh $*" >> "$PRAXIS_SPY_LOG"
-if [ "${1:-}" = "pr" ] && [ "${2:-}" = "view" ]; then
-    exit "${PRAXIS_GH_VIEW_EXIT:-1}"
-fi
 if [ "${1:-}" = "pr" ] && [ "${2:-}" = "create" ]; then
     printf '%s\\n' "PLACEHOLDER_PR_URL"
 fi
