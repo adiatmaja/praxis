@@ -9,9 +9,14 @@ Contract, in order of importance:
 3. Every RED result carries a fix hint.  A red light with no next step is
    worse than no light.
 
-Every troubleshooting entry in ``docs/reference.md`` starts with "run
-``praxis doctor``" plus the matching row's hint, so this registry and that doc
-are one thing in two places.
+The troubleshooting narrative lives in ``docs/gotchas.md``, one entry per
+subsystem, and this registry holds the one-line remedy each row prints. A hint
+naming a document is a claim that the document exists, so
+``tests/test_doctor_hints_name_real_docs.py`` resolves every path any hint
+mentions: two of them pointed at ``docs/reference.md`` and
+``docs/getting-started.md``, neither of which this repository has ever
+contained, so following the remedy for the reddest row in the table led
+nowhere.
 """
 
 from __future__ import annotations
@@ -28,7 +33,7 @@ logger = logging.getLogger(__name__)
 
 #: Last-resort hint for a RED result whose ``check_id`` is not registered.
 #: A registered check always resolves its own specific hint instead.
-GENERIC_HINT = "see docs/reference.md troubleshooting for this check"
+GENERIC_HINT = "see docs/gotchas.md for the subsystem this check names"
 
 
 class CheckStatus(StrEnum):
@@ -114,18 +119,25 @@ CHECKS: tuple[Check, ...] = (
     ),
     Check(
         "git_credential",
-        "Git credential usable",
+        # "usable" is a claim nobody here measures: the probe only asks whether
+        # a token (or an app key pair) is non-empty, and a revoked PAT is
+        # non-empty. The label states the measurement, so a green cannot read
+        # as a promise that the credential still works.
+        "Git credential configured",
         "set GITHUB_TOKEN (or the GitHub App vars) in .env, or use a local "
         "`file://` repo to evaluate without any credential",
     ),
     Check(
         "planner_cli",
-        # Not "installed and authenticated": the row can be RED precisely
-        # BECAUSE it is both of those and still cannot answer, and a label
-        # asserting the true half of that reads as a contradiction.
-        "Planner CLI answers a test prompt",
-        "install the planner CLI and run its login command; see "
-        "docs/getting-started.md",
+        # A topic, not an assertion. Every earlier wording asserted one
+        # particular outcome and then contradicted a detail this same row can
+        # carry: "installed and authenticated" is false when the CLI is
+        # missing, and "answers a test prompt" rendered OK beside the detail
+        # "no test prompt was made". The label has to survive every branch of
+        # probe_planner_cli, so it states which seat is being reported and
+        # leaves the verdict to the detail.
+        "Configured planner",
+        "install the planner CLI and run its login command; see docs/deployment.md",
     ),
     Check(
         "worker_endpoint",

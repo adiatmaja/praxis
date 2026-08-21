@@ -11,7 +11,39 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Any
 
+from orchestrator.core.clarification_states import RESUMABLE_CLARIFICATION_STATES
 from orchestrator.core.status_vocab import GATED_STATUSES
+from orchestrator.models.schemas import TaskStatus
+
+
+def task_awaits_an_answer(row: dict[str, Any]) -> bool:
+    """True when a task is blocked on a question only a human can answer.
+
+    A THIRD gate, and the one that had no surface at all. The worker asked
+    something, the brain either declined to answer it or answered below the
+    project's confidence threshold, and the task now sits at
+    NEEDS_CLARIFICATION until somebody calls ``POST /tasks/{id}/clarify``.
+    ``GATED_STATUSES`` covers only the merge gate, so none of the three
+    surfaces that report parked work listed these: the product stopped and
+    waited for a person without telling any person.
+
+    ``RESUMABLE_CLARIFICATION_STATES`` is the frozen set of POST-answer states
+    (``answered_by_brain`` and ``resolved``). Anything else is still waiting,
+    including a row carrying no state at all: an unrecorded state must never
+    read as an answer nobody gave, because that reading is the one that leaves
+    the task sitting there.
+
+    Args:
+        row: A task row.
+
+    Returns:
+        True for a NEEDS_CLARIFICATION task whose question is unanswered.
+    """
+    if str(row.get("status")) != TaskStatus.NEEDS_CLARIFICATION.value:
+        return False
+    return str(row.get("clarification_state") or "") not in (
+        RESUMABLE_CLARIFICATION_STATES
+    )
 
 
 def _age_hours(updated_at: str | None) -> float:
@@ -156,17 +188,104 @@ def summarize_pending(
         reverse=True,
     )
 
+    # Blocked questions, on the same terms as proposals: their own key and
+    # their own count, and NOT folded into `count`, which `digest_line`
+    # renders as a number of PRs. A blocked task has no PR and often no
+    # branch worth naming; what it has is a question and a task id.
+    blocked = [r for r in rows if task_awaits_an_answer(r)]
+    clarifications = sorted(
+        (
+            {
+                "task_id": r.get("id"),
+                "title": r.get("title"),
+                "question": r.get("clarification_question") or "",
+                "age_hours": _age_hours(r.get("updated_at")),
+            }
+            for r in blocked
+        ),
+        key=_age,
+        reverse=True,
+    )
+
     ages = [entry["age_hours"] for entry in (*tasks, *plans)]
     return {
         "count": len(tasks) + len(plans),
         "task_count": len(tasks),
         "plan_count": len(plans),
         "proposal_count": len(proposals),
+        "clarification_count": len(clarifications),
         "oldest_hours": max(ages) if ages else 0.0,
         "tasks": tasks,
         "plans": plans,
         "proposals": proposals,
+        "clarifications": clarifications,
     }
+
+
+async def fetch_pending_approvals(db: Any) -> dict[str, Any]:
+    """Read every row parked at either gate and summarize it.
+
+    The single reader for both surfaces that report parked work: the
+    ``/api/approvals/pending`` endpoint and the loop's rate-limited digest.
+    They used to hold their own copies of these two queries, and the copies
+    drifted: the endpoint was widened to select autonomous proposals and the
+    digest's was not, so the digest's ``proposals`` list was always empty and a
+    queue holding nothing but an improvement proposal announced nothing at all.
+    Both predicates are re-checked in ``summarize_pending``, so these queries
+    only have to avoid EXCLUDING a row that belongs to one of them.
+
+    Args:
+        db: The ``Database`` (anything with ``fetch_all``).
+
+    Returns:
+        The ``summarize_pending`` payload for the whole deployment.
+    """
+    # Two disjoint sets of tasks, so this is a union too: work parked at the
+    # merge gate, and work parked on an unanswered question. The second was
+    # selected by nothing, anywhere, which is why a task waiting on a human
+    # appeared on no surface that reports work waiting on a human.
+    task_statuses = (*GATED_STATUSES, TaskStatus.NEEDS_CLARIFICATION.value)
+    placeholders = ", ".join("?" for _ in task_statuses)
+    rows = await db.fetch_all(
+        # nosec B608 - `placeholders` is a run of `?` sized from a frozen
+        # tuple; the values are bound, never interpolated.
+        f"SELECT * FROM tasks WHERE status IN ({placeholders})",  # nosec B608
+        task_statuses,
+    )
+    # Two disjoint sets of plans land here, so this is a union rather than one
+    # predicate: plans whose integration PR is open (work finished, waiting to
+    # reach the base branch) and autonomous proposals still PENDING (work not
+    # started, waiting for a human to agree to it).
+    plan_rows = await db.fetch_all(
+        "SELECT * FROM plans WHERE "
+        "(integration_pr_url IS NOT NULL AND integration_merged_at IS NULL) "
+        "OR (source = 'autonomous' AND status = 'pending')"
+    )
+    return summarize_pending(rows, plan_rows)
+
+
+def outstanding_count(summary: dict[str, Any]) -> int:
+    """Total items a human still has to decide on, across BOTH gates.
+
+    Distinct from ``count`` on purpose. ``count`` is rendered by
+    ``digest_line`` as a number of PRs, and a proposal has neither a branch nor
+    a PR, so it is deliberately excluded there. But "is anything waiting on a
+    human" is a different question, and answering it with ``count`` is what
+    suppressed the digest entirely whenever the only outstanding item was an
+    improvement proposal.
+
+    Args:
+        summary: A ``summarize_pending`` payload.
+
+    Returns:
+        Parked tasks, plus plans awaiting integration, plus open proposals,
+        plus tasks blocked on an unanswered question.
+    """
+    return (
+        int(summary.get("count") or 0)
+        + int(summary.get("proposal_count") or 0)
+        + int(summary.get("clarification_count") or 0)
+    )
 
 
 def digest_line(summary: dict[str, Any]) -> str:

@@ -110,6 +110,45 @@ class _PlanVerifyResult:
     reason: str = ""
 
 
+def _no_op_evidence(verdict: _PlanVerifyResult, base_branch: str) -> str | None:
+    """Return the evidence that closes a leaf as a no-op, or None for "not established".
+
+    A no-op is terminal and SATISFIED: it unblocks dependents and lets the plan
+    complete with nothing committed. So it needs a POSITIVE answer, and the
+    stored reason has to say which answer it was, because
+    ``mark_no_changes`` writes this string to ``tasks.review_feedback``, where
+    the dashboard renders it and MCP returns it.
+
+    Exactly two answers qualify, and ``skipped`` alone is not one of them:
+
+    - ``passed``: the gate ran on the branch the leaf was cut from and the
+      tree there already satisfies it.
+    - ``skipped`` BECAUSE no verify command is configured: no independent
+      evidence, only the harness's clean exit. Deliberate, documented, and the
+      weakest link here; the measured alternative is worse.
+
+    The other two skips (``_SKIP_NO_CREDENTIAL_PROVIDER``, ``_SKIP_NO_TOKEN``)
+    mean a verify command IS configured and the gate could not reach the
+    repository. Both already log at WARNING because that is a broken
+    deployment, not an operator choice. Closing a leaf on one of them made two
+    false statements at once: that the leaf was satisfied, and that the
+    operator had chosen to run nothing. The reason is compared rather than the
+    status so a future skip reason cannot inherit the carve-out by default.
+
+    Args:
+        verdict: The gate result for the branch the leaf was cut from.
+        base_branch: That branch, named in the evidence string.
+
+    Returns:
+        The evidence to store, or None when the no-op was not established.
+    """
+    if verdict.status == "passed":
+        return f"verify passed on {base_branch}"
+    if verdict.status == "skipped" and verdict.reason == _SKIP_NO_VERIFY_CMD:
+        return f"{verdict.reason}; harness exited clean on {base_branch}"
+    return None
+
+
 def _verify_outcome(
     passed: bool, output: str, plan_branch: str, verify_cmd: str
 ) -> _PlanVerifyResult:
@@ -205,6 +244,47 @@ class ReviewMixin:
                     "feedback": feedback,
                 }
             )
+
+    async def _decide_empty_pr_diff(
+        self,
+        task: dict[str, Any],
+        project: dict[str, Any],
+        plan: dict[str, Any] | None,
+        log: Any,
+    ) -> None:
+        """Decide what a pull request with no diff means, without asking the brain.
+
+        The same fact-versus-verdict split the worker-reported ``no_changes``
+        callback goes through, applied at the other end of the loop: the
+        absence of a change is a fact, and what it MEANS is governance. So the
+        evidence is the same evidence, the project's own verify command run
+        against the branch the leaf was cut from, via
+        ``resolve_no_change_run``.
+
+        A review is NOT that evidence. An empty diff sent to the reviewer is a
+        question about nothing, and a model that answers "pass" to it parked
+        the task at the merge gate with a PR that would merge no change.
+
+        Args:
+            task: The task row being reviewed.
+            project: Its project row.
+            plan: The plan row, for the branch the leaf was cut from.
+            log: The task-scoped logger ``review_task`` already built.
+        """
+        task_id = task["id"]
+        log.warning(
+            "review: pull request %s carries no diff; deciding it as a fact "
+            "rather than sending an empty change to the reviewer",
+            task["pr_url"],
+        )
+        if await self.resolve_no_change_run(task_id, project, plan):
+            return
+        feedback = (
+            f"Review could not start: the pull request {task['pr_url']} "
+            "carries no diff, and the branch it was cut from did not verify "
+            "clean, so the work is genuinely missing."
+        )
+        await self._fail_and_maybe_retry(task_id, task, project, feedback)
 
     async def review_task(self, task_id: str, project: dict[str, Any]) -> None:
         """Review a task PR with Opus and merge or retry accordingly."""
@@ -322,6 +402,20 @@ class ReviewMixin:
             diff = ""
             if review is None:
                 diff = await backend.get_diff(ref)
+                if not diff.strip():
+                    # An empty diff is a FACT, not a verdict, and the fact is
+                    # about the PULL REQUEST: it carries no commits. Both
+                    # backends fetch it through a checked command, so a
+                    # non-zero exit raises and "" can only mean the command
+                    # succeeded and printed nothing.
+                    #
+                    # Handing that to the brain as "the change" is how a
+                    # review of nothing became a PASS parked at the merge gate
+                    # with "parked at merge gate awaiting approval". The
+                    # governance for an empty diff already exists one layer
+                    # down and is reused rather than re-decided here.
+                    await self._decide_empty_pr_diff(task, project, plan, log)
+                    return
                 review = await self._opus.review_diff(
                     diff,
                     task["description"] or task["title"],
@@ -399,7 +493,14 @@ class ReviewMixin:
                     "Review added dependencies and secrets before merging. "
                     + (feedback or "")
                 )
-                await _record("pass", None)
+                # Not a pass. The reviewer said pass, this gate blocked the
+                # merge anyway, and recording "pass" taught the calibration
+                # loop that a diff nothing would merge was a clean success by
+                # this model. Recording "fail" would be the opposite lie, so
+                # the claim is withdrawn instead: ``fetch_recent_outcomes``
+                # counts only 'pass' and qualifying 'fail' rows, so a distinct
+                # value keeps the row auditable without voting either way.
+                await _record("blocked", None)
                 await self._tq.mark_passed(task_id, feedback)
                 self._bus.publish(
                     {
@@ -866,12 +967,18 @@ class ReviewMixin:
         real failure and falls through to the normal retry path, so this can
         never green a leaf whose work is actually missing.
 
-        A ``skipped`` gate (no ``verify_cmd`` configured) also closes the leaf.
-        That is deliberate and it is the weakest link here: with no command
-        there is no independent evidence, only the harness's clean exit. The
-        alternative is worse and was measured, not guessed: retrying to the
-        same answer and failing a plan whose work is already done. An install
-        that wants the evidence configures ``verify_cmd``.
+        A gate skipped BECAUSE no ``verify_cmd`` is configured also closes the
+        leaf. That is deliberate and it is the weakest link here: with no
+        command there is no independent evidence, only the harness's clean
+        exit. The alternative is worse and was measured, not guessed: retrying
+        to the same answer and failing a plan whose work is already done. An
+        install that wants the evidence configures ``verify_cmd``.
+
+        That carve-out belongs to the REASON, not to ``skipped``: a gate that
+        skipped because it could not reach the repository establishes nothing
+        at all. ``_no_op_evidence`` is where the distinction lives, and it is
+        also what keeps the stored reason from claiming a check that was never
+        chosen and never ran.
 
         Args:
             task_id: The task whose run produced no diff.
@@ -899,21 +1006,18 @@ class ReviewMixin:
 
         verify_cmd = None if verify_gate_disabled() else project.get("verify_cmd")
         verdict = await self._verify_plan_branch(repo_url, base_branch, verify_cmd)
-        if verdict.status not in ("passed", "skipped"):
+        evidence = _no_op_evidence(verdict, base_branch)
+        if evidence is None:
             logger.warning(
-                "Task %s reported no changes, but %s does not verify clean "
-                "(%s); treating as a failure",
+                "Task %s reported no changes, but %s did not establish it "
+                "(status=%s, reason=%s); treating as a failure",
                 task_id,
                 base_branch,
                 verdict.status,
+                verdict.reason or "-",
             )
             return False
 
-        evidence = (
-            f"verify passed on {base_branch}"
-            if verdict.status == "passed"
-            else f"no verify_cmd configured; harness exited clean on {base_branch}"
-        )
         reason = (
             "No changes needed: the repository already satisfied this task "
             f"({evidence})."
@@ -925,6 +1029,10 @@ class ReviewMixin:
                 "task_id": task_id,
                 "base_branch": base_branch,
                 "verify_status": verdict.status,
+                # A bare "skipped" cannot say WHICH skip, and the two the gate
+                # produces mean opposite things about how much this no-op is
+                # worth trusting.
+                "verify_reason": verdict.reason,
                 "reason": reason,
             }
         )

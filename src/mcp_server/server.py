@@ -738,7 +738,8 @@ async def execute_plan(
     """Execute a full, externally-authored implementation plan on a repo.
 
     Praxis accepts the plan and returns immediately with {plan_id, project_id,
-    dashboard_url, status="decomposing"}. Decomposition (a multi-minute brain
+    dashboard_url, status="pending"}: the status the plan row actually holds,
+    and one poll_plan will report back. Decomposition (a multi-minute brain
     call) then runs asynchronously in the orchestration loop; the task graph
     and per-task PRs appear shortly after. Watch the dashboard_url, or poll the
     plan's tasks as they are created. Pass the FULL plan text. Use this (not

@@ -51,6 +51,33 @@ services:
       # enters the container on its own, so without this mount the check can
       # only ever answer "could not read .env" and the whole feature is inert.
       - ./.env:/app/.env:ro
+    # Container-only variables, from a file git never sees.
+    #
+    # This exists for one job the `environment:` block below cannot do without
+    # an edit to THIS file: opting out of a host Claude Code hook. ~/.claude is
+    # mounted above, so the host's hooks run inside this container, and a hook
+    # whose detector assumes the host OS (a VPN killswitch is the one that
+    # keeps happening) blocks every brain call, tunnel up or down. The opt-out
+    # variable's NAME is different for every hook, so it cannot be enumerated
+    # here, and the remedy used to be "add a literal to docker-compose.yml",
+    # which leaves a permanent diff in a tracked file in a fresh clone. That is
+    # a remedy nobody can follow twice.
+    #
+    # `env_file` passes EVERY key in the named file into the container, unlike
+    # `.env`, which compose reads on the host for substitution only. It is
+    # gitignored, and `required: false` means an install without one starts
+    # normally. Settings uses extra="ignore", so a variable here that is not a
+    # settings field is carried to the process and ignored by pydantic, which
+    # is exactly what a hook opt-out needs.
+    #
+    # `required:` needs Docker Compose 2.24.0 or later (checked against the
+    # Compose specification, 2026-08-21). Below that version compose treats
+    # every entry as required and refuses to start when the file is absent,
+    # which is a loud failure rather than a silent one, and the fix is either
+    # to upgrade compose or to `touch .env.container`.
+    env_file:
+      - path: ./.env.container
+        required: false
     # Bound log rotation prevents json-file log growth from making `docker logs`
     # seek slowly or hang on Docker Desktop for Windows (unbounded json-file logs
     # accumulate metadata Docker must scan on every `docker logs` call).
@@ -67,12 +94,20 @@ services:
       - LM_STUDIO_URL=${LM_STUDIO_URL:-http://host.docker.internal:1234}
       # The worker preset `praxis init` records in .env. Listed BARE (compose's
       # pass-through form), never as `${VAR}` or `${VAR:-default}`. Settings
-      # precedence is env > YAML > field default, and verified against Docker
-      # Compose v5.3.0: an unset `- VAR=${VAR}` resolves to `VAR: ""`, which is
-      # a set-but-empty variable that suppresses the mounted config/praxis.yaml
-      # for good; the bare form resolves to `VAR: null` and is simply not set,
-      # so an operator who chose no preset keeps the YAML in charge. The bare
-      # form still reads the project .env, which is where init writes.
+      # precedence is environment > .env > the settings YAML > field default,
+      # and verified against Docker Compose v5.3.0: an unset `- VAR=${VAR}`
+      # resolves to `VAR: ""`, which is a set-but-empty variable that suppresses
+      # the mounted YAML for good; the bare form resolves to `VAR: null` and is
+      # simply not set, so an operator who chose no preset keeps the YAML in
+      # charge. The bare form still reads the project .env, which is where init
+      # writes.
+      #
+      # The `.env` layer in that order is new. Until it landed, a key present in
+      # BOTH .env and the settings YAML silently took the YAML's value, because
+      # the YAML is injected as an init kwarg and those outrank pydantic's
+      # dotenv source. These two keys were the case that bit: forwarded here
+      # they won inside a container and lost under a bare uvicorn, from the same
+      # file, with nothing reporting the difference.
       - DEFAULT_WORKER_HARNESS
       - DEFAULT_WORKER_MODEL
       - HOST=0.0.0.0
@@ -85,23 +120,20 @@ services:
       # default user) unless it believes it runs in a sandbox. Brainstorm/plan/
       # review all pass that flag, so without this they exit 1 and silently fail.
       - IS_SANDBOX=1
-      # HOOK OPT-OUTS GO HERE, and only here.
+      # HOOK OPT-OUTS DO NOT GO HERE any more. Put them in `.env.container`,
+      # the gitignored `env_file` declared above:
       #
-      # ~/.claude is mounted above, so the host's Claude Code hooks run INSIDE
-      # this container. A hook whose detector assumes the host OS (a VPN
-      # killswitch is the one that keeps happening) then blocks every brain
-      # call, tunnel up or down, and `praxis doctor` reports planner_cli RED
-      # with the hook's own message.
+      #   echo CLAUDE_VPN_KILLSWITCH_OFF=1 >> .env.container
+      #   docker compose up -d
       #
-      # Add the hook's opt-out as a LITERAL, uncommented, then `docker compose
-      # up -d` (a `restart` does NOT re-read this file's substitutions):
+      # They must NOT go in `.env`. Compose reads that file on the host to
+      # substitute variables and passes nothing from it into the container on
+      # its own, so an opt-out there never reaches the process and the hook
+      # keeps firing, which reads as "the documented fix does not work".
       #
-      #   - CLAUDE_VPN_KILLSWITCH_OFF=1
-      #
-      # It must NOT go in .env. Settings uses extra="ignore", so an
-      # unrecognised key there is accepted and silently dropped; the variable
-      # never reaches the container and the hook keeps firing, which reads as
-      # "the documented fix does not work". See docs/gotchas.md.
+      # Editing this block still works and is still read first, but it dirties
+      # a TRACKED file, so a fresh clone that follows the doctor's remedy ends
+      # up with a permanent local diff. See docs/gotchas.md.
       # Agents reach the orchestrator back via the HOST-side port, so this must
       # track ${PORT} (not the in-container 8080). Derived here so the two can
       # never drift apart and silently 404 every agent callback.
@@ -155,6 +187,14 @@ services:
       - ./docker/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data
       - caddy_config:/config
+    environment:
+      # The Caddyfile is `{$DOMAIN:localhost} { ... }`, and Caddy reads DOMAIN
+      # from its OWN environment, not from compose's substitution context. With
+      # no environment block here the documented
+      # `DOMAIN=praxis.example.com docker compose --profile hosted up` produced
+      # a site bound to localhost, so auto-HTTPS could never be issued and the
+      # only symptom was a certificate that never arrived.
+      - DOMAIN=${DOMAIN:-localhost}
     depends_on:
       - orchestrator
     profiles:

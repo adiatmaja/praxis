@@ -16,6 +16,11 @@ from fastapi import APIRouter, Depends, Request
 from orchestrator.api.auth import verify_token
 from orchestrator.core.bench_mode import bench_mode, verify_gate_disabled
 from orchestrator.core.build_info import build_stamp
+from orchestrator.core.doctor_probes import (
+    PROVIDER_KIND_CLI,
+    PROVIDER_KIND_LOCAL,
+    PROVIDER_KIND_UNKNOWN,
+)
 from orchestrator.core.llm_router import (
     LOGIN_HINTS,
     UnknownProviderError,
@@ -69,21 +74,41 @@ class PlannerTarget:
     effort: str | None = None
 
 
-def planner_provider_is_cli(provider: str) -> bool:
-    """True when this provider is driven by a CLI binary on PATH.
+#: Providers ``LLMRouter`` executes WITHOUT a CLI binary.  Mirrors the
+#: ``if provider == "local"`` branch in ``LLMRouter._execute_one``, which is
+#: the only place a provider bypasses ``build_argv``; a second one added there
+#: has to be added here too, or it would be classified as unrunnable.
+_ENDPOINT_PROVIDERS = frozenset({"local"})
+
+
+def planner_provider_kind(provider: str) -> str:
+    """Classify a configured provider as ``cli``, ``local`` or ``unknown``.
 
     Decided by asking ``build_argv``, the same builder ``LLMRouter`` uses, so
     the doctor cannot hold an opinion about what a provider IS that disagrees
-    with what the loop will actually run.  ``local`` is the case that matters:
-    it is a working planner provider with no binary anywhere, so probing PATH
-    for it renders "planner CLI not found", an invented red about a correctly
-    configured install.
+    with what the loop will actually run.
+
+    Three outcomes, not two.  ``local`` is a working planner provider with no
+    binary anywhere, so probing PATH for it renders "planner CLI not found", an
+    invented red about a correctly configured install.  But ``build_argv``
+    rejects an UNRECOGNISED provider the same way it rejects ``local``, and
+    provider names are unvalidated free text: read as one boolean, a typo'd
+    provider rendered the same benign "not a CLI provider, nothing to fix"
+    amber while every plan would raise ``UnknownProviderError``.
+
+    Args:
+        provider: The provider name the ``plan_spec`` call site resolved to.
+
+    Returns:
+        One of ``"cli"``, ``"local"``, ``"unknown"``.
     """
+    if provider in _ENDPOINT_PROVIDERS:
+        return PROVIDER_KIND_LOCAL
     try:
         build_argv(provider, "", None)
     except UnknownProviderError:
-        return False
-    return True
+        return PROVIDER_KIND_UNKNOWN
+    return PROVIDER_KIND_CLI
 
 
 @dataclass(frozen=True)
@@ -92,8 +117,9 @@ class RoundTripResult:
 
     ``ok`` is tri-state on purpose.  ``None`` means no round trip could be made
     at all, which is NOT a failure: the provider may have none defined, or the
-    subscription may be throttled.  Either way the pre-round-trip verdict must
-    stand rather than a red being invented.
+    subscription may be throttled.  Either way no red may be invented from it,
+    and no green either: ``probe_planner_cli`` renders it amber, because
+    "nothing was verified" is not the same claim as "it answers".
     """
 
     ok: bool | None = None
@@ -121,7 +147,14 @@ _ROUNDTRIP_TIMEOUT = 20.0
 # Commands used to check if a provider CLI is available and authenticated.
 # Each entry: (version_cmd, auth_cmd | None)
 # version_cmd exit 0 → cli_available; auth_cmd exit 0 → authenticated.
-# None auth_cmd means: authenticated iff cli_available (best-effort).
+#
+# A None auth_cmd means this provider has NO way to check its login state
+# without spending a real call, so `authenticated` is derived from
+# `cli_available` and means only "the binary is on PATH". That derivation
+# travels with the result as `auth_measured=False`: a caller that renders it as
+# "authenticated" is asserting something nothing measured, and for `claude`
+# that turned "present but logged out" into a red accusing a blocking hook
+# while suppressing the login hint that would have fixed it.
 _PROVIDER_CMDS: dict[str, tuple[list[str], list[str] | None]] = {
     "claude": (["claude", "--version"], None),
     "codex": (["codex", "--version"], ["codex", "login", "status"]),
@@ -138,7 +171,10 @@ async def _probe_provider(name: str) -> dict[str, Any]:
         name: Provider name ("claude", "codex", "agy").
 
     Returns:
-        Dict with keys: name, cli_available, authenticated, login_hint.
+        Dict with keys: name, cli_available, authenticated, auth_measured,
+        login_hint.  ``auth_measured`` is False when this provider has no auth
+        command, in which case ``authenticated`` is derived from
+        ``cli_available`` and establishes nothing about the session.
     """
     now = time.monotonic()
     cached = _provider_probe_cache.get(name)
@@ -169,10 +205,13 @@ async def _probe_provider(name: str) -> dict[str, Any]:
             return False
 
     cli_available = await _run(version_cmd) if version_cmd else False
+    auth_measured = cli_available and auth_cmd is not None
     if not cli_available:
         authenticated = False
     elif auth_cmd is None:
-        # Best-effort: assume authenticated when CLI is present
+        # Derived, not measured: this provider has no auth command, so the only
+        # fact here is that the binary answered --version.  Reported as such
+        # via auth_measured below.
         authenticated = True
     else:
         authenticated = await _run(auth_cmd)
@@ -181,6 +220,7 @@ async def _probe_provider(name: str) -> dict[str, Any]:
         "name": name,
         "cli_available": cli_available,
         "authenticated": authenticated,
+        "auth_measured": auth_measured,
         "login_hint": login_hint,
     }
     _provider_probe_cache[name] = (now, result)
@@ -299,8 +339,10 @@ async def probe_provider_roundtrip(target: str | PlannerTarget) -> RoundTripResu
         ``agy``'s ``--print`` renders only to an interactive TTY, so a
         non-interactive probe reads its empty stdout as a refusal and paints a
         red on a provider that is merely uncapturable here.  Both stay "not
-        probed", so the install-plus-auth verdict stands rather than a verdict
-        nobody obtained.
+        probed", which ``probe_planner_cli`` reports as AMBER: an ``agy``
+        planner reaches that branch with ``authenticated`` derived from ``agy
+        help`` exiting 0, while the harness registry says agy needs an
+        interactive ``agy login``, so green there was a pass nothing earned.
     """
     spec = PlannerTarget(target) if isinstance(target, str) else target
     if spec.provider != "claude":

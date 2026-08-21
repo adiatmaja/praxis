@@ -43,10 +43,9 @@ def test_any_red_exits_non_zero():
     assert render(payload) == 1
 
 
-@pytest.mark.unit
-def test_amber_alone_exits_zero():
-    """Local mode has no GitHub credential; that is not a failure."""
-    payload = {
+def _amber_payload(hint: str = "") -> dict:
+    """One amber row and nothing else."""
+    return {
         "status": "amber",
         "checks": [
             {
@@ -54,11 +53,72 @@ def test_amber_alone_exits_zero():
                 "label": "Git credential",
                 "status": "amber",
                 "detail": "local mode",
+                "hint": hint,
+            }
+        ],
+    }
+
+
+@pytest.mark.unit
+def test_amber_alone_exits_zero():
+    """Local mode has no GitHub credential; that is not a failure.
+
+    The exit code is deliberately unchanged by the summary fix below: amber
+    means "nothing here is known to be broken", and `praxis init` ends by
+    running this, so failing on it would make every unprobeable planner a hard
+    install error.
+    """
+    assert render(_amber_payload()) == 0
+
+
+@pytest.mark.unit
+def test_amber_is_not_summarized_as_all_checks_passed(capsys):
+    """The claim, not the exit code, was the false one.
+
+    `render` partitioned on RED alone, so a table whose rows read "not
+    checked: the Docker daemon did not answer" and "no test prompt was made"
+    ended with "All checks passed." This is the last line `praxis init`
+    prints, which is where a newcomer has least reason to doubt it.
+    """
+    render(_amber_payload())
+    out = " ".join(capsys.readouterr().out.split())
+
+    assert "All checks passed" not in out
+    assert "could not be verified" in out
+
+
+@pytest.mark.unit
+def test_an_amber_hint_is_printed(capsys):
+    """An amber's hint is written to be read, and only reds got printed.
+
+    `probe_planner_cli` composes hints like "nothing to fix if that is
+    deliberate" precisely for these rows, so the rows that most needed
+    explaining were the silent ones.
+    """
+    render(_amber_payload(hint="nothing to fix if that is deliberate"))
+    out = " ".join(capsys.readouterr().out.split())
+
+    assert "nothing to fix if that is deliberate" in out
+
+
+@pytest.mark.unit
+def test_a_wholly_green_table_still_says_so(capsys):
+    """The other branch, so the fix cannot swallow the honest all-clear."""
+    payload = {
+        "status": "green",
+        "checks": [
+            {
+                "check_id": "docker_daemon",
+                "label": "Docker",
+                "status": "green",
+                "detail": "reachable",
                 "hint": "",
             }
         ],
     }
+
     assert render(payload) == 0
+    assert "All checks passed" in capsys.readouterr().out
 
 
 @pytest.mark.unit

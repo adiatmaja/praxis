@@ -55,10 +55,21 @@ class ImprovementMixin:
         reader = getattr(self, "_spec_reader", None)
         repo_url = project.get("repo_url")
         if reader is None or not repo_url:
+            # Name the cause that actually applied. Stating one of two
+            # unconditionally sends the operator to the wrong knob: a project
+            # with a working reader and a blank repo_url was told its reader
+            # was missing. When both are missing the reader is the one to fix
+            # first, since a repo_url is unreadable without one.
+            cause = (
+                "no repository reader is configured"
+                if reader is None
+                else "the project has no repo_url"
+            )
             logger.info(
-                "Improvement analysis skipped for project %s: no repository "
-                "reader is configured, so there is nothing to reason about",
+                "Improvement analysis skipped for project %s: %s, so there is "
+                "nothing to reason about",
                 project.get("id"),
+                cause,
             )
             return None
         try:

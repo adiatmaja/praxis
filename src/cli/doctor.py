@@ -20,7 +20,19 @@ _SYMBOL = {
 
 
 def render(payload: dict) -> int:
-    """Print the doctor table and return the intended process exit code."""
+    """Print the doctor table and return the intended process exit code.
+
+    AMBER is a real and common verdict here, not a rounding error: a planner
+    nothing round-tripped, an image nothing compared, a `.env` that could not
+    be read. This function partitioned on RED alone and then printed "All
+    checks passed", so a table full of "not checked" rows was summarized as a
+    clean bill of health. It is the last line `praxis init` prints, which puts
+    the claim exactly where a newcomer has least reason to doubt it.
+
+    The exit code is unchanged, and deliberately: amber means "nothing here is
+    known to be broken", so failing a scripted install on it would make every
+    unprobeable planner a hard error. What changes is the sentence.
+    """
     table = Table(title="praxis doctor")
     for column in ("", "Check", "Detail"):
         table.add_column(column)
@@ -33,14 +45,31 @@ def render(payload: dict) -> int:
     console.print(table)
 
     reds = [c for c in payload["checks"] if c["status"] == "red"]
+    ambers = [c for c in payload["checks"] if c["status"] == "amber"]
     for check in reds:
         console.print(
             f"[red]FAIL[/red] {check.get('label') or check['check_id']}: "
             f"{check['hint']}"
         )
+    # An amber's hint is written to be read ("nothing to fix if that is
+    # deliberate", "re-run doctor once the daemon is up"), and printing it only
+    # for reds meant the rows that most needed explaining were the silent ones.
+    for check in ambers:
+        if check.get("hint"):
+            console.print(
+                f"[yellow]NOTE[/yellow] {check.get('label') or check['check_id']}: "
+                f"{check['hint']}"
+            )
     if reds:
         console.print(f"\n[red]{len(reds)} check(s) failed.[/red]")
         return 1
+    if ambers:
+        console.print(
+            f"\n[yellow]No failures, but {len(ambers)} check(s) could not be "
+            "verified.[/yellow] Nothing above is known to be broken, and "
+            "nothing above confirms it works either."
+        )
+        return 0
     console.print("\n[green]All checks passed.[/green]")
     return 0
 

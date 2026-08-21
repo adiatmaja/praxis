@@ -17,6 +17,9 @@
     let sidePanelLogSource = null; // EventSource for side panel live log
     let liveLogMode = "clean";     // "clean" | "raw" for side panel
     let fullLogsMode = "clean";    // "clean" | "raw" for full-logs view
+    // How many completed plans get a collapsed lane on the dashboard. The
+    // remainder is REPORTED rather than dropped: see renderDashboard.
+    const COMPLETED_LANE_LIMIT = 5;
     let expandedCompletedPlans = new Set();
     let expandedSpecs = new Set();
     let dashboardSseSource = null;
@@ -25,10 +28,21 @@
     let effectiveLmStudioUrl = null;  // global effective LM Studio URL (from /api/status)
     let selectedLifecycle = null;
     let lifecycleSegment = "spec";
-    // Work parked at the human merge gate, across all projects. Refreshed once
-    // on load and again whenever the rate-limited approvals_digest SSE event
-    // fires; the header badge must be correct before the first event arrives.
-    let pendingApprovals = { count: 0, oldest_hours: 0, tasks: [], plans: [] };
+    // Work parked at the human merge gate, across all projects, PLUS the
+    // autonomous improvement proposals parked at the earlier approve/reject
+    // gate. Refreshed once on load and again whenever the rate-limited
+    // approvals_digest SSE event fires; the header badge must be correct
+    // before the first event arrives.
+    //
+    // `count` is the API's merge-gate total and deliberately EXCLUDES
+    // proposals, because it feeds a digest line that calls its items "PRs"
+    // and a proposal has neither a branch nor a PR. `proposals` therefore
+    // has to be read separately everywhere, or a live decision is invisible;
+    // declaring it here means no consumer ever reads `undefined`.
+    let pendingApprovals = {
+      count: 0, proposal_count: 0, oldest_hours: 0,
+      tasks: [], plans: [], proposals: []
+    };
 
     initTheme();
 
@@ -1106,8 +1120,13 @@
       const scoped = visiblePlans();
       const activePlans = scoped.filter(plan => plan.status === "active");
       const pendingPlans = scoped.filter(plan => plan.status === "pending");
-      const completedPlans = scoped.filter(plan => plan.status === "completed").slice(0, 5);
-      const plansToLoad = [...activePlans, ...pendingPlans, ...completedPlans];
+      // PlanStatus has five members. Leaving failed and rejected out of the
+      // fetch is what made a dead plan invisible on the one surface whose job
+      // is showing what needs attention: with no tasks fetched, the failed
+      // task count in renderDashboard was necessarily zero.
+      const stoppedPlans = scoped.filter(plan => plan.status === "failed" || plan.status === "rejected");
+      const completedPlans = scoped.filter(plan => plan.status === "completed").slice(0, COMPLETED_LANE_LIMIT);
+      const plansToLoad = [...activePlans, ...pendingPlans, ...stoppedPlans, ...completedPlans];
       const currentPlanIds = new Set(plansToLoad.map(plan => String(plan.id)));
       for (const planId of Object.keys(dashboardTasks)) {
         if (!currentPlanIds.has(String(planId))) delete dashboardTasks[planId];
@@ -1140,15 +1159,29 @@
       }
       const scoped = visiblePlans();
       const activePendingPlans = scoped.filter(plan => plan.status === "active" || plan.status === "pending");
-      const completedPlans = scoped.filter(plan => plan.status === "completed").slice(0, 5);
+      // A failed or rejected plan gets a lane of its own, immediately after
+      // the live ones. It is finished, so it does not belong beside "active",
+      // but it is not completed either and folding it into the collapsed
+      // completed list would hide the one outcome someone has to act on.
+      const stoppedPlans = scoped.filter(plan => plan.status === "failed" || plan.status === "rejected");
+      const allCompleted = scoped.filter(plan => plan.status === "completed");
+      const completedPlans = allCompleted.slice(0, COMPLETED_LANE_LIMIT);
       const attentionCount = scoped.filter(plan => plan.status === "pending").length +
+        scoped.filter(plan => plan.status === "failed").length +
         Object.values(dashboardTasks).flat().filter(task => task.status === "failed").length;
-      const lanesHtml = activePendingPlans.map(renderSwimLane).join("");
+      const liveLanes = [...activePendingPlans, ...stoppedPlans];
+      const lanesHtml = liveLanes.map(renderSwimLane).join("");
       const completedHtml = completedPlans.length ? completedPlans.map(renderCompletedLane).join("") : "";
-      const bodyHtml = activePendingPlans.length ?
-        lanesHtml + completedHtml :
+      // The cap is kept, but never silently: a truncated list that says
+      // nothing reads as the whole list.
+      const hiddenCompleted = allCompleted.length - completedPlans.length;
+      const truncationHtml = hiddenCompleted > 0 ?
+        '<div class="lane-truncation">Showing the ' + completedPlans.length + ' most recent of ' +
+        allCompleted.length + ' completed plans. ' + hiddenCompleted + ' more are in the Plans view.</div>' : "";
+      const bodyHtml = liveLanes.length ?
+        lanesHtml + completedHtml + truncationHtml :
         '<div class="dashboard-idle"><div>No active plans right now</div><div style="font-size:12px;margin-top:8px;">Submit a spec to start orchestration.</div></div>' +
-        completedHtml;
+        completedHtml + truncationHtml;
       const container = document.getElementById("view-container");
       container.innerHTML =
         '<div class="dashboard-shell">' +
@@ -1188,6 +1221,21 @@
       return name || ("Plan " + String(plan.id || "").slice(0, 8));
     }
 
+    // What an empty lane means depends on WHY it is empty, and the default
+    // ("task cards will appear shortly") is a promise the loop only keeps for
+    // a plan it is actually working on.
+    function emptyLaneMessage(plan) {
+      // An autonomous proposal has no tasks because nobody has approved it,
+      // and none will ever appear until somebody does. Telling the operator
+      // to wait points them away from the only thing that unblocks it.
+      if (plan.status === "pending" && plan.source === "autonomous") {
+        return "Awaiting your approval - no tasks are created until this proposal is approved.";
+      }
+      if (plan.status === "failed") return "This plan failed before any task was recorded.";
+      if (plan.status === "rejected") return "This plan was rejected, so no tasks were created.";
+      return "Planning in progress - task cards will appear shortly.";
+    }
+
     function renderSwimLane(plan) {
       const tasks = (dashboardTasks[plan.id] || []).slice();
       // no_changes sits beside merged: the leaf is done and its work is in
@@ -1202,7 +1250,7 @@
         '<button class="btn btn-compact btn-primary" type="button" onclick="dashboardApprove(\'' + esc(plan.id) + '\')">Approve</button>' +
         '<button class="btn btn-compact btn-danger" type="button" onclick="dashboardReject(\'' + esc(plan.id) + '\')">Reject</button>' : "";
       const taskCards = tasks.length ? tasks.map(renderTaskCard).join("") :
-        '<div class="card-meta" style="padding:2px 0;">Planning in progress - task cards will appear shortly.</div>';
+        '<div class="card-meta" style="padding:2px 0;">' + emptyLaneMessage(plan) + '</div>';
       return '<section class="swim-lane">' +
         '<div class="lane-header">' +
           badge(plan.status) +
@@ -1663,8 +1711,16 @@
           return;
         }
         if (!data) return;
-        pendingApprovals = data;
+        // MERGE, never overwrite. The digest is assembled from a narrower
+        // query than GET /api/approvals/pending, so a list it omits means
+        // "not asked for", not "none left": assigning the event wholesale
+        // deleted the autonomous proposals the poll had already fetched, and
+        // the header went quiet over a live decision.
+        pendingApprovals = mergeApprovals(pendingApprovals, data);
         renderApprovalsBadge();
+        // The event is a hint; the endpoint is the truth. Re-fetch so the
+        // merged view cannot keep a proposal that has since been decided.
+        void pollPendingApprovals();
       });
     }
 
@@ -1759,13 +1815,68 @@
       }
     }
 
+    // Normalize any approvals payload (REST body or SSE event) into the one
+    // shape every consumer reads. A list that is absent becomes an empty
+    // array here and ONLY here, so no renderer has to guess.
+    function normalizeApprovals(raw) {
+      const src = raw || {};
+      const tasks = Array.isArray(src.tasks) ? src.tasks : [];
+      const plans = Array.isArray(src.plans) ? src.plans : [];
+      const proposals = Array.isArray(src.proposals) ? src.proposals : [];
+      // A THIRD gate, on the same terms as proposals: a task at
+      // NEEDS_CLARIFICATION whose question nobody has answered. It has no PR
+      // and no branch, so the API keeps it out of `count` too, and reading
+      // `count` alone leaves the header idle while the product waits for a
+      // person it never told.
+      const clarifications = Array.isArray(src.clarifications) ? src.clarifications : [];
+      return {
+        count: Number(src.count) || tasks.length + plans.length,
+        proposal_count: Number(src.proposal_count) || proposals.length,
+        clarification_count: Number(src.clarification_count) || clarifications.length,
+        oldest_hours: Number(src.oldest_hours) || 0,
+        tasks: tasks,
+        plans: plans,
+        proposals: proposals,
+        clarifications: clarifications
+      };
+    }
+
+    // Fold a digest event into the object the poll fetched.
+    //
+    // The merge-gate fields are taken from the event, which is what makes a
+    // digest useful. `proposals` is different: the digest is built from a
+    // plans query filtered on integration_pr_url, which no proposal can ever
+    // satisfy, so an empty proposals list in an event carries no information.
+    // Keeping the previous list is therefore the correct reading whether or
+    // not the event ever starts carrying proposals: a stale entry is undone
+    // by the very next poll, a deleted one is invisible until someone
+    // reloads the page.
+    function mergeApprovals(previous, incoming) {
+      const before = normalizeApprovals(previous);
+      const merged = normalizeApprovals(incoming);
+      if (!merged.proposals.length) {
+        merged.proposals = before.proposals;
+        merged.proposal_count = before.proposal_count;
+      }
+      return merged;
+    }
+
+    // Everything a human still has to decide, across BOTH gates: work parked
+    // at the merge gate (`count`) and autonomous proposals parked before any
+    // work starts. The API keeps them apart on purpose; the badge and the
+    // panel must show the same total as each other, and this is it.
+    function totalPendingApprovals() {
+      const src = normalizeApprovals(pendingApprovals);
+      return src.count + src.proposals.length + src.clarifications.length;
+    }
+
     // Fetch the merge-gate approvals summary and refresh the header badge.
     // Called once on load (so the badge is correct before any SSE event) and
     // again on each approvals_digest event (rate-limited to every few hours).
     async function pollPendingApprovals() {
       if (!token) return;
       try {
-        pendingApprovals = await api("GET", "/api/approvals/pending");
+        pendingApprovals = normalizeApprovals(await api("GET", "/api/approvals/pending"));
       } catch (error) {
         // The badge is an add-on; a failed lookup just leaves it stale.
         return;
@@ -1777,7 +1888,16 @@
       const actions = document.querySelector(".topbar-actions");
       if (!actions) return;
       let el = document.getElementById("approvals-badge");
-      if (!pendingApprovals.count) {
+      const src = normalizeApprovals(pendingApprovals);
+      const mergeGate = src.count;
+      const proposalCount = src.proposals.length;
+      // Same helper the panel's header uses, so the number on the badge and
+      // the number of rows the panel lists cannot drift apart.
+      const total = totalPendingApprovals();
+      // Both gates, or the header reads idle while an autonomous proposal
+      // waits. Testing `count` alone hid every proposal-only state, which is
+      // exactly the state the improvement loop leaves behind.
+      if (!total) {
         if (el) el.remove();
         return;
       }
@@ -1789,10 +1909,16 @@
         el.onclick = showPendingApprovals;
         actions.insertBefore(el, actions.firstChild);
       }
-      const noun = pendingApprovals.count === 1 ? "PR" : "PRs";
-      const oldest = Math.floor(pendingApprovals.oldest_hours || 0);
-      el.textContent = pendingApprovals.count + " " + noun + " awaiting approval";
-      el.title = "Oldest parked " + oldest + "h ago — click to view";
+      // No noun on the number: the two gates hold different things, and
+      // calling a proposal a "PR" is how the digest line got it wrong. The
+      // breakdown lives in the tooltip, where it can name both.
+      const proposalAges = src.proposals.map(p => Number(p.age_hours) || 0);
+      const oldest = Math.floor(Math.max(src.oldest_hours, ...proposalAges, 0));
+      const parts = [];
+      if (mergeGate) parts.push(mergeGate + (mergeGate === 1 ? " PR" : " PRs") + " at the merge gate");
+      if (proposalCount) parts.push(proposalCount + (proposalCount === 1 ? " proposal" : " proposals") + " awaiting approval");
+      el.textContent = total + " awaiting approval";
+      el.title = parts.join(" and ") + ", oldest " + oldest + "h ago — click to view";
     }
 
     // Show the parked tasks flat, across every plan (the tasks view is
@@ -1812,10 +1938,17 @@
       // every bit as unapproved as a parked task. Listing only tasks is what
       // let the dashboard agree with a CLI that was also wrong.
       const awaitingPlans = pendingApprovals.plans || [];
+      // Autonomous improvement proposals are parked on a DIFFERENT gate:
+      // approve/reject before any work starts, rather than merge after work
+      // finished. They carry no branch and no PR, which is why the API keeps
+      // them out of `count` — but they are still a decision only a human can
+      // make, and reading only `.tasks` and `.plans` printed "Nothing
+      // awaiting approval" straight over a live one.
+      const proposals = pendingApprovals.proposals || [];
       const container = document.getElementById("view-container");
       container.innerHTML =
         '<div class="master-panel">' +
-          '<div class="master-header"><div class="master-title">' + pendingApprovals.count + ' awaiting approval</div>' +
+          '<div class="master-header"><div class="master-title">' + totalPendingApprovals() + ' awaiting approval</div>' +
           '<button class="btn btn-compact" type="button" onclick="pollPendingApprovals().then(showPendingApprovals)">Refresh</button></div>' +
           '<div class="master-list" id="tasks-master-list"></div>' +
         '</div><div class="detail-panel" id="task-detail-panel"><div class="detail-empty">Select a task</div></div>';
@@ -1835,7 +1968,54 @@
           '</div></div>' + badge("passed") +
         '</div>'
       ).join("");
-      list.innerHTML = (taskRows + planRows) || '<div class="empty-list">Nothing awaiting approval</div>';
+      const mergeGateHtml = (taskRows + planRows) ?
+        '<div class="master-group-title">Merge gate</div>' + taskRows + planRows : "";
+      const proposalRows = proposals.map(proposal =>
+        '<div class="master-row">' +
+          '<div class="row-main"><div class="row-name">Improvement proposal ' + esc(String(proposal.plan_id || "").slice(0, 8)) + '</div>' +
+          '<div class="row-meta">no branch yet &middot; proposed ' + Math.floor(Number(proposal.age_hours) || 0) + 'h ago</div></div>' +
+          badge("pending") +
+          '<div class="row-actions">' +
+            '<button class="btn btn-compact btn-primary" type="button" onclick="approveProposal(' + jsArg(proposal.plan_id) + ')">Approve</button>' +
+            '<button class="btn btn-compact btn-danger" type="button" onclick="rejectProposal(' + jsArg(proposal.plan_id) + ')">Reject</button>' +
+          '</div>' +
+        '</div>'
+      ).join("");
+      const proposalsHtml = proposalRows ?
+        '<div class="master-group-title">Autonomous proposals</div>' + proposalRows : "";
+      // The third gate. A worker asked a question, the brain declined to
+      // answer it or answered below the project's confidence threshold, and
+      // the task has been parked ever since. There is no button here on
+      // purpose: the answer is free text and the CLI verb takes it
+      // (`praxis clarify <task-id> "..."`), so this surface names the
+      // question and the id rather than pretending a click can resolve it.
+      const clarifications = pendingApprovals.clarifications || [];
+      const clarificationRows = clarifications.map(item =>
+        '<div class="master-row">' +
+          '<div class="row-main"><div class="row-name">' + esc(item.title || item.task_id) + '</div>' +
+          '<div class="row-meta">' + esc(item.question || "(no question recorded)") + '</div>' +
+          '<div class="row-meta">praxis clarify ' + esc(item.task_id) + ' "your answer"</div></div>' +
+          badge("needs_clarification") +
+        '</div>'
+      ).join("");
+      const clarificationsHtml = clarificationRows ?
+        '<div class="master-group-title">Blocked on a question</div>' + clarificationRows : "";
+      list.innerHTML = (mergeGateHtml + proposalsHtml + clarificationsHtml) || '<div class="empty-list">Nothing awaiting approval</div>';
+    }
+
+    // Approve/Reject a proposal from the approvals panel. The POST lives in
+    // approvePlan/rejectPlan and stays there: these wrappers only add the
+    // refresh this view needs, so there is exactly one call site per verb.
+    async function approveProposal(planId) {
+      await approvePlan(planId);
+      await pollPendingApprovals();
+      await showPendingApprovals();
+    }
+
+    async function rejectProposal(planId) {
+      await rejectPlan(planId);
+      await pollPendingApprovals();
+      await showPendingApprovals();
     }
 
     async function pollStatus() {
@@ -2754,33 +2934,79 @@
 
     // ── Unified Lifecycle View (Spec | Plan | Run) ────────────────────────────
 
+    // An item is identified by project AND path: two projects can hold the
+    // same docs/superpowers/specs/... name, and once this view spans more
+    // than one project a bare path selects the wrong row.
+    function lifecycleKey(item) {
+      return String(item.project_id || "") + "::" + String(item.spec_path || "");
+    }
+
+    function lifecycleScope() {
+      return globalProjectFilter === "all"
+        ? projects
+        : projects.filter(project => project.id === globalProjectFilter);
+    }
+
+    function lifecycleScopeLabel() {
+      if (globalProjectFilter === "all") return "All Projects";
+      const project = projects.find(p => p.id === globalProjectFilter);
+      return project ? project.name : "1 project";
+    }
+
     async function loadLifecycle() {
-      if (!selectedProjectId) { lifecycleItems = []; renderLifecycleView(); return; }
-      lifecycleItems = await api("GET", "/api/projects/" + selectedProjectId + "/lifecycle");
-      if (!selectedLifecycle && lifecycleItems.length) selectedLifecycle = lifecycleItems[0].spec_path;
+      // Honour the global project filter, like visiblePlans() does for every
+      // other list. This used to fetch the singly-selected project id, which
+      // under "All Projects" is whatever loadProjects left behind (that is,
+      // projects[0]), so the view showed ONE arbitrary project's specs under
+      // a header counting "N Plans".
+      const scope = lifecycleScope();
+      const collected = [];
+      for (const project of scope) {
+        let items;
+        try {
+          items = await api("GET", "/api/projects/" + project.id + "/lifecycle");
+        } catch (error) {
+          // The endpoint reads the repo, so one unreachable clone must not
+          // blank every other project's specs.
+          continue;
+        }
+        for (const item of items) {
+          collected.push({ ...item, project_id: project.id, projectName: project.name });
+        }
+      }
+      lifecycleItems = collected;
+      if (!lifecycleItems.some(item => lifecycleKey(item) === selectedLifecycle)) {
+        selectedLifecycle = lifecycleItems.length ? lifecycleKey(lifecycleItems[0]) : null;
+      }
       renderLifecycleView();
+    }
+
+    function currentLifecycleItem() {
+      return lifecycleItems.find(item => lifecycleKey(item) === selectedLifecycle) || null;
     }
 
     function renderLifecycleView() {
       const c = document.getElementById("view-container");
       const rows = lifecycleItems.map(it =>
-        '<button class="master-row' + (selectedLifecycle === it.spec_path ? ' selected' : '') +
-        '" type="button" onclick="selectLifecycle(\'' + esc(it.spec_path) + '\')">' +
+        '<button class="master-row' + (selectedLifecycle === lifecycleKey(it) ? ' selected' : '') +
+        '" type="button" onclick="selectLifecycle(' + jsArg(lifecycleKey(it)) + ')">' +
         '<div class="row-main"><div class="row-name">' + esc(it.title) + '</div>' +
-        '<div class="row-meta">' + esc(it.stage) + '</div></div>' + badge(it.stage) + '</button>'
+        '<div class="row-meta">' + esc(it.projectName || "") + ' &middot; ' + esc(it.stage) + '</div></div>' +
+        badge(it.stage) + '</button>'
       ).join("") || '<div class="empty-list">No specs yet — use + Create Spec</div>';
       const detail = selectedLifecycle
-        ? renderLifecycleDetail(lifecycleItems.find(i => i.spec_path === selectedLifecycle))
+        ? renderLifecycleDetail(currentLifecycleItem())
         : '<div class="detail-empty">Select an item</div>';
       c.innerHTML =
         '<div class="master-panel"><div class="master-header">' +
-        '<div class="master-title">' + lifecycleItems.length + ' Plans</div>' +
+        '<div class="master-title">' + lifecycleItems.length + ' Plans' +
+        '<span class="master-scope">' + esc(lifecycleScopeLabel()) + '</span></div>' +
         '<button class="btn btn-compact" type="button" onclick="loadLifecycle()">Refresh</button></div>' +
         '<div class="master-list">' + rows + '</div></div>' +
         '<div class="detail-panel">' + detail + '</div>';
     }
 
-    function selectLifecycle(specPath) { selectedLifecycle = specPath; lifecycleSegment = "spec"; renderLifecycleView(); loadLifecycleDoc(); }
+    function selectLifecycle(key) { selectedLifecycle = key; lifecycleSegment = "spec"; renderLifecycleView(); loadLifecycleDoc(); }
     function setLifecycleSegment(seg) { lifecycleSegment = seg; renderLifecycleView(); loadLifecycleDoc(); }
 
     let lifecycleDocCache = {};
@@ -2797,7 +3023,7 @@
         body = run ? renderPlanDetail(run) : '<div class="detail-empty">Run not loaded — open Refresh</div>';
       } else {
         const path = lifecycleSegment === "spec" ? it.spec_path : it.plan_path;
-        const cached = lifecycleDocCache[path];
+        const cached = lifecycleDocCache[String(it.project_id) + "::" + String(path)];
         let promote = "";
         if (lifecycleSegment === "plan" && it.plan_path && !it.run_id) {
           promote = '<div class="detail-actions"><button class="btn btn-primary" type="button" onclick="promoteLifecycle(\'' + esc(it.plan_path) + '\')">Promote to Run</button></div>';
@@ -2820,34 +3046,42 @@
           cardBody + '</div>' + promote + '</div>';
       }
       return '<div class="detail-header"><div class="detail-title">' + esc(it.title) + '</div>' +
+        '<div class="detail-subtitle">' + esc(it.projectName || "") + '</div>' +
         '<div style="margin-top:8px;">' + segmented + '</div></div>' + body;
     }
 
     async function loadLifecycleDoc() {
-      const it = lifecycleItems.find(i => i.spec_path === selectedLifecycle);
+      const it = currentLifecycleItem();
       if (!it || lifecycleSegment === "run") return;
       const path = lifecycleSegment === "spec" ? it.spec_path : it.plan_path;
-      if (!path || lifecycleDocCache[path] !== undefined) { renderLifecycleView(); return; }
+      // The cache is keyed by project too: the same path in two projects is
+      // two different documents.
+      const cacheKey = String(it.project_id) + "::" + String(path);
+      if (!path || lifecycleDocCache[cacheKey] !== undefined) { renderLifecycleView(); return; }
       try {
-        const doc = await api("GET", "/api/projects/" + selectedProjectId + "/doc-raw?path=" + encodeURIComponent(path));
-        lifecycleDocCache[path] = doc.content;
-      } catch (e) { lifecycleDocCache[path] = "_Could not load " + path + "_"; }
+        const doc = await api("GET", "/api/projects/" + it.project_id + "/doc-raw?path=" + encodeURIComponent(path));
+        lifecycleDocCache[cacheKey] = doc.content;
+      } catch (e) { lifecycleDocCache[cacheKey] = "_Could not load " + path + "_"; }
       renderLifecycleView();
     }
 
     async function generatePlanForLifecycle(specPath) {
+      const it = currentLifecycleItem();
+      const projectId = it ? it.project_id : selectedProjectId;
       const btn = event.target; btn.disabled = true; btn.textContent = "Generating…";
       try {
-        await api("POST", "/api/specs/plan", { project_id: selectedProjectId, spec_path: specPath, notes: "" });
+        await api("POST", "/api/specs/plan", { project_id: projectId, spec_path: specPath, notes: "" });
         btn.textContent = "Plan generated — refreshing…";
         await loadLifecycle();
       } catch (e) { btn.disabled = false; btn.textContent = "Generate Plan"; alert("Generate plan failed: " + e.message); }
     }
 
     async function promoteLifecycle(planPath) {
+      const it = currentLifecycleItem();
+      const projectId = it ? it.project_id : selectedProjectId;
       const btn = event.target; btn.disabled = true; btn.textContent = "Promoting…";
       try {
-        await api("POST", "/api/plans/promote", { project_id: selectedProjectId, plan_path: planPath });
+        await api("POST", "/api/plans/promote", { project_id: projectId, plan_path: planPath });
         await loadPlans(); await loadLifecycle();
       } catch (e) { btn.disabled = false; btn.textContent = "Promote to Run"; alert("Promote failed: " + e.message); }
     }

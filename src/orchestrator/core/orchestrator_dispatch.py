@@ -16,6 +16,10 @@ from orchestrator.core.agent_manager import detect_context_limit
 from orchestrator.core.bench_mode import verify_gate_disabled
 from orchestrator.core.harnesses import default_harness_id
 from orchestrator.core.leaf_validator import is_runnable_verification
+from orchestrator.core.orchestrator_review import (
+    _SKIP_BENCH_MODE_DISABLED,
+    _SKIP_NO_VERIFY_CMD,
+)
 from orchestrator.core.plan_graph import (
     build_graph_index,
     parse_graph_tasks,
@@ -45,6 +49,13 @@ DEFAULT_FLAG_BELOW = 0.55
 # Finer granularity has to be paired with MORE verification, not less (MAKER,
 # arXiv 2511.09030), so the leaf the gate is warning about is exactly the one
 # that must not ship with an empty acceptance slot.
+# The wave gate's own skip reason, alongside the two imported from the review
+# module (whose wording it shares deliberately, so one vocabulary describes
+# every skip in the product rather than two that look unrelated in a log).
+# This one has no review-side equivalent: only the per-wave gate verifies the
+# accumulated PLAN branch, so only it can be missing one.
+_SKIP_NO_PLAN_BRANCH = "no plan branch or repo_url recorded on the plan"
+
 MANDATORY_ACCEPTANCE = (
     "This leaf was flagged high risk before dispatch and declares no acceptance "
     "check. Before you finish, run this repository's test suite (or the "
@@ -357,12 +368,21 @@ class DispatchMixin:
         # an all-whitespace command is truthy, so it used to reach the shell,
         # exit 0, and memoize this wave as verified against a command that ran
         # nothing.
+        bench_disabled = verify_gate_disabled()
         verify_cmd = (
-            None
-            if verify_gate_disabled()
-            else normalize_verify_cmd(project.get("verify_cmd"))
+            None if bench_disabled else normalize_verify_cmd(project.get("verify_cmd"))
         )
         if not verify_cmd:
+            # Every skip names its reason, on the same ground the review gate
+            # states: neither caller distinguishes a skip from a pass by
+            # control flow, so a skip that could not say why reads as a green
+            # gate. Bench mode and a missing command both land here with a
+            # falsy ``verify_cmd``, so they must not share one reason string.
+            logger.info(
+                "Wave verify gate skipped for plan %s: %s",
+                plan_id,
+                _SKIP_BENCH_MODE_DISABLED if bench_disabled else _SKIP_NO_VERIFY_CMD,
+            )
             return True
 
         state = cast(Any, self)._wave_verify_state
@@ -374,6 +394,13 @@ class DispatchMixin:
         plan_branch = plan.get("plan_branch_name")
         repo_url = project.get("repo_url")
         if not plan_branch or not repo_url:
+            # There is a verify command and it did not run: without this line
+            # the wave is greened by a gate that had nothing to check out.
+            logger.info(
+                "Wave verify gate skipped for plan %s: %s",
+                plan_id,
+                _SKIP_NO_PLAN_BRANCH,
+            )
             return True
 
         result = await cast(Any, self)._verify_plan_branch(

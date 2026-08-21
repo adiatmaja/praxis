@@ -233,9 +233,17 @@ async def test_agent_done_callback_without_run_id_uses_latest_run(
     queue = client.app.state.task_queue  # type: ignore[attr-defined]
     await queue.create_agent_run(task_id, "container-latest")
 
+    # This test is about run-id resolution, not the PR. The pr_url is still
+    # required: a ``completed`` callback with no pull request is a failure now
+    # (there is nothing for review_task to fetch, and REVIEWING with a NULL
+    # pr_url wedged the plan forever). See tests/test_api_internal.py.
     response = await client.post(
         "/api/internal/agent-done",
-        json={"task_id": task_id, "status": "completed"},
+        json={
+            "task_id": task_id,
+            "status": "completed",
+            "pr_url": "https://github.com/u/a/pull/2",
+        },
         headers={"X-Praxis-Callback-Token": "test-auth"},
     )
     task = await queue.get_task(task_id)

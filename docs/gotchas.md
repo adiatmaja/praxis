@@ -65,9 +65,13 @@ belongs among the everyday traps.
   `list_agent_containers` queries the `praxis-agent-` prefix used by all harness containers.
 - **Agent callback URL is port-derived, not hardcoded** — `Settings.callback_url()`
   builds `http://host.docker.internal:{PORT}/api/internal/agent-done` (override with
-  `AGENT_CALLBACK_URL`) and is passed to `Orchestrator(callback_url=...)`. Running the
-  orchestrator on a non-8080 port without this makes every agent callback 404, so tasks
-  only ever finish via reconcile (and get marked failed even on success).
+  `AGENT_CALLBACK_URL`) and is passed to `Orchestrator(callback_url=...)`. Note the port
+  in that URL must be the HOST-side one, because the agent container reaches back through
+  `host.docker.internal`, while `PORT` inside the container is the in-container bind 8080.
+  Compose therefore derives `AGENT_CALLBACK_URL` from `${PORT:-12323}` explicitly rather
+  than letting `callback_url()` read the container's own `PORT`. Get that wrong and every
+  agent callback 404s, so tasks only ever finish via reconcile (and get marked failed even
+  on success).
 - **Brain prompts go to the CLI via stdin, never argv** — `OpusBridge._run_claude_raw`
   and `LLMRouter.run` pipe the prompt through stdin (`communicate(input=...)`); a full
   PR diff as an argv element overflows the OS command-line limit (Windows `WinError 206`
@@ -75,7 +79,8 @@ belongs among the everyday traps.
 - **The claude CLI effort flag is `--effort`, not `--reasoning-effort`** — the installed
   CLI (v2.1.170) renamed it; passing the old flag fails every effort-tiered brain call
   with `unknown option '--reasoning-effort'` (this 500'd `/api/execute-plan`, whose
-  `plan_review` call-site is opus/high). Both `core/llm_router.build_argv` and
+  `plan_review` call-site resolves to Sonnet through the `plan` role chain, and carried
+  an effort flag at the time). Both `core/llm_router.build_argv` and
   `OpusBridge` use `--effort`. `review_task` runs `gh pr diff/merge/comment`
   with `--repo <owner/name>` (from `GitOps.repo_slug(pr_url)`); without it `gh` resolves
   the PR against the orchestrator's own cwd (the praxis repo) and reviews the wrong diff.
@@ -92,13 +97,18 @@ belongs among the everyday traps.
   `localhost` orchestrator setting stays reachable from inside the container. The worker
   can still reach `host.docker.internal` (needed for LM Studio and the callback
   endpoint), so this reduces but does not eliminate host network exposure.
-- **Harness agent images are standalone — rebuild after ANY `entrypoint.sh` change** —
+- **Rebuild the harness agent images after ANY `entrypoint.sh` change, with compose** —
   the agent images (`opencode-agent:latest` default, `agy-agent:latest` experimental)
-  are not in docker-compose, so a stale image silently runs old
+  are never started by a plain `docker compose up`, so a stale image silently runs old
   entrypoint logic while the source looks current. This bit us live: a pre-callback-token
   image sent an **empty** `X-Praxis-Callback-Token`, so every callback 401'd and tasks
-  never advanced past implement (only reconcile → failed). Rebuild fixes it, e.g.:
-  `docker build -t opencode-agent:latest -f docker/opencode-agent/Dockerfile docker/opencode-agent/`.
+  never advanced past implement (only reconcile → failed). The rebuild is
+  `praxis init` then `docker compose --profile agents build`: both images ARE compose
+  services under `profiles: [agents]` (build-only entries with `command: ["true"]`, which
+  is what keeps them out of `up`). Do **not** reach for a bare `docker build`. It leaves
+  the `org.praxis.entrypoint-sha256` label EMPTY, because that label is a build ARG only
+  compose supplies, and the freshness check reads an empty label as "cannot judge" rather
+  than as fresh, so the rebuild looks done while the stale image may still be what runs.
   To read an image's baked-in files reliably use `docker cp <container>:/path` — NOT
   `docker run --entrypoint cat <img> /path`, which on buildkit multi-manifest images
   resolves the attestation manifest (no rootfs) and returns nothing (false negative).
@@ -121,10 +131,10 @@ belongs among the everyday traps.
 - **Approve sets plan to ACTIVE immediately** — If the orchestration loop hasn't called
   Opus to break the spec into tasks yet, an ACTIVE plan with no `opus_plan` will trigger
   `plan_and_activate` on the next loop iteration
-- **Harness images are standalone** — build each directly, none are in
-  docker-compose:
-  `docker build -t opencode-agent:latest -f docker/opencode-agent/Dockerfile docker/opencode-agent/`
-  (or the equivalent for `agy-agent`).
+- **Harness images build behind a compose profile** — one command builds every image
+  `AgentManager` can spawn: `docker compose --profile agents build`. Never a bare
+  `docker build`; see the entrypoint-rebuild entry above for why the label it omits
+  matters.
 - **OpenCode and agy don't auto-commit** — their entrypoints run `git add -A && git commit`
   after the agent. A run that produces no changes is marked `failed`.
 - **OpenCode config needs `limit.output`, not just `limit.context`** — when the
@@ -283,8 +293,9 @@ belongs among the everyday traps.
   injected into the decompose prompt as a `HARD CONSTRAINTS` block, one line per limit,
   stating that violating leaves will be rejected automatically. The brain is expected
   to comply; prose guidance alone is not enforcement — F3 enforces it. Budget
-  consistency uses the same `reserve_fraction = 0.6` as `worker_bible`/`fit_sections`,
-  replacing the independent `_LEAF_BUDGET_FRACTION = 0.4` that existed before.
+  consistency uses the same `WORKER_RESERVE_FRACTION = 0.6` (`core/token_budget.py`) as
+  `worker_bible`/`fit_sections`, replacing the independent `_LEAF_BUDGET_FRACTION = 0.4`
+  that existed before and no longer exists anywhere under `src/`.
 - **F3 leaf validator is deterministic and fail-closed** — `core/leaf_validator.py`
   runs after `_normalize_slugs` in `decompose_plan`. It checks: DAG + depth limits,
   no dangling `depends_on` slugs, file/LOC limits, verbatim `plan_text` (≥70% fuzzy
@@ -329,8 +340,11 @@ belongs among the everyday traps.
   REUSE the existing remote `BRANCH` with a non-force push instead of cutting a fresh
   `agent/{slug}` (changing that behavior needs an agent IMAGE REBUILD). Dead work branches
   (no open PR, no live run, never protected) are reclaimed by
-  `core/branch_sweeper.dead_branches` via `ReconcileMixin.sweep_dead_branches` on the
-  reconcile loop, which swallows its own errors so a sweep failure never wedges the loop.
+  `core/branch_sweeper.dead_branches` via `orchestrator_reconcile.sweep_dead_branches` on
+  the reconcile loop, which swallows its own errors so a sweep failure never wedges the
+  loop. That sweeper is a MODULE-LEVEL function, not a `ReconcileMixin` method:
+  `reconcile_runs` calls it bare, so a test that patches it on the mixin (or on
+  `core.orchestrator`) patches nothing and the real sweep still runs.
   Mode is sequential in v1 (one delegate in flight at a time).
 - **`config/praxis.yaml` is MOUNTED, not baked**: both compose files bind-mount
   `./config` read-only at `/app/config`, and the base file sets
@@ -481,7 +495,7 @@ belongs among the everyday traps.
   DESCRIPTIONS also truncate, at 2 KB each, but Praxis was measured on
   2026-08-06 and its largest is 942 B, so there is nothing to fix there.
 - **`praxis doctor` is the front door to every problem**: `core/doctor.py`
-  registers eleven read-only checks, each with a fix hint;
+  registers twelve read-only checks, each with a fix hint;
   `core/doctor_probes.py` holds the pure decision logic (facts in, verdict out)
   so every check is testable with no Docker, network, or filesystem. Two checks
   exist specifically to convert this project's oldest silent failures into red
@@ -674,8 +688,9 @@ belongs among the everyday traps.
   both compose files list `- DEFAULT_WORKER_HARNESS` and `- DEFAULT_WORKER_MODEL`
   with no `=` and no default. This is deliberate and the two obvious
   alternatives are both wrong. `Settings.__init__` drops a YAML key whenever
-  that name is present in `os.environ`, and precedence is env > YAML > field
-  default. `- VAR=${VAR:-something}` therefore wins on every run and permanently
+  that name is present in the environment, and precedence is environment
+  variable > `.env` file > settings file > field default. `- VAR=${VAR:-something}`
+  therefore wins on every run and permanently
   suppresses the mounted `config/praxis.yaml`; `- VAR=${VAR}` is worse in a
   subtler way, because when the variable is unset compose sets it to an EMPTY
   string, which is still "in `os.environ`" and so suppresses the YAML just the
@@ -959,12 +974,39 @@ belongs among the everyday traps.
   a traceback naming the key but never naming `.env` as the source. `Settings`
   now sets `extra="ignore"`. **The cost, stated accurately: a typo in a real key
   is now silent and NOTHING catches it.** `env_drift` structurally cannot:
-  compose passes an explicit key allowlist with no `env_file:` directive, so a
+  compose passes an explicit key allowlist and names `.env` in no `env_file:`
+  directive (the one `env_file:` entry is the separate `.env.container`), so a
   typo'd key never enters the container env; `_env_drift_facts` then filters the
   on-disk map to `if k in os.environ`, discarding it; and `probe_env_drift` only
   compares keys present on both sides. Verified by executing the probe: a `.env`
   carrying `AUTH_TOKN` returns GREEN. `AUTH_TOKEN` itself is the exception,
   being a required field with no default.
+
+- **Settings precedence is environment variable, then `.env`, then the settings
+  file, then the field default, and a key in both files now says which won**:
+  the dotenv file counts as ENVIRONMENT, and it did not use to. `Settings.__init__`
+  overlays `config/praxis.yaml` as init KWARGS, and a kwarg outranks every
+  pydantic-settings source including the dotenv one, so a key present in BOTH
+  files silently took the settings file's value. Measured 2026-08-21:
+  `LOOP_INTERVAL=0` in `.env` left the container running at the YAML's 5 and
+  said nothing anywhere. Worse, it split the two ways of running the product
+  apart, because compose forwards `DEFAULT_WORKER_HARNESS` and
+  `DEFAULT_WORKER_MODEL` as real environment variables: the same dotenv file
+  that `praxis init` writes won inside a container and lost under a bare
+  `uvicorn`, with no way to tell which you were looking at. `_dotenv_keys` now
+  reads the dotenv file pydantic-settings is about to read and treats those
+  names as set, so the YAML value is not injected for them. Two things follow
+  and both matter. A `PRAXIS_`-prefixed variable is EXEMPT, and has to be: those
+  keys are in the overlay because an environment variable put them there, not
+  because the file holds them, so shadowing one with the dotenv file would drop
+  a real environment variable in favour of a lower-precedence source. And the
+  fix would otherwise open the opposite silence, an operator editing the
+  settings file for a key their dotenv file also names and getting no
+  edit, so `_log_dotenv_overrides` emits ONE `INFO` line per key naming the
+  winner and the settings-file path. Once per key per process, because
+  `Settings` is constructed more than once and a per-construction line would
+  repeat forever. Only the dotenv case is reported: a real environment variable
+  winning is the documented order and surprises nobody.
 
 - **`gh pr merge` can fail AFTER GitHub has performed the merge**: a
   `504 Gateway Timeout` on the response is not evidence the merge did not
@@ -1138,23 +1180,42 @@ belongs among the everyday traps.
   or not the VPN is actually running. `praxis doctor` reports `planner_cli` RED
   and quotes the hook's own message, so the diagnosis is precise.
 
-  **The remedy is one line, and it goes in exactly one place.** Add the hook's
-  own opt-out variable as a LITERAL under the orchestrator's `environment:` in
-  `docker-compose.yml`, then `docker compose up -d`:
+  **The remedy is one line, and it goes in `.env.container`.** That file is a
+  gitignored optional `env_file` declared on the orchestrator service, so
+  everything in it is passed into the container as a real environment variable
+  and the `claude` subprocess inherits it:
 
-  ```yaml
-      - CLAUDE_VPN_KILLSWITCH_OFF=1
+  ```bash
+  echo CLAUDE_VPN_KILLSWITCH_OFF=1 >> .env.container
+  docker compose up -d
   ```
+
+  `required: false` means an install with no such file starts normally, and
+  `Settings` uses `extra="ignore"`, so a variable in there that is not a
+  settings field is carried to the process and simply not validated, which is
+  exactly what a hook opt-out needs.
+
+  It exists because the previous remedy, a literal under the orchestrator's
+  `environment:` block in `docker-compose.yml`, dirties a TRACKED file. In a
+  fresh clone that leaves a permanent local diff on the one file every operator
+  is told not to hand-edit, which is a remedy nobody can follow twice. Editing
+  that block still works and is still read, it is just no longer the
+  instruction.
 
   Three ways to get this wrong, each of which fails silently:
 
   - **Putting it in `.env`.** This is where an operator reaches first and it
-    does nothing. `Settings` uses `extra="ignore"` (see the `.env` entry above,
-    which explains why), so an unrecognised key is accepted and dropped; the
-    variable never reaches the container, the hook keeps firing, and the
-    symptom is unchanged. Nothing reports the mistake.
+    does nothing. Compose reads `.env` on the HOST to substitute `${VAR}` in the
+    compose file and passes nothing from it into the container on its own, so an
+    opt-out there never becomes an environment variable of the orchestrator
+    process and is never inherited by the `claude` subprocess. (The file is
+    bind-mounted at `/app/.env` for the `env_drift` check, and pydantic-settings
+    reads it, but that only fills `Settings` FIELDS; an unrecognised key is
+    dropped by `extra="ignore"`.) The hook keeps firing and the symptom is
+    unchanged. Nothing reports the mistake.
   - **`docker compose restart` instead of `up -d`.** `restart` does not re-read
-    the compose file's substitutions. Same reason the `env_drift` check exists.
+    `env_file` or the compose file's substitutions. Same reason the `env_drift`
+    check exists.
   - **Assuming it is only needed while the VPN is down.** It is not. The hook
     blocks the container in both states, which is what makes this look like a
     Praxis bug rather than a local hook.
@@ -1163,10 +1224,10 @@ belongs among the everyday traps.
   shipped and the cure did not: the doctor's hint named the cause and pointed
   at this page, and this page did not say what to do. The hint now states the
   remedy inline, `docker-compose.yml` carries it as a commented block beside
-  `IS_SANDBOX`, and `tests/test_doctor_probes.py` asserts the hint names both
-  where the fix goes and where it does not. Writing a correct diagnosis is not
-  the same as shipping a fix, and a pointer to a page is only worth what the
-  page says.
+  `IS_SANDBOX` pointing at `.env.container`, and `tests/test_doctor_probes.py`
+  asserts the hint names both where the fix goes and where it does not. Writing
+  a correct diagnosis is not the same as shipping a fix, and a pointer to a page
+  is only worth what the page says.
 
 - **`gh pr view <branch>` resolves a branch to a PR regardless of state, and
   both agent entrypoints used it to decide whether to reuse a PR.** Plan

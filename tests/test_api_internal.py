@@ -240,6 +240,141 @@ async def test_a_rejected_no_changes_callback_falls_through_to_the_failure_path(
 
 
 @pytest.mark.integration
+async def test_a_completed_callback_with_a_pr_url_moves_the_task_to_reviewing(
+    client: AsyncClient,
+    db: Database,
+    auth_headers: dict[str, str],
+) -> None:
+    """The working branch of the guard below, so the fix cannot over-reach.
+
+    Delete this and a guard that failed EVERY completed callback would look
+    correct: the wedge case would be caught and the normal case would go
+    unnoticed until a real run parked nothing for review.
+    """
+    task_id, run_id = await _seed_in_progress_task(
+        client, db, auth_headers, attempt=1, max_retries=3
+    )
+    queue: TaskQueue = client.app.state.task_queue  # type: ignore[attr-defined]
+
+    resp = await client.post(
+        "/api/internal/agent-done",
+        headers={"X-Praxis-Callback-Token": "test-auth"},
+        json={
+            "task_id": task_id,
+            "run_id": run_id,
+            "status": "completed",
+            "pr_url": "https://github.com/u/retry/pull/7",
+        },
+    )
+    assert resp.status_code == 200
+
+    task = await queue.get_task(task_id)
+    assert task["status"] == TaskStatus.REVIEWING
+    assert task["pr_url"] == "https://github.com/u/retry/pull/7"
+
+
+@pytest.mark.integration
+async def test_a_completed_callback_with_no_pr_url_fails_instead_of_wedging(
+    client: AsyncClient,
+    db: Database,
+    auth_headers: dict[str, str],
+) -> None:
+    """REVIEWING with a NULL pr_url is a permanent wedge, not a review.
+
+    ``review_task`` returns immediately when ``pr_url`` is None and is
+    re-entered on every loop tick, while REVIEWING counts as ACTIVE: the plan
+    never completes and ``plan_stalled`` stays suppressed because it requires
+    ``not active``. The only symptom is silence.
+
+    Asserted on the row the callback wrote, not on a log line or a summary:
+    the status carried forward is the thing that wedges.
+    """
+    task_id, run_id = await _seed_in_progress_task(
+        client, db, auth_headers, attempt=3, max_retries=3
+    )
+    queue: TaskQueue = client.app.state.task_queue  # type: ignore[attr-defined]
+
+    resp = await client.post(
+        "/api/internal/agent-done",
+        headers={"X-Praxis-Callback-Token": "test-auth"},
+        json={"task_id": task_id, "run_id": run_id, "status": "completed"},
+    )
+    assert resp.status_code == 200
+
+    task = await queue.get_task(task_id)
+    assert task["status"] != TaskStatus.REVIEWING, (
+        "a task with no pull request was parked for a review that can never "
+        "start, and the plan can never complete"
+    )
+    assert task["status"] == TaskStatus.FAILED
+    feedback = task["review_feedback"] or ""
+    assert "pull request" in feedback.lower(), feedback
+    assert "no pull-request URL" in feedback, (
+        f"the stored reason does not say what happened: {feedback!r}"
+    )
+
+
+@pytest.mark.integration
+async def test_a_completed_callback_with_no_pr_url_retries_when_budget_remains(
+    client: AsyncClient,
+    db: Database,
+    auth_headers: dict[str, str],
+) -> None:
+    """A lost PR url is worth another attempt, exactly like any other failure.
+
+    The point of failing rather than parking is that the plan can PROGRESS.
+    A fix that only marked the task FAILED terminally would still be wrong for
+    a task with retries left.
+    """
+    task_id, run_id = await _seed_in_progress_task(
+        client, db, auth_headers, attempt=1, max_retries=3
+    )
+    queue: TaskQueue = client.app.state.task_queue  # type: ignore[attr-defined]
+
+    resp = await client.post(
+        "/api/internal/agent-done",
+        headers={"X-Praxis-Callback-Token": "test-auth"},
+        json={"task_id": task_id, "run_id": run_id, "status": "completed"},
+    )
+    assert resp.status_code == 200
+
+    task = await queue.get_task(task_id)
+    assert task["status"] == TaskStatus.PENDING
+    assert int(task["attempt"]) == 2
+
+
+@pytest.mark.integration
+async def test_a_completed_callback_may_rely_on_a_pr_url_stored_earlier(
+    client: AsyncClient,
+    db: Database,
+    auth_headers: dict[str, str],
+) -> None:
+    """Both harnesses REUSE an open PR across retries, so silence is not loss.
+
+    A resumed or retried run whose callback omits ``pr_url`` still has a
+    reviewable pull request on the row. Failing that task would turn a working
+    retry into a dead one, which is why the guard reads the effective url and
+    not just the payload field.
+    """
+    task_id, run_id = await _seed_in_progress_task(
+        client, db, auth_headers, attempt=1, max_retries=3
+    )
+    queue: TaskQueue = client.app.state.task_queue  # type: ignore[attr-defined]
+    await queue.set_task_pr_url(task_id, "https://github.com/u/retry/pull/3")
+
+    resp = await client.post(
+        "/api/internal/agent-done",
+        headers={"X-Praxis-Callback-Token": "test-auth"},
+        json={"task_id": task_id, "run_id": run_id, "status": "completed"},
+    )
+    assert resp.status_code == 200
+
+    task = await queue.get_task(task_id)
+    assert task["status"] == TaskStatus.REVIEWING
+    assert task["pr_url"] == "https://github.com/u/retry/pull/3"
+
+
+@pytest.mark.integration
 async def test_agent_done_needs_clarification_parks_task(
     client: AsyncClient,
     db: Database,
@@ -327,10 +462,19 @@ async def test_agent_done_without_session_id_leaves_existing_handle_untouched(
     )
     assert first.status_code == 200
 
+    # The pr_url is load-bearing here even though this test is about the
+    # session handle: a ``completed`` callback with no pull request is a
+    # FAILURE now (there is nothing to review), and the failure path clears
+    # the worker session handle on purpose. Keep it, or this test stops
+    # exercising the no-session_id branch it exists for.
     second = await client.post(
         "/api/internal/agent-done",
         headers={"X-Praxis-Callback-Token": "test-auth"},
-        json={"task_id": task_id, "status": "completed"},
+        json={
+            "task_id": task_id,
+            "status": "completed",
+            "pr_url": "https://github.com/u/a/pull/9",
+        },
     )
     assert second.status_code == 200
 

@@ -55,7 +55,7 @@ praxis/
 ├── src/
 │   ├── orchestrator/
 │   │   ├── main.py           # FastAPI app + lifespan (seeds the default user)
-│   │   ├── config.py         # pydantic-settings; env > config/praxis.yaml > default
+│   │   ├── config.py         # pydantic-settings; env > .env > config/praxis.yaml > default
 │   │   ├── database.py       # SQLite, raw SQL, versioned MIGRATIONS list
 │   │   ├── api/              # REST routers, one file per surface
 │   │   ├── core/             # the engine (table below)
@@ -72,7 +72,9 @@ praxis/
 
 `api/` routers: `projects`, `plans`, `lifecycle`, `specs`, `docs`, `context`, `settings`,
 `presets`, `harnesses`, `tasks`, `dispatch`, `execute_plan`, `git_state`, `system`,
-`doctor`, `approvals`, `events` (SSE), `internal` (agent callback), `auth`.
+`doctor`, `approvals`, `events` (SSE), `internal` (agent callback). `api/auth.py` is in the
+same package but is NOT a router: it holds the auth dependency, declares no `APIRouter`, and
+`main.py` includes nothing from it.
 
 `core/` is the engine. The orchestrator is ONE class split across mixins, so patch
 module-level helpers on the mixin that calls them, never on `core.orchestrator`:
@@ -124,6 +126,7 @@ uv run praxis logs <task-id>    # the agent container log, captured on the run r
 # See what is parked at the merge gate, and open it
 uv run praxis pending                # parked tasks AND plans awaiting integration
 uv run praxis merge <task-id>        # one task
+uv run praxis reject-merge <task-id> [--feedback "..."]   # the other half of the gate
 uv run praxis merge-plan <plan-id>   # parked tasks, then the integration PR
 
 # Setup, manual equivalent of `praxis init`
@@ -158,7 +161,7 @@ Workflows live in `.github/workflows/` (added 2026-07-02, all verified green on 
 | Workflow | Trigger | Does |
 |----------|---------|------|
 | `ci.yml` | push main / all PRs | `lint` job (ruff format+check, mypy) on Ubuntu; `test` matrix on **ubuntu-latest + windows-latest** (`pytest --cov-fail-under=80 --timeout=120`) |
-| `docker.yml` | `docker/**` changes | shell-checks entrypoints + builds all 4 images. **Orchestrator builds with repo-root context** (its Dockerfile copies `src/`, `web/`, `pyproject.toml` from root); the 3 agent images build from their own dir in a matrix |
+| `docker.yml` | `docker/**` changes | shell-checks entrypoints, validates `--profile agents config`, and builds every image the repo actually builds: `opencode-agent` and `agy-agent` in a matrix from their own dir, plus a separate orchestrator job. **Orchestrator builds with repo-root context** (its Dockerfile copies `src/`, `web/`, `pyproject.toml` from root). `docker/caddy/` is a Caddyfile only, mounted into the stock `caddy:2-alpine` image, so there is nothing there to build |
 | `security.yml` | push / PR / weekly | pip-audit (on `uv export`ed lockfile) + bandit + gitleaks |
 | `codeql.yml` | push / PR / weekly | CodeQL security-and-quality |
 | `dependency-review.yml` | PRs touching deps | blocks high-severity vulnerable additions (needs repo **Dependency graph** setting on) |
@@ -185,9 +188,13 @@ what unblocks dependents and lets the plan complete.
 ## Data Model (SQLite)
 
 Tables: `users`, `projects`, `plans`, `tasks`, `agent_runs`, `opus_state`,
-`doc_index`, `settings_overrides`
+`doc_index`, `settings_overrides`, `capability_events`, `task_outcomes`
 
 - A default `admin` user is auto-seeded on first startup (token_hash = AUTH_TOKEN)
+- `capability_events` and `task_outcomes` come from MIGRATIONS, not the baseline
+  `CREATE_TABLE_STATEMENTS` block, which is why they are easy to miss when reading
+  `database.py` top-down. They carry the capability engine's decision trail (S1 events)
+  and the per-task outcome record `record_outcome` writes at a terminal verdict
 - `opus_state` is a singleton row tracking `available` / `rate_limited` / `resuming`
 - `plans.integration_pr_url` / `integration_merged_at` (migration 9) are where a
   completed plan's last step lives; without them the integration PR is invisible to
@@ -213,13 +220,20 @@ Tables: `users`, `projects`, `plans`, `tasks`, `agent_runs`, `opus_state`,
   rebuild; steps must be idempotent (re-run safe).
 - **Global settings layer (Spec 2)** — git-trackable defaults live in `config/praxis.yaml`
   (loaded by `core/settings_file.load_yaml_settings`); `Settings.__init__` overlays them
-  beneath env vars, so precedence is **env > YAML > field default**. Keys map by uppercase
-  field name (e.g. `loop_interval` ← `PRAXIS_LOOP_INTERVAL` in the YAML loader, `LOOP_INTERVAL`
-  for the pydantic env layer). Project config stays DB-backed.
+  beneath env vars, so precedence is **environment variable > `.env` file > settings file >
+  field default**. The `.env` layer is explicit and load-bearing: the YAML is overlaid as init
+  KWARGS, which outrank every pydantic-settings source, so a key in BOTH files used to take
+  the YAML's value silently (`LOOP_INTERVAL=0` in `.env` ran at the YAML's 5). `_dotenv_keys`
+  now counts the dotenv file as environment; a `PRAXIS_`-prefixed var is exempt because it IS
+  environment. A key present in both logs ONE `INFO` line naming the winner, so the reverse
+  silence (editing the settings file and getting no effect) is covered too. Keys map by
+  uppercase field name (e.g. `loop_interval` ← `PRAXIS_LOOP_INTERVAL` in the YAML loader,
+  `LOOP_INTERVAL` for the pydantic env layer). Project config stays DB-backed.
 - **Provider-agnostic LLM router (Spec 3)** — `core/llm_router.py` resolves each brain
   call-site to `{provider, model, effort}` and executes it. `CALL_SITE_DEFAULTS` is the
-  model-tiering policy (e.g. `plan_spec`→opus/high, `review_diff_rereview`→haiku,
-  `derive_tasks`→local). CLI providers: `claude`, `agy` (Gemini), `codex` (GPT) via
+  model-tiering policy (e.g. `plan_spec`→sonnet, `review_diff_rereview`→haiku,
+  `derive_tasks`→local), but it is SHADOWED wherever the call-site has a role: see the
+  role-chain gotcha below. CLI providers: `claude`, `agy` (Gemini), `codex` (GPT) via
   `build_argv`; `local` routes through an LM Studio OpenAI call. `OpusBridge` takes an
   optional `router` and routes `plan_spec`/`review_diff`(tier first|rereview)/
   `analyze_improvements`/`classify_doc` through it (falls back to the legacy `_run_claude`
@@ -288,10 +302,14 @@ in both directions and then gets cited as authority.)
   doctor check exists for this.
 - **A host `~/.claude` hook blocks every brain call inside the container**, tunnel up or
   down, because that directory is mounted. Set the hook's opt-out (e.g.
-  `CLAUDE_VPN_KILLSWITCH_OFF=1`) as a LITERAL under the orchestrator's `environment:` in
-  `docker-compose.yml`, then `up -d`. NEVER in `.env`: an unrecognised key there is ignored
-  and never reaches the container, so the fix appears not to work.
-- **Agent images are standalone, NOT in compose**: rebuild `opencode-agent:latest` /
+  `CLAUDE_VPN_KILLSWITCH_OFF=1`) in `.env.container`, then `up -d`. That file is a
+  gitignored optional compose `env_file`, so its keys become real container environment
+  variables the `claude` subprocess inherits. It replaced "add a literal to
+  `docker-compose.yml`", which still works but dirties a TRACKED file. NEVER `.env`:
+  compose reads that on the host for substitution and passes nothing from it into the
+  container, so the fix appears not to work.
+- **Agent images are compose services behind the `agents` profile** (build-only,
+  `command: ["true"]`, so `up` never starts them): rebuild `opencode-agent:latest` /
   `agy-agent:latest` after ANY `entrypoint.sh` change or a stale image runs silently.
   Staleness is judged by CONTENT (the `org.praxis.entrypoint-sha256` label), never mtime.
   Rebuild via `praxis init` then `docker compose --profile agents build`: a bare `docker build`
@@ -308,6 +326,24 @@ in both directions and then gets cited as authority.)
   `llm_router.build_argv` so the probe runs the flags the loop runs. The row NAMES the
   provider and model it probed. A `local` planner is AMBER (no binary to probe), never
   a red; `codex` and `agy` stay "not probed" for the reasons in `probe_provider_roundtrip`.
+- **A YAML role chain SHADOWS `CALL_SITE_DEFAULTS` entirely**: once a call-site has a
+  role (`core/roles.ROLE_OF_CALL_SITE`) and `models.roles` declares a chain for it,
+  `EffectiveSettings.call_site_chain` returns that chain and never consults the defaults
+  map or a per-call-site override. The shipped chains are `plan: [sonnet, opus]` and
+  `review: [sonnet, haiku]`, so on a stock install EVERY routed call-site runs sonnet and
+  the second entry is only the unavailability fallback. Reading `CALL_SITE_DEFAULTS` to
+  answer "what does this call-site run" gives the wrong answer, and a **Settings, Models**
+  override for such a call-site is stored and ignored: clear the role chain first.
+  `docs/configurations.md` has the full account.
+- **A key in `.env` that the settings file also names now WINS, and says so**: the dotenv
+  file counts as environment (`env > .env > settings file > default`). It did not before,
+  so `LOOP_INTERVAL=0` in `.env` ran at the YAML's 5 in silence. A key in both files logs
+  one `INFO` line naming the winner, once per key per process.
+- **Container-only variables go in `.env.container`**, a gitignored optional compose
+  `env_file` on the orchestrator. That is where a Claude Code hook opt-out belongs now;
+  the old remedy edited `docker-compose.yml`, which is TRACKED and leaves a permanent diff
+  in a fresh clone. Not `.env`: compose reads that on the host for substitution and passes
+  nothing from it into the container on its own.
 - **An unrecognised key in `.env` is IGNORED, not rejected**: `./.env` is mounted
   into the container and parsed whole, so `extra="forbid"` used to abort startup.
   The cost is that a typo in a real key is now silent and NOTHING catches it;
@@ -343,9 +379,13 @@ in both directions and then gets cited as authority.)
   the exit status.
 - **Verify gates FAIL CLOSED and fetch the branch first**: treat `error` like `failed`, and
   only `skipped` passes through. An `error` is never memoized, so the next tick retries.
-- **`praxis merge <task-id>` / `praxis merge-plan <plan-id>` open the merge gate**;
-  `praxis approve` is for improvement PLANS and 404s on a task id. `merge-plan`
-  exits 1 if any task failed.
+- **The merge gate has TWO CLI verbs and they are not the obvious pair**:
+  `praxis merge <task-id>` and `praxis reject-merge <task-id> [--feedback ...]` are the
+  two halves; `praxis merge-plan <plan-id>` does the plan's parked tasks and then its
+  integration PR, exiting 1 if any task failed. `praxis approve` / `praxis reject` are for
+  improvement PLANS and 404 on a task id, which reads as a broken command rather than the
+  wrong one. A rejected task is re-dispatched if attempts remain; the printed line says
+  which happened rather than assuming.
 - **The improvement loop must be given the REPOSITORY, and fails closed without it**:
   `check_improvements` once built its whole prompt from three strings and cloned nothing,
   so it proposed Praxis-shaped work for an unrelated repo. `core/repo_survey.py` +

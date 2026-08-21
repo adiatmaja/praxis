@@ -16,15 +16,21 @@ model can't.
 | Tool | Purpose |
 |------|---------|
 | `dispatch_task(repo_url, instructions, model, harness?, branch?, context?)` | Dispatch one task; returns `{task_id, dashboard_url, status}`. `context` is curated, secret-scrubbed reference text for the worker. Praxis always runs its own review. |
-| `execute_plan(repo_url, plan, model, harness?, branch?, context?, local_context?, expected_base_sha?)` | Hand Praxis a full, externally-authored **plan** (the entire plan text). Returns immediately with `{plan_id, project_id, dashboard_url, status="decomposing"}`; Praxis capability-gates the plan against `model`, decomposes it into a task graph, and dispatches the tasks. Use this (not `dispatch_task`) when you already have a multi-step plan. |
+| `execute_plan(repo_url, plan, model, harness?, branch?, context?, local_context?, expected_base_sha?)` | Hand Praxis a full, externally-authored **plan** (the entire plan text). Returns immediately with `{plan_id, project_id, dashboard_url, status="pending"}`; Praxis capability-gates the plan against `model`, decomposes it into a task graph, and dispatches the tasks. Use this (not `dispatch_task`) when you already have a multi-step plan. |
 | `poll_plan(plan_id)` | Get the plan status plus a one-line summary of every task (`task_id`, `title`, `status`, `pr_url`). Poll the `plan_id` from `execute_plan` until the plan is `completed` or all tasks are terminal. Tasks at `awaiting_merge` passed review and are parked for your PR approval; `awaiting_clarification` is blocked on a question. |
 | `poll_task(task_id)` | Get status, PR URL, review (and a dashboard link for wedged tasks). |
 | `list_providers()` | List brain providers + worker models available to dispatch to. |
 | `get_project(repo_url)` | Read a repo's configured worker model, harness, and settings (or null if unregistered). |
 | `list_projects()` | List every repo Praxis knows, each with its configured model + harness. |
 | `get_mode()` | Return auto-delegate mode state: `{enabled, worker:{harness,model}}`. Check this before implementing directly, when `enabled` is true the brain should delegate every task via `dispatch_task`/`execute_plan` rather than editing code itself. |
+| `pending_approvals()` | List every task parked at the human merge gate, across ALL projects, with a one-line summary plus `{count, oldest_hours, tasks:[...]}`. This is the queue that actually has to be cleared: Praxis never merges without a human even after review passes clean, so a run that looks finished can still be waiting here. |
 | `get_task_logs(task_id)` | Return agent-run logs for failure triage. |
 | `cancel_task(task_id)` | Stop a running task. |
+
+That is the whole tool surface. Approving or rejecting a parked merge is deliberately not in
+it: those go through the CLI (`praxis merge` / `praxis reject-merge`), the dashboard, or the
+REST endpoints, so the decision to land code stays with a person rather than with the brain
+driving the session.
 
 Praxis also exposes a static MCP **resource**, `praxis://guide/orchestration` — the
 orchestration guide your assistant should read before driving a multi-step plan. It spells out
@@ -105,7 +111,7 @@ model:
    > `<your-worker-model>`:_ …then the full plan text.
 
 2. Your assistant calls `execute_plan(repo_url, plan, model)`. It returns right away with a
-   `plan_id` and `status="decomposing"` — the brain's capability-aware decomposition is a
+   `plan_id` and `status="pending"` — the brain's capability-aware decomposition is a
    multi-minute call that runs asynchronously, sizing each task to what `model` can implement.
 3. Ask your assistant to `poll_plan(plan_id)` periodically (or watch the `dashboard_url`). Each
    task becomes its own `agent/<slug>` branch and PR, gets reviewed, and squash-merges into the

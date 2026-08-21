@@ -67,10 +67,15 @@
 1. **Spec submission** — User submits a specification via Web UI, CLI, or REST API,
    targeting a registered GitHub repository (or promotes an existing `plan.md`).
 
-2. **Planning** — Orchestrator routes the planning call through the `LLMRouter`
-   (default `claude-opus-4-8`; configurable per call-site in Settings → Models). It
-   returns a JSON plan with a summary, slug, and task list with dependency graph. (For
-   the Promote path, tasks are derived locally instead — no Opus call.)
+2. **Planning** — Orchestrator routes the planning call through the `LLMRouter` at the
+   `plan_spec` call-site. What that resolves to is the **plan role chain** in
+   `config/praxis.yaml` (`plan: [sonnet, opus]`), not `CALL_SITE_DEFAULTS`: once a
+   call-site has a role, `EffectiveSettings.call_site_chain` returns the role chain and
+   never consults the per-call-site default. So planning runs on Sonnet, and Opus is the
+   rung it falls back to when Sonnet is unavailable. Per-call-site overrides are still
+   settable in Settings → Models. It returns a JSON plan with a summary, slug, and task
+   list with dependency graph. (For the Promote path, tasks are derived locally instead,
+   with no brain call.)
 
 3. **Plan activation** — Orchestrator creates a `plan/{date}-{slug}` branch from main,
    stores the parsed plan in SQLite, and marks the plan as `active`.
@@ -84,9 +89,14 @@
    - Commits, pushes, and creates a PR targeting the plan branch
    - Calls back to `/api/internal/agent-done` when finished
 
-5. **Code review** — Orchestrator fetches the PR diff via `gh pr diff` and routes it
-   to the review call-site (`review_diff_first` → Sonnet by default; re-reviews →
-   `review_diff_rereview` → Haiku). Returns a JSON verdict: `pass` or `fail` with feedback.
+5. **Code review** — Orchestrator fetches the PR diff via `gh pr diff` and routes it to
+   the review call-site: `review_diff_first` for the first read, `review_diff_rereview`
+   for a re-read after fixes. Both carry the `review` role, so both resolve through the
+   role chain in `config/praxis.yaml` (`review: [sonnet, haiku]`) and both run on Sonnet;
+   Haiku is the fallback rung, not the re-review tier. `CALL_SITE_DEFAULTS` still names
+   Haiku for `review_diff_rereview`, and that default is shadowed by the role chain
+   exactly as `docs/configurations.md` describes. Returns a JSON verdict: `pass` or
+   `fail` with feedback.
 
 6. **Pass** — PR is squash-merged into the plan branch. Agent branch is deleted.
 
@@ -161,8 +171,10 @@ Three mechanisms make the mode work:
    non-force push onto it rather than cutting a new one.
 3. **Stale-branch sweeper.** `core/branch_sweeper.dead_branches` selects reclaimable work
    branches (no open PR, no live run, never a protected branch) and the reconcile loop
-   (`ReconcileMixin.sweep_dead_branches`) deletes them. It is fail-safe: a sweep error is logged
-   and never wedges the loop.
+   deletes them via `orchestrator_reconcile.sweep_dead_branches`, a MODULE-LEVEL function
+   that `reconcile_runs` calls bare rather than a method on `ReconcileMixin`; patch it on
+   the module or the patch does nothing. It is fail-safe: a sweep error is logged and never
+   wedges the loop.
 
 ## Per-Project Settings
 

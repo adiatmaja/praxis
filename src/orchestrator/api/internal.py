@@ -146,7 +146,34 @@ async def agent_done(request: Request, body: AgentDonePayload) -> dict[str, str]
         harness = (project or {}).get("harness") or default_harness_id()
         await queue.record_worker_session(body.task_id, body.session_id, harness)
 
-    if body.status == "completed":
+    # A worker reporting ``completed`` is claiming there is a change to
+    # review, and the review can only start from a pull request:
+    # ``review_task`` returns immediately when ``pr_url`` is None, is
+    # re-entered for every REVIEWING task on every loop tick, and REVIEWING
+    # counts as ACTIVE, so the plan never completes while ``plan_stalled``
+    # stays suppressed (it requires ``not active``). That is a permanent wedge
+    # whose only symptom is silence, and it is the same wedge the unparseable
+    # ``pr_url`` case in core/orchestrator_review.py already fails out of.
+    #
+    # No supported mode completes without one: both harness entrypoints set
+    # PR_URL on every path that reaches a ``completed`` callback (local mode
+    # synthesizes a ``praxis-local://`` ref, GitHub mode reuses an open PR or
+    # creates one), and ``SINGLE_BRANCH=1`` changes only branch reuse and the
+    # protected-base guard, never the PR block. Under ``set -euo pipefail`` a
+    # non-zero ``gh`` exits the script and the EXIT trap rewrites the status to
+    # ``failed``. So an absent url means the url was LOST -- a ``gh pr create``
+    # that exits 0 printing nothing produces exactly this -- and the honest
+    # report is a failure carrying the reason, which lets retries and the plan
+    # progress.
+    #
+    # The row's own ``pr_url`` counts, not just the payload field: ``task`` was
+    # read before the ``set_task_pr_url`` above, and both harnesses REUSE an
+    # open PR across retries, so a retried or resumed run may correctly send
+    # nothing new.
+    reviewable_pr_url = (body.pr_url or task["pr_url"] or "").strip()
+    completed_without_pr = body.status == "completed" and not reviewable_pr_url
+
+    if body.status == "completed" and not completed_without_pr:
         await queue.update_task_status(body.task_id, TaskStatus.REVIEWING)
         logger.info("Task %s ready for review", task_id)
     elif body.status == "needs_clarification":
@@ -161,7 +188,20 @@ async def agent_done(request: Request, body: AgentDonePayload) -> dict[str, str]
         from orchestrator.core.orchestrator_reconcile import ReconcileMixin
 
         max_retries = int(project["max_retries"]) if project else 0
-        if body.status == "no_changes":
+        if completed_without_pr:
+            feedback = (
+                "Worker reported the task completed but no pull-request URL "
+                "reached the orchestrator, so there is nothing to review. The "
+                "pull request was never created or its URL was lost on the way "
+                "out of the harness."
+            )
+            logger.warning(
+                "Task %s reported completed with no pull request; failing it "
+                "so the plan can progress rather than parking it for a review "
+                "that cannot start",
+                task_id,
+            )
+        elif body.status == "no_changes":
             # Reaching here means the no-op check ran and said no. Say which
             # question was answered, or the operator reads a bare "finished
             # with status no_changes" as the product not understanding it.

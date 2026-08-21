@@ -94,7 +94,7 @@ dashboard and CLI, forwarding every tool call over HTTP with a Bearer token.
 | Module | Responsibility |
 |--------|---------------|
 | `client.py` | `PraxisClient` — async httpx wrapper, env config (`PRAXIS_BASE_URL`/`PRAXIS_AUTH_TOKEN`), Bearer auth, HTTP-status → `PraxisClientError` translation |
-| `server.py` | FastMCP server; five tools (`dispatch_task`, `poll_task`, `list_providers`, `get_task_logs`, `cancel_task`) delegating to testable `*_impl` functions. Tool errors are returned as `{error, message}`, never raised |
+| `server.py` | FastMCP server; the tools are `dispatch_task`, `execute_plan`, `poll_task`, `poll_plan`, `pending_approvals`, `list_providers`, `get_task_logs`, `cancel_task`, `get_project`, `list_projects`, `get_mode`, each delegating to a testable `*_impl` function. Tool errors are returned as `{error, message}`, never raised |
 | `__main__.py` | `praxis-mcp` stdio entry point (`mcp.run()`) |
 
 The only engine-side addition is `POST /api/dispatch`, which injects a one-task `opus_plan`
@@ -110,7 +110,7 @@ MCP transport cannot surface.
 | `orchestrator.py` | Loop core: `__init__`, `plan_and_activate`, `process_plan_once`, `run_once`, `run_loop`, `shutdown` |
 | `orchestrator_dispatch.py` | `DispatchMixin`: `dispatch_pending_tasks`, `_build_worker_bible` |
 | `orchestrator_review.py` | `ReviewMixin`: `review_task`, `approve_task_merge`, `reject_task_merge`, `on_plan_completed` |
-| `orchestrator_reconcile.py` | `ReconcileMixin`: `reconcile_runs`, `monitor_run`, `_classify_pr_failure` (8 methods total) |
+| `orchestrator_reconcile.py` | `ReconcileMixin`: `reconcile_runs`, `monitor_run`, `_classify_pr_failure`. Also the MODULE-LEVEL `sweep_dead_branches`, which the mixin calls as a bare function, so a test patches it on this module and never on the mixin |
 | `orchestrator_improve.py` | `ImprovementMixin`: `check_improvements`, `create_improvement_plan` |
 | `task_queue.py` | Plan/task CRUD, state machine, dependency-aware dispatch |
 | `opus_bridge.py` | Brain calls (via `llm_router`, or legacy `claude -p`), JSON parsing, rate limit tracking |
@@ -135,14 +135,21 @@ MCP transport cannot surface.
 - **SQLite** via aiosqlite (no ORM, raw SQL) — a thin **execution ledger** (Spec 2);
   markdown docs in the target repo are the source of truth for spec/plan content.
 - Tables: `users`, `projects`, `plans`, `tasks`, `agent_runs`, `opus_state`,
-  `doc_index`, `settings_overrides`
+  `doc_index`, `settings_overrides`, plus `capability_events` and `task_outcomes`,
+  which are created by migrations rather than by the baseline block and carry the
+  capability engine's decision trail and per-task outcome record
 - `plans` keeps `opus_plan` (runtime task graph), `spec_path`, `plan_path`, status,
   branch — the free-text `spec` column was **dropped** in Spec 2.
 - Global orchestrator settings live in `config/praxis.yaml` (env-overridable); per-call-site
   model overrides persist in `settings_overrides` (`models.<call_site>`). The auto-delegate
   toggle (`auto_delegate.enabled`) also persists there; the global default worker
   (`default_worker_harness` / `default_worker_model`) lives in `config/praxis.yaml`.
-- Migrations: inline `CREATE TABLE IF NOT EXISTS` + additive `ALTER`/table-rebuild in `database.py`
+- Migrations: the baseline tables are an idempotent `CREATE TABLE IF NOT EXISTS` block
+  (`CREATE_TABLE_STATEMENTS`, run every startup); every schema change after that goes
+  through the versioned `MIGRATIONS` list in `database.py`, applied against
+  `PRAGMA user_version` at the end of `initialize()`. Add a `Migration(n, desc, fn)`
+  rather than another ad-hoc conditional rebuild, and keep each step re-run safe: the
+  version pragma is what stops a step running twice, not the step's own shape
 - Default admin user auto-seeded on first startup
 
 ## Task State Machine
@@ -217,7 +224,8 @@ main
 existing remote branch and non-force push onto it rather than cutting a fresh `agent/{slug}`
 per task, so a sequential daily-dev session accumulates on a single branch. Dead work branches
 (no open PR, no live run, never protected) are swept by `core/branch_sweeper.dead_branches`,
-wired into the reconcile loop (`ReconcileMixin.sweep_dead_branches`). Dispatch reads the mode
+wired into the reconcile loop by the module-level `orchestrator_reconcile.sweep_dead_branches`,
+which `reconcile_runs` calls as a bare function rather than through `self`. Dispatch reads the mode
 via `EffectiveSettings.auto_delegate_enabled()` and threads `single_branch` into
 `AgentManager.spawn_agent`.
 
@@ -282,7 +290,9 @@ unauthenticated local services.
 docker compose up --build
 ```
 
-- Orchestrator on port 8080
+- Orchestrator reachable on the host at `${PORT:-12323}`. Compose maps
+  `"${PORT:-12323}:8080"`, so 8080 is only the in-container bind (and the port a
+  bare `uvicorn` run uses, which is why both numbers turn up in these docs)
 - LM Studio on localhost:1234 (host machine)
 - Docker socket mounted for agent spawning
 

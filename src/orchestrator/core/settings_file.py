@@ -69,14 +69,47 @@ def capabilities_file_path() -> str:
     return os.environ.get(_CAPABILITIES_PATH_ENV) or _DEFAULT_CAPABILITIES_PATH
 
 
-def load_yaml_settings(path: str, env: dict[str, str] | None = None) -> dict[str, Any]:
-    """Return YAML settings with PRAXIS_* env vars overriding matching keys.
+def _is_overlay_var(key: str) -> bool:
+    """True when an environment variable name is a ``PRAXIS_*`` setting override.
 
-    ``PRAXIS_CONFIG_PATH`` is deliberately excluded from that overlay: it is a
-    POINTER TO this file, not a setting inside it.  Both compose files set it
+    ``PRAXIS_CONFIG_PATH`` is deliberately excluded: it is a POINTER TO the
+    settings file, not a setting inside it.  Both compose files set it
     permanently, so folding it in would give every deployment a phantom
     ``config_path`` key that no consumer wants.
+
+    Shared by :func:`load_yaml_settings` and :func:`env_overlay_keys` so the
+    two cannot drift: the second exists to tell a caller which keys the first
+    sourced from the environment rather than from the file, and a divergence
+    would make that answer wrong in exactly the cases it is consulted for.
+
+    Args:
+        key: Environment variable name.
+
+    Returns:
+        True when the variable overrides a settings key.
     """
+    return key.startswith(_ENV_PREFIX) and key != _CONFIG_PATH_ENV
+
+
+def env_overlay_keys(env: dict[str, str] | None = None) -> set[str]:
+    """Return the settings names ``PRAXIS_*`` env vars contribute to the overlay.
+
+    Names are the lowercase form :func:`load_yaml_settings` folds them in
+    under, so a caller can tell an overlaid key apart from one that genuinely
+    came out of the file.
+
+    Args:
+        env: Environment mapping to read, or None for ``os.environ``.
+
+    Returns:
+        Lowercase settings names supplied by the environment.
+    """
+    env = os.environ.copy() if env is None else env
+    return {key[len(_ENV_PREFIX) :].lower() for key in env if _is_overlay_var(key)}
+
+
+def load_yaml_settings(path: str, env: dict[str, str] | None = None) -> dict[str, Any]:
+    """Return YAML settings with PRAXIS_* env vars overriding matching keys."""
     env = os.environ.copy() if env is None else env
     file = Path(path)
     data: dict[str, Any] = {}
@@ -93,7 +126,7 @@ def load_yaml_settings(path: str, env: dict[str, str] | None = None) -> dict[str
             raise ValueError(message)
         data = loaded
     for key, raw in env.items():
-        if key.startswith(_ENV_PREFIX) and key != _CONFIG_PATH_ENV:
+        if _is_overlay_var(key):
             name = key[len(_ENV_PREFIX) :].lower()
             data[name] = _coerce(raw)
     return data

@@ -524,10 +524,16 @@ async def test_the_suite_never_spends_a_live_planner_round_trip(
 
     The row now also names the planner it resolved, which is the whole point of
     the configured-planner probe, so the assertion is a suffix match rather than
-    an equality: pinning the resolved model string here would re-pin
-    `config/praxis.yaml`'s role chain in a test about the fixture.
+    an equality: pinning the resolved model string here would re-pin the
+    settings YAML's role chain in a test about the fixture.
     `tests/test_doctor_probes_configured_planner.py` is where the naming itself
     is pinned.
+
+    UPDATED: this pinned `status == "green"` and the words "installed and
+    authenticated". Both were claims nothing measured: no round trip was made,
+    and `claude` has no auth command, so the row is now amber and says what it
+    actually established. The fixture pin itself is unchanged, and the suffix
+    asserted below is reachable ONLY from `prompt_ok=None` with no rate limit.
     """
     from orchestrator.api import doctor as doctor_api
 
@@ -539,8 +545,8 @@ async def test_the_suite_never_spends_a_live_planner_round_trip(
     response = await client.get("/api/doctor", headers=auth_headers)
 
     check = next(c for c in response.json()["checks"] if c["check_id"] == "planner_cli")
-    assert check["status"] == "green"
+    assert check["status"] == "amber"
     assert check["detail"].endswith(
-        "installed and authenticated; no test prompt was made"
+        "no test prompt was made, so nothing here established that it can answer one"
     )
     assert check["detail"].startswith("planner claude/")

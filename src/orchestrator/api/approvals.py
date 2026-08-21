@@ -7,8 +7,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, Request
 
 from orchestrator.api.auth import verify_token
-from orchestrator.core.approvals import summarize_pending
-from orchestrator.core.status_vocab import GATED_STATUSES
+from orchestrator.core.approvals import fetch_pending_approvals
 
 
 router = APIRouter(tags=["approvals"], dependencies=[Depends(verify_token)])
@@ -18,35 +17,20 @@ router = APIRouter(tags=["approvals"], dependencies=[Depends(verify_token)])
 async def get_pending_approvals(request: Request) -> dict[str, Any]:
     """Summarize everything parked at the merge gate, across all projects.
 
-    Two kinds of work park here, and reporting only the first is what made
+    Three kinds of work park here, and reporting only the first is what made
     the loop's last step invisible:
 
     - Tasks in ``GATED_STATUSES`` (the single source of truth for what
-      "parked" means, rather than a hardcoded ``'passed'`` literal, so this
-      endpoint and the loop's rate-limited digest can never disagree).
+      "parked" means, rather than a hardcoded ``'passed'`` literal).
     - Completed plans whose integration PR is open. Once the last task
       merges, the work is on the plan branch and NOT on the base branch; the
       integration PR is the only thing standing between the two.
+    - Autonomous proposals still PENDING: work the improvement loop offered
+      that nobody has agreed to run yet.
+
+    The rows come from ``core.approvals.fetch_pending_approvals``, which the
+    loop's rate-limited digest also calls. That is not tidiness: this endpoint
+    and the digest each held their own copy of the queries, one copy was
+    widened for proposals and the other was not, and the digest went quiet.
     """
-    db = request.app.state.db
-    placeholders = ", ".join("?" for _ in GATED_STATUSES)
-    rows = await db.fetch_all(
-        # nosec B608 - `placeholders` is a run of `?` sized from the frozen
-        # GATED_STATUSES tuple; the values are bound, never interpolated.
-        f"SELECT * FROM tasks WHERE status IN ({placeholders})",  # nosec B608
-        tuple(GATED_STATUSES),
-    )
-    # Two disjoint sets of plans land here, so the WHERE clause is a union and
-    # not a single predicate: plans whose integration PR is open (work finished,
-    # waiting to reach the base branch) and autonomous proposals still PENDING
-    # (work not started, waiting for a human to agree to it). Selecting only the
-    # first left every improvement-loop proposal invisible to `praxis pending`,
-    # which is the same defect this endpoint's docstring already describes one
-    # layer up. `summarize_pending` re-checks both predicates, so this query
-    # only has to avoid excluding a row it needs.
-    plan_rows = await db.fetch_all(
-        "SELECT * FROM plans WHERE "
-        "(integration_pr_url IS NOT NULL AND integration_merged_at IS NULL) "
-        "OR (source = 'autonomous' AND status = 'pending')"
-    )
-    return summarize_pending(rows, plan_rows)
+    return await fetch_pending_approvals(request.app.state.db)

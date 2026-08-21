@@ -9,6 +9,7 @@ from typing import Any
 
 from orchestrator.core.agent_prompt import build_implementer_prompt
 from orchestrator.core.capability_events import CapabilityEventEmitter
+from orchestrator.core.clarification_states import RESUMABLE_CLARIFICATION_STATES
 from orchestrator.core.event_bus import EventBus
 from orchestrator.core.git_backend import GitBackend, resolve_backend
 from orchestrator.core.llm_router import ProviderAuthError
@@ -40,6 +41,36 @@ _DEFAULT_LOOP_INTERVAL_SECONDS = 5.0
 # is refused rather than honored: passed straight to asyncio.wait_for it
 # would busy-spin the orchestration loop instead of idling between passes.
 _MIN_LOOP_INTERVAL_SECONDS = 1.0
+
+# The only two statuses from which a plan may be activated. PENDING is the
+# normal case; ACTIVE covers a plan that was activated with no task graph yet
+# (``process_plan_once`` re-plans it). Everything else is a decision somebody
+# already made: REJECTED and FAILED are terminal, and COMPLETED has landed.
+_ACTIVATABLE_PLAN_STATUSES: frozenset[str] = frozenset(
+    {PlanStatus.PENDING.value, PlanStatus.ACTIVE.value}
+)
+
+
+def _is_awaiting_an_answer(task: dict[str, Any]) -> bool:
+    """True when a parked task is still waiting for somebody to answer it.
+
+    ``RESUMABLE_CLARIFICATION_STATES`` is the frozen set of POST-answer states
+    (``answered_by_brain`` and ``resolved``); its name describes its first
+    consumer, the worker-session resume gate, but the question it answers is
+    exactly "has an answer landed". Anything else is still waiting, including a
+    row carrying no state at all: an unrecorded state must never be read as an
+    answer nobody produced, because that is the reading that loses the work.
+
+    Args:
+        task: A task row.
+
+    Returns:
+        True only for a NEEDS_CLARIFICATION task whose question is unanswered.
+    """
+    if task.get("status") != TaskStatus.NEEDS_CLARIFICATION:
+        return False
+    state = str(task.get("clarification_state") or "")
+    return state not in RESUMABLE_CLARIFICATION_STATES
 
 
 def _clamp_loop_interval(interval_seconds: float) -> float:
@@ -166,6 +197,50 @@ class Orchestrator(DispatchMixin, ReviewMixin, ReconcileMixin, ImprovementMixin)
             raise ValueError(msg)
         return str(text)
 
+    async def _still_activatable(self, plan_id: str, stage: str) -> bool:
+        """Re-read a plan's status and report whether it may still be activated.
+
+        Both activation paths read the plan, await a brain call that can run for
+        minutes, and then activate. A ``POST /api/plans/{id}/reject`` landing in
+        that window was accepted, reported to the operator, and then silently
+        undone by ``activate_plan`` writing ACTIVE back over REJECTED, after
+        which the next tick dispatched the work the operator had refused.
+
+        Aborting here costs only the brain call that was already spent: the
+        decomposition result is discarded, no task rows are inserted, the plan
+        branch name is never written (and no git branch is created, since
+        branches are only cut at dispatch), and no agent container is spawned.
+        The plan row is left exactly as the rejecter wrote it.
+
+        Args:
+            plan_id: The plan being activated.
+            stage: The brain call that just returned, named in the log line.
+
+        Returns:
+            True when the plan is still PENDING or ACTIVE, False otherwise.
+        """
+        current = await self._tq.get_plan(plan_id)
+        status = None if current is None else str(current["status"])
+        if status in _ACTIVATABLE_PLAN_STATUSES:
+            return True
+        logger.warning(
+            "Activation aborted for plan %s: it became %s while %s was running, "
+            "so that result is discarded and no tasks, branch, or containers "
+            "are created",
+            plan_id,
+            status or "unreadable",
+            stage,
+        )
+        self._bus.publish(
+            {
+                "type": "plan_activation_aborted",
+                "plan_id": plan_id,
+                "stage": stage,
+                "status": status,
+            }
+        )
+        return False
+
     async def plan_and_activate(self, plan_id: str, project: dict[str, Any]) -> None:
         """Ask Opus to plan a pending spec and activate the resulting task graph."""
 
@@ -200,6 +275,8 @@ class Orchestrator(DispatchMixin, ReviewMixin, ReconcileMixin, ImprovementMixin)
         )
         today = datetime.now(UTC).date().isoformat()
         branch = f"plan/{today}-{opus_plan['plan_slug']}"
+        if not await self._still_activatable(plan_id, "plan_spec"):
+            return
         await self._tq.activate_plan(plan_id, opus_plan, branch)
         self._bus.publish(
             {
@@ -255,6 +332,9 @@ class Orchestrator(DispatchMixin, ReviewMixin, ReconcileMixin, ImprovementMixin)
                 {"type": "plan_failed", "plan_id": plan_id, "reason": str(exc)}
             )
             logger.error("execute-plan decomposition failed for %s: %s", plan_id, exc)
+            return
+
+        if not await self._still_activatable(plan_id, "decompose_plan"):
             return
 
         warning = opus_plan.get("decompose_warning")
@@ -330,12 +410,33 @@ class Orchestrator(DispatchMixin, ReviewMixin, ReconcileMixin, ImprovementMixin)
         pending = [t for t in tasks if t["status"] == TaskStatus.PENDING]
         failed = [t for t in tasks if t["status"] == TaskStatus.FAILED]
         passed = [t for t in tasks if t["status"] == TaskStatus.PASSED]
+        # NEEDS_CLARIFICATION is in none of the buckets above, which is what
+        # made the terminal word below self-fulfilling: one failure plus one
+        # leaf parked on an unanswered question satisfied every clause, the
+        # plan was written FAILED, and ``get_runnable_plans`` returns only
+        # PENDING and ACTIVE plans, so the answer arriving later through
+        # ``POST /tasks/{id}/clarify`` could never be dispatched. A parked
+        # question is outstanding work whichever way it resolves, so it holds
+        # the plan open; only ``awaiting_answer`` is work a HUMAN can unblock.
+        blocked = [t for t in tasks if t["status"] == TaskStatus.NEEDS_CLARIFICATION]
+        awaiting_answer = [t for t in blocked if _is_awaiting_an_answer(t)]
 
         all_done = await self._tq.all_tasks_done(plan_id)
         # A plan is also "done" when no tasks remain actionable (all are truly terminal:
         # MERGED or FAILED — not PASSED, which is awaiting human merge approval) and
         # there is at least one failure.
-        terminal_with_failures = not active and not pending and not passed and failed
+        terminal_with_failures = (
+            not active and not pending and not passed and not blocked and failed
+        )
+        if failed and blocked and not active and not pending and not passed:
+            logger.info(
+                "Plan %s has %d failed task(s) but %d still parked on a "
+                "clarification, so it is NOT terminal; it stays active until "
+                "every question is answered",
+                plan_id,
+                len(failed),
+                len(blocked),
+            )
 
         if all_done or terminal_with_failures:
             # A plan with a task that exhausted its retries (terminal FAILED,
@@ -375,13 +476,20 @@ class Orchestrator(DispatchMixin, ReviewMixin, ReconcileMixin, ImprovementMixin)
                 )
             return
 
-        if not active and pending and failed:
+        # A leaf parked on an unanswered question wedges the plan exactly the
+        # way a PENDING leaf behind a failure does, so it belongs in the same
+        # signal: without it, the shape this function no longer calls terminal
+        # would simply go quiet. ``awaiting_answer``, not ``blocked``: a leaf
+        # whose answer has landed is on its way back to dispatch, and naming it
+        # here would send the operator to answer a question that has an answer.
+        if not active and failed and (pending or awaiting_answer):
             self._bus.publish(
                 {
                     "type": "plan_stalled",
                     "plan_id": plan_id,
                     "pending_task_ids": [t["id"] for t in pending],
                     "failed_task_ids": [t["id"] for t in failed],
+                    "clarification_task_ids": [t["id"] for t in awaiting_answer],
                 }
             )
 
@@ -417,33 +525,30 @@ class Orchestrator(DispatchMixin, ReviewMixin, ReconcileMixin, ImprovementMixin)
         step (query, summarize, settings lookup, publish) runs inside one
         try/except that only logs.
         """
-        from orchestrator.core.approvals import should_publish_digest, summarize_pending
-        from orchestrator.core.status_vocab import GATED_STATUSES
+        from orchestrator.core.approvals import (
+            fetch_pending_approvals,
+            outstanding_count,
+            should_publish_digest,
+        )
 
         try:
-            placeholders = ", ".join("?" for _ in GATED_STATUSES)
-            rows = await self._tq._db.fetch_all(
-                # nosec B608 - `placeholders` is a run of `?` sized from the
-                # frozen GATED_STATUSES tuple; values are bound, not inlined.
-                f"SELECT * FROM tasks WHERE status IN ({placeholders})",  # nosec B608
-                tuple(GATED_STATUSES),
-            )
-            # Plans too, on the same terms as the API surface: a completed
-            # plan whose integration PR is open is unapproved work, and a
-            # digest that omitted it would go quiet exactly when the last
-            # step of the loop is the one waiting on a human.
-            plan_rows = await self._tq._db.fetch_all(
-                "SELECT * FROM plans WHERE integration_pr_url IS NOT NULL "
-                "AND integration_merged_at IS NULL"
-            )
-            summary = summarize_pending(rows, plan_rows)
+            # Exactly the rows ``GET /api/approvals/pending`` reports, from the
+            # same reader: parked tasks, plans whose integration PR is open,
+            # and autonomous proposals nobody has answered. This used to be a
+            # second, narrower copy of those queries, which is how the digest
+            # came to omit every improvement proposal.
+            summary = await fetch_pending_approvals(self._tq._db)
             interval_h = 6.0
             if self._effective_settings is not None:
                 interval_h = (
                     await self._effective_settings.approvals_digest_interval_h()
                 )
+            # ``outstanding_count``, not ``count``: the latter is a number of
+            # PRs by construction and excludes proposals, so using it here
+            # suppressed the digest entirely whenever a proposal was the only
+            # thing waiting on a human.
             if not should_publish_digest(
-                summary["count"], self._last_approvals_digest_at, interval_h
+                outstanding_count(summary), self._last_approvals_digest_at, interval_h
             ):
                 return
             self._last_approvals_digest_at = datetime.now(UTC)

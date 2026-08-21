@@ -115,6 +115,33 @@ def probe_agent_images(
     )
 
 
+def _unknown_freshness_reason(label: str | None, source_hash: str | None) -> str:
+    """Name WHICH side of the comparison was missing, and what fixes it.
+
+    Only the missing-label case is fixed by a rebuild.  An unreadable source is
+    an environment problem in the process doing the diagnosing (the container
+    sees the entrypoints only through the ``./docker`` bind mount), and telling
+    the operator to rebuild there sends them to rebuild an image that may
+    already be correct.
+
+    Args:
+        label: The entrypoint hash baked into the image, if any.
+        source_hash: The hash of the entrypoint on disk, if it could be read.
+
+    Returns:
+        A short clause naming the cause that actually applies.
+    """
+    unreadable_source = (
+        "its entrypoint source could not be read from here; in a container "
+        "that needs the ./docker bind mount"
+    )
+    if not label and not source_hash:
+        return "the image carries no entrypoint hash, and " + unreadable_source
+    if not label:
+        return "no entrypoint hash on the image; rebuild to populate it"
+    return unreadable_source
+
+
 def probe_agent_image_freshness(
     image_labels: dict[str, str | None],
     source_hashes: dict[str, str | None],
@@ -131,6 +158,13 @@ def probe_agent_image_freshness(
     A tag whose verdict is unknown (no label on the image, or an unreadable
     source) is reported AMBER, never GREEN: a green this check has not
     earned is exactly the failure it exists to prevent.
+
+    An unknown tag also NAMES which side was unknown.  ``image_content_differs``
+    returns None whenever EITHER side is missing, so one sentence used to cover
+    three different situations and told the operator to rebuild in two where
+    rebuilding changes nothing: the image may carry a perfectly good hash while
+    the entrypoint SOURCE could not be read (a container with no ``./docker``
+    mount), or the daemon may have refused to describe the image at all.
 
     Args:
         image_labels: ``image_tag`` to its baked entrypoint hash.
@@ -152,17 +186,24 @@ def probe_agent_image_freshness(
             status=CheckStatus.RED,
             detail=f"stale image(s): {', '.join(stale)}",
         )
-    unknown = sorted(
-        {tag for tag, differs in verdicts.items() if differs is None} | set(errors)
-    )
+    unknown: list[str] = []
+    for tag in sorted(set(verdicts) | set(errors)):
+        if tag in errors:
+            unknown.append(
+                f"{tag} (the daemon could not describe the image: {errors[tag]})"
+            )
+            continue
+        if verdicts[tag] is not None:
+            continue
+        reason = _unknown_freshness_reason(
+            label=image_labels.get(tag), source_hash=source_hashes.get(tag)
+        )
+        unknown.append(f"{tag} ({reason})")
     if unknown:
         return CheckResult(
             check_id="agent_image_freshness",
             status=CheckStatus.AMBER,
-            detail=(
-                f"could not compare {', '.join(unknown)}: no entrypoint hash "
-                "on the image (rebuild to populate it)"
-            ),
+            detail=f"could not compare {'; '.join(unknown)}",
         )
     return CheckResult(
         check_id="agent_image_freshness",
@@ -218,7 +259,22 @@ def probe_git_credential(configured: bool, local_mode: bool) -> CheckResult:
     )
 
 
-def planner_label(provider: str, model: str, effort: str | None = None) -> str:
+#: A provider driven by a binary on PATH (``llm_router.build_argv`` knows it).
+PROVIDER_KIND_CLI = "cli"
+#: A working provider with no binary anywhere: the router calls an
+#: OpenAI-compatible endpoint over HTTP for it.
+PROVIDER_KIND_LOCAL = "local"
+#: A provider nothing can run.  Provider names are unvalidated free text, so a
+#: typo lands here and every plan raises ``UnknownProviderError`` at run time.
+PROVIDER_KIND_UNKNOWN = "unknown"
+
+
+def planner_label(
+    provider: str,
+    model: str,
+    effort: str | None = None,
+    provider_kind: str = PROVIDER_KIND_CLI,
+) -> str:
     """Name the resolved planner for a row's detail text.
 
     A green that does not say WHAT it checked is how the wrong-model probe
@@ -227,12 +283,125 @@ def planner_label(provider: str, model: str, effort: str | None = None) -> str:
     model rather than the one the loop resolves.
 
     An empty ``model`` is spelled out rather than left blank, because "no
-    ``--model`` flag" is itself the configuration being reported.
+    ``--model`` flag" is itself the configuration being reported.  What that
+    omission MEANS depends on the provider, so ``provider_kind`` decides the
+    wording: for a provider with no CLI there is no CLI default to fall back
+    to, ``llm_router`` simply omits the model key and the endpoint answers with
+    whatever it currently has loaded.  The shipped ``local`` registry entry has
+    an empty model, so this is the ordinary case for it, not a corner.
+
+    Args:
+        provider: The resolved provider name, or "" when there is none.
+        model: The resolved model, or "" when the configuration names none.
+        effort: The resolved effort, if any.
+        provider_kind: One of :data:`PROVIDER_KIND_CLI`,
+            :data:`PROVIDER_KIND_LOCAL`, :data:`PROVIDER_KIND_UNKNOWN`.
+
+    Returns:
+        The label, or "" when there is no provider to name.
     """
     if not provider:
         return ""
-    named = f"{provider}/{model}" if model else f"{provider} (the CLI's default model)"
+    if model:
+        named = f"{provider}/{model}"
+    elif provider_kind == PROVIDER_KIND_CLI:
+        named = f"{provider} (the CLI's default model)"
+    elif provider_kind == PROVIDER_KIND_LOCAL:
+        named = (
+            f"{provider} (no model named: the endpoint answers with "
+            "whatever it has loaded)"
+        )
+    else:
+        named = f"{provider} (no model named)"
     return f"{named} at effort {effort}" if effort else named
+
+
+def _established_phrase(authenticated: bool, auth_measured: bool) -> str:
+    """What the pre-prompt probe actually established about the CLI.
+
+    ``authenticated`` is only a measurement when something measured it.  For a
+    provider with no auth command (``claude``, ``agy``) it is derived from the
+    version probe alone, so it means "the binary is on PATH" and nothing more.
+    Rendering that as "installed and authenticated" turned a CLI that was
+    merely present into one this endpoint claimed to have logged in, and sent
+    the operator hunting the OTHER cause of a refused prompt.
+    """
+    if auth_measured and authenticated:
+        return "installed and authenticated"
+    return "installed (its login state was not checked)"
+
+
+#: The remedy for a prompt that was refused by something other than the
+#: session.  Naming the exact file AND ruling out `.env` are both load-bearing:
+#: `.env` is where an operator reaches first, and compose reads that file on
+#: the HOST to substitute variables and passes nothing from it into the
+#: container on its own, so an opt-out written there never reaches the process
+#: and the failure looks unchanged.  Pointing at docs/gotchas.md alone is what
+#: this used to do, and across five walkthroughs the fix itself appeared in no
+#: shipped file, so the precise diagnosis only helped someone who already knew
+#: the answer.
+#:
+#: `.env.container`, not docker-compose.yml.  Both work, and compose is a
+#: TRACKED file: a fresh clone that follows this remedy would be left with a
+#: permanent local diff, which is a remedy nobody can follow twice.
+#: `.env.container` is gitignored and declared as an optional `env_file`, and
+#: an `env_file` hands every key it holds to the process.
+_HOOK_REMEDY = (
+    "a Claude Code hook in the mounted ~/.claude whose detector assumes the "
+    "host OS fires inside the container even when the host is fine. Put that "
+    "hook's own opt-out variable in .env.container (gitignored), e.g. "
+    "`echo CLAUDE_VPN_KILLSWITCH_OFF=1 >> .env.container`, then `docker "
+    "compose up -d`. Not in .env: compose reads that file on the host to "
+    "substitute variables and passes nothing from it into the container. "
+    "See docs/gotchas.md"
+)
+
+
+def _refused_prompt_hint(auth_measured: bool, login_hint: str) -> str:
+    """Hint for a CLI that is present but whose test prompt did not complete.
+
+    ``CheckResult`` auto-fills the registry hint ("install the planner CLI and
+    run its login command") for a hintless RED, so this function decides
+    whether that login instruction is ruled out or is one of the two live
+    candidates.  It is only ruled out when the login state was actually
+    measured; suppressing it on the strength of an unmeasured "authenticated"
+    left one of the two real causes unmentioned.
+    """
+    if auth_measured:
+        return (
+            f"the CLI is authenticated but something refused the prompt: {_HOOK_REMEDY}"
+        )
+    login = login_hint or "run the provider's login command"
+    return (
+        "two causes fit, and nothing here has ruled either out. The CLI's "
+        f"login state was never measured, so it may not be logged in ({login}); "
+        f"or something refused the prompt: {_HOOK_REMEDY}"
+    )
+
+
+def _local_planner_hint(endpoint_checked_elsewhere: bool, endpoint: str) -> str:
+    """Hint for a planner that talks to an OpenAI-compatible endpoint.
+
+    "The worker_endpoint row covers whether that endpoint answers" is only true
+    when that row actually probes it, and it does not when the configured
+    WORKER harness talks to its own API instead (``agy``, the shipped default
+    worker).  Under that combination the endpoint the planner will call is
+    checked by no row at all, so this says so and names the URL, which nothing
+    else prints in that configuration.
+    """
+    if endpoint_checked_elsewhere:
+        return (
+            "nothing to fix if that is deliberate: this planner calls an "
+            "OpenAI-compatible endpoint, and the worker_endpoint row probes "
+            "that same endpoint"
+        )
+    where = f": GET {endpoint}/v1/models" if endpoint else ""
+    return (
+        "no row checked this planner's endpoint. The worker_endpoint row is "
+        "about the configured WORKER harness, which does not use an "
+        "OpenAI-compatible endpoint, so it probed nothing here. Verify the "
+        f"endpoint by hand{where}"
+    )
 
 
 def probe_planner_cli(
@@ -244,17 +413,27 @@ def probe_planner_cli(
     provider: str = "",
     model: str = "",
     effort: str | None = None,
-    provider_is_cli: bool = True,
+    provider_kind: str = PROVIDER_KIND_CLI,
+    auth_measured: bool = False,
+    login_hint: str = "",
+    endpoint_checked_elsewhere: bool = False,
+    endpoint: str = "",
 ) -> CheckResult:
-    """Green only when the CONFIGURED planner is installed, authenticated, and answering.
+    """Green only when the CONFIGURED planner answered a real test prompt.
+
+    Every detail below states what was MEASURED.  Two of them used to state
+    more: an unmeasured "authenticated" was asserted for providers with no auth
+    command, and a green was returned for a planner no round trip had ever been
+    made to.
 
     Args:
         cli_available: The CLI binary resolved on PATH.
-        authenticated: The CLI reports a usable session.
+        authenticated: The CLI reports a usable session.  Only meaningful when
+            ``auth_measured`` is True.
         prompt_ok: Result of one real round-trip, or None when not probed.
-            None preserves the pre-round-trip verdict; False is a hard red,
-            because an installed-and-authenticated CLI whose prompts are refused
-            fails every plan while looking healthy here.
+            None is an amber, never a green: ``probe_provider_roundtrip`` has a
+            round trip for ``claude`` only, so ``codex`` and ``agy`` planners
+            reach this with nothing verified at all.
         rate_limited: The round trip could not run because the subscription is
             throttled.  Amber, never red: Praxis queues brain calls and resumes
             on its own, and ``praxis init`` ends by running doctor, so a red
@@ -266,15 +445,43 @@ def probe_planner_cli(
             to report, which then read exactly as they did before.
         model: The model that resolution named, likewise echoed into the row.
         effort: The effort that resolution named, if any.
-        provider_is_cli: Whether the resolved provider is driven by a binary on
-            PATH at all.  False for ``local``, a working planner provider with
-            no CLI: reporting "not found on PATH" for it would be a red about a
-            correctly configured install, so the row is an honest amber.
+        provider_kind: :data:`PROVIDER_KIND_CLI`, :data:`PROVIDER_KIND_LOCAL`
+            or :data:`PROVIDER_KIND_UNKNOWN`.  The last two are NOT the same
+            thing: ``local`` is a correctly configured planner with no binary
+            to probe, while an unrecognised name is a planner nothing can run,
+            and collapsing them rendered a typo'd provider as "nothing to fix".
+        auth_measured: Whether the login state was actually checked, i.e. the
+            provider has an auth command and it ran.  False means the row must
+            not claim authentication.
+        login_hint: The provider's own login command, quoted when "not logged
+            in" is one of the live candidates.
+        endpoint_checked_elsewhere: Whether the ``worker_endpoint`` row really
+            probes the endpoint a ``local`` planner would call.  It does not
+            when the configured WORKER harness does not use an OpenAI-compatible
+            endpoint (the shipped default worker is ``agy``), and promising
+            coverage that no row provides is how a local planner's endpoint
+            came to be checked by nobody.
+        endpoint: That endpoint's URL, quoted when nothing else prints it.
     """
-    label = planner_label(provider, model, effort)
+    label = planner_label(provider, model, effort, provider_kind)
     who = f"planner {label}" if label else "planner CLI"
     named = f" for {label}" if label else ""
-    if not provider_is_cli:
+    if provider_kind == PROVIDER_KIND_UNKNOWN:
+        return CheckResult(
+            check_id="planner_cli",
+            status=CheckStatus.RED,
+            detail=(
+                f"the configured planner names provider {provider!r}, which "
+                "Praxis has no way to run: every plan will fail on it"
+            ),
+            hint=(
+                "provider names are free text and reach no validation until a "
+                "plan runs. Point the plan role at a supported provider: "
+                "claude, codex or agy (each a CLI on PATH), or local (an "
+                "OpenAI-compatible endpoint)"
+            ),
+        )
+    if provider_kind == PROVIDER_KIND_LOCAL:
         return CheckResult(
             check_id="planner_cli",
             status=CheckStatus.AMBER,
@@ -285,11 +492,7 @@ def probe_planner_cli(
             ),
             # The registry hint says to install the CLI and log in, which is
             # the one thing that cannot help a provider that has no CLI.
-            hint=(
-                "nothing to fix if that is deliberate: this planner is an "
-                "OpenAI-compatible endpoint, and the worker_endpoint row "
-                "covers whether that endpoint answers"
-            ),
+            hint=_local_planner_hint(endpoint_checked_elsewhere, endpoint),
         )
     if not cli_available:
         return CheckResult(
@@ -303,12 +506,13 @@ def probe_planner_cli(
             status=CheckStatus.RED,
             detail=f"planner CLI installed but not authenticated{named}",
         )
+    established = _established_phrase(authenticated, auth_measured)
     if rate_limited:
         return CheckResult(
             check_id="planner_cli",
             status=CheckStatus.AMBER,
             detail=(
-                f"{who} is installed and authenticated; the subscription "
+                f"{who} is {established}; the subscription "
                 "is rate limited right now, so no test prompt was possible"
                 + (f" [{prompt_error}]" if prompt_error else "")
             ),
@@ -318,52 +522,58 @@ def probe_planner_cli(
             ),
         )
     if prompt_ok is False:
+        causes = (
+            "a hook or policy may be blocking it"
+            if auth_measured
+            else "it may not be logged in, or a hook or policy may be blocking it"
+        )
         return CheckResult(
             check_id="planner_cli",
             status=CheckStatus.RED,
             detail=(
-                f"{who} is installed and authenticated but a test prompt "
-                "did not complete; a hook or policy may be blocking it"
+                f"{who} is {established} but a test prompt "
+                f"did not complete; {causes}"
                 + (f" [{prompt_error}]" if prompt_error else "")
             ),
             # Explicit, because the registry hint for this check says "run its
-            # login command" and that is the one thing that will NOT help: the
-            # CLI is already authenticated. CheckResult only auto-fills a hint
-            # when none is passed.
-            #
-            # It states the REMEDY, not just the cause. Pointing at
-            # docs/gotchas.md alone is what this hint used to do, and across
-            # five walkthroughs the fix itself appeared in no shipped file, so
-            # the precise diagnosis only helped someone who already knew the
-            # answer. Naming docker-compose.yml AND ruling out .env are both
-            # load-bearing: .env is where an operator would reach first, and an
-            # unrecognised key there is IGNORED, so the opt-out never reaches
-            # the container and the failure looks unchanged.
-            hint=(
-                "the CLI is authenticated but something refused the prompt. "
-                "The usual cause is a Claude Code hook in the mounted "
-                "~/.claude whose detector assumes the host OS, so it fires "
-                "inside the container even when the host is fine. Set that "
-                "hook's own opt-out variable (e.g. CLAUDE_VPN_KILLSWITCH_OFF=1) "
-                "as a LITERAL under environment: in docker-compose.yml, then "
-                "`docker compose up -d`. Not in .env: an unrecognised key "
-                "there is ignored and never reaches the container. "
-                "See docs/gotchas.md"
-            ),
+            # login command". Whether that instruction helps depends on whether
+            # anything measured the login state, which is what the helper
+            # decides. CheckResult only auto-fills a hint when none is passed.
+            hint=_refused_prompt_hint(auth_measured, login_hint),
         )
     if prompt_ok is True:
+        # The round trip is the strongest evidence this row can hold, so it is
+        # reported as itself rather than through the pre-prompt phrase: a CLI
+        # that answered a prompt has a working session whether or not a
+        # separate auth command was ever run.
+        answered = (
+            "installed, authenticated, and answering prompts"
+            if auth_measured
+            else "installed and answering prompts"
+        )
         return CheckResult(
             check_id="planner_cli",
             status=CheckStatus.GREEN,
-            detail=f"{who} installed, authenticated, and answering prompts",
+            detail=f"{who} {answered}",
         )
     return CheckResult(
         check_id="planner_cli",
-        status=CheckStatus.GREEN,
-        # "no test prompt was made" is load bearing: this is the ONE green that
-        # was not earned by a round trip, and a reader cannot tell it from the
-        # one above without being told.
-        detail=f"{who} installed and authenticated; no test prompt was made",
+        status=CheckStatus.AMBER,
+        # AMBER, not green. Only `claude` has a round trip defined, so a
+        # `codex` or `agy` planner lands here having had NOTHING verified: for
+        # agy, `authenticated` came from `agy help` exiting 0 while the harness
+        # registry says it needs an interactive `agy login`, so an agy planner
+        # with empty credentials read as a clean pass. Amber is this module's
+        # word for "not checked" (see api/doctor._degraded).
+        detail=(
+            f"{who} is {established}; no test prompt was made, so nothing "
+            "here established that it can answer one"
+        ),
+        hint=(
+            "no round trip is defined for this provider, so its ability to "
+            "answer is unverified here. `claude` is the one planner provider "
+            "doctor can prove end to end"
+        ),
     )
 
 

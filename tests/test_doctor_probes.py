@@ -202,12 +202,23 @@ def test_agent_image_freshness_amber_when_nothing_was_compared():
     textually identical to a verified pass. In a container that was ALWAYS the
     case, so the check the plan added to catch stale agent images reported a
     clean bill of health without ever looking at one.
+
+    UPDATED: the amber's WORDING is now asserted too. This scenario is the
+    unreadable-SOURCE one (the image carries a good hash, `source_hashes` is
+    empty), and the row used to answer it with "no entrypoint hash on the
+    image (rebuild to populate it)" - the wrong side of the comparison and a
+    remedy that cannot help, since rebuilding does not create the ./docker
+    mount this process is missing.
     """
     result = probe_agent_image_freshness(
         image_labels={"opencode-agent:latest": "SAME"}, source_hashes={}
     )
     assert result.status is CheckStatus.AMBER
     assert "opencode-agent:latest" in result.detail
+    assert "entrypoint source could not be read" in result.detail
+    assert "rebuild" not in result.detail.lower(), (
+        "the image's hash was readable; rebuilding fixes nothing here"
+    )
 
 
 @pytest.mark.unit
@@ -369,9 +380,16 @@ def test_planner_cli_red_when_installed_but_not_authenticated():
 
 
 @pytest.mark.unit
-def test_planner_cli_green_when_installed_and_authenticated():
+def test_planner_cli_amber_when_installed_but_no_prompt_was_ever_made():
+    """UPDATED: this used to assert GREEN, which was a pass nothing earned.
+
+    Installed plus a derived "authenticated" is not evidence that the planner
+    answers, and for `agy` the derivation is `agy help` exiting 0 while the
+    harness registry says it needs an interactive `agy login`. Amber is this
+    project's word for "not checked".
+    """
     result = probe_planner_cli(cli_available=True, authenticated=True)
-    assert result.status is CheckStatus.GREEN
+    assert result.status is CheckStatus.AMBER
 
 
 @pytest.mark.unit
@@ -416,13 +434,22 @@ def test_planner_cli_red_when_installed_but_prompt_refused():
 
     A host hook mounted into the container (walkthrough #4) refused every
     prompt while this check stayed green.
+
+    UPDATED: `auth_measured=True` is now passed explicitly. Suppressing the
+    login hint is only correct when something actually MEASURED the login
+    state, which is true for `codex` (it has `codex login status`) and false
+    for `claude`. The unmeasured case is pinned separately in
+    tests/test_doctor_states_what_it_measured.py.
     """
-    result = probe_planner_cli(cli_available=True, authenticated=True, prompt_ok=False)
+    result = probe_planner_cli(
+        cli_available=True, authenticated=True, auth_measured=True, prompt_ok=False
+    )
 
     assert result.status is CheckStatus.RED
     assert "prompt" in result.detail.lower()
     # The registry hint says "run its login command", which is actively wrong
-    # here: the CLI IS logged in. The probe must override it.
+    # here: the CLI IS logged in, and an auth command established that. The
+    # probe must override it.
     assert "login" not in result.hint.lower()
 
 
@@ -436,18 +463,24 @@ def test_planner_cli_red_hint_states_the_remedy_not_just_the_diagnosis():
 
     Two things make this remedy wrong in the obvious place and right in exactly
     one place, and both are asserted here because either alone reads as
-    plausible: the opt-out must go in `docker-compose.yml`, and it must NOT go
-    in `.env`, where an unrecognised key is silently ignored and never reaches
-    the container at all. A hint naming only the variable would send the
-    operator straight to `.env`, which fails silently and looks like the
-    remedy not working.
+    plausible: the opt-out must go in `.env.container`, and it must NOT go in
+    `.env`, from which compose passes nothing into the container at all. A hint
+    naming only the variable would send the operator straight to `.env`, which
+    fails silently and looks like the remedy not working.
+
+    `.env.container` rather than `docker-compose.yml`, which this pinned until
+    the remedy was changed: compose is a TRACKED file, so a fresh clone that
+    followed the old remedy was left holding a permanent local diff. Both work;
+    only one can be followed twice.
     """
     hint = probe_planner_cli(
         cli_available=True, authenticated=True, prompt_ok=False
     ).hint.lower()
 
-    assert "docker-compose.yml" in hint, "the hint must name where the fix goes"
-    assert ".env" in hint, "the hint must name where the fix does NOT go"
+    assert ".env.container" in hint, "the hint must name where the fix goes"
+    assert ".env:" in hint or "not in .env" in hint, (
+        "the hint must name where the fix does NOT go"
+    )
 
 
 @pytest.mark.unit
@@ -458,10 +491,18 @@ def test_planner_cli_green_when_the_round_trip_answers():
 
 
 @pytest.mark.unit
-def test_planner_cli_unprobed_keeps_the_old_verdict():
+def test_planner_cli_unprobed_is_amber_and_says_so():
+    """UPDATED: "keeps the old verdict" meant keeping a GREEN nobody earned.
+
+    The old verdict was install-plus-auth, and for the two providers that
+    reach this branch (`codex`, `agy`) neither half is a measurement of
+    whether the planner answers. The row now reports that it verified
+    nothing.
+    """
     result = probe_planner_cli(cli_available=True, authenticated=True)
 
-    assert result.status is CheckStatus.GREEN
+    assert result.status is CheckStatus.AMBER
+    assert "no test prompt was made" in result.detail
 
 
 @pytest.mark.unit

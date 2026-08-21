@@ -206,7 +206,17 @@ def _live_presets() -> list[dict[str, Any]] | None:
         return None
     if response.status_code != 200:
         return None
-    data = response.json()
+    try:
+        data = response.json()
+    except ValueError:
+        return None
+    # `isinstance` before `.get`, because the docstring above promises that
+    # None covers every way the orchestrator can fail to answer usefully, and
+    # a bare `data.get("presets")` does not deliver that: a 200 carrying a
+    # JSON list raises AttributeError straight out of the CLI as a traceback,
+    # which is the one outcome this fallback exists to prevent.
+    if not isinstance(data, dict):
+        return None
     presets = data.get("presets")
     return presets if isinstance(presets, list) else None
 
@@ -258,6 +268,29 @@ def _check_list(response: httpx.Response) -> list[dict[str, Any]]:
     return data
 
 
+def _copyable(line: str) -> None:
+    """Print a command line the operator is meant to select and paste.
+
+    ``soft_wrap=True`` is the whole point. rich's default wrapping inserts a
+    REAL newline at the console width, breaking on whitespace, so a command
+    wider than the terminal arrives as two lines and selecting either one
+    yields half a command. That is how `praxis reject <plan-id>` shipped with
+    its verb on one row and its argument on the next, and how
+    `praxis init --non-interactive --preset hosted-openweight
+    --accept-preset-requirements` lost its trailing flag: the uuid itself
+    never folds, because rich breaks only on whitespace, which is exactly why
+    a wide terminal and a test pinned to one both looked fine.
+
+    Soft wrapping emits the line whole and lets the TERMINAL wrap it for
+    display, which keeps it one logical line for selection and one line when
+    the output is redirected to a file.
+
+    Args:
+        line: The full command, already formatted.
+    """
+    console.print(line, soft_wrap=True)
+
+
 @app.command()
 def projects() -> None:
     """List all projects."""
@@ -265,25 +298,31 @@ def projects() -> None:
     with _client() as client:
         data = _check_list(client.get("/api/projects"))
     table = Table(title="Projects")
-    # A uuid, whole. `add-project` prints a full id once at creation time and
-    # nothing else ever does, while `configure`, `submit`, and `plans` all look
-    # a project up by EXACT match: a truncated id here means that from a new
-    # terminal tomorrow the documented path is unreachable without curl. `fold`
-    # wraps the value instead of cutting it when the console is narrow.
-    table.add_column("ID", style="dim", max_width=36, overflow="fold")
+    # No ID column, for the reason `tasks` and `plans` already carry. This
+    # surface asserted the opposite in a comment ("a uuid, whole") while
+    # `max_width=36` delivered nineteen characters: it is a MAXIMUM, so with
+    # five columns competing for an 80-column console rich shrank the id and
+    # folded every uuid across two rows. `add-project` prints a full id once at
+    # creation and nothing else ever does, while `configure`, `submit`, and
+    # `plans` all look a project up by EXACT match, so a folded id means that
+    # from a new terminal tomorrow the documented path is unreachable without
+    # curl. The id goes below the table as a copyable line instead.
     table.add_column("Name")
     table.add_column("Repo")
     table.add_column("Model")
     table.add_column("Gate")
     for project in data:
         table.add_row(
-            project["id"],
             project["name"],
             project["repo_url"],
             project["model_name"],
             "ON" if project["approval_gate"] else "OFF",
         )
     console.print(table)
+    if data:
+        console.print()
+        for project in data:
+            _copyable(f"praxis plans {project['id']}   # {project['name']}")
 
 
 @app.command()
@@ -291,15 +330,26 @@ def add_project(
     name: str = typer.Argument(..., help="Project display name"),
     repo: str = typer.Argument(..., help="GitHub repo URL"),
     # Optional because the API has always allowed `model_name` to be null and
-    # fall back to the configured worker preset. Requiring it here asked the
-    # operator for a value that is undiscoverable under the shipped default
-    # (`gemini-agy`), whose model is named only in the settings YAML and nowhere
-    # the CLI prints. Still positional, so existing invocations are unchanged.
+    # fall back to the deployment's configured worker model. Requiring it here
+    # asked the operator for a value that is undiscoverable under the shipped
+    # default, whose model is named only in the settings file and nowhere the
+    # CLI prints. Still positional, so existing invocations are unchanged.
+    #
+    # Both help strings below name DEFAULT_WORKER_*, because that is what the
+    # API actually reads (`body.model_name or settings.default_worker_model`).
+    # They used to say "the configured worker preset", which is a different
+    # thing: `praxis presets` flags a preset with `default: true`, and that
+    # flag changes what `praxis init` OFFERS, not what an omitted flag
+    # resolves to. After `praxis init --preset local-lmstudio` the two
+    # disagree, and the help was a claim about resolution order that was then
+    # wrong. This is the second time this line has asserted the wrong default,
+    # so say which variable is read and stop naming an intermediary.
     model: str | None = typer.Argument(
         None,
         help=(
-            "Worker model name for this project. Omit to use the model from "
-            "the configured worker preset."
+            "Worker model for this project. Omit to use DEFAULT_WORKER_MODEL, "
+            "or the settings file's default_worker_model. If neither is set "
+            "the server refuses with a 422 rather than guessing."
         ),
     ),
     harness: str | None = typer.Option(
@@ -307,9 +357,9 @@ def add_project(
         "--harness",
         help=(
             "Coding harness this project's worker runs in, e.g. 'opencode' or "
-            "'agy'. Omit to use the harness from the configured worker preset, "
-            "which is what `praxis presets` shows as the default. The server "
-            "rejects an unknown value and names the allowed set."
+            "'agy'. Omit to use DEFAULT_WORKER_HARNESS, or the settings file's "
+            "default_worker_harness. The server rejects an unknown value and "
+            "names the allowed set."
         ),
     ),
 ) -> None:
@@ -465,15 +515,36 @@ def plans(project_id: str = typer.Argument(..., help="Project ID")) -> None:
             _status_cell(plan),
         )
     console.print(table)
-    if data:
-        console.print()
-        for plan in data:
-            console.print(f"praxis tasks {plan['id']}   # {_status_cell(plan)}")
-            if plan.get("integration_pr_url") and not plan.get("integration_merged_at"):
-                console.print(
-                    f"praxis merge-plan {plan['id']}   # integrate onto the base branch"
-                )
-                console.print(f"  PR: {plan['integration_pr_url']}")
+    if not data:
+        console.print(
+            f"\nNo plans for project {project_id}. "
+            "Create one with 'praxis submit <project-id> --file spec.md'."
+        )
+        return
+    console.print()
+    for plan in data:
+        _copyable(f"praxis tasks {plan['id']}   # {_status_cell(plan)}")
+        # One next-step line per STATE, not only for the one state that had
+        # one. A plan whose only offered verb was `praxis tasks` left the
+        # reader at an empty table with no way forward: a pending autonomous
+        # proposal needs approve or reject, and a completed plan with no
+        # integration PR needs to be told that, since its work is on the plan
+        # branch and nothing points at it.
+        if plan.get("integration_pr_url") and not plan.get("integration_merged_at"):
+            _copyable(
+                f"praxis merge-plan {plan['id']}   # integrate onto the base branch"
+            )
+            _copyable(f"  PR: {plan['integration_pr_url']}")
+        elif plan.get("status") == "pending" and plan.get("source") == "autonomous":
+            _copyable(f"praxis approve {plan['id']}   # dispatch it")
+            _copyable(f"praxis reject {plan['id']}   # close it")
+        elif plan.get("status") == "completed" and not plan.get(
+            "integration_merged_at"
+        ):
+            console.print(
+                "  No integration PR: this plan's work is on its own branch "
+                "and is NOT on the base branch."
+            )
 
 
 def _status_cell(plan: dict[str, Any]) -> str:
@@ -545,10 +616,19 @@ def tasks(plan_id: str = typer.Argument(..., help="Plan ID")) -> None:
             str(task["attempt"]),
         )
     console.print(table)
-    if data:
-        console.print()
-        for task in data:
-            console.print(f"praxis task {task['id']}   # {task['title']}")
+    if not data:
+        # A bordered table with a header row and no body is indistinguishable
+        # from "the plan failed to decompose", and this is the first thing an
+        # operator types after `praxis plans`.
+        console.print(
+            f"\nPlan {plan_id} has no tasks yet. A pending plan has none until "
+            "it is decomposed; check its status with 'praxis plans "
+            "<project-id>'."
+        )
+        return
+    console.print()
+    for task in data:
+        _copyable(f"praxis task {task['id']}   # {task['title']}")
 
 
 @app.command()
@@ -680,11 +760,28 @@ def logs(
 
 @app.command()
 def stop(task_id: str = typer.Argument(..., help="Task ID")) -> None:
-    """Stop a running agent."""
+    """Stop a task: kill any running agent AND mark the task failed.
+
+    The second half is not a side effect, it is most of what this does. The
+    endpoint sets the task FAILED and drops its stored worker session
+    unconditionally, outside the loop over running containers, so `stop` on a
+    task with nothing running still ends the task and discards the
+    conversation a resume would have replayed. Described only as "stop a
+    running agent", and printing only "Stopped 0 agent(s)", it read as a
+    no-op. `praxis task <id>` will show FAILED afterwards either way.
+    """
 
     with _client() as client:
         data = _check_dict(client.post(f"/api/tasks/{task_id}/stop"))
-    console.print(f"[yellow]Stopped {data['stopped']} agent(s)[/yellow]")
+    stopped = data["stopped"]
+    console.print(
+        f"[yellow]Stopped {stopped} agent(s)[/yellow]; task {task_id} is now "
+        "failed and its worker session was cleared."
+    )
+    if not stopped:
+        console.print(
+            "[dim]No container was running, so only the task status changed.[/dim]"
+        )
 
 
 @app.command()
@@ -738,7 +835,15 @@ def pending() -> None:
     # only `praxis plans <project-id>` would reveal it, which meant knowing
     # both that it existed and which project it belonged to.
     proposals = data.get("proposals") or []
-    if not data["count"] and not proposals:
+    # Blocked questions are a THIRD gate and were reported by nothing. The
+    # worker asked something, the brain declined to answer it or answered
+    # below the project's confidence threshold, and the task has been sitting
+    # at NEEDS_CLARIFICATION ever since. `GATED_STATUSES` covers the merge
+    # gate only, so `count` excludes them exactly as it excludes proposals,
+    # and each new kind of parked work has to be tested for separately here or
+    # this verb goes quiet in precisely the state it exists to report.
+    clarifications = data.get("clarifications") or []
+    if not data["count"] and not proposals and not clarifications:
         console.print("[green]Nothing awaiting approval.[/green]")
         return
 
@@ -766,6 +871,21 @@ def pending() -> None:
             )
         console.print(plan_table)
 
+    if clarifications:
+        question_table = Table(
+            title=f"{len(clarifications)} task(s) blocked on a question"
+        )
+        question_table.add_column("Age")
+        question_table.add_column("Task", max_width=30)
+        question_table.add_column("Question", overflow="fold")
+        for blocked in clarifications:
+            question_table.add_row(
+                f"{int(blocked['age_hours'])}h",
+                blocked["title"] or blocked["task_id"],
+                blocked["question"] or "(no question recorded)",
+            )
+        console.print(question_table)
+
     if proposals:
         proposal_table = Table(
             title=f"{len(proposals)} improvement proposal(s) awaiting approval"
@@ -787,29 +907,44 @@ def pending() -> None:
     # default word-wrap only breaks on whitespace, so a token with none (a
     # uuid, a url) survives contiguous at any width.
     for task in tasks:
-        console.print(
+        _copyable(
             f"praxis merge {task['task_id']}   # {task['title'] or task['task_id']}"
         )
+        # The gate is two-way at the API (`approve-merge` and `reject-merge`)
+        # and was one-way here, so the only thing `pending` let you say about
+        # parked work was yes. On its own line, not appended to the merge
+        # line: a verb and a 36-character uuid on one line already fills half
+        # an 80-column console, and rich breaks on whitespace, so a second
+        # command on the same line puts `praxis reject-merge` on one row and
+        # its id on the next. That is not a copyable line, it is two halves.
+        _copyable(f"praxis reject-merge {task['task_id']}   # send it back")
         if task["pr_url"]:
-            console.print(f"  PR: {task['pr_url']}")
+            _copyable(f"  PR: {task['pr_url']}")
     for plan in plans_awaiting:
         # The plan line names the same verb the per-task line does, because
         # `merge-plan` is one command that covers both stages: it drains
         # whatever is still parked, then merges the integration PR. A plan
         # reaching this list means stage one is already done.
-        console.print(
+        _copyable(
             f"praxis merge-plan {plan['plan_id']}   # integrate onto the base branch"
         )
         if plan["pr_url"]:
-            console.print(f"  PR: {plan['pr_url']}")
+            _copyable(f"  PR: {plan['pr_url']}")
     for proposal in proposals:
         # Both verbs, because unlike the merge gate this one is genuinely
         # two-way and rejecting is the common answer: `approve` dispatches the
         # proposal's tasks, `reject` closes it for good.
-        console.print(
-            f"praxis approve {proposal['plan_id']}   # or: praxis reject "
-            f"{proposal['plan_id']}"
-        )
+        #
+        # One per LINE. Both on one line measured 110 characters, and rich
+        # word-wraps at the console width breaking only on whitespace, so at
+        # 80 columns the uuid survived intact while `praxis reject` and its
+        # argument landed on different rows. Selecting either row gave you
+        # half a command. The uuid never folds, which is what made this look
+        # fine in a wide terminal and in a test that pinned one.
+        _copyable(f"praxis approve {proposal['plan_id']}   # dispatch it")
+        _copyable(f"praxis reject {proposal['plan_id']}   # close it")
+    for blocked in clarifications:
+        _copyable(f'praxis clarify {blocked["task_id"]} "your answer here"')
 
 
 @app.command()
@@ -825,6 +960,74 @@ def merge(
             _abandoned_merge(exc)
         data = _check_dict(response)
     console.print(f"[green]Merged:[/green] {data['task_id']} ({data['status']})")
+
+
+@app.command()
+def clarify(
+    task_id: str = typer.Argument(..., help="Full task ID from `praxis pending`"),
+    answer: str = typer.Argument(..., help="Your answer to the worker's question"),
+) -> None:
+    """Answer a task's blocking question and put it back in the queue.
+
+    `POST /api/tasks/{id}/clarify` has existed the whole time with no verb in
+    front of it, and no surface listed the tasks waiting on it either. A
+    worker asks a question, the brain declines to answer it or answers below
+    the project's confidence threshold, and the task parks at
+    NEEDS_CLARIFICATION. `praxis pending` reported only the merge gate, so the
+    product stopped and waited for a person without telling any person: the
+    only way to find out was to poll MCP or read the task row.
+
+    The answer is re-queued for the worker, which resumes its own session
+    where the harness supports one, so answer the question rather than
+    restating the task.
+    """
+
+    with _client() as client:
+        data = _check_dict(
+            client.post(f"/api/tasks/{task_id}/clarify", json={"answer": answer})
+        )
+    # The endpoint answers `{"status": "requeued"}` and names no id, so the id
+    # printed here is the one the operator passed in. Reading it back off the
+    # response would print an empty string and read as a task that vanished.
+    console.print(f"[green]Answered:[/green] {task_id} ({data.get('status')})")
+    _copyable(f"praxis task {task_id}   # watch it pick up again")
+
+
+@app.command("reject-merge")
+def reject_merge(
+    task_id: str = typer.Argument(..., help="Full task ID from `praxis pending`"),
+    feedback: str | None = typer.Option(
+        None,
+        "--feedback",
+        help=(
+            "Why you are rejecting it. Posted as a comment on the task's PR "
+            "and stored as the failure reason, so the retry has something to "
+            "work from. Omit and the task records a bare rejection."
+        ),
+    ),
+) -> None:
+    """Reject one parked task: comment on its PR and send it back.
+
+    The other half of the merge gate. `POST /api/tasks/{id}/reject-merge` has
+    existed the whole time with no verb in front of it, so `praxis pending`
+    printed a `merge` line for parked work and offered no way to say no:
+    `praxis reject` takes a PLAN id (an autonomous improvement proposal) and
+    404s on a task id, which reads as a broken command rather than the wrong
+    one. A gate with one door is not a gate.
+
+    The task is failed and re-dispatched if retry attempts remain, otherwise
+    it stays failed. That is the server's decision, and the printed line says
+    which happened rather than assuming.
+    """
+
+    body = {"feedback": feedback} if feedback else {}
+    with _client() as client:
+        data = _check_dict(client.post(f"/api/tasks/{task_id}/reject-merge", json=body))
+    console.print(f"[red]Rejected:[/red] {data['task_id']} ({data['status']})")
+    console.print(
+        f"Run 'praxis task {task_id}' to see whether it was re-dispatched or "
+        "has exhausted its attempts."
+    )
 
 
 @app.command("merge-plan")
@@ -859,11 +1062,11 @@ def merge_plan(
     if integration_status == "merged":
         console.print("[green]Integrated:[/green] plan merged to its base branch")
         if integration.get("pr_url"):
-            console.print(f"  PR: {integration['pr_url']}")
+            _copyable(f"  PR: {integration['pr_url']}")
     elif integration_status == "already_merged":
         console.print("[green]Already integrated:[/green] nothing left to merge")
         if integration.get("pr_url"):
-            console.print(f"  PR: {integration['pr_url']}")
+            _copyable(f"  PR: {integration['pr_url']}")
     elif integration_status == "not_ready" and not errors:
         console.print(
             f"[yellow]Not integrated:[/yellow] {integration.get('reason') or 'plan is not finished'}"
@@ -874,6 +1077,29 @@ def merge_plan(
             f"{integration.get('reason') or 'no parked tasks and no integration PR'}"
         )
         console.print("Run 'praxis tasks <plan-id>' to see where the plan stopped.")
+    elif integration_status == "none" and not errors:
+        # The branch that was missing, and the likeliest one: tasks merged
+        # onto the PLAN branch and there is no integration PR, because the
+        # best-effort `gh pr create` did not produce one. Without this the
+        # whole output was `Merged: N task(s)` and exit 0, which reads as
+        # landed on the base branch. It is not: it is on the plan branch with
+        # nothing pointing at it. The reason the endpoint returned was
+        # discarded on the floor.
+        console.print(
+            f"[yellow]Not integrated:[/yellow] {approved} task(s) merged onto "
+            "the plan branch, but the plan has no integration PR "
+            f"({integration.get('reason') or 'reason not reported'}). The work "
+            "is NOT on the base branch."
+        )
+        console.print("Run 'praxis plans <project-id>' to see the plan's state.")
+    elif not errors:
+        # A status this CLI does not know about. Saying nothing would put an
+        # unrecognised value back in the silent category this chain exists to
+        # empty, so name it and stay out of the way.
+        console.print(
+            f"[yellow]Integration status[/yellow] {integration_status!r} for "
+            f"plan {plan_id}: {integration.get('reason') or 'no reason given'}"
+        )
 
     for failure in errors:
         console.print(
@@ -980,11 +1206,18 @@ def presets() -> None:
     the model registry and role chains, not presets, and no other verb
     covers them either. Tries the running orchestrator first, since that is
     the configuration actually in effect; falls back to reading the settings
-    YAML directly when the orchestrator is unreachable or no token has been
+    file directly when the orchestrator is unreachable or no token has been
     set up yet, which is exactly the moment a newcomer running `praxis init`
-    for the first time needs this list the most. Both sources read the same
-    underlying preset records, so the fallback is never a degraded view, only
-    a different path to identical data.
+    for the first time needs this list the most.
+
+    Those two sources read the same records, so that fallback is a different
+    path to identical data. There is a THIRD source, and it is not: when the
+    settings file is absent, `_fetch_presets_or_defaults` returns a single
+    hardcoded preset that carries neither the shipped model string nor the
+    `default` flag. The docstring here used to say the fallback "is never a
+    degraded view", which was false in precisely the case it named, a
+    newcomer who has not run init yet, so the source line below distinguishes
+    all three.
     """
     data = _live_presets()
     source = "the running orchestrator"
@@ -993,7 +1226,16 @@ def presets() -> None:
         # The resolved path, not a literal: PRAXIS_CONFIG_PATH can move this
         # file, and naming the wrong one sends the reader to edit a file the
         # process never reads.
-        source = f"{config_file_path()} (orchestrator unreachable or not set up yet)"
+        settings_path = config_file_path()
+        if Path(settings_path).is_file():
+            source = f"{settings_path} (orchestrator unreachable or not set up yet)"
+        else:
+            source = (
+                f"a built-in fallback: no settings file at "
+                f"{Path(settings_path).resolve()}, and the orchestrator is "
+                "unreachable. Run this from your Praxis install directory to "
+                "see the presets this deployment actually ships."
+            )
 
     table = Table(title="Worker Presets")
     table.add_column("Name")
@@ -1016,7 +1258,26 @@ def presets() -> None:
         console.print()
         for preset in data:
             name = preset.get("name") or ""
-            console.print(f"praxis init --non-interactive --preset {name}")
+            # A preset with unmet requirements needs the flag, or this exact
+            # line exits 1. `praxis init` refuses a preset it cannot satisfy
+            # non-interactively, and two of the three shipped presets need a
+            # credential, so printing the bare command for all of them handed
+            # the reader a copy-pasteable command guaranteed to fail. The
+            # requirement is not a reason to hide the preset: it is a reason
+            # to print the command that actually runs it.
+            if preset.get("requires"):
+                _copyable(
+                    f"praxis init --non-interactive --preset {name} "
+                    "--accept-preset-requirements"
+                )
+            else:
+                _copyable(f"praxis init --non-interactive --preset {name}")
+        if any(preset.get("requires") for preset in data):
+            console.print(
+                "\n[dim]--accept-preset-requirements says you have already "
+                "supplied the credential in the Needs column. It does not "
+                "supply it.[/dim]"
+            )
 
 
 @app.command("env")
@@ -1047,8 +1308,15 @@ def env() -> None:
         auth_from = "AUTH_TOKEN environment variable"
     elif os.environ.get("ORCHESTRATOR_TOKEN"):
         auth_from = "ORCHESTRATOR_TOKEN environment variable"
-    elif values.get("AUTH_TOKEN") or values.get("ORCHESTRATOR_TOKEN"):
+    elif values.get("AUTH_TOKEN"):
         auth_from = f"AUTH_TOKEN in {path}"
+    elif values.get("ORCHESTRATOR_TOKEN"):
+        # Named separately, because the whole point of this verb is saying
+        # which source won. The single branch this replaces reported
+        # "AUTH_TOKEN in <path>" for a file containing only
+        # ORCHESTRATOR_TOKEN, i.e. it named a key that is not in the file, on
+        # the one surface whose job is to stop you debugging the wrong one.
+        auth_from = f"ORCHESTRATOR_TOKEN in {path}"
 
     console.print(f"URL:   {_api_url()}")
     console.print(f"       from {url_from}")
@@ -1059,6 +1327,14 @@ def env() -> None:
             "directory. Run this from your Praxis install directory."
         )
     if auth_from == "not found":
+        # `_auth_token()`'s own error names the two variables and points at
+        # `praxis init`, but this path never calls it, so the verb that error
+        # tells you to run was the one place that dead-ended with no remedy.
+        console.print(
+            "\n[yellow]No token resolved.[/yellow] Set AUTH_TOKEN or "
+            "ORCHESTRATOR_TOKEN in this shell, or run [cyan]praxis init[/cyan] "
+            "from your Praxis install directory to write one to .env."
+        )
         raise typer.Exit(1)
 
     # The token is never printed above, only its source. It IS printed here,
@@ -1077,11 +1353,68 @@ def env() -> None:
 
 @app.command()
 def onboard() -> None:
-    """First-run helper: point the operator at model configuration."""
+    """First-run helper: report what is configured and name the next verb.
+
+    This used to print "No models configured yet" unconditionally, without
+    making a single call, on an install that ships four registered models and
+    three role chains. It also sent the operator to `praxis config`, which is
+    a typer GROUP: running it prints help and registers nothing. Both halves
+    were false on every install, which is the worst place for it, since this
+    is the verb a newcomer runs before they know enough to doubt it.
+    """
+    console.print("[bold]Welcome to Praxis.[/bold]")
+
+    registry: list[dict[str, Any]] | None = None
+    roles: dict[str, Any] | None = None
+    if _token_available():
+        try:
+            with _client() as client:
+                registry_response = client.get("/api/settings/registry")
+                roles_response = client.get("/api/settings/roles")
+            # Shapes taken from `config show`, which is the only other reader:
+            # the registry endpoint answers with a LIST of model records and
+            # the roles endpoint with a MAPPING of role to chain. Guarding on
+            # the type rather than assuming keeps a changed shape from being
+            # rendered as "nothing configured".
+            if registry_response.status_code < 400:
+                body = registry_response.json()
+                registry = body if isinstance(body, list) else None
+            if roles_response.status_code < 400:
+                body = roles_response.json()
+                roles = body if isinstance(body, dict) else None
+        except httpx.RequestError:
+            registry = None
+            roles = None
+
+    if registry is None:
+        # Silence would read as "nothing is configured", which is the very
+        # claim this rewrite exists to stop making. Say that the question was
+        # not answered, and how to answer it.
+        console.print(
+            "Could not read this install's model configuration "
+            "(the orchestrator is unreachable or no token is set up yet).\n"
+            "Run [cyan]praxis env[/cyan] to see where the CLI is pointing, "
+            "then [cyan]praxis init[/cyan] if it is not running yet."
+        )
+    elif registry:
+        chains = ", ".join(
+            f"{role}: {' -> '.join(chain)}"
+            for role, chain in sorted((roles or {}).items())
+            if chain
+        )
+        console.print(
+            f"{len(registry)} model(s) registered"
+            + (f"; role chains {chains}" if chains else "; no role chains set")
+        )
+        console.print("Run [cyan]praxis config show[/cyan] to see them in full.")
+    else:
+        console.print("No models are registered yet.")
+
     console.print(
-        "[bold]Welcome to Praxis.[/bold] No models configured yet.\n"
-        "Run [cyan]praxis config[/cyan] to register models and set role fallback chains,\n"
-        "or [cyan]praxis config show[/cyan] to view the current defaults."
+        "To change them: [cyan]praxis config add-model[/cyan] registers a "
+        "model and [cyan]praxis config set-role[/cyan] sets a role's fallback "
+        "chain. [cyan]praxis config[/cyan] on its own is a command group and "
+        "only prints help."
     )
 
 

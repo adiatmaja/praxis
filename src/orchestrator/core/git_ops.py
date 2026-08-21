@@ -50,6 +50,48 @@ async def _merge_sleep(seconds: float) -> None:
     await asyncio.sleep(seconds)
 
 
+def _pr_url_from_output(stdout: str, *, action: str, target: str) -> str:
+    """Return the pull-request URL ``gh`` printed, or raise.
+
+    ``gh pr create`` exits 0 and prints the new pull request's URL on stdout.
+    An exit code of 0 with no URL in the output is not a created PR: it is a
+    ``gh`` that did nothing and said nothing. Returning "" from there logged
+    "Opened integration PR: " and handed the caller a falsy value, which
+    ``on_plan_completed`` reads as "there is nothing to record" and skips
+    ``set_plan_integration_pr`` over, leaving ``plans.integration_pr_url``
+    NULL. That column is what every read-only surface filters on, so the log
+    claimed a PR while ``praxis pending`` and ``merge-plan`` reported nothing
+    to approve.
+
+    The emptiness of the OUTPUT is the signal, never the exit status: the same
+    rule the harness entrypoints state for their ``gh pr list`` lookup.
+
+    Scans lines rather than taking the whole of stdout because ``gh`` prints
+    advisory lines around the URL often enough that a strict whole-output rule
+    would turn working runs into failures, which is the opposite defect.
+
+    Args:
+        stdout: The command's captured standard output.
+        action: The command being reported, for the error message.
+        target: Which branches or repository it was run for.
+
+    Returns:
+        The first URL on stdout.
+
+    Raises:
+        RuntimeError: If no line of ``stdout`` looks like a URL.
+    """
+    for line in stdout.splitlines():
+        candidate = line.strip()
+        if candidate.startswith(("https://", "http://")):
+            return candidate
+    msg = (
+        f"{action} exited 0 but printed no pull-request URL for {target}; "
+        f"output was {stdout.strip()!r}. No pull request was opened."
+    )
+    raise RuntimeError(msg)
+
+
 if TYPE_CHECKING:
     from orchestrator.core.progress_handover import Commit
 
@@ -291,8 +333,11 @@ class GitOps:
             cwd=workspace,
             token=token,
         )
-        logger.info("Created PR: %s", stdout)
-        return stdout.strip()
+        pr_url = _pr_url_from_output(
+            stdout, action="gh pr create", target=f"head={head}, base={base}"
+        )
+        logger.info("Created PR: %s", pr_url)
+        return pr_url
 
     async def _pr_is_merged(
         self, workspace: str, pr_number: int, repo: str | None, token: str | None
@@ -726,7 +771,10 @@ class GitOps:
             The GitHub pull request URL.
 
         Raises:
-            RuntimeError: If the ``gh`` command exits with a non-zero code.
+            RuntimeError: If the ``gh`` command exits with a non-zero code, or
+                exits 0 without printing a pull-request URL. The second case is
+                the load-bearing one: the caller treats a falsy return as
+                "nothing to record" and moves on silently.
         """
         slug = (
             self.repo_slug(repo_url)
@@ -751,8 +799,13 @@ class GitOps:
             ],
             token=token,
         )
-        logger.info("Opened integration PR: %s", stdout.strip())
-        return stdout.strip()
+        pr_url = _pr_url_from_output(
+            stdout,
+            action="gh pr create",
+            target=f"{slug} head={head}, base={base}",
+        )
+        logger.info("Opened integration PR: %s", pr_url)
+        return pr_url
 
     async def remote_file_exists(self, repo_slug: str, branch: str, path: str) -> bool:
         """Check whether ``path`` exists on ``branch`` in a GitHub repo.

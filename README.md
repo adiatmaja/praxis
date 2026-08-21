@@ -23,7 +23,7 @@
   <img alt="Python 3.11+" src="https://img.shields.io/badge/python-3.11+-blue.svg">
   <a href="https://github.com/adiatmaja/praxis/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/adiatmaja/praxis/actions/workflows/ci.yml/badge.svg"></a>
   <a href="https://github.com/adiatmaja/praxis/actions/workflows/codeql.yml"><img alt="CodeQL" src="https://github.com/adiatmaja/praxis/actions/workflows/codeql.yml/badge.svg"></a>
-  <img alt="Coverage" src="https://img.shields.io/badge/coverage-88%25-brightgreen.svg">
+  <a href="https://github.com/adiatmaja/praxis/blob/main/.github/workflows/ci.yml"><img alt="Coverage gate: 80% minimum, enforced in CI" src="https://img.shields.io/badge/coverage-%E2%89%A580%25%20enforced-brightgreen.svg"></a>
   <a href="https://github.com/adiatmaja/praxis/stargazers"><img alt="Stars" src="https://img.shields.io/github/stars/adiatmaja/praxis?style=social"></a>
 </p>
 

@@ -249,6 +249,26 @@
       border-bottom: 1px solid var(--border-subtle);
     }
     .master-title { color: var(--text-muted); font-size: 13px; font-weight: 700; }
+    /* Names the scope a count was taken over, so "N Plans" cannot be read as
+       "every project" while the view is filtered to one. */
+    .master-scope {
+      margin-left: 8px;
+      color: var(--text-faint);
+      font-size: 11px;
+      font-weight: 600;
+    }
+    /* Section heading inside a master-list, for a list that holds more than
+       one kind of thing (merge-gate work vs autonomous proposals). */
+    .master-group-title {
+      padding: 10px 20px 6px;
+      color: var(--text-faint);
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: .04em;
+      text-transform: uppercase;
+      border-bottom: 1px solid var(--border-subtle);
+    }
+    .row-actions { display: flex; flex-shrink: 0; gap: 6px; }
     .master-list { flex: 1; overflow-y: auto; }
     .master-row {
       min-height: 56px;
@@ -602,6 +622,14 @@
       padding: 60px 20px 20px;
       color: var(--text-faint);
       font-size: 14px;
+    }
+
+    /* The completed-lane list is capped. The remainder is stated here rather
+       than dropped: a truncated list that says nothing reads as a whole one. */
+    .lane-truncation {
+      padding: 12px 20px 18px;
+      color: var(--text-faint);
+      font-size: 12px;
     }
 
     @media (max-width: 768px) {

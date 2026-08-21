@@ -90,9 +90,21 @@ def test_presets_lists_live_data_with_a_contiguous_copyable_line(monkeypatch) ->
     assert "local-lmstudio" in result.stdout
     # The copyable command must be a single, contiguous line -- not folded
     # across rich's column wrapping.
+    #
+    # `gemini-agy` needs `--accept-preset-requirements` and `local-lmstudio`
+    # does not, and that is the whole point: `praxis init --non-interactive`
+    # REFUSES a preset with unmet requirements, so the bare command this test
+    # used to pin was guaranteed to exit 1 for two of the three shipped
+    # presets, after writing a partial `.env` on the way out. A copyable line
+    # that cannot run is worse than no line, because it looks like the
+    # supported path.
     lines = result.stdout.splitlines()
     assert any(
-        line.strip() == "praxis init --non-interactive --preset gemini-agy"
+        line.strip()
+        == (
+            "praxis init --non-interactive --preset gemini-agy "
+            "--accept-preset-requirements"
+        )
         for line in lines
     ), result.stdout
     assert any(

@@ -707,15 +707,23 @@ class ExecutePlanRequest(BaseModel):
 class ExecutePlanResponse(BaseModel):
     """Response for an accepted execute-plan (async decomposition in the loop).
 
-    The endpoint returns immediately with ``status="decomposing"``. The brain
-    decomposition runs asynchronously in the orchestration loop; tasks appear
-    on the plan shortly after.
+    The endpoint returns immediately with the status the plan ROW holds, which
+    is ``pending``. It used to answer ``"decomposing"``, which asserted work
+    that had not started (decomposition begins on a later orchestration tick,
+    and only if the loop is running) and named a value outside
+    ``CANONICAL_PLAN_STATUSES``, so a caller polling for it would never see it
+    again from ``poll_plan``. The brain decomposition runs asynchronously;
+    tasks appear on the plan shortly after.
     """
 
     plan_id: str
     project_id: str
     dashboard_url: str
-    status: str = "decomposing"
+    # The endpoint always sets this explicitly, so the default is unreachable.
+    # It agrees with the endpoint anyway: a default that contradicts every
+    # response is a claim waiting for the day someone constructs one of these
+    # without passing a status.
+    status: str = PlanStatus.PENDING.value
 
 
 class GitStateResponse(BaseModel):

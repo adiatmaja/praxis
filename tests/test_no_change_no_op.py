@@ -83,15 +83,21 @@ async def orch_fixture(db: Database) -> tuple[Orchestrator, str, str, dict[str, 
     return orch, plan_id, task_id, dict(row)
 
 
-def _verify(orch: Orchestrator, status: str) -> list[str]:
-    """Replace the verify gate with a stub, recording the branch it checked."""
+def _verify(orch: Orchestrator, status: str, reason: str = "") -> list[str]:
+    """Replace the verify gate with a stub, recording the branch it checked.
+
+    ``reason`` is not decoration: ``_verify_plan_branch`` returns ``skipped``
+    for three different reasons and only ONE of them means "the operator
+    configured no check". A stub that omits it can only ever test a skip the
+    real gate never produces.
+    """
     from orchestrator.core.orchestrator_review import _PlanVerifyResult
 
     seen: list[str] = []
 
     async def _stub(repo_url: str, branch: str, verify_cmd: str | None):
         seen.append(branch)
-        return _PlanVerifyResult(status)
+        return _PlanVerifyResult(status, reason=reason)
 
     orch._verify_plan_branch = _stub  # type: ignore[method-assign]
     return seen
@@ -148,16 +154,59 @@ async def test_an_unconfigured_gate_still_closes_the_leaf(orch_fixture) -> None:
     evidence, only the harness's clean exit. The measured alternative is
     worse, retrying to the same answer and failing a plan whose work is done.
     """
+    from orchestrator.core.orchestrator_review import _SKIP_NO_VERIFY_CMD
+
     orch, plan_id, task_id, project = orch_fixture
     plan = await orch._tq.get_plan(plan_id)
-    _verify(orch, "skipped")
+    _verify(orch, "skipped", _SKIP_NO_VERIFY_CMD)
 
     assert await orch.resolve_no_change_run(task_id, project, plan) is True
 
     task = await orch._tq.get_task(task_id)
     assert task is not None
     assert task["status"] == TaskStatus.NO_CHANGES
-    assert "no verify_cmd configured" in task["review_feedback"]
+    assert _SKIP_NO_VERIFY_CMD in task["review_feedback"]
+
+
+@pytest.mark.parametrize(
+    "reason_name",
+    ["_SKIP_NO_CREDENTIAL_PROVIDER", "_SKIP_NO_TOKEN"],
+)
+async def test_a_gate_that_could_not_reach_the_repository_closes_nothing(
+    orch_fixture, reason_name: str
+) -> None:
+    """A skip is not one thing, and only one of its three reasons is a choice.
+
+    ``_verify_plan_branch`` returns ``skipped`` for three reasons. With no
+    verify_cmd the operator chose to run nothing. With no credential provider
+    or no token a verify command IS configured and the gate could not reach the
+    repository: a broken deployment, which both of those skips already log at
+    WARNING for exactly that reason.
+
+    Two things went wrong on that path and this pins both. The leaf was closed
+    as terminally SATISFIED on a gate that never ran, and the stored reason
+    told the operator they had configured no check. That string is not
+    log-only: ``mark_no_changes`` writes it to ``tasks.review_feedback``, the
+    dashboard renders it and MCP returns it.
+    """
+    import orchestrator.core.orchestrator_review as review_mod
+
+    orch, plan_id, task_id, project = orch_fixture
+    plan = await orch._tq.get_plan(plan_id)
+    _verify(orch, "skipped", getattr(review_mod, reason_name))
+
+    assert await orch.resolve_no_change_run(task_id, project, plan) is False
+
+    task = await orch._tq.get_task(task_id)
+    assert task is not None
+    assert task["status"] != TaskStatus.NO_CHANGES, (
+        "a leaf was closed as satisfied on the strength of a gate that could "
+        "not reach the repository"
+    )
+    assert review_mod._SKIP_NO_VERIFY_CMD not in (task["review_feedback"] or ""), (
+        "the product told the operator they configured no check when in fact "
+        "a broken deployment prevented a configured one"
+    )
 
 
 async def test_an_unresolvable_base_branch_is_a_failure(orch_fixture) -> None:

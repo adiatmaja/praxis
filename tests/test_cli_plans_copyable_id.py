@@ -181,14 +181,20 @@ def test_a_plan_awaiting_integration_still_offers_merge_plan_and_its_pr(
 def test_add_project_harness_help_does_not_claim_the_registry_default(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """`--harness` omitted takes the CONFIGURED worker, not the registry default.
+    """`--harness` omitted takes DEFAULT_WORKER_HARNESS, and must say so.
 
-    `POST /api/projects` resolves `body.harness or settings.default_worker_harness`,
-    so with the shipped `gemini-agy` preset an omitted flag yields `agy` while
-    `default_harness_id()` is `opencode`. The help said "registry default",
-    which named the wrong one of the two. Measured live in walkthrough #9:
-    `praxis add-project` with no `--harness` produced a project with
-    `harness = agy`.
+    `POST /api/projects` resolves `body.harness or settings.default_worker_harness`.
+    This one help string has now named the wrong source twice. First it said
+    "registry default", which is `default_harness_id()`, i.e. `opencode`, while
+    an omitted flag actually yielded `agy`. The replacement said "the configured
+    worker preset, which is what `praxis presets` shows as the default", which
+    is a DIFFERENT wrong answer: a preset's `default: true` flag decides what
+    `praxis init` OFFERS, and after `praxis init --preset local-lmstudio` the
+    flagged preset and the resolved harness disagree.
+
+    So this now pins the variable rather than any intermediary, and rejects
+    BOTH previous wordings. There is no third layer to be wrong about: the
+    variable is what the API reads.
     """
     result = runner.invoke(app, ["add-project", "--help"])
 
@@ -198,6 +204,10 @@ def test_add_project_harness_help_does_not_claim_the_registry_default(
         "add-project --harness help still claims the registry default, which is "
         f"opencode, while an omitted flag actually yields the configured worker:\n{flat}"
     )
-    assert "preset" in flat, (
+    assert "preset" not in flat, (
+        "add-project help names a worker PRESET as the source of an omitted "
+        f"harness or model; the API reads DEFAULT_WORKER_* instead:\n{flat}"
+    )
+    assert "DEFAULT_WORKER_HARNESS" in flat, (
         f"the help no longer says where an omitted harness comes from:\n{flat}"
     )

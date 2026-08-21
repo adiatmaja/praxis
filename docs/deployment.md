@@ -16,18 +16,27 @@ docker build -t orchestrator:latest -f docker/orchestrator/Dockerfile .
 Each harness has its own single-use worker image that clones, implements, pushes, and
 creates a PR, running as non-root `agent` user. **OpenCode is the default harness** (its
 agentic loop reads files in bounded chunks and auto-compacts, so it survives large tasks);
-agy/Antigravity is the experimental Gemini-backed alternative. Build the one(s) you use:
+agy/Antigravity is the experimental Gemini-backed alternative. Build them with:
 
 ```bash
-# Default harness (OpenCode)
-docker build -t opencode-agent:latest -f docker/opencode-agent/Dockerfile docker/opencode-agent/
-
-# Experimental Gemini harness (agy)
-docker build -t agy-agent:latest -f docker/agy-agent/Dockerfile docker/agy-agent/
+docker compose --profile agents build
 ```
 
+Both images are compose services under `profiles: [agents]`, which is why one command
+builds every image `AgentManager` can spawn and why a plain `docker compose up` does not
+start them (they are build-only entries with `command: ["true"]`).
+
+> **Do not build these with a bare `docker build`.** The freshness check
+> (`praxis doctor` → *Agent images match their entrypoints*) compares a hash of
+> `docker/*/entrypoint.sh` against the `org.praxis.entrypoint-sha256` LABEL baked into the
+> image. That label is a build ARG which compose supplies and a bare `docker build` leaves
+> EMPTY, and an empty label reads as "cannot judge", not as fresh. The rebuild then looks
+> done while a stale image may still be running the old entrypoint, silently. `praxis init`
+> exports the two `*_ENTRYPOINT_SHA256` values for you; if you build by hand, export
+> `OPENCODE_ENTRYPOINT_SHA256` and `AGY_ENTRYPOINT_SHA256` first.
+
 > All harness images honor the same entrypoint contract. AgentManager selects the image by
-> the project's `harness` column. All are standalone (not in docker-compose); build directly.
+> the project's `harness` column.
 
 #### agy (Antigravity / Gemini) harness — one-time credential setup
 
@@ -131,7 +140,10 @@ On failure, the trap sends a `"failed"` callback so the orchestrator can retry.
 docker compose up --build
 ```
 
-- Orchestrator on port 8080 (configurable via `PORT` env)
+- Orchestrator reachable on the host at `${PORT:-12323}`. Compose maps
+  `"${PORT:-12323}:8080"`, so 8080 is the in-container bind and `PORT` is the host side.
+  A bare `uvicorn` run has no mapping and so answers on whatever port you pass it, which
+  is the only reason 8080 turns up as a browsable address anywhere in these docs
 - Docker socket mounted for spawning agent containers
 - SSH keys mounted read-only for git operations
 - `data/` volume for SQLite persistence
@@ -165,7 +177,7 @@ session ends (logout, SSH drop, Ctrl-C) the process dies.  At that point:
 
 Agent containers and callback retries already tolerate a brief orchestrator restart
 (containers keep running, callbacks retry with backoff, reconcile catches any that slip
-through).  The control plane itself is the weak link when it is a bare host process.
+through).  The orchestrator itself is the weak link when it is a bare host process.
 
 The compose orchestrator service has `restart: unless-stopped` in `docker-compose.yml`.
 `docker-compose.local.yml` (the dev override) does not repeat the key; it inherits the
@@ -193,24 +205,46 @@ DOMAIN=praxis.example.com docker compose --profile hosted up --build
 - Security headers: `X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy`
 - Caddy data/config volumes for certificate persistence
 
+`DOMAIN` reaches Caddy through the service's own `environment:` block. It has to: the
+Caddyfile is `{$DOMAIN:localhost} { ... }` and Caddy reads `DOMAIN` from its own
+environment, not from compose's substitution context. Without that block the command above
+produced a site bound to `localhost`, so a certificate could never be issued and the only
+symptom was one that never arrived.
+
 ## Compose Services
 
 ```yaml
 # docker-compose.yml
 services:
   orchestrator:       # FastAPI server (always runs)
+  opencode-agent:     # build-only, profile: agents
+  agy-agent:          # build-only, profile: agents
   caddy:              # Reverse proxy (profile: hosted)
 ```
+
+The two agent entries are `command: ["true"]` build-only services. They exist so one
+documented command, `docker compose --profile agents build`, builds every image the
+orchestrator can spawn, and the profile keeps them out of a plain `docker compose up`.
 
 ### Volumes
 
 | Volume | Mount | Purpose |
 |--------|-------|---------|
-| `./data` | `/app/data` | SQLite database persistence |
+| `praxis_data` (named) | `/app/data` | SQLite database persistence |
 | `/var/run/docker.sock` | `/var/run/docker.sock` | Docker SDK for spawning agents |
 | `${SSH_KEY_PATH:-~/.ssh}` | `/root/.ssh:ro` | Git SSH keys (read-only) |
+| `./config` | `/app/config:ro` | Settings YAML, mounted so an edit needs a restart, not a rebuild |
+| `./docker` | `/app/docker:ro` | Entrypoint sources the image-freshness check hashes |
+| `./.env` | `/app/.env:ro` | What the `env_drift` check compares the running values against |
 | `caddy_data` | `/data` | Caddy certificates (hosted only) |
 | `caddy_config` | `/config` | Caddy config (hosted only) |
+
+**The database volume is a NAMED volume, and a host bind mount is the configuration that
+breaks.** On Docker Desktop the host bind-mount filesystem (9p/virtiofs) does not support
+the shared-memory and mmap semantics SQLite WAL needs, so `PRAGMA journal_mode=WAL` fails at
+startup with `disk I/O error`. A named volume is backed by the Linux VM's ext4 and works;
+it also avoids DB-file contention with a local dev server running against `data/`. Do not
+"fix" this by swapping in `./data:/app/data`.
 
 ## API Reference
 
@@ -317,7 +351,7 @@ env vars); secrets (`AUTH_TOKEN`, GitHub App private key or `GITHUB_TOKEN`) stay
 | `GITHUB_TOKEN` | Fallback | n/a | GitHub PAT (`repo` scope). Used only when no GitHub App is configured |
 | `DATABASE_URL` | No | `sqlite+aiosqlite:///data/orchestrator.db` | SQLite path |
 | `LM_STUDIO_URL` | No | `http://host.docker.internal:1234` | LM Studio endpoint (implementer / local brain calls) |
-| `AGENT_MODEL` | No | `claude-opus-4-8` | Default planner model (per-call-site overrides in **Settings → Models**) |
+| `AGENT_MODEL` | No | `claude-opus-4-8` | **Not the planner model.** It reaches no routed call: `OpusBridge._resolve_model` reads it only on the LEGACY `claude -p` path taken when no router is wired, and `/api/status` reports it for display. What the planner actually runs is decided by the `plan_spec` call-site through the `plan` role chain in `config/praxis.yaml`, overridable in **Settings → Models**. `praxis doctor`'s planner row names the provider and model it really probed |
 | `HOST` | No | `0.0.0.0` | Bind address |
 | `PORT` | No | `12323` | Host port (uncommon by design to avoid 8080 collisions; MCP `PRAXIS_BASE_URL` and agent callbacks must match it) |
 | `GEMINI_CREDS_VOLUME` | No | `praxis-gemini-creds` | Docker volume holding agy OAuth creds; only used by the `agy` harness (see [agy setup](#agy-antigravity--gemini-harness--one-time-credential-setup)) |
@@ -327,10 +361,36 @@ env vars); secrets (`AUTH_TOKEN`, GitHub App private key or `GITHUB_TOKEN`) stay
 Global orchestrator defaults also live in `config/praxis.yaml` (env-overridable via `PRAXIS_*`),
 including the auto-delegate global default worker:
 
-| YAML key | Default | Description |
-|----------|---------|-------------|
-| `default_worker_harness` | `opencode` | Harness for the global default worker used in auto-delegate mode and as a project fallback. Reference config sets `agy` |
-| `default_worker_model` | `""` | Model for the global default worker. Reference config sets `Gemini 3.7 Flash (High)` |
+The "field default" column below is the value baked into `Settings`, which is what you get
+only if nothing above it in the precedence order supplies one. The shipped
+`config/praxis.yaml` sets both keys, so on every stock install the shipped value is what
+runs and the field default is never reached. Read the shipped value out of the file, not
+out of this table.
+
+| YAML key | Field default | Shipped in `config/praxis.yaml` | Description |
+|----------|---------------|---------------------------------|-------------|
+| `default_worker_harness` | `opencode` | `agy` | Harness for the global default worker used in auto-delegate mode and as a project fallback |
+| `default_worker_model` | `""` | `Gemini 3.7 Flash (High)` | Model for the global default worker |
+
+> **Precedence, in order:** a real **environment variable**, then the **`.env` file**,
+> then the **settings file** (`config/praxis.yaml`), then the **built-in field default**.
+> The dotenv file counts as environment because that is where `praxis init` writes and
+> where every setup document tells you to put things; before this it lost to the settings
+> file silently, so `LOOP_INTERVAL=0` in `.env` ran at the YAML's 5 and said nothing. A
+> `PRAXIS_`-prefixed variable is exempt from the dotenv shadowing rule, since it IS an
+> environment variable. When a key appears in both `.env` and the settings file the
+> orchestrator logs one `INFO` line naming the winner and the settings-file path, once
+> per key, so an edit to the losing file is not silent either.
+
+> **Container-only variables go in `.env.container`.** It is a gitignored, optional
+> `env_file` on the orchestrator service, so every key in it is passed into the container
+> as a real environment variable and inherited by the subprocesses the orchestrator
+> spawns. That is what a Claude Code hook opt-out needs (`~/.claude` is mounted, so the
+> host's hooks run inside the container). `required: false` means an install without the
+> file starts normally, and `extra="ignore"` means a key that is not a settings field is
+> carried through and simply not validated. It must NOT go in `.env`: compose reads that
+> file on the host to substitute `${VAR}` and passes nothing from it into the container on
+> its own. See the hook entry in [gotchas.md](gotchas.md).
 
 > **Mounted, not baked:** both compose files bind-mount `./config` read-only at
 > `/app/config`, and the base file points `PRAXIS_CONFIG_PATH` at it (the dev overlay
@@ -467,8 +527,9 @@ attacks.
 > the entrypoint's `send_callback`. A stale image (built before this logic)
 > sends an empty header, so every callback 401s and tasks stall at `in_progress` until the
 > reconciler fails them — implement→review→merge never completes. Rebuild with
-> `docker build -t opencode-agent:latest -f docker/opencode-agent/Dockerfile docker/opencode-agent/`
-> (or the equivalent for `agy-agent`).
+> `praxis init` followed by `docker compose --profile agents build`, never a bare
+> `docker build`: the latter leaves `org.praxis.entrypoint-sha256` empty and the freshness
+> check then cannot tell you the image is stale (see [Docker Images](#docker-images)).
 
 ### Docker socket exposure
 
@@ -532,7 +593,7 @@ Approve or reject a parked merge via:
 | Endpoint | Effect |
 |----------|--------|
 | `POST /api/tasks/{id}/approve-merge` | Squash-merge one review-passed task's PR. CLI: `praxis merge <task-id>`. |
-| `POST /api/tasks/{id}/reject-merge` | Comment on the PR, fail the task, and re-dispatch if retry attempts remain (optional `{"feedback": "..."}` body). |
+| `POST /api/tasks/{id}/reject-merge` | Comment on the PR, fail the task, and re-dispatch if retry attempts remain (optional `{"feedback": "..."}` body). CLI: `praxis reject-merge <task-id> [--feedback "..."]`. Note `praxis reject` is a different verb: it closes an autonomous improvement PLAN and 404s on a task id. |
 | `POST /api/plans/{id}/approve-merges` | Batch-approve every `PASSED` task in a plan; returns `{approved, errors}`. CLI: `praxis merge-plan <plan-id>`. |
 
 MCP `poll_task` surfaces a parked task as `status: awaiting_merge` (with `pr_url`,

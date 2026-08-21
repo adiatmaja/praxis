@@ -14,7 +14,7 @@ Praxis has two ways to turn a plan document into tasks. They look similar but ar
 | | `core/plan_derive.py` | `core/plan_review.py` + `core/execute_plan_decompose.py` |
 |---|---|---|
 | Triggered by | "Promote" a `plan.md` doc (`POST /api/plans/promote`) | `execute_plan` (MCP) / `POST /api/execute-plan` |
-| Method | **Deterministic** text parse (regex/checklist); LM Studio only as a fallback | **Brain reasoning pass** (Opus/Sonnet, per the `plan_spec` model tier) |
+| Method | **Deterministic** text parse (regex/checklist); LM Studio only as a fallback | **Brain reasoning pass**, routed through the `plan_review` call-site (`router.run("plan_review", ...)`), which is separately overridable from `plan_spec` even though both resolve to the same model today |
 | Purpose | Extract a task list already written by a human | Judge the plan against the *local worker's capability* and reshape it |
 | Reads the model profile? | No | Yes (parameter count, context window, token budget) |
 
@@ -39,7 +39,7 @@ without doing the implementation itself.
                                        │
                                        ▼
   ┌──────────────────────────────────────────────────────────────────────────┐
-  │  BRAIN CALL  (router.run("plan_review", ...), model tier = plan_spec)     │
+  │  BRAIN CALL  (router.run("plan_review", ...), plan role chain)            │
   │                                                                            │
   │  Given:  full plan text                                                    │
   │          local model profile (params, context window, strengths/weak)     │
@@ -130,7 +130,11 @@ again at dispatch (defense in depth).
 
 `effective_settings.capability_profile(project_id, model)` returns the `CapabilityProfile`
 (parameter count, context window, strengths, weaknesses, max task complexity). The per-leaf
-budget is `int(context_window * 0.4)` (`_LEAF_BUDGET_FRACTION`, `execute_plan_decompose.py:27`).
+budget is `int(context_window * (1 - WORKER_RESERVE_FRACTION))`, which is 0.4 of the window
+today. `WORKER_RESERVE_FRACTION` lives in `core/token_budget.py` and is imported by
+`execute_plan_decompose.py`, `difficulty.py` and `worker_bible.py`, so the decomposer's idea
+of the leaf budget and the bible's idea of the worker's headroom are the same number by
+construction and cannot drift into disagreeing.
 
 ## Verified behavior (2026-07-08 dogfood)
 

@@ -37,7 +37,7 @@ from orchestrator.api.system import (
     PlannerTarget,
     RoundTripResult,
     _probe_provider,
-    planner_provider_is_cli,
+    planner_provider_kind,
     probe_provider_roundtrip,
 )
 from orchestrator.core import doctor_probes as probes
@@ -475,10 +475,23 @@ async def _is_local_mode(db: Any) -> bool:
 def _unreachable_docker_result(
     check_id: str, docker_facts: _DockerFacts
 ) -> CheckResult:
+    """AMBER row for an image check when the daemon never answered.
+
+    This is ``_degraded`` for the one gathering failure that used to be
+    exempt from it.  A daemon that is down means no image was inspected, so
+    "missing image(s)" and "an entrypoint changed since the image was built"
+    are both verdicts about facts nobody obtained, and both of their remedies
+    are docker commands that cannot run while it is down.  The RED belongs on
+    ``docker_daemon``, which is the row that names the actual problem and
+    carries the remedy that actually applies, so this one points at it.
+    """
     return CheckResult(
         check_id=check_id,
-        status=CheckStatus.RED,
-        detail=f"Docker unavailable: {docker_facts.error}",
+        status=CheckStatus.AMBER,
+        detail=(
+            "not checked: the Docker daemon did not answer, so no image could "
+            f"be inspected; see the docker_daemon row ({docker_facts.error})"
+        ),
     )
 
 
@@ -561,7 +574,12 @@ async def _build_probes(request: Request) -> dict[str, Any]:
     # Nothing is probed until the planner is known.  Falling back to "claude"
     # here would answer about a provider the operator never configured, which
     # is the same silent lie as probing the CLI's default model.
-    planner_is_cli = not planner_error and planner_provider_is_cli(planner.provider)
+    #
+    # The kind is three-valued: an unrecognised provider is NOT the same
+    # finding as ``local``, and the row below says so.  Empty while the
+    # planner itself could not be resolved, which the degraded row handles.
+    planner_kind = "" if planner_error else planner_provider_kind(planner.provider)
+    planner_is_cli = planner_kind == probes.PROVIDER_KIND_CLI
     if planner_is_cli:
         provider, provider_error = await _safe(
             "planner_cli", lambda: _probe_provider(planner.provider), no_provider
@@ -661,6 +679,11 @@ async def _build_probes(request: Request) -> dict[str, Any]:
         result_map["planner_cli"] = probes.probe_planner_cli(
             cli_available=bool(provider.get("cli_available")),
             authenticated=bool(provider.get("authenticated")),
+            # Whether anything actually CHECKED the login state, so the row
+            # cannot assert a session nobody logged into.  `claude` and `agy`
+            # have no auth command, so this is False for them.
+            auth_measured=bool(provider.get("auth_measured")),
+            login_hint=str(provider.get("login_hint") or ""),
             # An errored probe is "not probed", never a red: a probe that could
             # not run must not invent a verdict about the CLI.
             prompt_ok=None if roundtrip_error else roundtrip.ok,
@@ -670,7 +693,14 @@ async def _build_probes(request: Request) -> dict[str, Any]:
             provider=planner.provider,
             model=planner.model,
             effort=planner.effort,
-            provider_is_cli=planner_is_cli,
+            provider_kind=planner_kind,
+            # Whether the worker_endpoint row really probes the endpoint a
+            # `local` planner would call.  It is the SAME url (both come from
+            # `lm_studio_url`), but that row skips the probe entirely when the
+            # worker harness does not use an OpenAI-compatible endpoint, and
+            # the shipped default worker is exactly such a harness.
+            endpoint_checked_elsewhere=endpoint_required,
+            endpoint=lm_studio_url,
         )
 
     worker_config_error = lm_url_error or worker_cfg_error

@@ -11,6 +11,13 @@ venv/
 
 .env
 
+# Container-only variables (hook opt-outs and anything else that must reach
+# the orchestrator PROCESS rather than compose's substitution context). Kept
+# out of git so following `praxis doctor`'s remedy never dirties a tracked
+# file: the remedy used to be "add a literal to docker-compose.yml", which
+# leaves a permanent diff in a fresh clone.
+.env.container
+
 .vscode/
 .idea/
 CLAUDE.local.md

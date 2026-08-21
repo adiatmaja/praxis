@@ -62,12 +62,15 @@ def test_projects_prints_the_full_project_id(monkeypatch) -> None:
         )
 
     _patch_client(monkeypatch, handler)
+    # 80, not the 160 this pinned for five walkthroughs. `max_width=36` is a
+    # MAXIMUM: with five columns competing rich shrank the ID column to
+    # nineteen and folded every uuid across two rows, and flattening the
+    # output before asserting hid exactly that. An operator copies a LINE.
+    monkeypatch.setenv("COLUMNS", "80")
     result = runner.invoke(app, ["projects"])
 
     assert result.exit_code == 0
-    # The id may be FOLDED across lines by the table; it must not be CUT.
-    flat = "".join(result.stdout.split())
-    assert PROJECT_ID in flat
+    assert any(PROJECT_ID in line for line in result.stdout.splitlines())
 
 
 def test_tasks_prints_the_full_task_id(monkeypatch) -> None:

@@ -34,7 +34,11 @@ from orchestrator.core.preflight import (
     preflight_remote,
     status_and_detail,
 )
-from orchestrator.models.schemas import ExecutePlanRequest, ExecutePlanResponse
+from orchestrator.models.schemas import (
+    ExecutePlanRequest,
+    ExecutePlanResponse,
+    PlanStatus,
+)
 
 
 router = APIRouter(tags=["execute-plan"], dependencies=[Depends(verify_token)])
@@ -130,9 +134,16 @@ async def _create_or_reuse_project(
 async def execute_plan(request: Request, body: ExecutePlanRequest) -> dict[str, Any]:
     """Persist an external plan for async, loop-driven capability decomposition.
 
-    Returns immediately with ``status="decomposing"`` and a ``plan_id``. The
-    orchestration loop picks up the pending plan, runs the brain decomposition,
-    and activates the task graph. Watch ``dashboard_url`` to track progress.
+    Returns immediately with the plan's stored status (``pending``) and a
+    ``plan_id``. The orchestration loop picks the pending plan up on a later
+    tick, runs the brain decomposition, and activates the task graph; watch
+    ``dashboard_url``, or poll the plan, to track progress.
+
+    The status is the one written to the row on purpose. It used to be
+    ``"decomposing"``, which said the loop had started work it had not started
+    (decomposition begins on a later tick, and only while the loop is running)
+    and is not a member of the plan vocabulary, so a caller polling for it
+    would never see that word again from any other surface.
     """
     state = request.app.state
     db = state.db
@@ -229,5 +240,7 @@ async def execute_plan(request: Request, body: ExecutePlanRequest) -> dict[str, 
         "plan_id": plan_id,
         "project_id": project_id,
         "dashboard_url": settings.dashboard_url(),
-        "status": "decomposing",
+        # Read from the enum, not typed again: the value a caller polls for has
+        # to be the value the row holds.
+        "status": PlanStatus.PENDING.value,
     }

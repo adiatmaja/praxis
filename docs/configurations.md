@@ -130,10 +130,24 @@ declared in `worker_presets` in `config/praxis.yaml` and served by
 
 <!-- END worker-presets -->
 
-`praxis init` prints this menu during setup. It defaults to the first preset
-whose requirements it can satisfy on its own, so the default is never a preset
-that cannot work, and choosing one with an unmet requirement is an explicit
-confirmation rather than a silent misconfiguration. The chosen preset writes
+`praxis init` prints this menu during setup, and picks its default by three
+rules in order (`_default_preset_choice`), printing which rule fired next to the
+choice:
+
+1. **A preset flagged `default: true` in the settings file wins outright.** That
+   flag is the deployment saying "I have already done this preset's one-time
+   setup", which no other rule can see: an interactive login leaves no evidence
+   in the YAML. The shipped file flags `gemini-agy`, which needs exactly such a
+   login, so on a stock install that is the offered default.
+2. Otherwise, the first preset needing no credential, so holding Enter through
+   every prompt cannot land on something `init` could not have configured.
+3. Otherwise the first entry on the menu.
+
+The flag changes what is OFFERED, never what is CHECKED. An unmet requirement is
+still challenged before the choice is accepted (and non-interactive refuses it
+unless `--accept-preset-requirements` says the setup is done), so choosing a
+preset you have not set up is an explicit confirmation rather than a silent
+misconfiguration. The chosen preset writes
 `LM_STUDIO_URL`, `DEFAULT_WORKER_HARNESS`, and `DEFAULT_WORKER_MODEL` together.
 
 Re-running `praxis init` to switch presets is safe. It merges only the keys it
@@ -185,10 +199,14 @@ elsewhere: in practice it plans poorly, but its mid-tier models (Gemini 3.5
 Flash) are moderately capable at scoped implementation, review, and everything
 that is not the plan itself, trading higher token usage for that reach. So
 point Gemini at Implement / Review / Verify and keep Plan and Improve on
-Claude, GPT, or a frontier model. Gemini runs as a brain through the `agy`
-(Antigravity) CLI, which emits capturable non-interactive output as of agy
-v1.1.0; as an implementer it drives the Antigravity coding agent as a harness.
-See [gotchas.md](gotchas.md).
+Claude, GPT, or a frontier model. As an implementer Gemini drives the
+Antigravity coding agent as a harness, which is the seat it is wired into here.
+As a **brain** it is currently not usable at all: the `agy` CLI's `--print` only
+renders to an interactive TTY and yields no capturable stdout otherwise, so a
+routed call raises `ProviderOutputError`. Treat the Gemini-as-brain guidance
+above as what to do once that is resolved, not as something you can select
+today. See [gotchas.md](gotchas.md) and the provider table in
+[deployment.md](deployment.md).
 
 Field observation from daily use: Claude is excellent at workflow and systems
 reasoning but has weak visual judgment, including when asked to *repair* an

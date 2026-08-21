@@ -77,6 +77,36 @@ _ESCAPED: dict[str, str] = {
 
 _DEFAULT_PORT = 12323
 
+#: What the whole run costs, said before the first prompt.  The numbers are
+#: measured on this repository, not estimated: ~2 minutes end to end with a
+#: warm Docker layer cache, ~10 with a cold one, and the agent image builds
+#: are nearly all of both.  It names a RANGE and what drives it, because the
+#: failure mode is not impatience, it is an operator on a cold cache deciding
+#: at minute six that a run promised as "a few minutes" has hung.
+RUNTIME_EXPECTATION = (
+    "[dim]This takes about 2 minutes if Docker has these layers cached, and "
+    "about 10 minutes on a first run that has to build them. The agent image "
+    "builds are nearly all of it; everything else is seconds. Elapsed times "
+    "are reported as each step finishes.[/dim]\n"
+)
+
+
+def _format_elapsed(started: float, now: float) -> str:
+    """Render the interval between two ``time.monotonic()`` readings.
+
+    Args:
+        started: The reading taken when the step began.
+        now: The reading taken when it finished.
+
+    Returns:
+        ``"1m23s"`` at or above a minute, ``"23s"`` below one.  Whole seconds
+        only: this is an operator's sanity check against a hang, and a
+        fractional part reads as precision that means nothing here.
+    """
+    minutes, seconds = divmod(max(int(now - started), 0), 60)
+    return f"{minutes}m{seconds:02d}s" if minutes else f"{seconds}s"
+
+
 #: Files that must all be present for a directory to be the Praxis repo root.
 #: Three of them, not one, because ``init`` is CWD-relative everywhere (``.env``,
 #: ``docker compose``, the settings YAML) and any single generic marker
@@ -395,9 +425,16 @@ def build_env_file(values: Mapping[str, str | None]) -> str:
     Returns:
         The full text of a new ``.env`` file, newline-terminated.
     """
+    # The claim is qualified on purpose. `merge_env` drops the WHOLE line,
+    # trailing comment included, when a preset authors "" for a managed key
+    # (`gemini-agy` does exactly that to `LM_STUDIO_URL`). Removing the line is
+    # the behaviour worth keeping: a comment left hanging over a key that no
+    # longer exists documents a setting the file does not have. So the promise
+    # is narrowed to what is true rather than the behaviour bent to match it.
     lines = [
         "# Written by `praxis init`. Safe to edit; re-running init preserves",
-        "# every key it does not manage, and every comment.",
+        "# every key it does not manage. Comments survive too, except a",
+        "# trailing comment on a managed key a preset switch removes.",
     ]
     lines.extend(
         f"{key}={_render_value(value)}" for key, value in values.items() if value
@@ -728,6 +765,43 @@ def _resolve_github_token(current: dict[str, str], answers: Answers) -> str | No
     return None if answer.lower() in ("", "skip") else answer
 
 
+#: Why a preset ended up as the menu default, one string per rule in
+#: :func:`_default_preset_choice`.  Printed verbatim, because "deployment
+#: default" said unconditionally is an assertion about the settings file that
+#: two of the three rules cannot support: the fallbacks fire precisely when
+#: nothing is flagged, and the hardcoded :data:`_FALLBACK_PRESET` carries no
+#: ``default`` key at all.
+_RULE_FLAGGED = "flagged the default for this deployment"
+_RULE_NO_CREDENTIAL = "first preset needing no credential; none is flagged default"
+_RULE_FIRST_ON_MENU = (
+    "first on the menu; none is flagged default, all need a credential"
+)
+
+
+def _default_preset_choice(presets: list[dict[str, Any]]) -> tuple[int, str]:
+    """Return the 1-based menu default and the rule that selected it.
+
+    The rule travels with the index rather than being re-derived by the
+    caller: the parenthetical printed next to the chosen preset is a claim
+    about WHY it was chosen, and a claim derived separately from the choice is
+    one that can be wrong while the choice is right.
+
+    Args:
+        presets: The menu, in display order.
+
+    Returns:
+        ``(index, rule)``, where ``rule`` is one of :data:`_RULE_FLAGGED`,
+        :data:`_RULE_NO_CREDENTIAL` or :data:`_RULE_FIRST_ON_MENU`.
+    """
+    for index, preset in enumerate(presets, start=1):
+        if preset.get("default"):
+            return index, _RULE_FLAGGED
+    for index, preset in enumerate(presets, start=1):
+        if not preset["requires"]:
+            return index, _RULE_NO_CREDENTIAL
+    return 1, _RULE_FIRST_ON_MENU
+
+
 def _default_preset_index(presets: list[dict[str, Any]]) -> int:
     """Return the 1-based menu default.
 
@@ -756,13 +830,7 @@ def _default_preset_index(presets: list[dict[str, Any]]) -> int:
         nothing on the menu is satisfiable; :func:`_confirm_unmet_requirements`
         is what stops that case.
     """
-    for index, preset in enumerate(presets, start=1):
-        if preset.get("default"):
-            return index
-    for index, preset in enumerate(presets, start=1):
-        if not preset["requires"]:
-            return index
-    return 1
+    return _default_preset_choice(presets)[0]
 
 
 def _confirm_unmet_requirements(preset: dict[str, Any], answers: Answers) -> None:
@@ -876,10 +944,13 @@ def _choose_preset(presets: list[dict[str, Any]], answers: Answers) -> dict[str,
         requires = ", ".join(preset["requires"])
         extra = f"  (requires: {requires})" if requires else ""
         console.print(f"  {index}. {preset['label']}{extra}")
-    default = _default_preset_index(presets)
+    default, rule = _default_preset_choice(presets)
     if answers.non_interactive:
         chosen = presets[default - 1]
-        console.print(f"Preset: {chosen['name']} (deployment default)")
+        # The rule, not a blanket "deployment default": two of the three rules
+        # fire only when the settings file flags nothing, so naming the
+        # deployment there asserts a configuration that does not exist.
+        console.print(f"Preset: {chosen['name']} ({rule})")
     else:
         choice = IntPrompt.ask("Preset", default=default) - 1
         chosen = presets[max(0, min(choice, len(presets) - 1))]
@@ -930,9 +1001,11 @@ def cli_env_exports(api_url: str, token: str) -> dict[str, str]:
     """Return the environment `praxis doctor` and `praxis pending` need.
 
     These are the names ``cli.main`` actually reads, and the reason to print
-    them at all is that its default URL is port 8080, not the compose-mapped
-    one: without them the very next `praxis doctor` reports the orchestrator
-    unreachable even though it is running, which reads as a broken install.
+    them at all is that its default URL assumes port 12323 and the nearest
+    ``.env``: an install answering on any other port, or a CLI run from
+    outside this checkout, matches neither.  Without them the very next
+    `praxis doctor` reports the orchestrator unreachable even though it is
+    running, which reads as a broken install.
     A printed name that no longer matches what the CLI reads is the same
     silent failure the MCP snippet had, so both shells are rendered from this
     one mapping.
@@ -998,14 +1071,58 @@ def _print_next_steps(
             "below for what the orchestrator actually resolved."
         )
     else:
-        console.print(
-            f"\n[yellow]Note:[/yellow] .env was left unchanged, so the worker config "
-            f"it already has (DEFAULT_WORKER_HARNESS={preset['harness']!r}, "
-            f"DEFAULT_WORKER_MODEL={preset['model']!r}) is what is forwarded into the "
-            f"container, not the preset just picked above. It still overrides the "
-            f"worker defaults in {config_file_path()}. Check the worker row in the "
-            "table below for what the orchestrator actually resolved."
+        console.print(_unchanged_env_note(preset, config_file_path()))
+
+
+def _unchanged_env_note(preset: Mapping[str, Any], settings_path: str) -> str:
+    """Describe the worker config an untouched ``.env`` actually forwards.
+
+    A key `.env` does not set forwards NOTHING: both compose files list
+    ``DEFAULT_WORKER_HARNESS`` / ``DEFAULT_WORKER_MODEL`` as bare
+    pass-throughs, so an absent key leaves the settings file applying
+    unchanged.  Printing ``DEFAULT_WORKER_HARNESS=''`` and calling it an
+    override therefore states the opposite of what is in effect, and the
+    operator has no way to see the difference: both readings look configured.
+    The two keys are reported separately because `.env` can set one and not
+    the other, and a single verdict for the pair would be wrong for one half.
+
+    Args:
+        preset: The worker config actually on disk, as ``init``'s decline
+            branch assembles it: ``harness`` and ``model`` are the existing
+            ``.env`` values, or "" when the file sets no such key.
+        settings_path: Path of the settings file the container falls back to.
+
+    Returns:
+        The note to print, as rich markup.
+    """
+    keys = (
+        ("DEFAULT_WORKER_HARNESS", preset.get("harness") or ""),
+        ("DEFAULT_WORKER_MODEL", preset.get("model") or ""),
+    )
+    present = [(name, value) for name, value in keys if value]
+    absent = [name for name, value in keys if not value]
+    parts = [
+        "\n[yellow]Note:[/yellow] .env was left unchanged, so the preset just "
+        "picked above was not written."
+    ]
+    if present:
+        listed = ", ".join(f"{name}={value!r}" for name, value in present)
+        parts.append(
+            f"It already sets {listed}, which is forwarded into the container "
+            f"and overrides that worker default in {settings_path}."
         )
+    if absent:
+        subject = " or ".join(absent)
+        parts.append(
+            f"It sets no {subject}, so nothing is forwarded for "
+            f"{'those' if len(absent) > 1 else 'that'} and {settings_path} "
+            "applies unchanged."
+        )
+    parts.append(
+        "Check the worker row in the table below for what the orchestrator "
+        "actually resolved."
+    )
+    return " ".join(parts)
 
 
 def init(
@@ -1027,8 +1144,9 @@ def init(
         None,
         "--preset",
         help=(
-            "Worker preset by NAME (not menu position). "
-            "Default: the deployment's configured default."
+            "Worker preset by NAME (not menu position). Default: the preset "
+            "the settings file flags default, else the first needing no "
+            "credential, else the first on the menu."
         ),
     ),
     port: int | None = typer.Option(
@@ -1044,7 +1162,9 @@ def init(
         "--accept-preset-requirements",
         help=(
             "Assert a preset's one-time setup (API key, interactive login) is "
-            "already done. Without it, a preset with unmet requirements is refused."
+            "already done. Without it: --non-interactive refuses such a "
+            "preset, while interactively you are asked to confirm and may "
+            "still proceed."
         ),
     ),
 ) -> None:
@@ -1094,6 +1214,14 @@ def run_init(answers: Answers) -> None:
     # First, before any prompt and long before any write: everything below is
     # CWD-relative, so the wrong CWD means a secret in the wrong directory.
     root = _require_repo_root()
+
+    # Said up front, before the first prompt and before anything is written,
+    # because the only duration claim used to arrive at the build itself and
+    # said "a few minutes". Measured, it is ~2 minutes with a warm Docker
+    # layer cache and ~10 with a cold one, and the agent image builds are
+    # nearly all of it. An operator on a cold cache with "a few minutes" in
+    # mind reasonably concludes at minute six that it has hung, and kills it.
+    console.print(RUNTIME_EXPECTATION)
 
     env_path = root / ".env"
     _clear_env_placeholder_dir(env_path)
@@ -1162,9 +1290,17 @@ def run_init(answers: Answers) -> None:
         env_path.write_text(env_text, encoding="utf-8")
         console.print(f"[green]Wrote {env_path}[/green]")
 
-    console.print("\nBuilding agent images (this takes a few minutes the first time)")
+    # Every duration printed from here on is MEASURED, not predicted: a
+    # prediction that turns out wrong is indistinguishable from a hang, and a
+    # running elapsed count is the one thing that tells the operator the
+    # difference without them having to go and read docker's own output.
+    started = time.monotonic()
+    console.print("\nBuilding agent images (the long step; see the estimate above)")
     build_env = {**os.environ, **_entrypoint_build_env(root)}
     _compose(["--profile", "agents", "build"], "the agent image build", env=build_env)
+    console.print(
+        f"  Agent images built in {_format_elapsed(started, time.monotonic())}"
+    )
 
     console.print("Starting the orchestrator")
     _compose(["up", "-d", "--build"], "starting the orchestrator")
@@ -1178,6 +1314,7 @@ def run_init(answers: Answers) -> None:
             "`praxis init`."
         )
         raise typer.Exit(code=1)
+    console.print(f"  Healthy after {_format_elapsed(started, time.monotonic())} total")
 
     _print_next_steps(api_url, token, chosen_preset, preset_written=preset_written)
 

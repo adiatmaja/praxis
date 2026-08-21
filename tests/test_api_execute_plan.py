@@ -23,7 +23,12 @@ async def test_execute_plan_returns_immediately_without_brain_call(
     seeded_user: str,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Endpoint must return 201 with status=decomposing without calling the brain."""
+    """Endpoint must return 201 with the plan's stored status, no brain call.
+
+    The status is ``pending``, the value the row actually holds: it used to be
+    ``decomposing``, a word outside the plan vocabulary that also claimed work
+    the loop had not begun.
+    """
     router_mock = AsyncMock()
     monkeypatch.setattr(app.state, "llm_router", router_mock, raising=False)
 
@@ -38,7 +43,7 @@ async def test_execute_plan_returns_immediately_without_brain_call(
     )
     assert resp.status_code == 201, resp.text
     body = resp.json()
-    assert body["status"] == "decomposing"
+    assert body["status"] == "pending"
     assert body["plan_id"]
     assert body["project_id"]
     # Brain must NOT have been called in the request path.
@@ -367,7 +372,7 @@ async def test_execute_plan_preflight_success_allows_plan(
             },
         )
     assert resp.status_code == 201
-    assert resp.json()["status"] == "decomposing"
+    assert resp.json()["status"] == "pending"
 
 
 async def test_execute_plan_persists_local_context_in_pending_input(
