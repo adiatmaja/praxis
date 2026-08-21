@@ -21,8 +21,24 @@ Interpret the two counts as `<behind>  <ahead>`:
 
 When you proceed, resolve the local base sha (`git rev-parse HEAD`) and pass it
 as `expected_base_sha` to `dispatch_task`/`execute_plan`. The server does a
-read-only compare against `origin/<base>` and rejects a mismatch as a second
-line of defense.
+read-only compare and rejects a mismatch as a second line of defense, with two
+qualifications you have to know, because both fail silently:
+
+- **The compare is SKIPPED, not failed, when the server has no GitHub
+  credential.** Pre-flight short-circuits before the sha check and records
+  `"GitHub credential not configured; remote checks skipped"` in the `warnings`
+  list of the handle. Read `warnings`: an empty list is the only evidence the
+  guard actually ran.
+- **`dispatch_task` compares against `origin/main` regardless of the `branch`
+  you passed.** Only `execute_plan` compares against your `branch`. Passing a
+  feature branch's HEAD sha to `dispatch_task` is therefore rejected as a
+  mismatch against main.
+
+`repo_url` must be `https://github.com/owner/repo` or
+`git@github.com:owner/repo`. GitHub only: other https hosts, and the `ssh://`,
+`git://` and `ext::` schemes, are rejected. A local filesystem path is accepted
+only where the server enables `allow_local_repo_paths`, which is off by
+default.
 
 ---
 
@@ -44,9 +60,11 @@ will implement it, so pass the right `model`. Resolve it in this order:
 
 1. Call `get_project(repo_url)`.
 2. If it returns a `model`, reuse that value — the project is already configured.
-3. If it returns `{"project": null}` (Praxis has never seen this repo), call
-   `list_providers` to see the available worker models and ask the user which to
-   use. Do not invent a model name.
+3. If `project` is null (Praxis has never seen this repo), ask the user which
+   worker model to use. Do not invent a model name. `list_providers` helps only
+   for the local arm: its `worker_models` enumerates what LM Studio currently
+   has loaded, so a Gemini model string served through the agy harness can
+   never appear there, and its absence is not evidence the name is wrong.
 4. Pass the resolved `model` to `execute_plan` (for a full plan) or
    `dispatch_task` (for a single task).
 5. Watch progress with `poll_plan` (or `poll_task`) until terminal.
@@ -103,12 +121,19 @@ calls: nothing streams to you, so you must poll.
   (`task_id`, `title`, `status`, `pr_url`) as decomposition creates them. Use it when you
   handed over a plan and do not yet know the individual task ids.
 - `poll_task`, `get_task_logs`, `cancel_task` - lifecycle and triage (sections 4 and 6).
-- `get_project` — read a repo's configured worker model + harness (or null if unknown).
+- `get_project` — read a repo's configured worker model, harness, `verify_cmd` and
+  `auto_merge`. Always returns a `project` key: the config, or null when Praxis has
+  never seen the repo. Note `improvement_plan_approval_gate` is NOT the merge gate;
+  `auto_merge` is the field that decides whether Praxis merges without a human.
 - `list_projects` — list repos Praxis knows, each with its configured model + harness.
 - `get_mode` — return auto-delegate mode state ({enabled, worker:{harness,model}}).
-- `pending_approvals` — list every task parked at the human merge gate, across all
-  projects ({count, oldest_hours, tasks}). Praxis never merges without a human even
-  after review passes clean, so this is the queue an operator must actually clear.
+- `pending_approvals` — list everything waiting on a human, across all projects and
+  all THREE gates: `tasks` (reviewed PRs parked at the merge gate), `plans` (completed
+  plans whose integration PR is open), `proposals` (autonomous improvement plans nobody
+  has approved to run) and `clarifications` (tasks blocked on a question). `count`
+  covers only the first two, because it is rendered as a number of pull requests; read
+  `summary` for the whole queue. Praxis never merges without a human even after review
+  passes clean, so this is the queue an operator must actually clear.
   `poll_task` and `poll_plan` also carry a one-line `approvals` digest of this same
   queue, so you usually see it there first.
 
@@ -137,9 +162,13 @@ appear, then drill into any one with `poll_task(task_id)`.
 
 ## 5. Reading statuses
 
-The task moves through this state machine:
+The happy path is:
 
 `pending -> in_progress -> reviewing -> awaiting_merge -> merged`
+
+but it is not the only path, and three of the exits below are TERMINAL without
+ever reaching `awaiting_merge`. Polling "until awaiting_merge" can wait
+forever. The terminal set is `merged`, `failed`, `no_changes` and `superseded`.
 
 - `pending` / `in_progress` - queued or being implemented by the worker. Keep polling.
 - `reviewing` - the worker opened a PR; Praxis's brain is reviewing it. Keep polling.
@@ -153,12 +182,24 @@ The task moves through this state machine:
 - `failed` - a run failed review or produced no usable change. Praxis automatically
   re-dispatches up to the project's max_retries before the task goes terminal. Inspect
   with `get_task_logs` if it stays failed.
-- `awaiting_clarification` - the worker was blocked and asked a question. Praxis will
-  try to answer from the plan context; if it cannot, the task parks for human input.
-  Poll until it advances or check the dashboard.
-- `blocked` / `needs_stronger_model` (via `execute_plan`) - Praxis judged the task too
-  hard for the local model and did not ship guesswork. Revise the task into smaller
-  pieces, accept the project's escalation outcome, or handle it yourself.
+- `no_changes` - TERMINAL, and a SUCCESS. The worker found the work already present on
+  the base branch, so there is nothing to commit and no PR to relay. Praxis verifies this
+  against the branch rather than trusting an empty diff. Dependent tasks unblock exactly
+  as they do after `merged`. This is common, not exotic: a leaf frequently writes the next
+  leaf's file.
+- `superseded` - TERMINAL. The task was split into smaller children, which carry the work.
+- `awaiting_clarification` - the worker was blocked and asked a question. Praxis tries to
+  answer it from the plan context; when it cannot, the task parks for a HUMAN and will sit
+  there indefinitely. Do not poll through it. `poll_task` returns a different shape here:
+  it carries `question` and has no `verdict` and no `review`. No MCP tool can answer it.
+  Relay the question to the user, who replies with `praxis clarify <task-id> "..."` or
+  `POST /api/tasks/{id}/clarify`.
+
+There is no `blocked` task status, and `needs_stronger_model` is not a status either: it
+is a boolean column on the task row, set when Praxis judged the task too hard for the
+configured worker and declined to ship guesswork. Read it off the task rather than waiting
+for a status that will never arrive. The remedy is unchanged: split the task, accept the
+project's escalation outcome, or do it yourself.
 
 ## 6. Troubleshooting
 

@@ -220,7 +220,7 @@ uv run python -m bench.prepare --sample bench/samples/lite-pilot-18.json
 # PRAXIS_BENCH_DISABLE_VERIFY=1 in its environment, then:
 uv run python -m bench.runner --sample bench/samples/lite-pilot-18.json \
     --conditions A,C --worker local-openweight \
-    --run-id pilot-1 --verify-cmd "uv run pytest -q"
+    --run-id pilot-1 --verify-cmd "python -m pytest -q"
 
 # Grade and report
 uv run python -m bench.grade --run bench/.work/runs/pilot-1

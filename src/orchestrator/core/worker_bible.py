@@ -16,6 +16,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from orchestrator.core.context_scrub import scrub_context
+from orchestrator.core.leaf_validator import is_runnable_verification
 from orchestrator.core.token_budget import (
     WORKER_RESERVE_FRACTION,
     Section,
@@ -23,14 +24,30 @@ from orchestrator.core.token_budget import (
 )
 
 
-_WORKING_AGREEMENT = (
-    "# WORKING AGREEMENT\n"
-    "- Keep the GOAL above in view at all times.\n"
-    "- Commit after each completed checklist item, naming the item in the "
-    "commit subject (this is how progress is tracked across restarts).\n"
+# The per-item commit rule is CONDITIONAL, because the mechanism behind it is.
+# Completed items are matched by testing whether the item's whole text is a
+# substring of a commit subject, so it only works for short, distinct items.
+# When a leaf declares no checklist the dispatcher synthesises a single item
+# holding the entire task description, which no subject line can contain: the
+# instruction was then unfollowable and the box could never be ticked however
+# diligently the worker obeyed it.
+_AGREEMENT_HEAD = "# WORKING AGREEMENT\n- Keep the GOAL above in view at all times.\n"
+_AGREEMENT_CHECKLIST_COMMITS = (
+    "- Commit after each completed checklist item, naming the item verbatim in "
+    "the commit subject. That subject is what marks the item done in the "
+    "PROGRESS section if this task is resumed.\n"
+)
+_AGREEMENT_TAIL = (
+    "- Commit your work as you go, with subjects that name what changed.\n"
     "- Do NOT delete existing functionality or config the task did not ask "
     "you to remove.\n"
 )
+
+
+def _working_agreement(*, itemized_checklist: bool) -> str:
+    """The working agreement, with the per-item commit rule only when it works."""
+    middle = _AGREEMENT_CHECKLIST_COMMITS if itemized_checklist else ""
+    return _AGREEMENT_HEAD + middle + _AGREEMENT_TAIL
 
 
 # Work outside the leaf is not merely wasted turns: it lands in the reviewed
@@ -57,8 +74,8 @@ _SCOPE_DISCIPLINE = (
     "fails to collect, say so; do not edit files to make collection succeed.\n"
     "- Do NOT modernize, reformat, or fix unrelated files, even ones that look "
     "broken.\n"
-    "- Any change outside the files the task names must be justified in the PR "
-    "body.\n"
+    "- Any change outside the files the task names must be justified in your "
+    "FINAL REPORT (you cannot write the PR body).\n"
 )
 
 
@@ -87,6 +104,11 @@ class BibleSources:
     review_feedback: str | None = None
     verify_cmd: str | None = None
     reserve_fraction: float = WORKER_RESERVE_FRACTION
+    #: True when the leaf declared a real, multi-item checklist. False for the
+    #: synthesised single item holding the whole description, where the
+    #: per-item commit rule cannot be followed. Defaults False so a caller that
+    #: does not know cannot accidentally assert the stronger claim.
+    itemized_checklist: bool = False
 
 
 # Priority ranks. Lower is kept longer; ``floor`` sections are never dropped.
@@ -124,8 +146,12 @@ def build_bible(src: BibleSources) -> str:
             A leaf whose ``plan_slice`` alone overflows is invalid; F3 and the
             pre-dispatch difficulty gate exist to catch it earlier.
     """
+    # A heading with nothing under it is a statement that there is nothing to
+    # say, which is not what an empty source field means. Both of these are
+    # floors and so cannot simply be dropped; they say so instead.
+    goal_body = (src.goal or "").strip() or "(no goal text was recorded for this task)"
     raw_sections: list[Section] = [
-        Section("goal", f"# GOAL (do not lose this)\n{src.goal}", _P_GOAL, floor=True),
+        Section("goal", f"# GOAL (do not lose this)\n{goal_body}", _P_GOAL, floor=True),
     ]
     if src.plan_slice:
         raw_sections.append(
@@ -137,10 +163,19 @@ def build_bible(src: BibleSources) -> str:
             )
         )
     if src.edit_locations:
+        # Precedence stated, because the same two facts arrive twice. The leaf
+        # contract above is injected verbatim under a header forbidding
+        # reinterpretation and carries its own Files and Acceptance sections
+        # (``leaf_templates`` requires them), while these sections are built
+        # from the plan row. Two sources and no stated order means the worker
+        # picks one at random whenever they differ.
+        edits_body = str(src.edit_locations)
+        if src.plan_slice:
+            edits_body += "\n(Overrides the leaf contract's Files section.)"
         raw_sections.append(
             Section(
                 "edits",
-                f"# EDIT LOCATIONS\n{src.edit_locations}",
+                f"# EDIT LOCATIONS\n{edits_body}",
                 _P_EDITS,
                 floor=True,
             )
@@ -157,13 +192,22 @@ def build_bible(src: BibleSources) -> str:
         # because bench mode can disable the mechanical gate.
         if src.verify_cmd and src.verify_cmd != acceptance:
             body += f"\nProject verify command: {src.verify_cmd}"
+        # "run this before you finish" is an IMPERATIVE, and the slot does not
+        # always hold a command. A leaf with no verify command puts prose here
+        # ("Manual review of the generated docs."), and the flagged-leaf path
+        # deliberately puts a whole paragraph here. Telling a model to run a
+        # paragraph spends turns on it, so the header names what the slot
+        # actually contains.
+        if src.plan_slice:
+            body += "\n(Overrides the leaf contract's Acceptance section.)"
+        heading = (
+            "# ACCEPTANCE (run this before you finish)"
+            if is_runnable_verification(acceptance)
+            else "# ACCEPTANCE CRITERIA (not a runnable command; satisfy these "
+            "and report on them)"
+        )
         raw_sections.append(
-            Section(
-                "acceptance",
-                f"# ACCEPTANCE (run this before you finish)\n{body}",
-                _P_ACCEPT,
-                floor=True,
-            )
+            Section("acceptance", f"{heading}\n{body}", _P_ACCEPT, floor=True)
         )
     # Unconditional on purpose. Every source field this could plausibly be
     # gated on is empty on the plainest dispatch there is, so a gate here would
@@ -190,7 +234,13 @@ def build_bible(src: BibleSources) -> str:
                 _P_NEIGHBORS,
             )
         )
-    raw_sections.append(Section("agreement", _WORKING_AGREEMENT, _P_AGREEMENT))
+    raw_sections.append(
+        Section(
+            "agreement",
+            _working_agreement(itemized_checklist=src.itemized_checklist),
+            _P_AGREEMENT,
+        )
+    )
     if src.caller_context:
         raw_sections.append(
             Section("caller", f"# CONTEXT\n{src.caller_context}", _P_CALLER)

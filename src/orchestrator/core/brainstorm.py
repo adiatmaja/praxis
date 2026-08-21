@@ -171,6 +171,15 @@ class BrainstormManager:
         self._started[session_id] = False
         return session_id
 
+    def has_session(self, session_id: str) -> bool:
+        """True when this process still holds the session.
+
+        Sessions are in-memory, so the honest answer after a restart is "no".
+        Exposed so the route can say that instead of accepting a turn that
+        cannot happen.
+        """
+        return session_id in self._sessions
+
     async def send(self, session_id: str, message: str) -> None:
         session = self._sessions[session_id]
         first = not self._started[session_id]
@@ -272,7 +281,12 @@ class BrainstormManager:
         target.write_text(content, encoding="utf-8")
         try:
             token = await self._provider.token_for_repo(repo_url)
-            commit_and_push(workspace, token, "docs: update spec", paths=[path])
+            committed = commit_and_push(
+                workspace, token, "docs: update spec", paths=[path]
+            )
         finally:
             shutil.rmtree(workspace, ignore_errors=True)
-        return {"status": "committed", "path": path}
+        # Saving a spec the operator did not actually edit is a no-op, not a
+        # failure and not a commit. Reporting "committed" for it would put a
+        # commit in the UI that is not in the repo.
+        return {"status": "committed" if committed else "unchanged", "path": path}

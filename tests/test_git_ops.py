@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+import os
+import subprocess
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -10,6 +12,7 @@ import pytest
 from orchestrator.core import git_ops as git_ops_mod
 from orchestrator.core.git_ops import (
     GitOps,
+    _nothing_staged,
     checkout_branch,
     clone_with_token,
     commit_and_push,
@@ -983,3 +986,63 @@ async def test_merge_pr_raises_when_github_cannot_be_asked(
     # The merge error must surface, NOT the OSError and NOT a false success.
     with pytest.raises(RuntimeError, match="Git command failed"):
         await git.merge_pr("/tmp/workspace", 12)
+
+
+@pytest.mark.unit
+def test_nothing_staged_is_true_only_for_a_clean_index(tmp_path) -> None:
+    """The fact the whole fix rests on, checked against REAL git.
+
+    `git commit` exits 1 on a clean tree, so `check=True` turned "nothing
+    changed" into `CalledProcessError`, which two routes propagated as a bare
+    500. The replacement asks `git diff --cached --quiet`, which answers in
+    exit codes rather than in prose and so cannot be defeated by a locale that
+    translates "nothing to commit". Mocking subprocess here would assert only
+    that the mock was called.
+    """
+    ws = str(tmp_path)
+    env = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@e"}
+    env.update({"GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@e"})
+    subprocess.run(["git", "init", "-q", ws], check=True, env=env)
+    subprocess.run(
+        ["git", "-C", ws, "commit", "-q", "--allow-empty", "-m", "base"],
+        check=True,
+        env=env,
+    )
+
+    assert _nothing_staged(ws) is True
+
+    (tmp_path / "f.txt").write_text("x", encoding="utf-8")
+    subprocess.run(["git", "-C", ws, "add", "f.txt"], check=True, env=env)
+    assert _nothing_staged(ws) is False
+
+
+@pytest.mark.unit
+@patch("orchestrator.core.git_ops._nothing_staged", return_value=True)
+@patch("orchestrator.core.git_ops.subprocess.run")
+def test_commit_and_push_reports_a_no_op_instead_of_raising(
+    mock_run: object,
+    probe: object,  # noqa: ARG001 - patch decorator arg, not a fixture
+) -> None:
+    """ "Nothing changed" is a FACT the caller must be able to report.
+
+    Saving a spec without editing it, and approving a context draft the planner
+    produced empty, both answered 500. Revert to `check=True` on the commit and
+    only these go red.
+    """
+    assert commit_and_push("/tmp/ws", "tok123", "msg") is False
+    cmds = [c.args[0] for c in mock_run.call_args_list]  # type: ignore[attr-defined]
+    assert any("add" in c for c in cmds)
+    # Neither the commit nor the push was attempted.
+    assert not any("commit" in c for c in cmds)
+    assert not any("push" in c for c in cmds)
+
+
+@pytest.mark.unit
+@patch("orchestrator.core.git_ops._nothing_staged", return_value=False)
+@patch("orchestrator.core.git_ops.subprocess.run")
+def test_commit_and_push_reports_true_when_it_committed(
+    mock_run: object,
+    probe: object,  # noqa: ARG001 - patch decorator arg, not a fixture
+) -> None:
+    """The other branch, so "always False" cannot pass the test above."""
+    assert commit_and_push("/tmp/ws", "tok123", "msg") is True

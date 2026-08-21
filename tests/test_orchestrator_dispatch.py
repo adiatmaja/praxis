@@ -77,7 +77,9 @@ async def _dispatch_and_get_bible(
     mock_agent_manager = MagicMock()
     mock_agent_manager.spawn_agent = AsyncMock(return_value="container-123")
     mock_git = AsyncMock()
-    mock_git.branch_commit_log = AsyncMock(return_value=[])
+    # The bible reads the branch history from the REMOTE now; the local
+    # `branch_commit_log` was passed "." and could never work in production.
+    mock_git.remote_branch_commit_log = AsyncMock(return_value=[])
 
     orch = Orchestrator(
         task_queue=task_queue,
@@ -111,7 +113,7 @@ class TestDispatchMixinRepoMemory:
         mock_agent_manager = MagicMock()
         mock_agent_manager.spawn_agent = AsyncMock(return_value="container-123")
         mock_git = AsyncMock()
-        mock_git.branch_commit_log = AsyncMock(return_value=[])
+        mock_git.remote_branch_commit_log = AsyncMock(return_value=[])
 
         orch = Orchestrator(
             task_queue=task_queue,
@@ -167,7 +169,11 @@ class TestDispatchMixinEditLocations:
             db, {"files": "src/api/users.py"}
         )
         bible = await _dispatch_and_get_bible(db, task_queue, plan_id)
-        assert "# EDIT LOCATIONS\nsrc/api/users.py" in bible
+        # Matched against the line BELOW the heading rather than against the
+        # heading text, so this stays about character-splitting: the heading
+        # now also states precedence over the leaf contract's Files section.
+        edits = bible.split("# EDIT LOCATIONS", 1)[1]
+        assert edits.splitlines()[1] == "src/api/users.py"
         assert "s\nr\nc\n" not in bible
 
     @pytest.mark.parametrize(
@@ -357,9 +363,13 @@ class TestDispatchMixinAcceptanceFloor:
             verify_cmd=None,
         )
         bible = await _dispatch_and_get_bible(db, task_queue, plan_id)
+        # The prose is kept, and the heading no longer orders the worker to RUN
+        # it. "run this before you finish" over "manual review of the rendered
+        # docs" is an imperative aimed at a sentence, and the flagged-leaf path
+        # deliberately puts a whole paragraph in this slot.
         assert (
-            "# ACCEPTANCE (run this before you finish)\n"
-            "manual review of the rendered docs"
+            "# ACCEPTANCE CRITERIA (not a runnable command; satisfy these and "
+            "report on them)\nmanual review of the rendered docs"
         ) in bible
 
     async def test_an_absent_verification_falls_back_to_the_verify_cmd(

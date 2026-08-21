@@ -533,3 +533,95 @@ async def test_plain_failure_retry_after_resume_clears_session_handle(
 
     # The property that actually matters: the gate refuses to resume.
     assert resolve_resume_session(task, "agy") is None
+
+
+class _BrokenDocker:
+    """An agent manager whose Docker calls fail the way a restarted daemon does.
+
+    ``AgentManager`` catches only ``docker.errors.NotFound``; an ``APIError`` or
+    a ``DockerException`` from a daemon that went away propagates. Modelled as a
+    plain ``RuntimeError`` so the test does not depend on the docker SDK being
+    importable, which is the same shape the endpoint has to survive.
+    """
+
+    def __init__(self) -> None:
+        self.logs_calls = 0
+        self.cleanup_calls = 0
+
+    def get_container_logs(self, container_id: str) -> str:
+        self.logs_calls += 1
+        message = "Error while fetching server API version"
+        raise RuntimeError(message)
+
+    def cleanup_container(self, container_id: str) -> None:
+        self.cleanup_calls += 1
+        message = "Error while fetching server API version"
+        raise RuntimeError(message)
+
+
+@pytest.mark.integration
+async def test_a_docker_hiccup_reading_logs_never_strands_the_result(
+    client: AsyncClient, db: Database, auth_headers: dict[str, str]
+) -> None:
+    """Telemetry must not be able to lose the result it describes.
+
+    ``get_container_logs`` runs BEFORE ``complete_agent_run`` and before the PR
+    url is stored, so an uncaught Docker error aborted the callback with none of
+    the worker's outcome recorded: the finished PR was stranded and the task sat
+    IN_PROGRESS until the reconcile sweep. Docker Desktop restarts and WSL2
+    clock resyncs are documented as routine on this platform.
+    """
+    task_id, run_id = await _seed_in_progress_task(client, db, auth_headers)
+    broken = _BrokenDocker()
+    client.app.state.agent_manager = broken  # type: ignore[attr-defined]
+
+    resp = await client.post(
+        "/api/internal/agent-done",
+        json={
+            "task_id": task_id,
+            "run_id": run_id,
+            "status": "completed",
+            "pr_url": "https://github.com/u/retry/pull/7",
+        },
+        headers={"X-Praxis-Callback-Token": auth_headers["Authorization"].split()[1]},
+    )
+
+    assert broken.logs_calls == 1
+    assert resp.status_code == 200
+    # The outcome was recorded despite the log read failing.
+    task = await db.fetch_one("SELECT * FROM tasks WHERE id = ?", (task_id,))
+    assert task["pr_url"] == "https://github.com/u/retry/pull/7"
+    assert task["status"] != TaskStatus.IN_PROGRESS.value
+
+
+@pytest.mark.integration
+async def test_a_docker_hiccup_removing_the_container_never_replays_the_callback(
+    client: AsyncClient, db: Database, auth_headers: dict[str, str]
+) -> None:
+    """Cleanup runs AFTER the whole state machine has committed.
+
+    Raising there answered 500, which the harness entrypoints treat as "not
+    delivered" and retry five times (``CALLBACK_MAX_ATTEMPTS``), replaying a
+    fully-processed callback: five run completions, five retry-or-fail
+    decisions, and the retry budget spent up to five times over on one worker
+    run. Housekeeping is not a verdict.
+    """
+    task_id, run_id = await _seed_in_progress_task(client, db, auth_headers)
+    broken = _BrokenDocker()
+    # Only cleanup fails here, so this test isolates the second call site.
+    broken.get_container_logs = lambda _cid: "log body"  # type: ignore[assignment] # noqa: ARG005
+    client.app.state.agent_manager = broken  # type: ignore[attr-defined]
+
+    resp = await client.post(
+        "/api/internal/agent-done",
+        json={
+            "task_id": task_id,
+            "run_id": run_id,
+            "status": "completed",
+            "pr_url": "https://github.com/u/retry/pull/8",
+        },
+        headers={"X-Praxis-Callback-Token": auth_headers["Authorization"].split()[1]},
+    )
+
+    assert broken.cleanup_calls == 1
+    assert resp.status_code == 200

@@ -169,21 +169,66 @@ def checkout_branch(workspace: str, branch: str, token: str) -> None:
     logger.info("Checked out branch %s in %s", branch, workspace)
 
 
+def _nothing_staged(workspace: str) -> bool:
+    """True only on a POSITIVE answer that the index holds no changes.
+
+    ``git diff --cached --quiet`` exits 0 for an empty index and 1 when it
+    holds something, and it says so in exit codes rather than in prose, so it
+    cannot be defeated by a locale that translates "nothing to commit". Any
+    other exit code means the question was not answered; that falls through to
+    attempting the commit, which is the safe direction: a real failure then
+    still raises rather than being silently reported as "unchanged".
+    """
+    probe = subprocess.run(  # noqa: S603
+        ["git", "-C", workspace, "diff", "--cached", "--quiet"],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    return probe.returncode == 0
+
+
 def commit_and_push(
     workspace: str,
     token: str,
     message: str,
     paths: list[str] | None = None,
-) -> None:
+) -> bool:
     """Stage, commit, and push changes in ``workspace`` using token auth.
 
     Stages ``paths`` (or everything when ``paths`` is None), commits with
     ``message``, and pushes via the token-auth credential helper.
+
+    "Nothing changed" is a FACT, not a failure. ``git commit`` exits 1 on a
+    clean tree, so under ``check=True`` it raised ``CalledProcessError``, and
+    the two callers that write operator-authored text propagated that as a bare
+    500: saving a spec in the dashboard editor without editing it, and
+    approving a context draft the planner had produced empty, both answered
+    "Internal Server Error" for a no-op. The caller needs to be able to tell
+    "I committed" from "there was nothing to commit", so this reports it
+    instead of raising.
+
+    Args:
+        workspace: A clone with a checked-out branch.
+        token: A token with push rights on the remote.
+        message: The commit subject.
+        paths: Paths to stage, or None to stage everything.
+
+    Returns:
+        True when a commit was made and pushed; False when the index was
+        already clean, in which case nothing was pushed.
+
+    Raises:
+        subprocess.CalledProcessError: If staging, committing, or pushing
+            fails for any reason other than there being nothing to commit.
     """
     env = {**os.environ, "GH_TOKEN": token}
     add_args = ["git", "-C", workspace, "add"]
     add_args += paths if paths else ["-A"]
     subprocess.run(add_args, check=True, capture_output=True, text=True)  # noqa: S603
+    if _nothing_staged(workspace):
+        logger.info("Nothing to commit in %s; skipping commit and push", workspace)
+        return False
     subprocess.run(  # noqa: S603
         ["git", "-C", workspace, "commit", "-m", message],
         check=True,
@@ -198,6 +243,7 @@ def commit_and_push(
         env=env,
     )
     logger.info("Committed and pushed in %s", workspace)
+    return True
 
 
 def compare_url(repo_url: str, base: str, head: str) -> str:
@@ -738,6 +784,67 @@ class GitOps:
                 f"{base_branch}..{branch}",
             ],
             cwd=cwd,
+        )
+        commits: list[Commit] = []
+        for line in out.splitlines():
+            if "\x1f" not in line:
+                continue
+            sha, subject = line.split("\x1f", 1)
+            commits.append(Commit(sha=sha, subject=subject))
+        return commits
+
+    async def remote_branch_commit_log(
+        self, repo_url: str, base_branch: str, branch: str
+    ) -> list[Commit]:
+        """Commits on ``branch`` and not on ``base_branch``, read from the REMOTE.
+
+        The sibling ``branch_commit_log`` needs a local clone, and the only
+        caller that wanted this data had none: ``_build_worker_bible`` passed
+        ``"."``, which inside the orchestrator container is ``/app`` (no
+        ``.git``, and no target repo anywhere on the filesystem). The read
+        therefore raised on every dispatch and was swallowed into an empty
+        list, so the progress handover rendered every checklist item unticked
+        forever while the Bible told the worker that per-item commits were how
+        progress survived a restart. Under bare uvicorn it was worse than
+        empty: ``.`` is the Praxis repo, so the refspec resolved against
+        Praxis's own branches.
+
+        Uses ``gh api ... /compare/`` for the same reason
+        ``open_integration_pr`` uses ``gh pr create --repo``: no workspace, no
+        clone, one call.
+
+        Args:
+            repo_url: Full GitHub repository URL.
+            base_branch: The branch to exclude commits from.
+            branch: The branch whose extra commits to return.
+
+        Returns:
+            Commits ordered oldest first, as ``branch_commit_log`` returns.
+
+        Raises:
+            RuntimeError: If the ``gh`` call fails. Callers decide what an
+                unreadable history means; it must never be reported as "no
+                progress", which is a different fact.
+        """
+        from orchestrator.core.progress_handover import Commit
+
+        slug = (
+            self.repo_slug(repo_url)
+            or repo_url.rstrip("/").removesuffix(".git").split("github.com/")[-1]
+        )
+        token = await self._token_for_repo(slug)
+        out = await self._run_checked(
+            [
+                "gh",
+                "api",
+                f"repos/{slug}/compare/{base_branch}...{branch}",
+                "--jq",
+                # Same %H\x1f%s shape branch_commit_log parses, so the two
+                # sources cannot drift in what the caller has to handle.
+                r'.commits[] | .sha + "\u001f" + '
+                r'(.commit.message | split("\n")[0])',
+            ],
+            token=token,
         )
         commits: list[Commit] = []
         for line in out.splitlines():

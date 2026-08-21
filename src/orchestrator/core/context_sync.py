@@ -84,14 +84,39 @@ class ContextSync:
         }
         return {"draft_id": draft_id, "diff": diff}
 
+    def has_draft(self, draft_id: str) -> bool:
+        """True when this process still holds the draft.
+
+        Drafts are in-memory, so a restart invalidates every outstanding one.
+        """
+        return draft_id in self._drafts
+
     async def approve(self, draft_id: str) -> dict:
-        draft = self._drafts.pop(draft_id)
+        """Commit and push an approved draft.
+
+        The draft is popped only AFTER the commit succeeds. Popping first meant
+        a failed push destroyed the only handle on the workspace, so the
+        operator could neither retry nor find what had been drafted.
+
+        Raises:
+            KeyError: If ``draft_id`` is unknown. Drafts live in this process,
+                so every outstanding one is invalidated by a restart, and the
+                caller must be able to say that rather than report a fault.
+        """
+        draft = self._drafts[draft_id]
         ws = draft["workspace"]
         repo_url = draft["repo_url"]
         token = await self._provider.token_for_repo(repo_url)
-        commit_and_push(ws, token, "docs: sync CLAUDE.md and MEMORY.md")
+        # An empty draft is the ordinary outcome when the planner was rate
+        # limited or blocked, and approving one used to raise: `git commit`
+        # exits 1 on a clean tree.
+        committed = commit_and_push(ws, token, "docs: sync CLAUDE.md and MEMORY.md")
+        self._drafts.pop(draft_id, None)
         shutil.rmtree(ws, ignore_errors=True)
-        return {"status": "committed", "draft_id": draft_id}
+        return {
+            "status": "committed" if committed else "unchanged",
+            "draft_id": draft_id,
+        }
 
     async def current(self, repo_url: str) -> dict:
         """Return current CLAUDE.md and MEMORY.md content from the repo.

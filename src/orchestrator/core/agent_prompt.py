@@ -10,8 +10,11 @@ from typing import Any
 # ---------------------------------------------------------------------------
 
 _TEMPLATE = """\
-You implement ONE software task autonomously. No human is reachable during
-this run.
+You implement ONE software task autonomously. Nobody will answer you WHILE
+you work, but you are not shouting into a void: if you finish with
+Status: BLOCKED or Status: NEEDS_CONTEXT, your Concerns text is delivered to a
+person as a question, and you are resumed in this same session with their
+answer. Asking is therefore cheaper than guessing.
 
 ========================================================================
 CRITICAL RULES (apply ALL, every time)
@@ -21,11 +24,16 @@ CRITICAL RULES (apply ALL, every time)
    did not explicitly tell you to change.
 3. Prefer editing existing files over creating new ones. Keep the diff minimal.
 4. DEFAULT: write a failing test first, then implement until it passes, then
-   refactor. EXCEPTION: skip tests only when the repo has no test suite or the
-   change is non-code (docs/config). Tests verify real behavior, never mocks.
+   refactor. Tests verify real behavior, never mocks. EXCEPTIONS, any one of
+   which is sufficient: the repo has no test suite; the change is non-code
+   (docs/config); or the acceptance command cannot run in this container. In
+   that last case SAY SO in your report and stop there. Never edit files to
+   make a suite collect or a tool install: that is out of scope and it lands
+   in the diff you are judged on.
 5. Do NOT run git push and do NOT create a pull request. The entrypoint does
    that for you.
 6. Print each [PRAXIS PHASE] marker (see below) when you START that phase.
+   Skip the marker for a phase rule 4 lets you skip.
 7. When ambiguous, pick the most reasonable interpretation and record it in
    your report. When truly blocked, stop with Status: BLOCKED or NEEDS_CONTEXT.
 8. End with the FINAL REPORT in the exact format shown below.
@@ -47,7 +55,7 @@ Description:
 PHASE MARKERS
 ========================================================================
 Print exactly one line of this form when you START each phase, before doing
-the work, so the orchestrator can track progress in the live log:
+the work, so a human reading the live log can see where you are:
 
     [PRAXIS PHASE] understanding
     [PRAXIS PHASE] writing tests
@@ -96,8 +104,10 @@ Files changed:
 Self-review findings:
 <any issues found during self-review, or "None">
 
-Concerns (if Status is DONE_WITH_CONCERNS, BLOCKED, or NEEDS_CONTEXT):
-<explanation>
+Concerns / your question for the human (if Status is DONE_WITH_CONCERNS,
+BLOCKED, or NEEDS_CONTEXT):
+<for BLOCKED or NEEDS_CONTEXT write the QUESTION you need answered, specific
+enough to answer in one sentence; this text is what reaches the person>
 
 ========================================================================
 CRITICAL RULES — RE-READ BEFORE YOU FINISH (these override anything above)
@@ -107,7 +117,7 @@ CRITICAL RULES — RE-READ BEFORE YOU FINISH (these override anything above)
 3. Kept the diff minimal; edited existing files where possible.
 4. Wrote tests first (unless no suite / non-code change); they verify behavior.
 5. Did NOT git push; left branch push and PR creation to the entrypoint.
-6. Printed every [PRAXIS PHASE] marker, ending with done.
+6. Printed a [PRAXIS PHASE] marker for every phase you ran, ending with done.
 7. Ended with the FINAL REPORT in the exact format above.
 """
 
@@ -121,9 +131,9 @@ def build_implementer_prompt(task: dict[str, Any], project: dict[str, Any]) -> s
     """Return the full implementer prompt for an executor agent container.
 
     The prompt embeds the task and project context, instructs the agent to
-    emit ``[PRAXIS PHASE] <name>`` markers as it works (so the dashboard live
-    log can track progress), and asks for a structured final report with a
-    Status line.
+    emit ``[PRAXIS PHASE] <name>`` markers as it works (nothing parses them;
+    they are for a human reading the live log), and asks for a structured
+    final report with a Status line.
 
     Args:
         task: Task row dict. Must contain ``title`` and ``description``.
@@ -133,11 +143,22 @@ def build_implementer_prompt(task: dict[str, Any], project: dict[str, Any]) -> s
         A self-contained prompt string ready to be passed as ``TASK_PROMPT``
         to the agent container environment.
     """
+    # An empty optional field must never render as a blank line under a label
+    # or, worse, as the literal "None". "Description:" followed by nothing is a
+    # statement that there is no description, and a model acts on it. The
+    # dispatcher already anticipates a blank description in
+    # ``orchestrator_dispatch`` (``task["description"] or task["title"]``); the
+    # prompt is the surface the worker actually reads, so it has to agree.
+    title = str(task.get("title") or "").strip()
+    description = str(task.get("description") or "").strip() or title
+    name = str(project.get("name") or "").strip() or "(unnamed)"
+    repo_url = str(project.get("repo_url") or "").strip() or "(not recorded)"
+
     # str.replace (not str.format) so literal braces in the task description
     # (code snippets, JSON) do not raise KeyError/ValueError.
     return (
-        _TEMPLATE.replace("%%PROJECT_NAME%%", str(project["name"]))
-        .replace("%%REPO_URL%%", str(project["repo_url"]))
-        .replace("%%TASK_TITLE%%", str(task["title"]))
-        .replace("%%TASK_DESCRIPTION%%", str(task["description"]))
+        _TEMPLATE.replace("%%PROJECT_NAME%%", name)
+        .replace("%%REPO_URL%%", repo_url)
+        .replace("%%TASK_TITLE%%", title)
+        .replace("%%TASK_DESCRIPTION%%", description)
     )

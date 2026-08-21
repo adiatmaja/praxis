@@ -360,6 +360,39 @@ async def test_reject_merge_endpoint(
     assert captured["feedback"] == "redo"
 
 
+@pytest.mark.integration
+async def test_reject_merge_reports_a_gh_failure_the_way_approve_does(
+    client: AsyncClient,
+    db: Database,
+    auth_headers: dict[str, str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The two halves of the merge gate must fail the same way.
+
+    Rejecting posts the feedback as a PR comment, so a missing or
+    unauthenticated `gh`, a rate limit, or a credential the App cannot mint
+    raises RuntimeError. CredentialError is a RuntimeError, not a ValueError,
+    so the ValueError-only handler caught neither and `praxis reject-merge`
+    printed `Error 500: Internal Server Error` for the identical condition
+    `approve-merge` already reported as 502 with the reason attached. Delete
+    the `except Exception` block on reject_merge and only this goes red.
+    """
+
+    async def boom(task_id: str, project: dict, feedback: str | None) -> None:
+        message = "gh: could not resolve to a Repository"
+        raise RuntimeError(message)
+
+    task_id = await _seed_passed_task(client, db, auth_headers)
+    monkeypatch.setattr(client.app.state.orchestrator, "reject_task_merge", boom)
+    resp = await client.post(
+        f"/api/tasks/{task_id}/reject-merge",
+        headers=auth_headers,
+        json={"feedback": "redo"},
+    )
+    assert resp.status_code == 502
+    assert "could not resolve to a Repository" in resp.json()["detail"]
+
+
 async def _seed_clarifying_task(
     client: AsyncClient,
     db: Database,

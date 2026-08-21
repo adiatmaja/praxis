@@ -5,7 +5,8 @@ set -euo pipefail
 : "${BRANCH:?BRANCH is required}"
 : "${BASE_BRANCH:?BASE_BRANCH is required}"
 : "${TASK_PROMPT:?TASK_PROMPT is required}"
-# NOTE: MODEL carries the Gemini model string verbatim, e.g. "Gemini 3.5 Flash (High)".
+# NOTE: MODEL carries the Gemini model string verbatim, e.g. "Gemini 3.7 Flash (High)"
+# (config/praxis.yaml is the source of truth for that string; this is only an example).
 # agy does NOT use OPENAI_API_BASE (it talks to Google via OAuth creds, not LM Studio),
 # so that env var is tolerated if set but intentionally not required here.
 : "${MODEL:?MODEL is required}"
@@ -62,7 +63,15 @@ if [ "${SINGLE_BRANCH:-0}" != "1" ]; then
         main | master | release*)
             printf 'PRAXIS_FATAL_PROTECTED_BASE: base branch %s is protected; workers must never target it\n' \
                 "'${BASE_BRANCH}'"
-            STATUS="failed"
+            # NO callback here, deliberately, and no STATUS assignment
+            # either. This guard runs BEFORE send_callback and the EXIT trap
+            # are defined, so the `STATUS="failed"` that used to sit here was
+            # dead code that read as "we reported this". Nothing is reported,
+            # and that silence is load-bearing: `orchestrator_reconcile`
+            # scrapes the PRAXIS_FATAL_PROTECTED_BASE sentinel above out of
+            # the container log and marks the run terminal WITHOUT burning a
+            # retry, whereas a `failed` callback routes to the retry branch
+            # and would spend one on a misconfiguration no retry can fix.
             exit 1
             ;;
     esac
@@ -84,25 +93,38 @@ url_encode() {
     printf '%s' "$1" | sed -e 's|%|%25|g' -e 's|/|%2F|g' -e 's| |%20|g' -e 's|&|%26|g'
 }
 
+# Escape a value for JSON, or render the bare word `null` if it cannot be.
+#
+# `json_escape` shells out to python3, and the four call sites below were plain
+# assignments, so under `set -e` one failing interpreter aborted send_callback
+# MIDWAY: no callback was posted at all, while the last two lines of the run's
+# own log still read "PR created: <url>" and "agent completed". The task then
+# hung until the reconcile sweep with its log asserting success. A callback
+# missing one field is recoverable; a callback that is never sent is the exact
+# failure this function exists to prevent, so an escaping failure degrades the
+# FIELD and never the delivery. The warning goes to stderr because stdout here
+# IS the return value.
+escape_or_null() {
+    local value="$1"
+    local escaped
+    if [ -z "${value}" ]; then
+        printf 'null'
+        return 0
+    fi
+    if escaped=$(printf '%s' "${value}" | json_escape); then
+        printf '%s' "${escaped}"
+    else
+        echo "WARNING: json escaping failed; reporting this field as null" >&2
+        printf 'null'
+    fi
+}
+
 send_callback() {
-    local pr_json="null"
-    local run_json="null"
-    if [ -n "${PR_URL}" ]; then
-        pr_json=$(printf "%s" "${PR_URL}" | json_escape)
-    fi
-    if [ -n "${RUN_ID:-}" ]; then
-        run_json=$(printf "%s" "${RUN_ID}" | json_escape)
-    fi
-
-    local question_json="null"
-    if [ -n "${QUESTION:-}" ]; then
-        question_json=$(printf "%s" "${QUESTION}" | json_escape)
-    fi
-
-    local session_json="null"
-    if [ -n "${CAPTURED_SESSION_ID:-}" ]; then
-        session_json=$(printf "%s" "${CAPTURED_SESSION_ID}" | json_escape)
-    fi
+    local pr_json run_json question_json session_json
+    pr_json=$(escape_or_null "${PR_URL:-}")
+    run_json=$(escape_or_null "${RUN_ID:-}")
+    question_json=$(escape_or_null "${QUESTION:-}")
+    session_json=$(escape_or_null "${CAPTURED_SESSION_ID:-}")
 
     # tokens_used is NUMERIC in the payload, never quoted, and must be the bare
     # word null (not "") when absent -- the callback schema treats a missing
@@ -127,18 +149,27 @@ send_callback() {
         if [ -n "${CALLBACK_TOKEN:-}" ]; then
             token_header=(-H "X-Praxis-Callback-Token: ${CALLBACK_TOKEN}")
         fi
+        # `|| code="000"` OUTSIDE the substitution, never `|| echo "000"`
+        # inside it: on a connection failure curl writes its own "000" to
+        # stdout AND exits non-zero, so BOTH landed in `code` and the operator
+        # read "failed (HTTP 000000)", a status code that does not exist.
         code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 \
             -X POST "${CALLBACK_URL}" \
             -H "Content-Type: application/json" \
             "${token_header[@]}" \
-            -d "${payload}" || echo "000")
+            -d "${payload}") || code="000"
         if [ "${code}" = "200" ]; then
             echo "Callback delivered on attempt ${attempt}"
             return 0
         fi
         echo "WARNING: callback attempt ${attempt}/${max_attempts} failed (HTTP ${code})"
         attempt=$((attempt + 1))
-        sleep $((attempt * 2))
+        # Only back off if another attempt is actually coming. The old sleep
+        # ran after the FINAL attempt too, adding dead time to a run that had
+        # already given up.
+        if [ "${attempt}" -le "${max_attempts}" ]; then
+            sleep $((attempt * 2))
+        fi
     done
     echo "ERROR: callback failed after ${max_attempts} attempts; orchestrator will reconcile"
 }
@@ -233,8 +264,9 @@ echo "--- Writing Static Bible (task context, never committed) ---"
     fi
     if command -v uv >/dev/null 2>&1; then
         printf '%s\n' "- uv: $(uv --version 2>&1) at $(command -v uv)"
-        printf '%s\n' '  Run Python tools via `uv run <tool>` (e.g. `uv run pytest`, `uv run ruff check .`, `uv run mypy src`).'
-        printf '%s\n' '  uv installs project deps on demand -- do NOT use pip/apt/get-pip.'
+        printf '%s\n' '  Run this repo tests with `python -m pytest` (pytest is installed system-wide).'
+        printf '%s\n' '  Do NOT use `uv run pytest`: it needs a project venv a freshly cloned repo does not have.'
+        printf '%s\n' '  uv is here for `uv run <tool>` on tools this image does not already provide, and installs project deps on demand -- do NOT use pip/apt/get-pip.'
     else
         printf '%s\n' "- uv: NOT available on PATH."
     fi
@@ -293,8 +325,14 @@ echo "--- Verifying OAuth creds are present ---"
 # docs/deployment.md). Read-write so agy can persist refreshed access tokens
 # (they expire in ~1h). A fresh worker process reads these Linux-native creds
 # back and authenticates without any browser flow.
+# The `-d` test that used to sit here asserted "creds present" from the mere
+# EXISTENCE of a directory agy creates for itself, so once agy had run in this
+# volume even once the warning could never fire again: an abandoned login and
+# an expired credential both reported as present, and the run then died inside
+# agy where the message is a Go stack trace rather than the one line that names
+# the remedy. Require something a login actually writes.
 if [ -f "/home/agent/.gemini/antigravity-cli/conversation_summaries.db" ] \
-    || [ -d "/home/agent/.gemini/antigravity-cli" ]; then
+    || [ -n "$(ls -A /home/agent/.gemini/antigravity-cli 2>/dev/null)" ]; then
     echo "OAuth creds volume present at ~/.gemini"
 else
     echo "WARNING: ~/.gemini has no agy credentials; authentication will fail."
@@ -309,7 +347,7 @@ echo "--- Running agy (headless) ---"
 #   --dangerously-skip-permissions : auto-approve all tool permission requests
 #   --mode accept-edits            : non-interactive edit mode
 #   --print-timeout 30m            : generous timeout for long tasks (default 5m)
-#   --model                        : Gemini model string, e.g. "Gemini 3.5 Flash (High)"
+#   --model                        : Gemini model string, e.g. "Gemini 3.7 Flash (High)"
 #   -p / --print                   : one-shot prompt, print output to stdout
 #
 # Note: --headless and --approve are NOT valid flags in v1.1.x; removed.
@@ -362,6 +400,15 @@ if SPLIT=$(python3 /usr/local/bin/extract_session.py < "${RAW_LOG}" 2>/dev/null)
     CAPTURED_SESSION_ID=$(printf '%s' "${SPLIT}" | head -n1)
     printf '%s' "${SPLIT}" | tail -n +2 > "${OUTPUT_LOG}"
     echo "Conversation id: ${CAPTURED_SESSION_ID:-<none>}"
+    # Second guard, deliberately not folded into the extractor's exit code.
+    # Everything downstream (the Status: grep, the token count, the
+    # no-changes decision, `praxis logs`) reads OUTPUT_LOG, so an empty one is
+    # indistinguishable from a harness that said nothing. The extractor fails
+    # closed on the shapes it knows about; this catches the ones it does not.
+    if [ ! -s "${OUTPUT_LOG}" ]; then
+        echo "Envelope split produced an empty transcript; using raw output"
+        cp "${RAW_LOG}" "${OUTPUT_LOG}"
+    fi
 else
     # Envelope unparseable: fall back to treating raw output as the transcript,
     # exactly as before this feature existed.
@@ -373,10 +420,10 @@ fi
 # agy's JSON envelope carries a sibling "usage" object with total_tokens.
 # Observed live against a real agy build on 2026-08-14 (two dispatched tasks,
 # concrete non-zero counts read back from this exact field); the entrypoint's
-# own envelope-shape comment further down was added from that same run. NOTE:
-# docs/gotchas.md still marks the envelope UNVERIFIED as of this commit --
-# that entry predates the 2026-08-14 run and was never updated; it needs a
-# doc fix, tracked separately, not a reason to distrust the observed shape.
+# own envelope-shape comment further down was added from that same run.
+# docs/gotchas.md now records the same thing ("VERIFIED on 2026-08-14"); the
+# note that used to sit here, telling the reader that doc still said
+# UNVERIFIED, outlived the doc fix it was waiting for.
 # Read from RAW_LOG, not OUTPUT_LOG: the split above strips the envelope.
 # Guarded twice, like the envelope_info read further below, so a
 # missing/unparseable field can never trip `set -e`; TOKENS_USED just stays
@@ -427,11 +474,32 @@ if [ "${report_status}" = "BLOCKED" ] || [ "${report_status}" = "NEEDS_CONTEXT" 
         fi
     fi
     ahead=0
-    if [ "${checkpoint_ok}" -eq 1 ] \
-        && ! ahead=$(git rev-list --count "${BASE_BRANCH}..HEAD"); then
-        echo "WARNING: checkpoint rev-list failed; suppressing session resume"
-        checkpoint_ok=0
-        ahead=0
+    if [ "${checkpoint_ok}" -eq 1 ]; then
+        # The same numeric validation the commit block below already applies,
+        # and for the same reason. `git rev-list --count` can exit 0 having
+        # printed nothing or something non-numeric, and `[ "" -gt 0 ]` is not
+        # false, it is an ERROR (`integer expression expected`) that bash then
+        # reads as false. That skipped the push while leaving checkpoint_ok at
+        # 1, so a session id was reported for a checkpoint that never reached
+        # the remote: the next turn resumes the model's memory of edits that
+        # only ever existed in a destroyed container, against a branch rebuilt
+        # from base. That divergence is exactly what the invariant below is
+        # written to prevent, and this was the hole it was falling through.
+        if checkpoint_ahead=$(git rev-list --count "${BASE_BRANCH}..HEAD" 2>&1); then
+            case "${checkpoint_ahead}" in
+                ""|*[!0-9]*)
+                    echo "WARNING: checkpoint rev-list returned non-numeric output; suppressing session resume"
+                    checkpoint_ok=0
+                    ;;
+                *)
+                    ahead="${checkpoint_ahead}"
+                    ;;
+            esac
+        else
+            echo "WARNING: checkpoint rev-list failed; suppressing session resume"
+            checkpoint_ok=0
+            ahead=0
+        fi
     fi
     if [ "${checkpoint_ok}" -eq 1 ] && [ "${ahead}" -gt 0 ]; then
         if ! git push -u origin "${BRANCH}"; then
@@ -671,8 +739,20 @@ PR_URL=$(gh pr create \
 Implemented by \`${MODEL}\` (harness: agy)" \
     --base "${BASE_BRANCH}" \
     --head "${BRANCH}")
+# `gh pr create` can exit 0 having printed NOTHING. The old code echoed
+# "PR created: " with an empty url and then ran to a normal exit, so the
+# callback said `completed` with `pr_url: null` and the log an operator reads
+# through `praxis logs` said the PR existed and the agent had finished. The
+# orchestrator's `completed_without_pr` guard converts that to a failure, so
+# the dashboard was right and the log was wrong about the same run. The
+# entrypoint reports FACTS; a success it did not observe is not one of them.
+# The EXIT trap turns this into a `failed` callback, so the task is not left
+# hanging for the reconcile sweep either.
+if [ -z "${PR_URL}" ]; then
+    echo "ERROR: gh pr create exited 0 but printed no PR URL"
+    exit 1
 fi
-
 echo "PR created: ${PR_URL}"
+fi
 fi
 echo "=== agy agent completed ==="

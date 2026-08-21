@@ -85,6 +85,54 @@ async def _resolved_as_no_op(
         return False
 
 
+def _best_effort_logs(agent_manager: object, container_id: str, task_id: str) -> str:
+    """Fetch the container log, or "" if Docker cannot answer right now.
+
+    ``AgentManager.get_container_logs`` catches only ``docker.errors.NotFound``.
+    A daemon that went away (a Docker Desktop restart or a WSL2 clock resync,
+    both routine on this platform) raises ``APIError``/``DockerException``
+    instead, and an uncaught raise here aborts the callback BEFORE
+    ``complete_agent_run`` and before the PR url is stored: the worker's
+    finished PR is stranded and the task sits IN_PROGRESS until the reconcile
+    sweep. Telemetry must never be able to lose the result it describes.
+    """
+    if agent_manager is None:
+        return ""
+    try:
+        return str(agent_manager.get_container_logs(container_id))  # type: ignore[attr-defined]
+    except Exception:  # noqa: BLE001 - a log read must never fail the callback
+        logger.warning(
+            "Could not read container logs for task %s; recording the run without them",
+            task_id,
+        )
+        return ""
+
+
+def _best_effort_cleanup(
+    agent_manager: object, container_id: str, task_id: str
+) -> None:
+    """Remove the finished container, tolerating a Docker that cannot answer.
+
+    This runs AFTER the whole state machine has committed, so raising here
+    answers 500 ("nothing happened, retry") for a callback in which everything
+    happened. The harness entrypoints retry any non-200 five times
+    (``CALLBACK_MAX_ATTEMPTS``), so one unremovable container replayed the
+    entire callback five times: five ``complete_agent_run`` writes, five
+    retry-or-fail decisions, five events, and the retry budget spent up to five
+    times over on a single worker run. Housekeeping is not a verdict.
+    """
+    if agent_manager is None:
+        return
+    try:
+        agent_manager.cleanup_container(container_id)  # type: ignore[attr-defined]
+    except Exception:  # noqa: BLE001 - cleanup must never fail the callback
+        logger.warning(
+            "Could not remove the container for task %s; the stale-container "
+            "sweep will collect it",
+            task_id,
+        )
+
+
 @router.post("/agent-done")
 async def agent_done(request: Request, body: AgentDonePayload) -> dict[str, str]:
     """Handle completion callback from a harness agent container.
@@ -111,9 +159,7 @@ async def agent_done(request: Request, body: AgentDonePayload) -> dict[str, str]
         )
 
     agent_manager = getattr(request.app.state, "agent_manager", None)
-    logs = ""
-    if agent_manager is not None:
-        logs = agent_manager.get_container_logs(run["container_id"])
+    logs = _best_effort_logs(agent_manager, run["container_id"], task_id)
     await queue.complete_agent_run(run["id"], body.status, logs)
 
     # Token telemetry is optional by design: harnesses declare whether they can
@@ -261,6 +307,5 @@ async def agent_done(request: Request, body: AgentDonePayload) -> dict[str, str]
                 status_str,
             )
 
-    if agent_manager is not None:
-        agent_manager.cleanup_container(run["container_id"])
+    _best_effort_cleanup(agent_manager, run["container_id"], task_id)
     return {"status": "ok"}

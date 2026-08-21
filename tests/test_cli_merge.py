@@ -8,6 +8,7 @@ from typer.testing import CliRunner
 
 from cli import main as cli_main
 from cli.main import app
+from tests.cli_text import flat
 
 
 runner = CliRunner()
@@ -48,8 +49,11 @@ def test_merge_posts_approve_merge_for_the_task(monkeypatch) -> None:
 
     assert result.exit_code == 0
     assert seen["path"] == "/api/tasks/abc-123/approve-merge"
-    assert "merged" in result.stdout
-    assert "abc-123" in result.stdout
+    # rich highlights the numeric tail of the id, landing an escape INSIDE
+    # "abc-123", so this must match colour-free output.
+    plain_out = flat(result)
+    assert "merged" in plain_out
+    assert "abc-123" in plain_out
 
 
 def test_merge_surfaces_a_gate_conflict(monkeypatch) -> None:
@@ -159,9 +163,10 @@ def test_merge_plan_says_when_the_plan_is_not_ready(monkeypatch) -> None:
     result = runner.invoke(app, ["merge-plan", "plan-9"])
 
     assert result.exit_code == 0
-    assert "Merged:" in result.stdout
-    assert "Not integrated" in result.stdout
-    assert "2 task(s) not merged yet" in result.stdout
+    plain_out = flat(result)
+    assert "Merged:" in plain_out
+    assert "Not integrated" in plain_out
+    assert "2 task(s) not merged yet" in plain_out
 
 
 def test_pending_lists_a_plan_awaiting_integration(monkeypatch) -> None:

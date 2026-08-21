@@ -5,15 +5,18 @@ narrative contributes least (ORACLE-SWE arXiv 2604.07789).  See
 docs/decomposition-standard.md section 4.
 
 Every budget number below is arithmetic over the real section costs of
-``_sources``: floors 266 tok (goal 10, leaf contract 29, edit locations 14,
-acceptance 34, scope briefing 143, review feedback 30, handover 6), droppables
-neighbors 70, working agreement 71, caller narrative 59, repo memory 61.  The
+``_sources``: floors 300 tok (goal 10, leaf contract 29, edit locations 26,
+acceptance 47, scope briefing 152, review feedback 30, handover 6), droppables
+neighbors 70, working agreement 54, caller narrative 59, repo memory 61.  The
 budget is ``int(context_window * 0.4)``; ``r`` below is what is left of it
 after the floors.
 
-The acceptance section costs 34 rather than the 25 of its own text because
+The acceptance section costs 47 rather than the 25 of its own text because
 ``_sources`` gives a leaf check that differs from ``verify_cmd``, so
-``build_bible`` restates the project command alongside it (9 tok).
+``build_bible`` restates the project command alongside it (9 tok), and because
+a leaf contract is present it also states that this section overrides the
+contract's own Acceptance section (13 tok). Edit locations carry the same
+precedence line, which is why they cost 26 rather than 14.
 
 Every window here was shifted by the scope briefing's 143 tok / 0.4 when that
 briefing joined the floors, so each ``r`` below, and therefore each boundary
@@ -54,10 +57,10 @@ def test_a_roomy_budget_keeps_every_section():
 
 @pytest.mark.unit
 def test_repo_memory_is_cut_before_narrative_context():
-    # 1258 tok window -> 503 tok budget, r = 237 after the 266 tok of floors.
-    # Neighbors (70), the working agreement (71) and the caller narrative (59)
-    # take 200 of that, leaving 37: too little for the 61 tok of repo memory.
-    bible = build_bible(_sources(context_window=1258))
+    # 1250 tok window -> 500 tok budget, r = 200 after the 300 tok of floors.
+    # Neighbors (70), the working agreement (54) and the caller narrative (59)
+    # take 183 of that, leaving 17: too little for the 61 tok of repo memory.
+    bible = build_bible(_sources(context_window=1250))
     assert "chromadb 0.5.0" not in bible
     assert "The user asked for a widget." in bible
 
@@ -69,33 +72,34 @@ def test_narrative_context_is_cut_before_the_working_agreement():
     The standard puts the working agreement and environment manifest above repo
     memory and narrative context, so the caller narrative must be cut first.
     That boundary is only observable when what is left after the neighbors
-    fits the agreement but not both it and the narrative: with 1058 tok the
-    budget is 423, r = 157 after the floors, and neighbors take 70 of it,
-    leaving 87.  The agreement (71) fits and the narrative (59) then does not.
+    fits the agreement but not both it and the narrative: with 1125 tok the
+    budget is 450, r = 150 after the floors, and neighbors take 70 of it,
+    leaving 80.  The agreement (54) fits and the narrative (59) then does not.
     Swap the two ranks and the pack keeps the narrative instead: outside the
-    87 tok in [71, 71 + 59) window the two orders keep exactly the same
+    80 tok in [54, 54 + 59) window the two orders keep exactly the same
     sections, which is why every other budget here is blind to the swap.
     """
-    bible = build_bible(_sources(context_window=1058))
+    bible = build_bible(_sources(context_window=1125))
     assert "# WORKING AGREEMENT" in bible
     assert "The user asked for a widget." not in bible
 
 
 @pytest.mark.unit
 def test_narrative_context_is_cut_before_neighbor_contracts():
-    # 858 tok window -> 343 tok budget, r = 77 after floors: only the 70 tok of
-    # neighbor contracts fit, so the narrative context is cut above them.
-    bible = build_bible(_sources(context_window=858))
+    # 1000 tok window -> 400 tok budget, r = 100 after floors: the 70 tok of
+    # neighbor contracts fit and the 30 left takes none of the rest, so the
+    # narrative context is cut above them.
+    bible = build_bible(_sources(context_window=1000))
     assert "The user asked for a widget." not in bible
     assert "def make_widget" in bible
 
 
 @pytest.mark.unit
 def test_plan_text_edit_locations_and_acceptance_survive_the_tightest_budget():
-    # 708 tok window -> 283 tok budget: the 266 tok of floors fit and nothing
-    # else does (the cheapest droppable, the caller narrative, costs 59, and
-    # only 17 tok are left).
-    bible = build_bible(_sources(context_window=708))
+    # 800 tok window -> 320 tok budget: the 300 tok of floors fit and nothing
+    # else does (the cheapest droppable, the working agreement, costs 54, and
+    # only 20 tok are left).
+    bible = build_bible(_sources(context_window=800))
     # Rank 1: the leaf contract, verbatim.
     assert "## Steps" in bible
     # Rank 2: edit locations.
@@ -155,9 +159,9 @@ def test_a_large_high_priority_section_can_lose_to_a_smaller_low_priority_one():
     ``fit_sections`` keeps the floors, then fills what is left greedily in
     ascending priority, skipping any section that does not fit and continuing
     to the next.  So a large high-priority section can be dropped while a
-    smaller lower-priority one survives.  Here the floors cost 200 tok of the
-    743 tok budget, the neighbors take 270 and the working agreement 71,
-    leaving 202: the caller narrative (rank 9, 234 tok) does not fit and is
+    smaller lower-priority one survives.  Here the floors cost 234 tok of the
+    758 tok budget, the neighbors take 270 and the working agreement 54,
+    leaving 200: the caller narrative (rank 9, 234 tok) does not fit and is
     skipped, and the repo memory (rank 10, 183 tok) then does fit and is kept.
 
     This documents the behavior the code has, it does not endorse it.  The
@@ -168,7 +172,7 @@ def test_a_large_high_priority_section_can_lose_to_a_smaller_low_priority_one():
     src = BibleSources(
         goal="Ship it.",
         handover="PROGRESS: none.",
-        context_window=1858,
+        context_window=1895,
         plan_slice="## Goal\nShip.\n## Steps\n1. go",
         edit_locations="src/a.py::make_widget",
         acceptance="uv run pytest tests/test_widget.py",

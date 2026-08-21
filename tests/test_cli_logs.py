@@ -15,6 +15,7 @@ from typer.testing import CliRunner
 
 from cli import main as cli_main
 from cli.main import app
+from tests.cli_text import flat
 
 
 runner = CliRunner()
@@ -118,9 +119,13 @@ def test_a_long_log_is_tailed_and_says_how_much_it_hid(monkeypatch) -> None:
     result = runner.invoke(app, ["logs", FULL_TASK_ID])
 
     assert result.exit_code == 0
-    assert "line-0500" in result.stdout
-    assert "line-0001" not in result.stdout
-    assert "300 earlier line(s) suppressed" in result.stdout
+    # Through `flat`: rich highlights the digits inside "line-0500" and inside
+    # the suppression count when the stream takes colour, so a raw `in
+    # result.stdout` passes uncoloured and fails under FORCE_COLOR.
+    plain_out = flat(result)
+    assert "line-0500" in plain_out
+    assert "line-0001" not in plain_out
+    assert "300 earlier line(s) suppressed" in plain_out
 
 
 def test_tail_zero_prints_everything(monkeypatch) -> None:

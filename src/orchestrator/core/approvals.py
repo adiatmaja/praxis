@@ -288,14 +288,60 @@ def outstanding_count(summary: dict[str, Any]) -> int:
     )
 
 
+def _plural(n: int, singular: str) -> str:
+    """``singular`` for one, a naive ``+s`` plural otherwise."""
+    return singular if n == 1 else f"{singular}s"
+
+
 def digest_line(summary: dict[str, Any]) -> str:
-    """Render a one-line summary, or an empty string when nothing is parked."""
+    """Render one line naming every gate with something on it, or "".
+
+    Praxis has THREE gates and this sentence used to render one of them. It
+    read ``count``, which is a number of PRs by construction and excludes both
+    autonomous proposals and tasks blocked on an unanswered question, so a
+    queue holding nothing but those produced an EMPTY string. That silence
+    reached three surfaces: ``pending_approvals`` fell back to "No work parked
+    at the merge gate" over a queue that was not empty, ``poll_task`` and
+    ``poll_plan`` attached nothing, and the loop's digest event published a
+    payload whose own sentence mentioned none of what triggered it, because
+    ``should_publish_digest`` already fires on ``outstanding_count``.
+
+    Excluding proposals and blocked tasks from ``count`` is still right: they
+    have no PR, and announcing pull requests that do not exist is the same
+    defect wearing the other sign. They get their own clause instead.
+
+    ``oldest_hours`` spans parked tasks and plans ONLY, so the age is attached
+    to the PR clause rather than to the line, and clauses are joined with "; "
+    so that clause's own comma can never read as the separator.
+
+    Args:
+        summary: A ``summarize_pending`` payload.
+
+    Returns:
+        One sentence, or "" when no gate has anything on it.
+    """
+    clauses: list[str] = []
+
     count = int(summary.get("count") or 0)
-    if count == 0:
+    if count > 0:
+        oldest = int(summary.get("oldest_hours") or 0)
+        clauses.append(
+            f"{count} {_plural(count, 'PR')} awaiting your approval, oldest {oldest}h"
+        )
+
+    proposals = int(summary.get("proposal_count") or 0)
+    if proposals > 0:
+        noun = _plural(proposals, "improvement proposal")
+        clauses.append(f"{proposals} {noun} awaiting approval")
+
+    blocked = int(summary.get("clarification_count") or 0)
+    if blocked > 0:
+        noun = _plural(blocked, "task")
+        clauses.append(f"{blocked} {noun} blocked on a question")
+
+    if not clauses:
         return ""
-    noun = "PR" if count == 1 else "PRs"
-    oldest = int(summary.get("oldest_hours") or 0)
-    return f"{count} {noun} awaiting your approval, oldest {oldest}h."
+    return "; ".join(clauses) + "."
 
 
 def should_publish_digest(

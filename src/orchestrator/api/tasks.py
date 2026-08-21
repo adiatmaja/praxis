@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any, cast
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
@@ -10,6 +11,9 @@ from pydantic import BaseModel
 from orchestrator.api.auth import verify_token
 from orchestrator.core.clarification_states import RESOLVED
 from orchestrator.models.schemas import TaskResponse, TaskStatus
+
+
+logger = logging.getLogger(__name__)
 
 
 class RejectMergeRequest(BaseModel):
@@ -59,8 +63,17 @@ async def get_task(request: Request, task_id: str) -> dict[str, Any]:
 
 
 @router.post("/tasks/{task_id}/stop")
-async def stop_task(request: Request, task_id: str) -> dict[str, int]:
-    """Stop running agent containers for a task."""
+async def stop_task(request: Request, task_id: str) -> dict[str, Any]:
+    """Stop running agent containers for a task and mark it failed.
+
+    ``stopped`` counts RUN ROWS closed, which is not the same as containers
+    killed. On a host with no Docker (``main.py`` tolerates that deliberately
+    and logs "Agent manager unavailable") the loop still closed every run row
+    and answered ``{"stopped": 2}`` having contacted nothing: the caller reads
+    that as two containers killed while both keep running. ``containers_stopped``
+    is the honest count, and ``docker_available`` says whether the question
+    could be asked at all.
+    """
 
     queue = request.app.state.task_queue
     task = await queue.get_task(task_id)
@@ -71,11 +84,22 @@ async def stop_task(request: Request, task_id: str) -> dict[str, int]:
 
     agent_manager = getattr(request.app.state, "agent_manager", None)
     stopped = 0
+    containers_stopped = 0
     for run in await queue.get_runs_for_task(task_id):
         if run["status"] != "running":
             continue
         if agent_manager is not None:
-            agent_manager.stop_agent(run["container_id"])
+            try:
+                agent_manager.stop_agent(run["container_id"])
+                containers_stopped += 1
+            except Exception:  # noqa: BLE001 - one bad container must not
+                # abandon the rest half-stopped, nor 500 a request whose other
+                # runs were closed correctly.
+                logger.warning(
+                    "Could not stop the container for run %s; the run row is "
+                    "still closed",
+                    run["id"],
+                )
         await queue.complete_agent_run(run["id"], "stopped", "Stopped by user")
         stopped += 1
     await queue.update_task_status(task_id, TaskStatus.FAILED)
@@ -85,7 +109,11 @@ async def stop_task(request: Request, task_id: str) -> dict[str, int]:
     # back a memory the branch does not match. Drop it: this path sets FAILED
     # directly rather than via fail_task, so it does not inherit that clearing.
     await queue.clear_worker_session(task_id)
-    return {"stopped": stopped}
+    return {
+        "stopped": stopped,
+        "containers_stopped": containers_stopped,
+        "docker_available": agent_manager is not None,
+    }
 
 
 @router.post("/tasks/{task_id}/retry", response_model=TaskResponse)
@@ -176,6 +204,17 @@ async def reject_merge(
     except ValueError as exc:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT, detail=str(exc)
+        ) from exc
+    except Exception as exc:  # noqa: BLE001
+        # The other half of the merge gate must fail the same way the approve
+        # half does. Rejecting posts the feedback as a PR comment, so a missing
+        # or unauthenticated `gh`, a rate limit, or a credential the App cannot
+        # mint raises RuntimeError (CredentialError is a RuntimeError, not a
+        # ValueError, so neither was caught): `praxis reject-merge` answered a
+        # bare 500 for the identical condition `approve-merge` reports as 502
+        # with the reason attached.
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY, detail=f"reject failed: {exc}"
         ) from exc
     return {"task_id": task_id, "status": "rejected"}
 

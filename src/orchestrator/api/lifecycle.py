@@ -7,6 +7,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 
 from orchestrator.api.auth import verify_token
+from orchestrator.api.repo_errors import guard_repo_access
 
 
 router = APIRouter(tags=["lifecycle"], dependencies=[Depends(verify_token)])
@@ -24,12 +25,10 @@ async def list_lifecycle(request: Request, project_id: str) -> list[dict[str, An
             status_code=status.HTTP_404_NOT_FOUND, detail="Project not found"
         )
 
-    try:
-        docs = await request.app.state.brainstorm.list_lifecycle_docs(
-            project["repo_url"]
-        )
-    except Exception as exc:  # noqa: BLE001 - surface clone/git failure as 502
-        raise HTTPException(status_code=502, detail=f"repo read failed: {exc}") from exc
+    docs = await guard_repo_access(
+        request.app.state.brainstorm.list_lifecycle_docs(project["repo_url"]),
+        what="lifecycle doc listing",
+    )
 
     specs = [d for d in docs if d["category"] == "spec"]
     plans_by_spec = {
@@ -79,10 +78,8 @@ async def get_doc_raw(request: Request, project_id: str, path: str) -> dict[str,
     )
     if project is None:
         raise HTTPException(status_code=404, detail="Project not found")
-    try:
-        content = await request.app.state.brainstorm.read_doc(project["repo_url"], path)
-    except FileNotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-    except Exception as exc:  # noqa: BLE001 - clone/git failure
-        raise HTTPException(status_code=502, detail=f"repo read failed: {exc}") from exc
+    content = await guard_repo_access(
+        request.app.state.brainstorm.read_doc(project["repo_url"], path),
+        what="doc read",
+    )
     return {"path": path, "content": content}

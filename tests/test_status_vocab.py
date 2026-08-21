@@ -179,22 +179,37 @@ def test_server_uses_status_vocab_constants() -> None:
 def test_dashboard_status_literals_in_sync() -> None:
     """The dashboard JS only uses task status literals that exist in TaskStatus.
 
-    Scans for ``task.status === "xxx"`` patterns (task-level status checks),
-    excluding plan-level ``plan.status`` comparisons which use PlanStatus.
+    Scans for ``<receiver>.status === "xxx"`` and checks the literal against
+    ``TaskStatus``. Not every ``.status`` in the dashboard is a TASK status:
+    plans carry ``PlanStatus``, and the settings API answers a PUT with its own
+    ``status`` describing the WRITE (``ok`` / ``stored_but_shadowed``). Those
+    are legitimately outside this vocabulary, so the receiver decides whether a
+    literal is in scope rather than a growing list of substrings to skip. A
+    receiver this does not recognise is checked, which is the safe direction:
+    a new task-shaped variable is caught, and a genuine non-task one is added
+    here deliberately.
     """
     app_js = Path(__file__).resolve().parent.parent / "web" / "app.js"
     content = app_js.read_text(encoding="utf-8")
 
     import re
 
-    # Match task.status or .status === "xxx" but exclude plan.status lines
+    #: Receivers whose ``.status`` is NOT a TaskStatus, with what it is instead.
+    not_task_status = {
+        "plan": "PlanStatus",
+        "p": "PlanStatus (plan row in a loop)",
+        "saved": "the settings PUT response (ok / stored_but_shadowed)",
+    }
+
     lines = content.split("\n")
     status_refs = []
     for line in lines:
-        # Skip lines that are clearly plan-level status checks
-        if "plan.status" in line or "plan_status" in line:
+        if "plan_status" in line:
             continue
-        status_refs.extend(re.findall(r'\.status\s*===?\s*"([^"]+)"', line))
+        for receiver, literal in re.findall(r'(\w*)\.status\s*===?\s*"([^"]+)"', line):
+            if receiver in not_task_status:
+                continue
+            status_refs.append(literal)
 
     # Build the set of known status values (including MCP aliases)
     from orchestrator.core.status_vocab import MCP_STATUS_ALIASES

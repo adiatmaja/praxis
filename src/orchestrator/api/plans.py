@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import subprocess  # noqa: S404
 import uuid
 from datetime import UTC, datetime
 from typing import Any, cast
@@ -11,6 +12,11 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel
 
 from orchestrator.api.auth import verify_token
+from orchestrator.api.repo_errors import repo_failure_detail
+from orchestrator.core.github_credentials import (
+    CredentialError,
+    build_credential_provider,
+)
 from orchestrator.core.markdown_utils import extract_frontmatter_field
 from orchestrator.core.plan_derive import PlanDeriveError, derive_opus_plan
 from orchestrator.core.spec_docs import render_spec_doc, spec_doc_path
@@ -60,6 +66,22 @@ async def create_plan(
         today=datetime.now(UTC).date(),
         unique=uuid.uuid4().hex[:8],
     )
+    # A missing GitHub credential must answer the SAME WAY here as it does from
+    # POST /api/projects, which classifies it 422 with the remedy attached.
+    # This route answered 502 Bad Gateway ("upstream is broken, retry") for a
+    # permanent configuration fact that will never self-heal on a retry, so the
+    # first two commands a newcomer types disagreed about the same install.
+    try:
+        build_credential_provider(request.app.state.settings)
+    except CredentialError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=(
+                f"{exc}. Submitting a spec commits it to the repository as a "
+                "doc, so it needs a GitHub credential."
+            ),
+        ) from exc
+
     try:
         await request.app.state.brainstorm.write_and_commit(
             project["repo_url"], spec_path, render_spec_doc(body.spec)
@@ -185,6 +207,13 @@ async def promote_plan(request: Request, body: PromoteRequest) -> dict[str, Any]
     except FileNotFoundError as exc:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)
+        ) from exc
+    except subprocess.CalledProcessError as exc:
+        # Same family, same handler: `str()` on this is only the exit code and
+        # the reason lives on `.stderr`.
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=repo_failure_detail(exc),
         ) from exc
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(

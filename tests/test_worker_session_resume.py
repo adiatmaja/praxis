@@ -290,12 +290,23 @@ def test_agy_extractor_ignores_non_string_conversation_id():
     assert "ok" in body
 
 
-def test_agy_extractor_prints_id_only_when_no_response_key_matches():
-    """No known response key present: id line still prints, body stays empty."""
+def test_agy_extractor_fails_closed_when_no_response_key_matches():
+    """No known response key present: exit 1 and print NOTHING.
+
+    This used to assert the opposite, and the opposite was the defect. Exiting
+    0 with only the conversation id handed the entrypoint an EMPTY transcript
+    and, because the fallback runs only on a non-zero exit, suppressed the
+    RAW_LOG copy that exists for exactly this case. Downstream that is not a
+    degraded run but a wrong one: the `Status:` grep finds no BLOCKED line so a
+    worker's question is destroyed and a PR of half-finished work goes to
+    review, and the no-changes block reads zero bytes so a satisfied tree is
+    reported as a failed run. The file's own docstring and `docs/gotchas.md`
+    both already said it failed closed.
+    """
     payload = json.dumps({"conversation_id": "conv_only"})
     result = _run_extractor(AGY_EXTRACTOR, payload)
-    assert result.returncode == 0
-    assert result.stdout == "conv_only\n"
+    assert result.returncode == 1
+    assert result.stdout.strip() == ""
 
 
 def test_agy_extractor_falls_back_to_later_response_key():

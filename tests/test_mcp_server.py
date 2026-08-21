@@ -448,7 +448,41 @@ async def test_get_project_found_maps_model_name_to_model() -> None:
     assert result["model"] == "qwen3-32b"
     assert result["harness"] == "opencode"
     assert result["default_branch"] == "main"
-    assert result["approval_gate"] is False
+    # `approval_gate` is renamed on this surface, because it does not gate
+    # merges. It gates whether an autonomous IMPROVEMENT PLAN starts running
+    # unapproved; `auto_merge` is the one that decides whether Praxis merges
+    # without a human, and it was not returned at all. An assistant reading
+    # `approval_gate: false` as "merges are automatic here" gets the opposite
+    # of the truth.
+    assert result["improvement_plan_approval_gate"] is False
+    assert "approval_gate" not in result
+    assert "auto_merge" in result
+
+
+async def test_get_project_always_carries_a_project_key() -> None:
+    """Both branches must have the key the caller is told to test.
+
+    The guide instructs `result["project"] is None` for "unknown repo", and the
+    found branch had no `project` key at all, so `.get("project") is None` was
+    True for a repo Praxis knew perfectly well.
+    """
+    client = FakeClient(
+        {
+            ("GET", "/api/projects"): [
+                {"id": "p1", "repo_url": "https://github.com/u/target"}
+            ]
+        }
+    )
+    found = await server.get_project_impl(
+        client, repo_url="https://github.com/u/target"
+    )
+    assert found["project"] is not None
+    assert found["project"]["project_id"] == "p1"
+
+    missing = await server.get_project_impl(
+        client, repo_url="https://github.com/u/nope"
+    )
+    assert missing["project"] is None
 
 
 async def test_get_project_missing_returns_null_not_error() -> None:

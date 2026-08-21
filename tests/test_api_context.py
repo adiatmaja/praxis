@@ -71,9 +71,51 @@ async def test_approve_endpoint(
         "approve",
         return_value={"status": "committed", "draft_id": "d1"},
     )
+    mocker.patch.object(client.app.state.context_sync, "has_draft", return_value=True)
     r = await client.post("/api/context-drafts/d1/approve", headers=auth_headers)
     assert r.status_code == 200
     assert r.json()["status"] == "committed"
+
+
+@pytest.mark.asyncio
+async def test_approve_unknown_draft_is_404_not_a_server_error(
+    client: AsyncClient,
+    auth_headers: dict,
+) -> None:
+    """Drafts live in this process, so a restart invalidates every one.
+
+    `approve` popped straight out of the dict, so the ordinary post-restart
+    click on Approve raised KeyError and answered a bare 500: "the server is
+    broken", for a state whose remedy is "run context-sync again".
+    """
+    r = await client.post("/api/context-drafts/gone/approve", headers=auth_headers)
+    assert r.status_code == 404
+    assert "restart" in r.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_approve_reports_the_git_reason_not_a_bare_500(
+    client: AsyncClient,
+    auth_headers: dict,
+    mocker,
+) -> None:
+    """The fourth member of the clone/commit failure family.
+
+    Its three siblings in this module already answered 502 with the reason;
+    this route answered 500 with none of it.
+    """
+    error = subprocess.CalledProcessError(
+        128, "git push", stderr=b"fatal: Authentication failed"
+    )
+    mocker.patch.object(client.app.state.context_sync, "has_draft", return_value=True)
+    mocker.patch.object(
+        client.app.state.context_sync,
+        "approve",
+        new=mocker.AsyncMock(side_effect=error),
+    )
+    r = await client.post("/api/context-drafts/d1/approve", headers=auth_headers)
+    assert r.status_code == 502
+    assert "Authentication failed" in r.json()["detail"]
 
 
 @pytest.mark.asyncio

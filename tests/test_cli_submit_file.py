@@ -13,6 +13,7 @@ import httpx
 from typer.testing import CliRunner
 
 from cli.main import app
+from tests.cli_text import flat
 
 
 runner = CliRunner()
@@ -166,5 +167,7 @@ def test_submit_missing_file_errors_without_creating_a_plan(
     result = runner.invoke(app, ["submit", PROJECT_ID, "--file", str(missing_path)])
 
     assert result.exit_code != 0
-    assert str(missing_path) in result.stdout
+    # The path carries digits and separators rich highlights, so an escape can
+    # land mid-path; match against colour-free output.
+    assert str(missing_path) in flat(result)
     assert called["n"] == 0

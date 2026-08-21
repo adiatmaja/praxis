@@ -197,8 +197,17 @@ async def pending_approvals_impl(client: Any) -> dict[str, Any]:
     except PraxisClientError as exc:
         return _error(exc)
     if not isinstance(result, dict):
-        return {"summary": "No work parked at the merge gate."}
-    summary = digest_line(result) or "No work parked at the merge gate."
+        # A positive assertion of emptiness must come from a readable answer,
+        # never from an unusable one. Claiming the queue is clear because the
+        # response could not be parsed is the worst version of this defect:
+        # the caller stops looking.
+        return {
+            "summary": "Praxis error: the approvals endpoint returned an "
+            "unreadable response, so what is waiting is unknown.",
+            "error": "bad_response",
+            "message": f"expected a JSON object, got {type(result).__name__}",
+        }
+    summary = digest_line(result) or "Nothing is waiting on a human."
     return {"summary": summary, **result}
 
 
@@ -439,10 +448,16 @@ def derive_terminal_incomplete_state(
 
     failed_count = sum(1 for t in tasks if t.get("status") == "failed")
     merged_count = sum(1 for t in tasks if t.get("status") == "merged")
+    # ``pending`` counts as active. It was excluded, so a plan with one merged,
+    # one failed, one gated and one PENDING leaf reported terminal_incomplete
+    # AND merge_gate.action_required="approve_merge" in the same payload: two
+    # contradictory instructions, one of which abandons work that is a single
+    # approval away from running.
     in_progress_count = sum(
         1
         for t in tasks
-        if t.get("status") in {"in_progress", "reviewing", "needs_clarification"}
+        if t.get("status")
+        in {"pending", "in_progress", "reviewing", "needs_clarification"}
     )
 
     terminal_incomplete = (
@@ -467,12 +482,37 @@ def derive_terminal_incomplete_state(
 
 
 def _plan_summary(tasks: list[dict[str, Any]]) -> str:
-    """One human-readable line for a plan's leaf states."""
+    """One human-readable line for a plan's leaf states.
+
+    Counts SATISFIED leaves, not merged ones. ``SATISFIED_STATUSES`` is the set
+    that unblocks dependents and lets a plan complete: ``merged`` did the work
+    itself, ``superseded`` handed it to split children, ``no_changes`` found it
+    already present. Counting only ``merged`` made a COMPLETED plan whose leaves
+    ended ``no_changes`` report "0 of 3 leaves merged", and an assistant reading
+    that line reports a finished plan as a failure. A leaf writing the next
+    leaf's file has happened in eight of eight observed plans, so ``no_changes``
+    is the common case rather than an edge one.
+
+    The non-merged kinds are named rather than folded in silently, because
+    "3 of 3 satisfied" alone would hide that nothing was actually committed.
+    """
     total = len(tasks)
-    merged = sum(1 for t in tasks if t.get("status") == "merged")
+    satisfied = [
+        t for t in tasks if str(t.get("status")) in status_vocab.SATISFIED_STATUSES
+    ]
     gated = sum(1 for t in tasks if str(t.get("status")) in _GATED_STATUSES)
     failed = sum(1 for t in tasks if t.get("status") == "failed")
-    parts = [f"{merged} of {total} leaves merged"]
+
+    kinds: dict[str, int] = {}
+    for t in satisfied:
+        key = str(t.get("status"))
+        kinds[key] = kinds.get(key, 0) + 1
+    detail = ", ".join(f"{n} {name}" for name, n in sorted(kinds.items()))
+    head = f"{len(satisfied)} of {total} leaves satisfied"
+    if detail and set(kinds) != {"merged"}:
+        head += f" ({detail})"
+
+    parts = [head]
     if gated:
         parts.append(f"{gated} awaiting approval")
     if failed:
@@ -483,21 +523,33 @@ def _plan_summary(tasks: list[dict[str, Any]]) -> str:
 async def poll_plan_impl(client: Any, plan_id: str) -> dict[str, Any]:
     """Return the plan status plus a one-line summary of every task in the plan.
 
-    The response is enriched with two diagnostic fields:
+    The response is enriched with three diagnostic fields.
 
-    - ``merge_gate``: populated when pending tasks are stalled because their
-      dependencies passed review but have not been merged yet.  Contains
-      ``action_required="approve_merge"``, ``gated_task_ids``, ``blocked_by_gate``
-      (list of blocked task summaries), and a human-readable ``hint``.
+    ``merge_gate`` and ``terminal_incomplete`` are ALWAYS PRESENT, and their
+    "nothing to report" value is a populated dict, not an empty one. So
+    ``if result["merge_gate"]:`` is true on every poll of every healthy plan.
+    Test the inner field instead: ``merge_gate["action_required"]`` and
+    ``terminal_incomplete["terminal_incomplete"]``.
 
-    - ``terminal_incomplete``: populated when some tasks failed while others
-      merged successfully (partial plan completion).  Contains ``failed_count``,
-      ``merged_count``, and a ``hint`` suggesting the operator check for an
-      integration PR on the dashboard.
+    - ``merge_gate``: ``{gated_task_ids, blocked_by_gate, action_required,
+      hint}``. ``action_required`` is ``"approve_merge"`` when pending tasks
+      are stalled because their dependencies passed review but have not been
+      merged, else ``None``.
 
-    - ``approvals``: a one-line digest of ANY work parked at the merge gate
-      across the whole project (not just this plan). A failure fetching that
-      digest never breaks this poll; ``approvals`` is simply "" in that case.
+    - ``terminal_incomplete``: ``{terminal_incomplete, failed_count,
+      merged_count, hint}``. The boolean is True when some tasks failed while
+      others merged and nothing is still moving.
+
+    - ``approvals``: a one-line digest of ANY work parked at any gate across
+      the whole deployment (not just this plan). A failure fetching that digest
+      never breaks this poll; ``approvals`` is simply "" in that case, which is
+      also what it is when nothing is parked.
+
+    ``integration_pr_url`` and ``integration_merged_at`` are the last step of a
+    plan: a COMPLETED plan's work sits on the plan branch, and the integration
+    PR is the only thing between it and the base branch. They were dropped from
+    this payload, so "completed" read as "landed" with no way to tell the two
+    apart.
     """
     try:
         plan_data = await client.get(f"/api/plans/{plan_id}")
@@ -529,6 +581,11 @@ async def poll_plan_impl(client: Any, plan_id: str) -> dict[str, Any]:
         ],
         "merge_gate": merge_gate,
         "terminal_incomplete": term,
+        # The plan's own last gate. Without these a caller cannot distinguish
+        # "completed and landed on the base branch" from "completed, and the
+        # work is still sitting on the plan branch behind an unapproved PR".
+        "integration_pr_url": plan_data.get("integration_pr_url"),
+        "integration_merged_at": plan_data.get("integration_merged_at"),
         "dashboard_url": _dashboard_url(client),
         "approvals": approvals,
     }
@@ -560,14 +617,28 @@ async def get_project_impl(client: Any, repo_url: str) -> dict[str, Any]:
         if row.get("repo_url") == repo_url:
             # Defensive .get(): MCP tools must never raise on a malformed row
             # (only PraxisClientError is caught), so a missing key returns null.
-            return {
+            config = {
                 "project_id": row.get("id"),
                 "name": row.get("name"),
                 "model": row.get("model_name"),
                 "harness": row.get("harness"),
                 "default_branch": row.get("default_branch"),
-                "approval_gate": row.get("approval_gate"),
+                "verify_cmd": row.get("verify_cmd"),
+                # `auto_merge` is the field that decides whether Praxis merges
+                # without a human, and it was not returned at all.
+                # `approval_gate`, which WAS returned, gates something else
+                # entirely: whether an autonomous improvement plan starts
+                # running unapproved. A caller reading `approval_gate: false`
+                # as "merges are automatic here" gets the opposite of the
+                # truth, so both are present and the key names say which.
+                "auto_merge": row.get("auto_merge"),
+                "improvement_plan_approval_gate": row.get("approval_gate"),
             }
+            # The `project` key is present on BOTH branches. It was absent on
+            # this one, so the guide's documented `result["project"] is None`
+            # test for "unknown repo" was True for a repo Praxis knew perfectly
+            # well.
+            return {"project": config, **config}
     return {"project": None}
 
 
@@ -623,6 +694,10 @@ async def get_task_logs_impl(client: Any, task_id: str) -> dict[str, Any]:
         "logs": logs,
         "truncated": truncated,
         "total_chars": total,
+        # A task with zero runs also gives `logs == ""`. "the worker never
+        # started" and "the worker ran and said nothing" are different
+        # diagnoses and the payload could not tell them apart.
+        "run_count": len(runs),
     }
 
 
@@ -632,7 +707,16 @@ async def cancel_task_impl(client: Any, task_id: str) -> dict[str, Any]:
         data = await client.post(f"/api/tasks/{task_id}/stop")
     except PraxisClientError as exc:
         return _error(exc)
-    return {"status": "cancelled", "stopped": data.get("stopped", 0)}
+    stopped = data.get("stopped", 0)
+    return {
+        "status": "cancelled",
+        "stopped": stopped,
+        # `stopped` counts run ROWS closed, not containers killed. Forwarding
+        # only that told an assistant on a Docker-less host that N containers
+        # had been stopped when nothing was contacted.
+        "containers_stopped": data.get("containers_stopped", stopped),
+        "docker_available": data.get("docker_available", True),
+    }
 
 
 async def get_mode_impl(client: Any) -> dict[str, Any]:
@@ -641,7 +725,33 @@ async def get_mode_impl(client: Any) -> dict[str, Any]:
         data = await client.get_mode()
     except PraxisClientError as exc:
         return _error(exc)
-    return data if isinstance(data, dict) else {}
+    if not isinstance(data, dict):
+        # `{}` here reads as `enabled: None` to a caller doing
+        # `.get("enabled")`, i.e. auto-delegate is OFF, which is a verdict
+        # derived from an unreadable response rather than from the server.
+        return {
+            "error": "bad_response",
+            "message": f"expected a JSON object, got {type(data).__name__}",
+        }
+    return data
+
+
+async def _with_client(impl: Any, **kwargs: Any) -> dict[str, Any]:
+    """Run ``impl`` against a freshly built client, guarding construction too.
+
+    ``PraxisClient.from_env`` raises ``PraxisClientError("config_error", ...)``
+    when ``PRAXIS_AUTH_TOKEN`` is unset. Every wrapper used to call it as an
+    ARGUMENT, outside the impl's own try, so that exception propagated out of
+    the tool: the module contract promises tools never raise, and the guide
+    lists ``config_error`` among the codes a caller can expect, and it was the
+    one code that could never be returned. It is also the most likely failure
+    on a first run.
+    """
+    try:
+        client = PraxisClient.from_env()
+    except PraxisClientError as exc:
+        return _error(exc)
+    return cast(dict[str, Any], await impl(client, **kwargs))
 
 
 def _dashboard_url(client: Any) -> str:
@@ -659,8 +769,14 @@ mcp = FastMCP(
         "a reviewed pull request. Read the praxis://guide/orchestration "
         "resource before your first dispatch. Typical loop: get_project to read a "
         "repo's configured worker, dispatch_task or execute_plan to delegate, "
-        "poll_task or poll_plan until a task reports awaiting_merge, then relay "
-        "the PR URL to the human for approval. Praxis never merges without them."
+        "then poll_task or poll_plan until the task reaches a TERMINAL status. "
+        "Do not poll for awaiting_merge specifically: a task can end at "
+        "no_changes (the work was already there, a success with no PR), "
+        "superseded, or failed without ever passing through it, and a task at "
+        "awaiting_clarification is waiting on a person and will never advance "
+        "on its own. On awaiting_merge, relay the PR URL to the human for "
+        "approval: Praxis does not merge without them unless the project has "
+        "opted into auto_merge, which get_project reports."
     ),
 )
 
@@ -679,10 +795,31 @@ async def dispatch_task(
     verification: str | None = None,
     neighbor_contracts: str | None = None,
 ) -> dict[str, Any]:
-    """Dispatch an implementation task to a non-Anthropic worker model inside Praxis.
+    """Dispatch one implementation task to a configured worker inside Praxis.
 
-    Returns a handle: {task_id, plan_id, project_id, status, dashboard_url}.
-    Poll with poll_task. Praxis always runs its own review before merge.
+    Returns a handle: {task_id, plan_id, project_id, status, warnings,
+    dashboard_url}. Poll with poll_task. Praxis always runs its own review
+    before merge, and never merges without a human.
+
+    ``status`` in the handle is the literal string ``"queued"``: an
+    acknowledgement that the submission was accepted, NOT a task status. The
+    task row is written ``pending``, which is what poll_task reports a second
+    later.
+
+    ``warnings`` lists pre-flight checks that were SKIPPED rather than passed
+    (most commonly "GitHub credential not configured; remote checks skipped",
+    which disables the expected_base_sha compare below). An empty list means
+    every check ran.
+
+    SIDE EFFECTS on the project row, which is why they are stated here: an
+    unknown ``repo_url`` CREATES a project, and a known one has its stored
+    ``model_name`` and ``harness`` OVERWRITTEN with the values passed here. A
+    one-off model argument therefore re-points the repo's configured worker for
+    every future dispatch, including what get_project will report.
+
+    repo_url: ``https://github.com/owner/repo`` or ``git@github.com:owner/repo``.
+    GitHub only; other https hosts and ssh://, git://, ext:: are rejected. A
+    local path works only where the server enables ``allow_local_repo_paths``.
 
     context: Optional curated context to brief the worker: task-relevant project
     memory, conventions, and architecture notes that help implement THIS task.
@@ -695,7 +832,10 @@ async def dispatch_task(
     inline text, never a "read file X" pointer. Prefer env var NAMES/shapes over
     live values: the worker writes code, it does not run it.
 
-    expected_base_sha: origin base sha you validated locally; server rejects a mismatch.
+    expected_base_sha: origin base sha you validated locally. Compared against
+    ``origin/main`` REGARDLESS of the ``branch`` argument (execute_plan compares
+    against ``branch`` instead), and skipped entirely, with a ``warnings`` entry
+    and no error, when no GitHub credential is configured.
 
     files: Optional list of repo-relative paths the worker should edit (the
     same edit-locations slot a decomposed plan leaf gets). Improves worker
@@ -703,13 +843,14 @@ async def dispatch_task(
 
     verification: Optional acceptance check for the worker to run before
     finishing (e.g. a pytest command). Falls back to the project's configured
-    verify_cmd when omitted.
+    verify_cmd when omitted, and is DEMOTED in favour of that command when
+    the value supplied here is not something a shell can run.
 
     neighbor_contracts: Optional signatures of directly-adjacent functions or
     endpoints the worker must not break while implementing this task.
     """
-    return await dispatch_task_impl(
-        PraxisClient.from_env(),
+    return await _with_client(
+        dispatch_task_impl,
         repo_url=repo_url,
         instructions=instructions,
         model=model,
@@ -752,10 +893,19 @@ async def execute_plan(
     inline text, never a "read file X" pointer. Prefer env var NAMES/shapes over
     live values: the worker writes code, it does not run it.
 
-    expected_base_sha: origin base sha you validated locally; server rejects a mismatch.
+    expected_base_sha: origin base sha you validated locally, compared against
+    ``branch`` (or ``main`` when no branch is given). Skipped, with a warning
+    and no error, when no GitHub credential is configured.
+
+    SIDE EFFECTS on the project row: an unknown ``repo_url`` CREATES a project,
+    and a known one has its stored ``model_name`` and ``harness`` OVERWRITTEN
+    with the values passed here.
+
+    repo_url: ``https://github.com/owner/repo`` or ``git@github.com:owner/repo``.
+    GitHub only.
     """
-    return await execute_plan_impl(
-        PraxisClient.from_env(),
+    return await _with_client(
+        execute_plan_impl,
         repo_url=repo_url,
         plan=plan,
         model=model,
@@ -771,75 +921,148 @@ async def execute_plan(
 async def poll_task(task_id: str) -> dict[str, Any]:
     """Get the status, PR URL, and review of a dispatched task.
 
-    Returns ``status="awaiting_merge"`` (with ``verdict="pass"``) when the
-    task's PR has passed review and is parked for human approval.  Relay
-    ``pr_url`` to the user so they can approve and merge the PR themselves.
+    Normal payload: {summary, task_id, status, verdict, pr_url, branch,
+    review, attempt, dashboard_url, approvals}.
+
+    ``status="awaiting_merge"`` (with ``verdict="pass"``) means the PR passed
+    review and is parked for human approval. Relay ``pr_url`` to the user; only
+    they can merge it.
+
+    ``status="awaiting_clarification"`` is a DIFFERENT SHAPE: it carries
+    ``question`` and has NO ``verdict`` and NO ``review``. The worker stopped
+    and asked something, and the task sits there until a person answers, so do
+    not poll through it. No MCP tool can answer it: relay the question to the
+    user, who replies with ``praxis clarify <task-id> "..."`` (or
+    POST /api/tasks/{id}/clarify).
+
+    Terminal statuses a poll can end on: ``merged``, ``failed``, ``no_changes``
+    (the work was already present, a success with no PR to relay) and
+    ``superseded``. Polling "until awaiting_merge" can therefore wait forever.
     """
-    return await poll_task_impl(PraxisClient.from_env(), task_id=task_id)
+    return await _with_client(poll_task_impl, task_id=task_id)
 
 
 @mcp.tool()
 async def poll_plan(plan_id: str) -> dict[str, Any]:
     """Get the status of a plan and a one-line summary of each of its tasks.
 
-    Returns the plan's current status and a list of task summaries, each
-    containing task_id, title, status, and pr_url.  Tasks with status
-    ``awaiting_merge`` have passed review and are parked for human PR approval;
-    relay the pr_url to the user so they can approve and merge.  Tasks with
-    status ``awaiting_clarification`` are blocked on a question.
+    Returns {summary, plan_id, status, error, task_count, tasks, merge_gate,
+    terminal_incomplete, integration_pr_url, integration_merged_at,
+    dashboard_url, approvals}.
 
-    Use this tool to watch an ``execute_plan`` submission progress: call with
-    the plan_id returned by execute_plan and poll until the plan status is
-    ``completed`` or all tasks are in a terminal state.
+    ``merge_gate`` and ``terminal_incomplete`` are ALWAYS present and are
+    always non-empty dicts, so truth-testing them is always true. Read
+    ``merge_gate["action_required"]`` and
+    ``terminal_incomplete["terminal_incomplete"]``.
+
+    Tasks with status ``awaiting_merge`` have passed review and are parked for
+    human PR approval; relay the pr_url. Tasks with ``awaiting_clarification``
+    are blocked on a question only a human can answer (see poll_task).
+
+    ``status="completed"`` does NOT mean the work reached the base branch. A
+    completed plan's leaves are merged into the PLAN branch, and
+    ``integration_pr_url`` is the pull request that takes it to the base
+    branch; it has landed only once ``integration_merged_at`` is set. Report
+    the integration PR to the user rather than announcing the plan as done.
     """
-    return await poll_plan_impl(PraxisClient.from_env(), plan_id=plan_id)
+    return await _with_client(poll_plan_impl, plan_id=plan_id)
 
 
 @mcp.tool()
 async def pending_approvals() -> dict[str, Any]:
-    """List every task parked at the human merge gate, across all projects.
+    """List everything waiting on a human, across all projects and ALL THREE gates.
 
-    Praxis never merges without a human even after review passes clean, so
-    this is the queue an operator must actually clear. Returns
-    {count, oldest_hours, tasks: [{task_id, title, branch, pr_url, age_hours}]}.
+    Returns {summary, count, task_count, plan_count, proposal_count,
+    clarification_count, oldest_hours, tasks, plans, proposals, clarifications}.
+
+    - ``tasks``: reviewed-clean task PRs parked at the merge gate.
+    - ``plans``: completed plans whose integration PR is open.
+    - ``proposals``: autonomous improvement plans nobody has approved to RUN.
+    - ``clarifications``: tasks blocked on a question, with the question text.
+
+    ``count`` covers only ``tasks`` + ``plans``, because it is rendered as a
+    number of pull requests and the other two have none. It is NOT the answer
+    to "is anything waiting on a human": for that read ``summary``, or add all
+    four counts. Reporting only ``tasks`` tells the user their queue is clear
+    while three other kinds of work sit in the same payload.
     """
-    return await pending_approvals_impl(PraxisClient.from_env())
+    return await _with_client(pending_approvals_impl)
 
 
 @mcp.tool()
 async def list_providers() -> dict[str, Any]:
-    """List brain providers and the worker models available to dispatch to."""
-    return await list_providers_impl(PraxisClient.from_env())
+    """List brain providers, and the LOCALLY LOADED worker models.
+
+    ``worker_models`` enumerates what LM Studio currently has loaded, which is
+    the opencode/local arm only. A project on the agy harness runs a Gemini
+    model string that can never appear in that list, so its absence is not
+    evidence the model is wrong. Use get_project for what a repo is actually
+    configured to run.
+    """
+    return await _with_client(list_providers_impl)
 
 
 @mcp.tool()
 async def get_task_logs(task_id: str) -> dict[str, Any]:
-    """Return the agent-run logs for a task (for diagnosing a wedged/failed run)."""
-    return await get_task_logs_impl(PraxisClient.from_env(), task_id=task_id)
+    """Return the agent-run logs for a task (for diagnosing a wedged run).
+
+    Returns {task_id, logs, truncated, total_chars, run_count}. Only the LAST
+    40,000 characters are returned, because the useful end of a failure log is
+    the bottom; ``truncated`` says whether anything was cut.
+
+    ``run_count == 0`` means no worker ever started, which is a different
+    diagnosis from a run that produced no output. Both give ``logs == ""``.
+    """
+    return await _with_client(get_task_logs_impl, task_id=task_id)
 
 
 @mcp.tool()
 async def cancel_task(task_id: str) -> dict[str, Any]:
-    """Stop a running task and mark it failed."""
-    return await cancel_task_impl(PraxisClient.from_env(), task_id=task_id)
+    """Mark a task failed, and stop its containers if any are running.
+
+    Returns {status, stopped, containers_stopped, docker_available}.
+    ``"cancelled"`` describes THIS CALL and is not a task status: the task row
+    is set to ``failed``, which is what poll_task reports afterwards.
+
+    ``stopped`` counts run ROWS closed; ``containers_stopped`` counts
+    containers actually signalled. They differ whenever Docker is unreachable
+    (``docker_available: false``), where every row closes and nothing is
+    stopped, so report the container count, not ``stopped``.
+
+    There is no precondition. Calling this on a task that already passed review
+    or merged flips that good row to ``failed`` and still answers
+    ``{"status": "cancelled", "stopped": 0}``, which reads like a clean no-op.
+    Check the task's status first.
+    """
+    return await _with_client(cancel_task_impl, task_id=task_id)
 
 
 @mcp.tool()
 async def get_project(repo_url: str) -> dict[str, Any]:
-    """Read a repo's configured worker model, harness, and settings (or null if unknown)."""
-    return await get_project_impl(PraxisClient.from_env(), repo_url=repo_url)
+    """Read a repo's configured worker and gate settings.
+
+    Always returns a ``project`` key: the config dict, or ``None`` when Praxis
+    does not know this repo.
+
+    ``auto_merge`` is the field that decides whether Praxis merges without a
+    human. ``improvement_plan_approval_gate`` does NOT: it gates whether an
+    autonomous improvement PLAN starts running without approval. It is
+    deliberately not called ``approval_gate`` here, because reading that name
+    as "the merge gate" gets the truth backwards.
+    """
+    return await _with_client(get_project_impl, repo_url=repo_url)
 
 
 @mcp.tool()
 async def list_projects() -> dict[str, Any]:
     """List all repos Praxis knows, each with its configured model + harness."""
-    return await list_projects_impl(PraxisClient.from_env())
+    return await _with_client(list_projects_impl)
 
 
 @mcp.tool()
 async def get_mode() -> dict[str, Any]:
     """Return auto-delegate mode state {enabled, worker:{harness,model}}."""
-    return await get_mode_impl(PraxisClient.from_env())
+    return await _with_client(get_mode_impl)
 
 
 @mcp.resource("praxis://guide/orchestration")

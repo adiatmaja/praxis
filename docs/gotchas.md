@@ -22,7 +22,8 @@ belongs among the everyday traps.
   vars raise `ValidationError` must pass `_env_file=None` to `Settings()` to prevent
   fallback reads
 - **Default user auto-seeded** — `main.py` lifespan seeds a `default` user on first
-  startup. Without it, project creation returns 500 ("No user found")
+  startup. Without it, project creation returns 503 naming the real remedy (stop the
+  orchestrator, delete `data/orchestrator.db`, restart)
 - **Windows port cleanup** — `kill -9` from bash doesn't work for Windows processes.
   Use `taskkill //PID <pid> //F` to release ports
 - **Orchestrator is split across mixins** — `core/orchestrator.py` holds only the
@@ -1377,6 +1378,22 @@ as a newcomer, not by reading it.
   fix the invisibility by making the digest announce pull requests that do not
   exist. Two gates that both mean "a human must answer this" are still two
   gates.
+
+  And a third half, which is the trap the second half set. Keeping a gate out
+  of `count` is right; letting that keep it out of the SENTENCE was not.
+  `digest_line` rendered `count` alone, so a queue holding nothing but a
+  proposal, or nothing but a task blocked on an unanswered question, rendered
+  `""`. That silence reached three surfaces at once: the MCP `pending_approvals`
+  tool fell back to "No work parked at the merge gate" over a queue that was
+  not empty, `poll_task` and `poll_plan` attached nothing, and the loop
+  published an `approvals_digest` event whose own sentence mentioned none of
+  what triggered it, because `should_publish_digest` fires on
+  `outstanding_count` (all three gates) while the renderer read `count` (one).
+  `digest_line` now emits one clause per gate, joined with `"; "`, and
+  `oldest_hours` stays attached to the PR clause because it spans parked tasks
+  and plans only. The general shape: when a decision function and a renderer
+  read DIFFERENT fields of the same payload, the renderer is where the
+  disagreement becomes a lie.
 
 - **rich's `max_width` is a MAXIMUM, not a minimum, and a table will shrink a
   column below it.** `praxis tasks` set `max_width=36, overflow="fold"` on a

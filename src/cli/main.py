@@ -319,13 +319,21 @@ def projects() -> None:
     table.add_column("Name")
     table.add_column("Repo")
     table.add_column("Model")
-    table.add_column("Gate")
+    # Two DIFFERENT gates, and the column used to show only one of them under
+    # the bare name "Gate". `approval_gate` decides whether an autonomous
+    # IMPROVEMENT PLAN starts running unapproved; `auto_merge` decides whether
+    # Praxis merges without a human, and it appeared on no CLI surface at all.
+    # Reading a single "Gate: OFF" as "merges are automatic here" gets the more
+    # dangerous of the two backwards, so both are named.
+    table.add_column("Improve gate")
+    table.add_column("Auto-merge")
     for project in data:
         table.add_row(
             project["name"],
             project["repo_url"],
             project["model_name"],
             "ON" if project["approval_gate"] else "OFF",
+            "ON" if project.get("auto_merge") else "OFF",
         )
     console.print(table)
     if not data:
@@ -402,7 +410,14 @@ def add_project(
 @app.command()
 def configure(
     project_id: str = typer.Argument(..., help="Project ID"),
-    gate: bool | None = typer.Option(None, help="Approval gate on/off"),
+    gate: bool | None = typer.Option(
+        None,
+        help=(
+            "Gate autonomous improvement plans before they run. This is NOT "
+            "the merge gate: a reviewed PR always waits for a human unless "
+            "auto_merge is on for the project."
+        ),
+    ),
     threshold: float | None = typer.Option(None, help="Confidence threshold"),
     retries: int | None = typer.Option(None, help="Max retries"),
     verify_cmd: str | None = typer.Option(
@@ -794,12 +809,30 @@ def stop(task_id: str = typer.Argument(..., help="Task ID")) -> None:
 
     with _client() as client:
         data = _check_dict(client.post(f"/api/tasks/{task_id}/stop"))
+    # `stopped` counts run ROWS closed, which is NOT the number of containers
+    # killed. On a host with no Docker every row still closes and the old line
+    # said "Stopped 1 agent(s)" having contacted nothing, while suppressing the
+    # caveat below because `stopped` was truthy: the operator walked away
+    # believing a container was dead that is still running.
     stopped = data["stopped"]
+    containers = data.get("containers_stopped", stopped)
+    docker_available = data.get("docker_available", True)
     console.print(
-        f"[yellow]Stopped {stopped} agent(s)[/yellow]; task {task_id} is now "
-        "failed and its worker session was cleared."
+        f"[yellow]Stopped {containers} container(s)[/yellow]; task {task_id} is "
+        "now failed and its worker session was cleared."
     )
-    if not stopped:
+    if not docker_available:
+        console.print(
+            "[red]Docker was not reachable, so no container was signalled.[/red] "
+            f"{stopped} run row(s) were closed; anything still running has to be "
+            "stopped by hand."
+        )
+    elif containers < stopped:
+        console.print(
+            f"[red]{stopped - containers} container(s) could not be stopped[/red] "
+            "and may still be running; see the orchestrator log."
+        )
+    elif not stopped:
         console.print(
             "[dim]No container was running, so only the task status changed.[/dim]"
         )

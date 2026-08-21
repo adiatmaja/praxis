@@ -3,8 +3,10 @@
 
 Reads the JSON envelope on stdin. Prints the conversation id on the FIRST line
 (empty if absent) and the response body on the remaining lines, then exits 0.
-On malformed input prints nothing and exits 1, so the entrypoint can fall back
-to plain text mode.
+Exits 1 printing nothing on ANY shape it cannot fully read, which now includes
+a well-formed envelope carrying no recognized body key: the entrypoint's
+fallback to plain text mode is what keeps the transcript, and it only runs on a
+non-zero exit.
 
 Emitting the body on stdout keeps the existing `Status:` grep working unchanged
 against the extractor's output.
@@ -42,9 +44,20 @@ def main() -> int:
             body = value
             break
 
+    if not body:
+        # FAIL CLOSED. A well-formed envelope whose body sits under a key not
+        # in _RESPONSE_KEYS is exactly the shape this file admits it cannot be
+        # sure of, and returning 0 here handed the entrypoint an EMPTY
+        # transcript while suppressing the RAW_LOG fallback that exists for
+        # this case. Downstream that is not a degraded run, it is a wrong one:
+        # the `Status:` grep finds no BLOCKED line and the worker's question is
+        # destroyed, and the no-changes block reads zero bytes and calls a
+        # satisfied tree a failed run. Losing the conversation id costs a
+        # session resume; losing the transcript costs the verdict.
+        return 1
+
     print(conversation_id)
-    if body:
-        print(body)
+    print(body)
     return 0
 
 

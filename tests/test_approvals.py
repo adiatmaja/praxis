@@ -271,7 +271,71 @@ def test_a_proposal_is_not_counted_as_a_pull_request():
     """
     summary = summarize_pending([], [_proposal()])
     assert summary["count"] == 0
-    assert digest_line(summary) == ""
+
+
+@pytest.mark.unit
+def test_a_proposal_only_queue_still_produces_a_digest_sentence():
+    """Keeping it out of `count` must not keep it out of the SENTENCE.
+
+    `digest_line` rendered `count` alone, so a queue holding nothing but an
+    improvement proposal produced "", and `pending_approvals` fell back to
+    "No work parked at the merge gate" over a queue that was not empty. Revert
+    `digest_line` to the count-only form and only this goes red.
+    """
+    line = digest_line(summarize_pending([], [_proposal()]))
+    assert "1 improvement proposal awaiting approval" in line
+    # And it must not have gained a PR it does not have.
+    assert "PR" not in line
+
+
+@pytest.mark.unit
+def test_the_digest_pluralizes_proposals():
+    line = digest_line({"count": 0, "proposal_count": 2})
+    assert "2 improvement proposals" in line
+
+
+@pytest.mark.unit
+def test_a_blocked_task_only_queue_still_produces_a_digest_sentence():
+    """The third gate, on the same terms as the second.
+
+    A task blocked on an unanswered question is not a PR either, and rendering
+    `count` alone left it unmentioned on every surface that carries this line.
+    """
+    line = digest_line({"count": 0, "clarification_count": 1})
+    assert "1 task blocked on a question" in line
+    assert "PR" not in line
+
+
+@pytest.mark.unit
+def test_the_digest_names_all_three_gates_at_once():
+    """One clause per gate, and the PR clause keeps its own age.
+
+    `oldest_hours` spans parked tasks and plans only, so it must stay attached
+    to the PR clause; "; " separates clauses so that clause's comma cannot be
+    read as the separator.
+    """
+    line = digest_line(
+        {
+            "count": 2,
+            "oldest_hours": 26.4,
+            "proposal_count": 1,
+            "clarification_count": 3,
+        }
+    )
+    assert "2 PRs awaiting your approval, oldest 26h" in line
+    assert "1 improvement proposal awaiting approval" in line
+    assert "3 tasks blocked on a question" in line
+    assert line.count("; ") == 2
+    assert line.endswith(".")
+
+
+@pytest.mark.unit
+def test_the_digest_is_still_empty_when_no_gate_holds_anything():
+    """The silence has to survive: a badge over an empty queue trains people
+    to ignore the badge."""
+    assert (
+        digest_line({"count": 0, "proposal_count": 0, "clarification_count": 0}) == ""
+    )
 
 
 @pytest.mark.unit

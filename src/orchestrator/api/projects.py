@@ -39,8 +39,17 @@ async def create_project(request: Request, body: ProjectCreate) -> dict[str, Any
     user = await db.fetch_one("SELECT id FROM users LIMIT 1")
     if user is None:
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="No user found. Seed a user first.",
+            # 503, not 500. This is a recoverable state of the INSTALL, not
+            # a bug in the request or the server, and the old wording named
+            # an action ("seed a user") that no CLI verb or endpoint
+            # performs, so an operator reading it had nothing to do.
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=(
+                "The database has no user row. It predates the automatic "
+                "seeding added in a later version, so nothing will create "
+                "one: stop the orchestrator, delete data/orchestrator.db, "
+                "and restart to rebuild it."
+            ),
         )
 
     # NOTE: the protected-branch guard (main/master/release*) applies only to

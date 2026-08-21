@@ -27,6 +27,7 @@ from typer.testing import CliRunner
 
 from cli import init as init_mod
 from cli.init import Answers, build_env_file, cli_env_exports, merge_env
+from tests.cli_text import plain
 
 
 REPO = Path(__file__).resolve().parents[1]
@@ -36,27 +37,11 @@ REPO = Path(__file__).resolve().parents[1]
 #: the sentence: "use the registry | | default".  Collapsing whitespace first
 #: and searching after leaves a guard that can never match, and passes whether
 #: the help is right or wrong.  Strip the glyphs BEFORE collapsing.
-_BOX_GLYPHS = re.compile("[" + chr(0x2500) + "-" + chr(0x257F) + "]")
-
-#: ANSI SGR sequences.  rich colorizes help when it believes the stream can
-#: take it, and that belief is PLATFORM DEPENDENT: on the Windows runner these
-#: assertions saw plain text and passed, while on the Linux runner the same
-#: help arrived as `Without it: \x1b[1;36m--non\x1b[0m\x1b[1;36m-interactive\x1b[0m
-#: refuses such a preset`, with the escapes falling INSIDE the phrase being
-#: matched. Every guard in this file went red on CI while green locally, which
-#: is the same defect as the box glyphs one layer out: the rendered text is not
-#: the text you wrote, and what it turns into depends on where it runs.
-_ANSI = re.compile(r"\x1b\[[0-9;]*m")
-
-
-def _flatten(text: str) -> str:
-    """Return ``text`` with ANSI and box glyphs removed, whitespace collapsed.
-
-    Order matters. ANSI first, because an escape can sit mid-word and would
-    otherwise survive into the collapsed string; box glyphs second, because
-    they are what a wrapped panel row leaves behind; whitespace last.
-    """
-    return " ".join(_BOX_GLYPHS.sub(" ", _ANSI.sub("", text)).split())
+#:
+#: Both this and the sibling copy in `test_cli_reporting_honesty.py` now come
+#: from `tests/cli_text.py`. They had drifted on which glyphs count, which is
+#: the ordinary fate of a helper that lives in two files.
+_flatten = plain
 
 
 @pytest.fixture(autouse=True)

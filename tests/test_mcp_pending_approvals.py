@@ -52,6 +52,29 @@ async def test_poll_plan_carries_the_digest_line():
 
 
 @pytest.mark.unit
+async def test_pending_approvals_does_not_call_a_proposal_queue_empty():
+    """The `summary` key is the one an assistant acts on without reading on.
+
+    `digest_line` rendered `count` alone, so a queue holding only an autonomous
+    proposal made it return "", and this tool's fallback then asserted "No work
+    parked at the merge gate" over a queue that had something on it. The
+    proposal was in the payload the whole time, one key further down.
+    """
+    client = _client({"count": 0, "proposal_count": 1, "proposals": [{"plan_id": "p"}]})
+    result = await pending_approvals_impl(client)
+    assert "1 improvement proposal awaiting approval" in result["summary"]
+    assert "No work parked" not in result["summary"]
+
+
+@pytest.mark.unit
+async def test_poll_task_carries_the_blocked_question_gate_too():
+    """A task blocked on a question is the third gate and had no clause."""
+    client = _client({"count": 0, "clarification_count": 1})
+    result = await poll_task_impl(client, "t1")
+    assert "1 task blocked on a question" in result["approvals"]
+
+
+@pytest.mark.unit
 async def test_a_failing_digest_lookup_never_breaks_the_poll():
     """The digest is an add-on; poll must still answer if it fails."""
     client = AsyncMock()

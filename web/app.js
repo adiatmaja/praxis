@@ -1927,8 +1927,14 @@
       const parts = [];
       if (mergeGate) parts.push(mergeGate + (mergeGate === 1 ? " PR" : " PRs") + " at the merge gate");
       if (proposalCount) parts.push(proposalCount + (proposalCount === 1 ? " proposal" : " proposals") + " awaiting approval");
+      // The THIRD gate. The badge already counts blocked questions (they are in
+      // `total`) and the panel below lists them, so leaving them out here made
+      // the tooltip name fewer things than the number it explains, and on a
+      // clarification-only queue it opened with a bare comma naming nothing.
+      const blocked = src.clarifications.length;
+      if (blocked) parts.push(blocked + (blocked === 1 ? " task" : " tasks") + " blocked on a question");
       el.textContent = total + " awaiting approval";
-      el.title = parts.join(" and ") + ", oldest " + oldest + "h ago — click to view";
+      el.title = parts.join(", ") + ", oldest " + oldest + "h ago — click to view";
     }
 
     // Show the parked tasks flat, across every plan (the tasks view is
@@ -2600,8 +2606,15 @@
         model: document.getElementById("m-model-" + site).value || null,
         effort: document.getElementById("m-effort-" + site).value || null,
       };
-      await api("PUT", "/api/settings/models", { call_site: site, config });
+      const saved = await api("PUT", "/api/settings/models", { call_site: site, config });
       await loadModelsPanel();
+      // A stored override that a role chain shadows has NOT taken effect. The
+      // server says so; discarding the response made this panel the one place
+      // the warning could not appear, and on a stock install the shipped role
+      // chains shadow most call sites.
+      if (saved && saved.status === "stored_but_shadowed") {
+        showSettingsFeedback(saved.detail, true);
+      }
     }
 
     async function resetModel(site) {

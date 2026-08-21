@@ -25,7 +25,6 @@ Two rendering traps make a guard here inert, and both have shipped:
 from __future__ import annotations
 
 import json
-import re
 from typing import Any
 
 import httpx
@@ -33,6 +32,7 @@ import pytest
 from typer.testing import CliRunner
 
 from cli.main import app
+from tests.cli_text import flat, on_one_line, plain, strip_ansi
 
 
 runner = CliRunner()
@@ -41,28 +41,12 @@ PROJECT_ID = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
 PLAN_ID = "11111111-2222-3333-4444-555555555555"
 TASK_ID = "8b1bafa2-e401-4b17-81c2-56b56c91c906"
 
-#: Everything rich draws a table or a panel with. Stripped before whitespace
-#: is collapsed: doing it the other way round leaves the glyphs embedded in
-#: the collapsed string and no expected phrase ever matches.
-_BOX_GLYPHS = "─│┌┐└┘├┤┬┴┼━┃╭╮╰╯═║╔╗╚╝╠╣╦╩╬"
-
-#: ANSI SGR sequences. rich colorizes help when it believes the stream can take
-#: it, and that belief is PLATFORM DEPENDENT: on the Windows runner these
-#: assertions saw plain text, while on the Linux runner the escapes landed
-#: INSIDE the phrases being matched. The sibling guards in
-#: `tests/test_init_claims.py` were green locally and red on CI for exactly
-#: this, so it is stripped here before it can bite the same way.
-_ANSI = re.compile(r"\x1b\[[0-9;]*m")
-
-
-def _plain(text: str) -> str:
-    """Return help text with ANSI and box drawing removed, then collapsed.
-
-    ANSI first: an escape can sit mid-word, so removing the glyphs or
-    collapsing whitespace ahead of it leaves it embedded in the result.
-    """
-    stripped = _ANSI.sub("", text)
-    return " ".join(stripped.translate({ord(c): " " for c in _BOX_GLYPHS}).split())
+#: Re-exported from the shared helper. This file and `test_init_claims.py`
+#: each carried a private copy, and they had DRIFTED: this one stripped a
+#: hand-listed string of box glyphs while the other stripped the whole
+#: U+2500-U+257F block, so the same phrase was matchable in one file and not
+#: the other. One implementation now, in `tests/cli_text.py`.
+_plain = plain
 
 
 def _patch(monkeypatch, handler, columns: str = "80") -> list[httpx.Request]:
@@ -100,21 +84,13 @@ def _json(payload: Any):
     return handler
 
 
-def _one_line(result, needle: str) -> bool:
-    """True when `needle` appears CONTIGUOUS on a single output line."""
-    return any(needle in _ANSI.sub("", line) for line in result.stdout.splitlines())
+#: True when `needle` appears CONTIGUOUS on a single output line.
+_one_line = on_one_line
 
-
-def _flat(result) -> str:
-    """The whole output as one ANSI-free line, for prose assertions.
-
-    Every assertion in this file goes through this or `_one_line`, so none of
-    them can depend on whether the runner colorizes. That dependency is not
-    hypothetical: rich colorizes when it believes the stream can take it, the
-    belief differs by platform, and five guards in `tests/test_init_claims.py`
-    were green on Windows and red on CI's Linux for exactly that reason.
-    """
-    return " ".join(_ANSI.sub("", result.stdout).split())
+#: The whole output as one ANSI-free line, for prose assertions. Every
+#: assertion in this file goes through this or `_one_line`, so none of them can
+#: depend on whether the runner colorizes.
+_flat = flat
 
 
 # --------------------------------------------------------------------------
@@ -311,7 +287,7 @@ def test_clarify_names_the_task_the_operator_passed(monkeypatch) -> None:
     answered = [
         stripped
         for line in result.stdout.splitlines()
-        if (stripped := _ANSI.sub("", line)).startswith("Answered:")
+        if (stripped := strip_ansi(line)).startswith("Answered:")
     ]
     assert answered, result.stdout
     assert TASK_ID in answered[0]

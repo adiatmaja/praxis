@@ -26,7 +26,11 @@ from orchestrator.core.plan_graph import (
     resolve_task_slug,
     slug_to_graph_task,
 )
-from orchestrator.core.progress_handover import ChecklistItem, render_handover
+from orchestrator.core.progress_handover import (
+    ChecklistItem,
+    Commit,
+    render_handover,
+)
 from orchestrator.core.session_resume import resolve_resume_session
 from orchestrator.core.token_budget import ContextBudgetExceeded
 from orchestrator.core.verify_gate import normalize_verify_cmd
@@ -475,10 +479,40 @@ class DispatchMixin:
             plan_task.get("checklist") or task.get("checklist") or [{"text": goal}]
         )
         items = [ChecklistItem(c["text"]) for c in raw_checklist]
+        # Read from the REMOTE. This used to pass ``"."``, which in the
+        # orchestrator container is ``/app``: no ``.git``, and no clone of the
+        # target repo anywhere on the filesystem. So the call raised on every
+        # dispatch and was swallowed into ``[]``, and the handover rendered
+        # every item unticked forever while the Bible told the worker that
+        # per-item commits were how progress survived a restart. Under bare
+        # uvicorn it was worse than empty: ``.`` is the Praxis repo, so the
+        # refspec resolved against Praxis's own branches.
+        #
+        # ``None``, not ``[]``, when the read fails: "no commits" and "I could
+        # not find out" are different facts, and ``render_handover`` now says
+        # which one it is rather than presenting the second as the first.
+        commits: list[Commit] | None
         try:
-            commits = await self._git.branch_commit_log(".", base_branch, branch)
-        except Exception:  # noqa: BLE001 - fresh/absent branch -> no progress yet
-            commits = []
+            commits = await self._git.remote_branch_commit_log(
+                project["repo_url"], base_branch, branch
+            )
+        except Exception:  # noqa: BLE001 - an absent branch is the normal first case
+            # On attempt 1 the branch has only just been named and does not
+            # exist on the remote yet, so an unreadable history IS "no commits":
+            # rendering "history unavailable, verify before redoing work" there
+            # would send every first worker looking for work nobody has done.
+            # On a re-dispatch the branch does exist, so a failed read means the
+            # answer is genuinely unknown and the handover has to say so.
+            first_attempt = int(task.get("attempt") or 1) <= 1
+            commits = [] if first_attempt else None
+            logger.info(
+                "No readable commit history for %s..%s (attempt %s); "
+                "handover reports %s",
+                base_branch,
+                branch,
+                task.get("attempt"),
+                "no commits yet" if first_attempt else "history unavailable",
+            )
         handover = render_handover(items, commits, task.get("progress_note"))
 
         if self._effective_settings is not None:
@@ -556,9 +590,15 @@ class DispatchMixin:
                 caller_context=plan_task.get("context_text"),
                 # Client-gathered manifest of NON-committed context (gitignored
                 # config shapes, user-scope conventions). Committed repo files
-                # are still folded in separately by the entrypoint --read.
+                # reach the worker through the clone itself.
                 repo_memory=plan_task.get("repo_memory"),
                 review_feedback=task.get("review_feedback"),
                 verify_cmd=project_check,
+                # Only a real declared checklist can satisfy the per-item
+                # commit rule; the synthesised single item is the whole task
+                # description and no commit subject can contain it.
+                itemized_checklist=bool(
+                    plan_task.get("checklist") or task.get("checklist")
+                ),
             )
         )

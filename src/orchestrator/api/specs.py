@@ -10,6 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel
 
 from orchestrator.api.auth import verify_token
+from orchestrator.api.repo_errors import guard_repo_access
 
 
 logger = logging.getLogger(__name__)
@@ -79,7 +80,9 @@ async def start_session(
         )
     mgr = request.app.state.brainstorm
     event_bus = getattr(request.app.state, "event_bus", None)
-    session_id = await mgr.create_session(repo_url=project["repo_url"])
+    session_id = await guard_repo_access(
+        mgr.create_session(repo_url=project["repo_url"]), what="brainstorm session"
+    )
     asyncio.create_task(_run_turn_safely(mgr, event_bus, session_id, body.message))
     return {"session_id": session_id}
 
@@ -94,6 +97,18 @@ async def send_message(
     """Send a follow-up message to an existing brainstorming session."""
     mgr = request.app.state.brainstorm
     event_bus = getattr(request.app.state, "event_bus", None)
+    # Sessions live in this process, so a restart invalidates every one of
+    # them. Dispatching the turn regardless answered `accepted` for a session
+    # that does not exist: the KeyError surfaced later as a `brainstorm_error`
+    # event, long after this response claimed the turn had been taken.
+    if not mgr.has_session(session_id):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=(
+                "Brainstorm session not found (sessions do not survive an "
+                "orchestrator restart; start a new one)"
+            ),
+        )
     asyncio.create_task(_run_turn_safely(mgr, event_bus, session_id, body.message))
     return {"status": "accepted"}
 
@@ -114,8 +129,11 @@ async def modify_spec(
         )
     return cast(
         dict[str, Any],
-        await request.app.state.brainstorm.write_and_commit(
-            project["repo_url"], body.spec_path, body.content
+        await guard_repo_access(
+            request.app.state.brainstorm.write_and_commit(
+                project["repo_url"], body.spec_path, body.content
+            ),
+            what="spec commit",
         ),
     )
 
@@ -136,7 +154,10 @@ async def generate_plan(
         )
     return cast(
         dict[str, Any],
-        await request.app.state.brainstorm.generate_plan(
-            project["repo_url"], body.spec_path, body.notes
+        await guard_repo_access(
+            request.app.state.brainstorm.generate_plan(
+                project["repo_url"], body.spec_path, body.notes
+            ),
+            what="plan generation",
         ),
     )

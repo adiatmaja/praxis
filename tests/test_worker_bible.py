@@ -16,7 +16,32 @@ def test_goal_is_first_and_scrubbed():
     bible = build_bible(src)
     assert bible.index("# GOAL") < bible.index("# PROGRESS")
     assert "ghp_abcdef" not in bible
-    assert "commit after each completed checklist item" in bible.lower()
+    assert "# WORKING AGREEMENT" in bible
+
+
+@pytest.mark.unit
+def test_the_per_item_commit_rule_appears_only_with_a_real_checklist():
+    """The rule is only followable when the mechanism behind it can work.
+
+    A completed item is detected by testing whether the item's whole text is a
+    substring of a commit subject. With no declared checklist the dispatcher
+    synthesises ONE item holding the entire task description, which no subject
+    line can contain, so the instruction was unfollowable and the box could
+    never be ticked however diligently the worker obeyed it. Drop the
+    `itemized_checklist` gate and only this pair goes red.
+    """
+    base = {
+        "goal": "Add validation",
+        "handover": "# PLAN (no commits on this branch yet)",
+        "context_window": 8000,
+    }
+    itemized = build_bible(BibleSources(**base, itemized_checklist=True))
+    assert "commit after each completed checklist item" in itemized.lower()
+
+    synthesised = build_bible(BibleSources(**base, itemized_checklist=False))
+    assert "commit after each completed checklist item" not in synthesised.lower()
+    # But the worker is still told to commit, just without the unfollowable part.
+    assert "commit your work as you go" in synthesised.lower()
 
 
 @pytest.mark.unit
@@ -143,8 +168,11 @@ def test_no_project_command_means_no_restatement():
         verify_cmd=None,
     )
     out = build_bible(src)
+    # The heading names what the slot holds. "run this before you finish" over
+    # a sentence of prose is an imperative aimed at something unrunnable.
     assert (
-        "# ACCEPTANCE (run this before you finish)\nmanual review of the rendered docs"
+        "# ACCEPTANCE CRITERIA (not a runnable command; satisfy these and "
+        "report on them)\nmanual review of the rendered docs"
     ) in out
     assert "Project verify command:" not in out
 
@@ -212,8 +240,12 @@ _BRIEFING = (
     "fails to collect, say so; do not edit files to make collection succeed.\n"
     "- Do NOT modernize, reformat, or fix unrelated files, even ones that look "
     "broken.\n"
-    "- Any change outside the files the task names must be justified in the PR "
-    "body.\n"
+    # Points at the final report, NOT the PR body: the worker cannot write the
+    # PR body (the entrypoint builds it from a fixed literal after the worker's
+    # process is gone) and the prompt separately forbids creating a PR at all,
+    # so the old wording named a channel the worker had no access to.
+    "- Any change outside the files the task names must be justified in your "
+    "FINAL REPORT (you cannot write the PR body).\n"
 )
 
 
@@ -256,8 +288,8 @@ def test_the_scope_briefing_renders_with_every_optional_source_unset():
         ),
         (
             "outside the files the task names",
-            "- Any change outside the files the task names must be justified in "
-            "the PR body.",
+            "- Any change outside the files the task names must be justified "
+            "in your FINAL REPORT (you cannot write the PR body).",
         ),
     ],
     ids=["environment", "wider-suite", "outside-files"],
@@ -301,12 +333,12 @@ def test_the_scope_briefing_is_a_floor_not_a_droppable_section():
 
 @pytest.mark.unit
 def test_the_briefing_is_kept_where_the_working_agreement_is_cut():
-    """A 380 tok window budgets 152: exactly the floors, and nothing else.
+    """A 425 tok window budgets 170: the 161 tok of floors and 9 to spare.
 
     Pairs with the raise above. The working agreement carries the same kind of
     advice one rank lower and is droppable, so seeing it cut while the briefing
     survives shows the briefing is not merely early in the fit order.
     """
-    out = build_bible(_bare(context_window=380))
+    out = build_bible(_bare(context_window=425))
     assert _BRIEFING in out
     assert "# WORKING AGREEMENT" not in out

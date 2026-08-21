@@ -15,17 +15,17 @@ model can't.
 
 | Tool | Purpose |
 |------|---------|
-| `dispatch_task(repo_url, instructions, model, harness?, branch?, context?)` | Dispatch one task; returns `{task_id, dashboard_url, status}`. `context` is curated, secret-scrubbed reference text for the worker. Praxis always runs its own review. |
+| `dispatch_task(repo_url, instructions, model, harness?, branch?, context?, local_context?, expected_base_sha?, files?, verification?, neighbor_contracts?)` | Dispatch one task; returns `{task_id, plan_id, project_id, status, warnings, dashboard_url}`. `status` is the literal `"queued"`, an acknowledgement rather than a task status: the row is written `pending`. `warnings` lists pre-flight checks that were SKIPPED (a missing GitHub credential disables the `expected_base_sha` compare). SIDE EFFECT: an unknown `repo_url` creates a project, and a known one has its stored `model_name`/`harness` overwritten. Praxis always runs its own review. |
 | `execute_plan(repo_url, plan, model, harness?, branch?, context?, local_context?, expected_base_sha?)` | Hand Praxis a full, externally-authored **plan** (the entire plan text). Returns immediately with `{plan_id, project_id, dashboard_url, status="pending"}`; Praxis capability-gates the plan against `model`, decomposes it into a task graph, and dispatches the tasks. Use this (not `dispatch_task`) when you already have a multi-step plan. |
-| `poll_plan(plan_id)` | Get the plan status plus a one-line summary of every task (`task_id`, `title`, `status`, `pr_url`). Poll the `plan_id` from `execute_plan` until the plan is `completed` or all tasks are terminal. Tasks at `awaiting_merge` passed review and are parked for your PR approval; `awaiting_clarification` is blocked on a question. |
+| `poll_plan(plan_id)` | Plan status, a one-line summary of every task, plus `integration_pr_url` / `integration_merged_at`. `completed` does NOT mean the work reached the base branch: a completed plan's leaves are merged into the PLAN branch, and it has landed only once `integration_merged_at` is set. `merge_gate` and `terminal_incomplete` are always present and always truthy dicts, so read their inner fields. Tasks at `awaiting_merge` are parked for your PR approval; `awaiting_clarification` is blocked on a question only a human can answer. |
 | `poll_task(task_id)` | Get status, PR URL, review (and a dashboard link for wedged tasks). |
-| `list_providers()` | List brain providers + worker models available to dispatch to. |
-| `get_project(repo_url)` | Read a repo's configured worker model, harness, and settings (or null if unregistered). |
+| `list_providers()` | List brain providers, and the models LM Studio currently has loaded. `worker_models` covers the local arm only: a Gemini model string served through the agy harness can never appear there, so its absence is not evidence the name is wrong. |
+| `get_project(repo_url)` | Read a repo's configured worker model, harness, `verify_cmd`, `auto_merge` and `improvement_plan_approval_gate`. Always returns a `project` key: the config, or null when Praxis has never seen the repo. `auto_merge` is the field that decides whether Praxis merges without a human; the improvement gate is a different thing entirely. |
 | `list_projects()` | List every repo Praxis knows, each with its configured model + harness. |
 | `get_mode()` | Return auto-delegate mode state: `{enabled, worker:{harness,model}}`. Check this before implementing directly, when `enabled` is true the brain should delegate every task via `dispatch_task`/`execute_plan` rather than editing code itself. |
-| `pending_approvals()` | List every task parked at the human merge gate, across ALL projects, with a one-line summary plus `{count, oldest_hours, tasks:[...]}`. This is the queue that actually has to be cleared: Praxis never merges without a human even after review passes clean, so a run that looks finished can still be waiting here. |
-| `get_task_logs(task_id)` | Return agent-run logs for failure triage. |
-| `cancel_task(task_id)` | Stop a running task. |
+| `pending_approvals()` | Everything waiting on a human, across ALL projects and all THREE gates: `tasks` (reviewed PRs at the merge gate), `plans` (completed plans whose integration PR is open), `proposals` (autonomous improvement plans nobody has approved to run) and `clarifications` (tasks blocked on a question). `count` covers only the first two, because it is rendered as a number of pull requests: read `summary` for the whole queue. This is the queue that actually has to be cleared. |
+| `get_task_logs(task_id)` | Agent-run logs for failure triage: `{task_id, logs, truncated, total_chars, run_count}`. Only the last 40,000 characters are returned. `run_count == 0` means no worker ever started, which is a different diagnosis from a run that produced no output. |
+| `cancel_task(task_id)` | Mark a task failed and stop its containers: `{status: "cancelled", stopped, containers_stopped, docker_available}`. There is no precondition, so calling it on a passed or merged task flips that good row to `failed`. `stopped` counts run rows closed; `containers_stopped` counts containers actually signalled. |
 
 That is the whole tool surface. Approving or rejecting a parked merge is deliberately not in
 it: those go through the CLI (`praxis merge` / `praxis reject-merge`), the dashboard, or the
@@ -90,7 +90,9 @@ and it picks the right tool. For example:
 
 It calls `dispatch_task` and hands back a `task_id`. Praxis spawns a containerized coding agent
 that implements on a branch, opens a PR, and reviews it, then ask the assistant to `poll_task`
-until the status is `merged` (or watch the dashboard). Pick a worker model that can follow a
+until the task reaches a TERMINAL status (or watch the dashboard). Do not wait for `merged`:
+a clean review parks at `awaiting_merge` for you to approve, and `no_changes`, `superseded`
+and `failed` are terminal without ever passing through it. Pick a worker model that can follow a
 coding agent's edit format; very small chat models reply *with* the code instead of editing, so
 nothing commits.
 
