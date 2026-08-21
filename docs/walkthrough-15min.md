@@ -1812,3 +1812,76 @@ proposed tasks describe the target repo.
 Worth doing at the same time, because it is nearly free: teach the
 plan-completed path that a plan with no commits has nothing to integrate, so a
 correct no-op stops being logged as a failed `gh pr create`.
+
+## Run #7 follow-up, 2026-08-21: both HIGH fixes verified live
+
+Committed as `76d4882`. Both fixes from the run-#7 findings were verified
+against the running product, not only by unit test.
+
+### The improvement loop now describes the target repo
+
+Acceptance was defined in advance as behavioural, because a structural test
+("the prompt contains a file list") would pass on a prompt built from the wrong
+tree. The check: build the survey with the real clone, hand the real summary to
+the real planner through the real router, and read what comes back.
+
+The summary now carries `playground`'s actual 36 files, `src/playground/greet.py`
+through `tests/test_ordinal.py`, plus its README and `pyproject.toml`.
+
+The proposals changed completely, and every one is now checkable:
+
+| Pre-fix, invented | Post-fix, real |
+|---|---|
+| Add Content-Security-Policy header to Caddyfile | Test files exist in BOTH `src/playground/` and `tests/`, so `bytesize` and `ordinal` tests run twice under `testpaths=["src","tests"]` |
+| Add rate limiting to authentication endpoints | Specs exist for slug, word-frequency and truncation helpers with no implementation files, leaving dead documentation |
+| Hash auth tokens with bcrypt | No CI workflow exists to enforce the ruff/mypy/pytest gates already configured in `pyproject.toml` |
+| Add a transaction context manager to the Database class | |
+| Fix timing-oracle vulnerability in SSE token verification | |
+
+`playground` has no Caddyfile, no auth endpoints, no Database class and no SSE.
+It does have every one of the three post-fix findings. The first is a real
+defect that this very session introduced: attempt 2 of the bytesize plan set
+`testpaths = ["src", "tests"]` while both copies of the tests existed.
+
+Confidence moved from a confident 0.85-0.9 on fiction to 0.72 on fact.
+
+Two runs of the pre-fix loop were observed, at 09:32 and earlier, with different
+wording each time (the second named SSE token verification and the `users`
+table), so the defect was systematic rather than one bad sample.
+
+### A plan with no commits no longer reports a failure
+
+Re-submitting the no-op spec on the opencode arm produced, in order:
+
+```
+Task ... closed as a no-op: No changes needed: the repository already
+  satisfied this task (verify passed on plan/2026-08-21-add-python-gitignore-entries)
+nothing to integrate for plan ...: branch=plan/2026-08-21-add-python-gitignore-entries
+  is identical to base=main, so there is no diff to open a PR for
+```
+
+No `Integration PR open failed`. The plan reports `completed (no PR)` exactly as
+before; only the misfiled error is gone.
+
+That run also puts `no_changes` on **both harnesses**: agy in run #7, opencode
+here.
+
+### What the fix cost, and what nearly went wrong
+
+Two existing tests broke, and that was the signal rather than the obstacle: both
+constructed the Orchestrator with no `spec_reader`, which is exactly the
+configuration in which the loop used to analyse happily. A fix that left them
+green would have been the wrong fix.
+
+More usefully, the nothing-to-integrate guard was briefly WRONG in a way its own
+tests could not see. An `AsyncMock` returns the same sentinel for every call, so
+a loose double made the two SHAs compare equal and the guard skipped integration
+for EVERY plan, while all four of its own new tests stayed green. Seven
+pre-existing tests caught it. The guard now requires two actual `str` values,
+and that case has its own test. The lesson generalises: ask what a permissive
+test double makes your comparison say.
+
+Seven mutants, each killed by its own dedicated test. One "survivor" turned out
+to be a broken mutant, not a missing test: `frozenset() or frozenset({...})` is
+a no-op because an empty frozenset is falsy. Mutate a member, not a constructor,
+and be suspicious of a lone survivor among killed siblings.
