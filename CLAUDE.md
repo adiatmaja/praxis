@@ -9,19 +9,20 @@ loop. It splits the software engineering loop into four roles — **plan**, **im
 and decomposes every plan to fit the capability of the model that implements it. Nothing is
 hard-wired to a single vendor.
 
-**Framing (canonical, 2026-08-21, supersedes 2026-07-11):** the identity is *a tool set up
-inside the harness you already use, enabling it to manage, control, and steer other coding
-harnesses from a single session, with every change governed by the loop instead of
-one-shotted*. Praxis is NOT itself a harness. Public wording is "govern/governed", never
-"predictable" (a measurable claim with no published benchmark yet). Capability-aware task decomposition is
-the flagship MECHANISM behind that promise (still unique in the landscape), not the
-headline; the public features are implement-a-plan (a single dispatched task is its
-smallest case, not a third feature) and auto-delegate mode (beta until the review-scope
-fix), the batch and continuous shapes of one connection; role separation is the supporting
-architecture; cost is a consequence.
+**Framing (canonical, 2026-08-22, supersedes 2026-08-21):** the identity is *a tool for
+agentic AI to govern other coding harnesses*: set up inside the harness you already use, it
+lets that harness manage, control, and steer the others from a single session, with every
+change governed by the loop instead of one-shotted. Praxis is NOT itself a harness. Public
+wording is "govern/governed", never "predictable" (a measurable claim with no published
+benchmark yet). **Implement-a-plan is the flagship FEATURE** (a single dispatched task is
+its smallest case, not a second feature); auto-delegate mode is the companion feature
+(beta until the review-scope fix), the continuous shape of the same connection, presented
+after the flagship, never beside it. Capability-aware task decomposition is the flagship
+MECHANISM behind the promise (still unique in the landscape), not the headline; role
+separation is the supporting architecture; cost is a consequence.
 Reference: `docs/positioning.md` ("The framing"), which also lists the wording to avoid
 ("meta-harness" and "control plane" are claimed by larger projects).
-Flagship under development: the **Capability Calibration Loop**. Roadmap + feature/contract
+Flagship mechanism under development: the **Capability Calibration Loop**. Roadmap + feature/contract
 designs: `docs/superpowers/specs/2026-07-11-capability-engine-roadmap.md` (F1-F15, S1-S11,
 10-plan breakdown).
 
@@ -175,15 +176,21 @@ Workflows live in `.github/workflows/` (added 2026-07-02, all verified green on 
 ```
 PENDING -> IN_PROGRESS -> REVIEWING -> PASSED -> (human approve) -> MERGED
                                     -> FAILED -> (re-dispatch, max 3)
-         -> NO_CHANGES  (work already present; verified on the base branch)
+         -> NO_CHANGES        (work already present; verified on the base branch)
+         -> NEEDS_CLARIFICATION (worker asked; parks for `praxis clarify` and
+                                 waits indefinitely for a person)
+         -> SUPERSEDED        (split into children, which carry the work)
 
 Then, once every task is done:
 plan COMPLETED -> integration PR -> (human approve) -> integration_merged_at
 ```
 
-`NO_CHANGES` is terminal and is neither a success nor a failure, like
-`SUPERSEDED`. It is in `SATISFIED_STATUSES` (`core/status_vocab.py`), which is
-what unblocks dependents and lets the plan complete.
+All eight `TaskStatus` values appear above; a surface that lists fewer teaches
+a caller to poll for a state that will never arrive. `NO_CHANGES` is terminal
+and is neither a success nor a failure, like `SUPERSEDED`. Both are in
+`SATISFIED_STATUSES` (`core/status_vocab.py`), which is what unblocks
+dependents and lets the plan complete. `NEEDS_CLARIFICATION` is the third gate:
+nothing advances it but a human answering.
 
 ## Data Model (SQLite)
 

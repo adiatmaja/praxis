@@ -10,11 +10,11 @@
 </div>
 
 <p align="center">
-  <strong>Let the harness you already use drive every other harness.</strong>
+  <strong>Engine for agentic AI to govern other coding harnesses.</strong>
 </p>
 
 <p align="center">
-  Dispatch real coding work to other agents and models from the session you are already in,
+  Dispatch real coding work to other harnesses and models from the session you are already in,
   and get back a reviewed pull request instead of a one-shot guess.
 </p>
 
@@ -27,42 +27,42 @@
   <a href="https://github.com/adiatmaja/praxis/stargazers"><img alt="Stars" src="https://img.shields.io/github/stars/adiatmaja/praxis?style=social"></a>
 </p>
 
-Praxis is not another coding harness. It is an engine you set up inside the one you
-already use: wire it into your AI assistant over MCP and that assistant can dispatch real
-work to the harnesses that do the typing, OpenCode driving any OpenAI-compatible model,
-Antigravity driving Gemini. Plans are decomposed to fit the model that implements them,
-and every change is checked by the verify gate when you configure one, reviewed by a
-second model, and delivered as a pull request that waits for your approval. One session, no copy-pasted plans, no switching
+Praxis is a tool set up inside the coding assistant you already use, wired in over MCP,
+that lets it dispatch real coding work to the harnesses that do the typing: OpenCode
+driving any OpenAI-compatible model, Antigravity driving Gemini. Plans are
+decomposed to fit the model that implements them, and every change is checked by the
+verify gate when you configure one, reviewed by a second model, and delivered as a pull
+request that waits for your approval. One session, no copy-pasted plans, no switching
 tools by hand. (A CLI and a dashboard drive the same engine.)
 
 ```
-                           ┌───────────────────────────┐
-   spec / plan ───────────►│       PRAXIS ENGINE       │
-                           │  (FastAPI · SQLite · Git) │
-                           └─────────────┬─────────────┘
-                                         │
-          ┌────────────────────┬─────────┴──────────┬────────────────────┐
-          ▼                    ▼                    ▼                    ▼
-  ┌───────────────┐    ┌───────────────┐    ┌───────────────┐    ┌───────────────┐
-  │    PLANNER    │    │  IMPLEMENTER  │    │    VERIFIER   │    │    REVIEWER   │
-  │  decompose to │    │   write the   │    │    run the    │    │  inspect the  │
-  │  match worker │    │  code, open a │    │   mechanical  │    │  PR, gate the │
-  │   capability  │    │  pull request │    │      gate     │    │     merge     │
-  └───────┬───────┘    └───────┬───────┘    └───────┬───────┘    └───────┬───────┘
-          │                    │                    │                    │
-     any provider        any harness +         any command          any provider
-   (Claude · GLM ·     open-weight model     (tests · lint ·      (Claude · GLM ·
-    Codex · local)      (LM Studio · …)           build)            GPT · local)
-          └────────────────────┴─────────┬──────────┴────────────────────┘
-                                         ▼
-                         ┌───────────────────────────────┐
-                         │    GitHub · branches + PRs    │
-                         │  (the one platform contract)  │
-                         └───────────────────────────────┘
+  ┌──────────────────────────────────────────────────────────┐
+  │  THE HARNESS YOU ALREADY USE                             │
+  │  (your agentic AI, with Praxis wired in over MCP)        │
+  └────────────────────────────┬─────────────────────────────┘
+                               │  dispatch · steer · approve
+                               ▼
+  ┌──────────────────────────────────────────────────────────┐
+  │  PRAXIS ENGINE                    FastAPI · SQLite · Git │
+  │  implement a plan · auto-delegate mode (beta)            │
+  │  every change governed: verify ─▶ review ─▶ merge gate   │
+  └────────────────────────────┬─────────────────────────────┘
+                               │  one task per isolated container
+                               ▼
+  ┌──────────────────────────────────────────────────────────┐
+  │  WORKER HARNESSES, doing the typing (a pluggable set)    │
+  │  OpenCode · any OpenAI-compatible model (LM Studio · …)  │
+  │  Antigravity · Gemini                                    │
+  └────────────────────────────┬─────────────────────────────┘
+                               ▼
+  ┌──────────────────────────────────────────────────────────┐
+  │  reviewed pull requests, parked for your approval        │
+  │  GitHub · branches + PRs (the one platform contract)     │
+  └──────────────────────────────────────────────────────────┘
 ```
 
-Every seat is swappable without changing the architecture around it. GitHub is the one
-intentional platform dependency: inspectable, revertible PRs are the loop's unit of trust.
+GitHub is the one intentional platform dependency: inspectable, revertible PRs are the
+loop's unit of trust.
 
 ## Why Praxis exists
 
@@ -71,18 +71,19 @@ the ask to what the model can actually do, nothing checked the result, no second
 before it lands. The usual workaround, planning with a strong model and pasting the plan
 into a cheaper one, breaks differently: the worker never sees the context the plan was
 written with, some tasks are simply beyond it, and nothing warns you about either. Praxis
-is the control layer that closes both gaps. The harnesses stay interchangeable; the
+is the governing layer that closes both gaps. The harnesses stay interchangeable; the
 discipline around them does not.
 
 ## Features
 
-Two shapes of the same engine, one theme: you never leave your session, another harness
-does the typing, and nothing lands unreviewed.
+One theme across both features: you never leave your session, another harness does the
+typing, and nothing lands unreviewed.
 
 **Implement a plan.** You did the thinking in a chat, an editor, or a design doc; what is
-left is the typing. Hand Praxis the `plan.md` and it capability-gates the plan against
-the worker, decomposes anything too coarse, and drives dispatch, verify, and review to
-the merge gate (`execute_plan`, REST and MCP). Its smallest case is a single task: say
+left is the typing. Hand Praxis the `plan.md` and it
+capability-gates the plan against the worker, decomposes anything too coarse, and drives
+dispatch, verify, and review to the merge gate (`execute_plan`, REST and MCP). Its
+smallest case is a single task: say
 "use praxis to fix X on this repo" and a worker picks it up in an isolated container
 while your session moves on (`dispatch_task`). Harness and model are chosen per project
 or per call, so work goes to whichever model is actually good at it, for example UI
@@ -100,7 +101,7 @@ single-branch review flow is still being hardened; treat it as a preview.
 **Capability-aware task decomposition.** The core mechanism. Praxis keeps a capability
 profile of the implementing model and decomposes every plan against it, so no task asks
 for more than the worker can deliver; what still exceeds its reach is escalated instead
-of quietly failing, and every outcome feeds the profile for next time.
+of quietly failing, and recorded outcomes tune the difficulty gate for next time.
 
 **A deterministic verify gate before any model reviews.** Tests, lint, or a build command
 run first when configured; a non-zero exit fails the task cheaply, before a review model
@@ -115,15 +116,23 @@ branch without you.
 fresh from `origin`; your working tree is never touched, and only the pushed branch and
 its PR remain.
 
-**Every seat independently configurable.** Provider, model, and harness per role and per
-project, interchangeable examples rather than a blessed pairing:
+**Every seat independently configurable.** Provider, model, and harness are chosen per
+role and per project, and swapping a seat never changes the architecture around it.
+Interchangeable examples, not a blessed pairing:
 
-| Role | Interchangeable examples |
-|------|--------------------------|
-| Planner | Claude · GLM · Codex · an open-weight model |
-| Implementer | any harness + any OpenAI-compatible endpoint (LM Studio · Ollama · hosted) |
-| Verifier | any shell command: `pytest`, `ruff`, `npm test` (deterministic, not a model) |
-| Reviewer | Claude · GLM · GPT · Gemini · an open-weight model |
+```
+  ┌───────────────┐    ┌───────────────┐    ┌───────────────┐    ┌───────────────┐
+  │    PLANNER    │    │  IMPLEMENTER  │    │    VERIFIER   │    │    REVIEWER   │
+  │  decompose to │    │   write the   │    │    run the    │    │  inspect the  │
+  │  match worker │    │  code, open a │    │   mechanical  │    │  PR, gate the │
+  │   capability  │    │  pull request │    │      gate     │    │     merge     │
+  └───────────────┘    └───────────────┘    └───────────────┘    └───────────────┘
+     any provider        any harness +         any command          any provider
+   (Claude · GLM ·     open-weight model     (tests · lint ·      (Claude · GLM ·
+    Codex · local)      (LM Studio · …)           build)            GPT · local)
+```
+
+The verifier seat is deterministic, a shell command rather than a model.
 
 Tier recommendations, worker presets, and whole-loop arrangements:
 [docs/configurations.md](docs/configurations.md). A useful consequence: the token-heavy
@@ -165,7 +174,7 @@ prefix, or activate the venv once (`.venv\Scripts\activate` on Windows,
 `source .venv/bin/activate` elsewhere) and drop it.
 
 ```bash
-uv run praxis doctor            # read-only diagnostic; exits 0 when healthy, reds point at the fix
+uv run praxis doctor            # read-only against your repo and DB; reds point at the fix
 uv run praxis env               # what URL and token the CLI resolved, and from where
 uv run praxis logs <task-id>    # what the worker actually did, after its container is gone
 ```
@@ -181,19 +190,18 @@ that includes installation. Add `--non-interactive` and the wizard never prompts
 uv run praxis init --non-interactive --preset gemini-agy
 ```
 
-It reuses the `AUTH_TOKEN` already in `.env`, or generates one and prints it. Add
-`--auth-token`, `--port`, or `--github-token` to pin any of them. `uv run praxis presets`
-lists the names `--preset` accepts, and works before the orchestrator is running (it falls
-back to reading `config/praxis.yaml`), which is when you need it. Omitting `--preset` takes
-the one flagged `default: true`. A preset needing a credential `init` cannot collect (an API key, an
-interactive login) is refused rather than half-installed, until you pass
-`--accept-preset-requirements` to say that setup is done.
+It reuses the `AUTH_TOKEN` already in `.env`, or generates one and prints it
+(`--auth-token`, `--port`, and `--github-token` pin any of them). `uv run praxis presets`
+lists the names `--preset` accepts and works before the orchestrator is running; omitting
+`--preset` takes the default. A preset needing a credential `init` cannot collect (an API
+key, an interactive login) is refused rather than half-installed, until
+`--accept-preset-requirements` says that setup is done.
 
-Two things worth telling your agent, because neither is discoverable from a failure:
-build the agent images with `docker compose --profile agents build` and never a bare
-`docker build` (the profile stamps a label Praxis needs for staleness detection), and log
-into your planner CLI yourself if the doctor's planner check is red, since that login is
-interactive and an agent's would not persist.
+Two traps to tell your agent about, because neither is discoverable from a failure: build
+the agent images with `docker compose --profile agents build`, never a bare `docker build`
+(the profile stamps a label Praxis needs for staleness detection); and log into your
+planner CLI yourself if the doctor's planner check is red, since that login is interactive
+and an agent's would not persist.
 
 With the orchestrator running:
 
@@ -202,10 +210,11 @@ With the orchestrator running:
 - **Dashboard:** http://localhost:12323 · **API docs:** http://localhost:12323/docs
 - **CLI:** `uv run praxis projects`, `submit`, `pending`, `merge <task-id>`, `mode on`
 
-Point at least one planner CLI (`claude`, `codex`, or `agy`) at your subscription, and
-serve a coding-capable model over an OpenAI-compatible endpoint for the implementer seat
-([LM Studio](https://lmstudio.ai/) is the default). Full setup and deployment modes:
-[docs/deployment.md](docs/deployment.md).
+Point at least one planner CLI (`claude`, `codex`, or `agy`) at your subscription. The
+implementer seat comes from your worker preset: the shipped default drives Gemini via
+`agy` (one-time `agy login`), or pick `local-lmstudio` to serve an open-weight model over
+an OpenAI-compatible endpoint ([LM Studio](https://lmstudio.ai/)). Full setup and
+deployment modes: [docs/deployment.md](docs/deployment.md).
 
 ## Documentation
 

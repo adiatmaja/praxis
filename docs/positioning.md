@@ -4,12 +4,15 @@ This doc captures *why* Praxis exists, what makes it genuinely different from
 off-the-shelf tools, and an honest account of its limitations. It is the
 reference for keeping the README and marketing aligned with reality.
 
-## The framing (canonical, 2026-08-21)
+## The framing (canonical, 2026-08-22)
 
 **Identity: Praxis is not itself a harness. It is a tool set up inside the
 harness the user already works in, enabling that harness to manage, control,
 and steer other coding harnesses from a single session, with every change
-governed by the loop instead of one-shotted.** The user stays where they
+governed by the loop instead of one-shotted.** The one-line compression is
+**"a tool for agentic AI to govern other coding harnesses"**: the operator of
+the tool is the agentic AI in the harness you already use, not primarily the
+human at a dashboard. The user stays where they
 already are (their MCP assistant primarily; the CLI and dashboard are clients
 of the same engine); Praxis runs the other harnesses and holds every change to
 the gated loop: deterministic verify, model review, PR-per-change, human merge
@@ -18,20 +21,24 @@ to the worker.
 
 Three consequences of that identity, in priority order:
 
-1. **Capability-aware task decomposition is the flagship *mechanism*, not the
+1. **Implement-a-plan is the flagship feature** (2026-08-22; supersedes the
+   two-co-headline framing of 2026-08-21). It is the batch shape of the one
+   connection, the shape where capability-sizing actually engages, and the
+   shape with a clean live-verified loop today. A single dispatched task is
+   its smallest case, not a second feature. Auto-delegate mode is the
+   companion feature, the continuous shape of the same connection; it keeps
+   its beta label until the single-branch review-scope defect is fixed (plan:
+   `superpowers/plans/2026-08-14-review-scope-single-branch.md`) and is
+   presented after the flagship, never beside it. Both are unified by the
+   theme (single session, other harnesses do the work, everything gated), the
+   shared engine is a closing note, never the pitch, and delegation alone is
+   commodity, so the governed loop is always the second beat of the pitch.
+2. **Capability-aware task decomposition is the flagship *mechanism*, not the
    headline.** It is the load-bearing answer to "what governs the output?",
    and (per the 2026-08-21 landscape refresh) still shipped by no other tool.
-   Lead with the promise; prove it with this mechanism.
-2. **Two headline features, one connection: implement-a-plan and
-   auto-delegate mode.** The batch shape and the continuous shape of the same
-   engine; a single dispatched task is implement-a-plan's smallest case, not a
-   third feature. Both are unified by the theme (single session, other
-   harnesses do the work, everything gated), and the shared engine is a
-   closing note, never the pitch. Auto-delegate keeps its beta label until the
-   single-branch review-scope defect is fixed (plan:
-   `superpowers/plans/2026-08-14-review-scope-single-branch.md`). The
-   connection framing never stands alone: delegation is commodity, so the
-   governed loop is always the second beat of the pitch.
+   Lead with the flagship feature; prove it with this mechanism. (The
+   roadmap's "calibration-flagship" naming refers to this mechanism, not to a
+   feature.)
 3. **Role separation stays the supporting architecture, and cost stays a
    consequence.** Unchanged from the 2026-07-11 framing.
 
@@ -267,12 +274,13 @@ about the engine's economic foundation.
 
 ## Positioning guidance
 
-Lead with the canonical framing above: **single-session control of other
-harnesses, with every change governed by the gated loop**. Do not lead with
-the generic "autonomous PR engine" or bare "orchestrator" framing (the
-orchestrator-IDE space is owned; see "Engine, not cockpit" above), and do not
-lead with capability-aware decomposition as the *name* of the product; it is
-the flagship mechanism inside the promise. Platform-native subagents (e.g.
+Lead with the canonical framing above: **a tool for agentic AI to govern
+other harnesses, with every change governed by the gated loop**, and name
+implement-a-plan as the flagship feature; auto-delegate follows it, carrying
+its beta label. Do not lead with the generic "autonomous PR engine" or bare
+"orchestrator" framing (the orchestrator-IDE space is owned; see "Engine, not
+cockpit" above), and do not lead with capability-aware decomposition as the
+*name* of the product; it is the flagship mechanism inside the promise. Platform-native subagents (e.g.
 Claude Code's own fan-out) are absorbing generic orchestration, but they are
 single-provider by design, which is exactly the seam Praxis occupies. Present
 the **MCP / subscription→local bridge** and the two-cost-tier split as one
