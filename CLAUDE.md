@@ -374,6 +374,11 @@ a line here only if it belongs in this shortlist.
 - **Design spec:** `docs/superpowers/specs/2026-06-01-ai-agent-orchestrator-design.md`
 - **Capability-engine roadmap (canonical, 2026-07-11):** `docs/superpowers/specs/2026-07-11-capability-engine-roadmap.md`: features F1-F15, standardization contracts S1-S11, 10-plan breakdown; next up = Plan 3 `outcome-recording`
 - **Implementation plans:** `docs/superpowers/plans/` (sequential plans)
+- **Auto-delegate, written and unexecuted, ORDER MATTERS:** review-scope single-branch
+  (`plans/2026-08-14-review-scope-single-branch.md`) must land BEFORE the micro-edit lane
+  (`specs/2026-08-21-micro-edit-lane.md`), which commits to the same shared branch with no
+  dispatch and so depends on the base-SHA column the former adds. The lane skips the
+  WORKER, never the governance: verify gate and a cheap review still run, on the same PR
 - **Implemented + merged (2026-06-29 epic, live e2e-verified 2026-07-01):** worker context
   continuity (`specs/2026-06-29-worker-context-continuity-design.md`), capability-aware plan
   execution (`specs/2026-06-29-capability-aware-execution-design.md`), and the MCP orchestration

@@ -15,6 +15,14 @@ spec_path: docs/superpowers/specs/2026-08-14-dogfood-findings.md
 
 **Spec:** `docs/superpowers/specs/2026-08-14-dogfood-findings.md`, finding 6 and its amendment.
 
+**Execute this BEFORE the micro-edit lane.** `docs/superpowers/specs/2026-08-21-micro-edit-lane.md`
+commits directly to the same shared work branch with no dispatch, so it depends
+on the base-SHA column and the range-bounded diff this plan adds. Landing the
+lane first would put brain-authored commits on a branch whose per-task review
+scoping does not exist yet, reproducing the exact out-of-scope failure this plan
+removes, with the brain as the author. The ordering is one way only: this plan
+is complete and correct on its own.
+
 ---
 
 ## Read this before starting
@@ -152,6 +160,12 @@ Message: `fix(review): judge a task on its own commits, not the whole branch`
 The recorded base SHA is a correct task boundary ONLY while auto-delegate mode is sequential. If the mode ever dispatches concurrently onto one shared branch, two tasks' commit ranges interleave and the scoped diff silently becomes wrong: it would contain another task's commits again, which is the bug this plan exists to remove, returning without any error.
 
 This is a landmine for whoever later makes the mode concurrent for throughput. It must be written where they will be standing.
+
+The micro-edit lane inherits the same constraint from the other side: a brain
+commit interleaved with a running worker on the same branch breaks the commit
+range for both. Name it in the same comment
+(`docs/superpowers/specs/2026-08-21-micro-edit-lane.md`), so the next person to
+make the mode concurrent finds both dependencies in one place rather than one.
 
 ### Steps
 
