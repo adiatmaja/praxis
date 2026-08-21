@@ -427,6 +427,30 @@ def test_planner_cli_red_when_installed_but_prompt_refused():
 
 
 @pytest.mark.unit
+def test_planner_cli_red_hint_states_the_remedy_not_just_the_diagnosis():
+    """Five walkthroughs lost time to a fix that was written down NOWHERE.
+
+    The diagnosis has been precise since walkthrough #4 and the hint pointed at
+    `docs/gotchas.md`, which explained the cause and omitted the cure. So the
+    minute it saved was only available to someone who already knew the answer.
+
+    Two things make this remedy wrong in the obvious place and right in exactly
+    one place, and both are asserted here because either alone reads as
+    plausible: the opt-out must go in `docker-compose.yml`, and it must NOT go
+    in `.env`, where an unrecognised key is silently ignored and never reaches
+    the container at all. A hint naming only the variable would send the
+    operator straight to `.env`, which fails silently and looks like the
+    remedy not working.
+    """
+    hint = probe_planner_cli(
+        cli_available=True, authenticated=True, prompt_ok=False
+    ).hint.lower()
+
+    assert "docker-compose.yml" in hint, "the hint must name where the fix goes"
+    assert ".env" in hint, "the hint must name where the fix does NOT go"
+
+
+@pytest.mark.unit
 def test_planner_cli_green_when_the_round_trip_answers():
     result = probe_planner_cli(cli_available=True, authenticated=True, prompt_ok=True)
 

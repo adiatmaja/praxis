@@ -280,10 +280,25 @@ def probe_planner_cli(
             # login command" and that is the one thing that will NOT help: the
             # CLI is already authenticated. CheckResult only auto-fills a hint
             # when none is passed.
+            #
+            # It states the REMEDY, not just the cause. Pointing at
+            # docs/gotchas.md alone is what this hint used to do, and across
+            # five walkthroughs the fix itself appeared in no shipped file, so
+            # the precise diagnosis only helped someone who already knew the
+            # answer. Naming docker-compose.yml AND ruling out .env are both
+            # load-bearing: .env is where an operator would reach first, and an
+            # unrecognised key there is IGNORED, so the opt-out never reaches
+            # the container and the failure looks unchanged.
             hint=(
                 "the CLI is authenticated but something refused the prompt. "
-                "Check for a Claude Code hook in the mounted ~/.claude whose "
-                "detector assumes the host OS; see docs/gotchas.md"
+                "The usual cause is a Claude Code hook in the mounted "
+                "~/.claude whose detector assumes the host OS, so it fires "
+                "inside the container even when the host is fine. Set that "
+                "hook's own opt-out variable (e.g. CLAUDE_VPN_KILLSWITCH_OFF=1) "
+                "as a LITERAL under environment: in docker-compose.yml, then "
+                "`docker compose up -d`. Not in .env: an unrecognised key "
+                "there is ignored and never reaches the container. "
+                "See docs/gotchas.md"
             ),
         )
     if prompt_ok is True:

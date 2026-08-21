@@ -85,6 +85,23 @@ services:
       # default user) unless it believes it runs in a sandbox. Brainstorm/plan/
       # review all pass that flag, so without this they exit 1 and silently fail.
       - IS_SANDBOX=1
+      # HOOK OPT-OUTS GO HERE, and only here.
+      #
+      # ~/.claude is mounted above, so the host's Claude Code hooks run INSIDE
+      # this container. A hook whose detector assumes the host OS (a VPN
+      # killswitch is the one that keeps happening) then blocks every brain
+      # call, tunnel up or down, and `praxis doctor` reports planner_cli RED
+      # with the hook's own message.
+      #
+      # Add the hook's opt-out as a LITERAL, uncommented, then `docker compose
+      # up -d` (a `restart` does NOT re-read this file's substitutions):
+      #
+      #   - CLAUDE_VPN_KILLSWITCH_OFF=1
+      #
+      # It must NOT go in .env. Settings uses extra="ignore", so an
+      # unrecognised key there is accepted and silently dropped; the variable
+      # never reaches the container and the hook keeps firing, which reads as
+      # "the documented fix does not work". See docs/gotchas.md.
       # Agents reach the orchestrator back via the HOST-side port, so this must
       # track ${PORT} (not the in-container 8080). Derived here so the two can
       # never drift apart and silently 404 every agent callback.
