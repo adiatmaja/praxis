@@ -130,8 +130,12 @@ CHECKS: tuple[Check, ...] = (
     Check(
         "worker_endpoint",
         "Worker endpoint reachable with the configured model loaded",
+        # NOT `praxis config`: that verb only shows the model registry and
+        # sets role chains, so it cannot change a worker preset and the
+        # operator following this line found nothing. Re-running init is the
+        # documented way, and it rewrites the DEFAULT_WORKER_* keys in .env.
         "start the endpoint and load the configured model, or switch preset "
-        "with `praxis config`",
+        "with `praxis init --preset <name>`",
     ),
     Check(
         "callback_url",
