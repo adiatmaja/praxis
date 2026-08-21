@@ -24,6 +24,7 @@ from cli import init as init_mod
 from cli.init import (
     _FALLBACK_PRESET,
     MANAGED_KEYS,
+    Answers,
     _managed_values,
     _render_value,
     build_env_file,
@@ -50,20 +51,24 @@ def _never_touch_the_real_env(monkeypatch):
     fixture stands guard for whatever test is added next.
 
     Cheap and inert: it never reads or writes `.env` itself, only compares
-    `Path.cwd()` against the checkout root immediately before `init()` would
-    otherwise run.
-    """
-    real_init = init_mod.init
+    `Path.cwd()` against the checkout root immediately before `run_init()`
+    would otherwise run.
 
-    def _guarded_init():
+    Guards `run_init`, not `init`: `init` is a typer shim whose parameter
+    defaults are `OptionInfo` objects, so it cannot be called directly at all.
+    All the behaviour, and therefore all the hazard, is in `run_init`.
+    """
+    real_run_init = init_mod.run_init
+
+    def _guarded_run_init(answers):
         cwd = Path.cwd().resolve()
         assert cwd != REPO.resolve(), (
-            "a test is about to call init() from the real repo root; "
+            "a test is about to call run_init() from the real repo root; "
             "did it forget the `fake_root` fixture?"
         )
-        return real_init()
+        return real_run_init(answers)
 
-    monkeypatch.setattr(init_mod, "init", _guarded_init)
+    monkeypatch.setattr(init_mod, "run_init", _guarded_run_init)
 
 
 # Shaped like this repo's real .env: unmanaged keys, a comment, a blank line.
@@ -615,7 +620,7 @@ def test_a_flagged_default_still_challenges_an_unmet_requirement(monkeypatch):
     _hold_enter(monkeypatch)
     presets = init_mod._fetch_presets_or_defaults()
     with pytest.raises(typer.Exit):
-        init_mod._choose_preset(presets)
+        init_mod._choose_preset(presets, Answers())
 
 
 @pytest.mark.unit
@@ -639,7 +644,7 @@ def test_holding_enter_refuses_a_preset_whose_requirement_init_cannot_collect(
         }
     ]
     with pytest.raises(typer.Exit) as exit_info:
-        init_mod._choose_preset(unsatisfiable)
+        init_mod._choose_preset(unsatisfiable, Answers())
     assert exit_info.value.exit_code == 1
 
 
@@ -660,7 +665,7 @@ def test_unmet_requirement_prints_the_setup_hint(capsys, monkeypatch):
     }
 
     with contextlib.suppress(typer.Exit):
-        _confirm_unmet_requirements(preset)
+        _confirm_unmet_requirements(preset, Answers())
 
     out = capsys.readouterr().out
     assert "agy login" in out
@@ -678,7 +683,7 @@ def test_unmet_requirement_without_hint_still_stops(capsys, monkeypatch):
     preset = {"label": "Some preset", "requires": ["api_key"]}
 
     with pytest.raises(typer.Exit):
-        _confirm_unmet_requirements(preset)
+        _confirm_unmet_requirements(preset, Answers())
 
 
 @pytest.mark.unit
@@ -872,7 +877,7 @@ def test_init_refuses_to_run_outside_the_repo_root(tmp_path, monkeypatch):
     _stub_the_world(monkeypatch)
 
     with pytest.raises(typer.Exit) as exit_info:
-        init_mod.init()
+        init_mod.run_init(Answers())
 
     assert exit_info.value.exit_code == 1
     assert not (tmp_path / ".env").exists()
@@ -901,7 +906,7 @@ def test_the_guard_runs_before_any_prompt_is_issued(tmp_path, monkeypatch):
     _stub_the_world(monkeypatch)
 
     with pytest.raises(typer.Exit) as exit_info:
-        init_mod.init()
+        init_mod.run_init(Answers())
 
     assert exit_info.value.exit_code == 1
     assert calls == []
@@ -921,7 +926,7 @@ def test_the_refusal_names_what_it_looked_for_and_where_it_looked(
     _stub_the_world(monkeypatch)
 
     with pytest.raises(typer.Exit):
-        init_mod.init()
+        init_mod.run_init(Answers())
 
     printed = buffer.getvalue()
     assert str(tmp_path) in printed
@@ -939,7 +944,7 @@ def test_a_blank_github_answer_still_keeps_the_existing_credential(monkeypatch):
     prompt makes.
     """
     _hold_enter(monkeypatch)
-    answer = init_mod._resolve_github_token({"GITHUB_TOKEN": "ghp_real"})
+    answer = init_mod._resolve_github_token({"GITHUB_TOKEN": "ghp_real"}, Answers())
     merged = merge_env(
         "GITHUB_TOKEN=ghp_real\n",
         _managed_values(
@@ -1015,8 +1020,17 @@ def _run_init(
     presets: list | None = None,
     healthy: bool = True,
     doctor_code: int = 0,
+    flags: Answers | None = None,
 ) -> dict:
-    """Drive a full `init()` inside the current directory.
+    """Drive a full `run_init()` inside the current directory.
+
+    Args:
+        answers: Prompt text fragment -> scripted reply, for interactive runs.
+        presets: The preset menu to offer.
+        healthy: Whether the stubbed health check succeeds.
+        doctor_code: The stubbed doctor's exit code.
+        flags: Command-line answers. Defaults to none at all, which is the
+            interactive path every pre-existing test in this file exercises.
 
     Returns:
         The `_stub_the_world` record, plus "exit_code".
@@ -1029,7 +1043,7 @@ def _run_init(
         lambda: [dict(p) for p in (presets or TWO_PRESETS)],
     )
     with pytest.raises(typer.Exit) as exit_info:
-        init_mod.init()
+        init_mod.run_init(flags or Answers())
     calls["exit_code"] = exit_info.value.exit_code
     return calls
 
@@ -1139,8 +1153,12 @@ def test_declining_preset_still_writes_collected_answers(fake_root, monkeypatch)
     preset needing a login `init` cannot do for them, and ends with an empty
     directory and exit 1 -- every answer just typed, discarded.
     """
-    monkeypatch.setattr(init_mod, "_resolve_auth_token", lambda _current: "TESTTOKEN")
-    monkeypatch.setattr(init_mod, "_resolve_github_token", lambda _current: "GHTOKEN")
+    monkeypatch.setattr(
+        init_mod, "_resolve_auth_token", lambda _current, _answers: "TESTTOKEN"
+    )
+    monkeypatch.setattr(
+        init_mod, "_resolve_github_token", lambda _current, _answers: "GHTOKEN"
+    )
     monkeypatch.setattr(init_mod.IntPrompt, "ask", lambda *_a, **_k: 12323)
     monkeypatch.setattr(
         init_mod,
@@ -1160,7 +1178,7 @@ def test_declining_preset_still_writes_collected_answers(fake_root, monkeypatch)
     monkeypatch.setattr(init_mod.Confirm, "ask", lambda *_a, **_k: False)
 
     with pytest.raises(typer.Exit):
-        init_mod.init()
+        init_mod.run_init(Answers())
 
     env = (fake_root / ".env").read_text(encoding="utf-8")
     assert "AUTH_TOKEN=TESTTOKEN" in env
@@ -1186,8 +1204,12 @@ def test_declining_preset_on_a_re_run_leaves_the_existing_worker_config_intact(
         "DEFAULT_WORKER_MODEL=qwen3-32b\n",
         encoding="utf-8",
     )
-    monkeypatch.setattr(init_mod, "_resolve_auth_token", lambda _current: "old-token")
-    monkeypatch.setattr(init_mod, "_resolve_github_token", lambda _current: None)
+    monkeypatch.setattr(
+        init_mod, "_resolve_auth_token", lambda _current, _answers: "old-token"
+    )
+    monkeypatch.setattr(
+        init_mod, "_resolve_github_token", lambda _current, _answers: None
+    )
     monkeypatch.setattr(init_mod.IntPrompt, "ask", lambda *_a, **_k: 12323)
     monkeypatch.setattr(
         init_mod,
@@ -1207,7 +1229,7 @@ def test_declining_preset_on_a_re_run_leaves_the_existing_worker_config_intact(
     monkeypatch.setattr(init_mod.Confirm, "ask", lambda *_a, **_k: False)
 
     with pytest.raises(typer.Exit):
-        init_mod.init()
+        init_mod.run_init(Answers())
 
     env = (fake_root / ".env").read_text(encoding="utf-8")
     assert "DEFAULT_WORKER_HARNESS=opencode" in env
@@ -1461,7 +1483,7 @@ def test_agent_image_build_receives_entrypoint_hash_env(fake_root, monkeypatch):
     _hold_enter(monkeypatch)
 
     with pytest.raises(typer.Exit):
-        init_mod.init()
+        init_mod.run_init(Answers())
 
     build_calls = [c for c in calls if "agents" in c["cmd"]]
     assert len(build_calls) == 1, f"expected exactly one agent build call, got {calls}"
@@ -1536,3 +1558,198 @@ def test_a_real_env_file_is_left_alone(tmp_path):
     _clear_env_placeholder_dir(env_path)
 
     assert env_path.read_text(encoding="utf-8") == "AUTH_TOKEN=x\n"
+
+
+# ---------------------------------------------------------------------------
+# Non-interactive mode
+#
+# The wizard is TTY-only, so the only way to drive it from an agent or a setup
+# script was to pipe newlines at it. That does not work, and it fails in the
+# worst possible way: the QUESTION SET changes with state. Five questions on a
+# fresh clone, seven once `.env` exists ("Reuse the AUTH_TOKEN already in
+# .env?" first, "Update .env?" last). An answer sequence tuned on the first
+# run silently misaligns on the second and answers the wrong questions.
+#
+# Every test below therefore scripts NO prompt answers at all. A prompt that
+# reaches rich in this mode returns its default rather than raising, so
+# asserting on the resulting `.env` is what actually proves nothing was asked.
+# ---------------------------------------------------------------------------
+
+
+def _no_prompts(monkeypatch):
+    """Make any prompt an outright failure, so silence is provable.
+
+    Without this a stray prompt quietly takes its default and the run looks
+    non-interactive when it merely got lucky.
+    """
+
+    def _boom(*_args, **_kwargs):
+        message = "init prompted in non-interactive mode"
+        raise AssertionError(message)
+
+    for name in ("Confirm", "IntPrompt", "Prompt"):
+        stub = type(name, (), {"ask": staticmethod(_boom)})
+        monkeypatch.setattr(init_mod, name, stub)
+
+
+@pytest.mark.unit
+def test_non_interactive_writes_a_full_env_without_asking_anything(
+    fake_root, monkeypatch
+):
+    """The primitive PR #109 Task 10 asked for, end to end on a fresh clone."""
+    _no_prompts(monkeypatch)
+    calls = _run_init(
+        monkeypatch,
+        flags=Answers(non_interactive=True, auth_token="tok-abc", preset="gemini-agy"),
+    )
+
+    values = dotenv_values(fake_root / ".env")
+    assert values["AUTH_TOKEN"] == "tok-abc"
+    assert values["DEFAULT_WORKER_HARNESS"] == "agy"
+    assert values["PORT"] == "12323"
+    assert calls["exit_code"] == 0
+
+
+@pytest.mark.unit
+def test_non_interactive_selects_a_preset_by_name_not_by_position(
+    fake_root, monkeypatch
+):
+    """A menu index shifts whenever the settings YAML gains or reorders a row.
+
+    Pinning position 1 in a setup script would silently start selecting a
+    different worker; pinning the name cannot.
+    """
+    _no_prompts(monkeypatch)
+    _run_init(
+        monkeypatch,
+        flags=Answers(non_interactive=True, auth_token="t", preset="local-lmstudio"),
+        presets=list(reversed(TWO_PRESETS)),
+    )
+
+    values = dotenv_values(fake_root / ".env")
+    assert values["DEFAULT_WORKER_HARNESS"] == "opencode"
+    assert values["DEFAULT_WORKER_MODEL"] == "qwen3-32b"
+
+
+@pytest.mark.unit
+def test_an_unknown_preset_name_fails_before_anything_is_written(
+    fake_root, monkeypatch
+):
+    """Naming a preset that does not exist must not silently fall back."""
+    _no_prompts(monkeypatch)
+    calls = _run_init(
+        monkeypatch,
+        flags=Answers(non_interactive=True, auth_token="t", preset="no-such-preset"),
+    )
+
+    assert calls["exit_code"] == 1
+    assert calls["compose"] == [], (
+        "nothing may be built or started after an unknown preset"
+    )
+
+
+@pytest.mark.unit
+def test_non_interactive_reuses_the_existing_token_rather_than_rotating_it(
+    fake_root, monkeypatch
+):
+    """A re-run must not rotate the token out from under configured clients.
+
+    The interactive path defaults to reuse; unattended has to do the same, or
+    every scheduled re-run breaks every MCP client pointed at this install.
+    """
+    (fake_root / ".env").write_text(REAL_SHAPED_ENV, encoding="utf-8")
+    _no_prompts(monkeypatch)
+    _run_init(monkeypatch, flags=Answers(non_interactive=True, preset="gemini-agy"))
+
+    assert dotenv_values(fake_root / ".env")["AUTH_TOKEN"] == "old-token"
+
+
+@pytest.mark.unit
+def test_non_interactive_generates_and_prints_a_token_when_there_is_none(
+    fake_root, monkeypatch, capsys
+):
+    """The operator never saw a prompt, so the generated secret must be printed.
+
+    Without this the install works and is unusable: the token exists only
+    inside a file the caller was not told to read.
+    """
+    _no_prompts(monkeypatch)
+    _run_init(monkeypatch, flags=Answers(non_interactive=True, preset="gemini-agy"))
+
+    written = dotenv_values(fake_root / ".env")["AUTH_TOKEN"]
+    assert written
+    assert written in capsys.readouterr().out
+
+
+@pytest.mark.unit
+def test_non_interactive_never_clears_an_existing_github_credential(
+    fake_root, monkeypatch
+):
+    """Omitting --github-token means "leave it alone", never "delete it".
+
+    An unattended re-run that wiped the credential would put the install into
+    local mode with nothing raising anywhere.
+    """
+    (fake_root / ".env").write_text(
+        "AUTH_TOKEN=t\nGITHUB_TOKEN=ghp_real\n", encoding="utf-8"
+    )
+    _no_prompts(monkeypatch)
+    _run_init(monkeypatch, flags=Answers(non_interactive=True, preset="gemini-agy"))
+
+    assert dotenv_values(fake_root / ".env")["GITHUB_TOKEN"] == "ghp_real"
+
+
+@pytest.mark.unit
+def test_non_interactive_refuses_a_preset_with_unmet_requirements(
+    fake_root, monkeypatch
+):
+    """The guard survives the flag. Skipping it is the whole hazard.
+
+    A run that skipped this starts, reports healthy, and fails its first real
+    task, which is exactly what the confirmation exists to prevent.
+    """
+    _no_prompts(monkeypatch)
+    unsatisfiable = [{**TWO_PRESETS[0], "requires": ["api_key"]}]
+    calls = _run_init(
+        monkeypatch,
+        flags=Answers(non_interactive=True, auth_token="t"),
+        presets=unsatisfiable,
+    )
+
+    assert calls["exit_code"] == 1
+    assert calls["compose"] == [], "an unmet requirement must stop before docker runs"
+
+
+@pytest.mark.unit
+def test_accepting_the_requirements_explicitly_lets_the_run_proceed(
+    fake_root, monkeypatch
+):
+    """The escape hatch, which must be an explicit assertion and not a default."""
+    _no_prompts(monkeypatch)
+    unsatisfiable = [{**TWO_PRESETS[0], "requires": ["api_key"]}]
+    calls = _run_init(
+        monkeypatch,
+        flags=Answers(
+            non_interactive=True, auth_token="t", accept_preset_requirements=True
+        ),
+        presets=unsatisfiable,
+    )
+
+    assert calls["exit_code"] == 0
+    assert dotenv_values(fake_root / ".env")["DEFAULT_WORKER_HARNESS"] == "opencode"
+
+
+@pytest.mark.unit
+def test_a_flag_pre_answers_the_prompt_in_interactive_mode_too(fake_root, monkeypatch):
+    """One decision path, two modes. A second path is a second thing to drift.
+
+    The port flag is asserted rather than the token because the port has a
+    prompt that would otherwise take its own default and mask the flag.
+    """
+    _run_init(
+        monkeypatch,
+        {"Auth token": "tok", "GitHub token": "skip"},
+        flags=Answers(port=9911),
+    )
+
+    assert dotenv_values(fake_root / ".env")["PORT"] == "9911"

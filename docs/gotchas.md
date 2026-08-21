@@ -997,3 +997,105 @@ belongs among the everyday traps.
   database, but it is not free. The timeout is 20s deliberately: a healthy cold
   `claude -p` was measured at 15.68s on a Windows host, so a 15s timeout would
   false-RED a working planner and accuse the operator of a blocked hook.
+
+- **A completed plan is NOT a landed plan, and nothing used to say so**: when
+  the last task merges, the work sits on the plan branch and Praxis opens an
+  integration PR to the base branch. That URL used to exist in exactly two
+  places a user cannot reach: an SSE event that has already fired by the time
+  anyone looks, and one INFO line in the orchestrator's log. `praxis pending`
+  printed `Nothing awaiting approval.` with two such PRs open, `praxis plans`
+  showed `completed` with no URL, and `praxis merge-plan` returned
+  `Merged: 0 task(s)` and exited 0. It is now persisted on
+  `plans.integration_pr_url` (migration 9) and `merge-plan` merges it once every
+  task is merged. Two rules follow: `integration_merged_at` is what takes the
+  plan back OUT of `pending`, so a merge path that forgets to stamp it turns
+  one lie into its mirror image; and integration is refused while any task is
+  unmerged or any task merge errored, because a partial plan must never reach
+  the base branch.
+
+- **The sweeper counted every `completed` plan as reclaimable**: so a plan
+  branch carrying the whole plan's merged work was classified dead while its
+  integration PR was open, and deleting it would also have closed that PR. Only
+  the delete being separately broken (it shells `git push <url> --delete` with
+  no repository, which git refuses unconditionally) kept this from destroying
+  anything. Fix the classification BEFORE fixing the delete, or the first thing
+  the repaired deleter does is destroy merged work. Note the two guards that now
+  protect it are co-extensive by construction, both reading
+  `integration_pr_url`/`integration_merged_at` off the same row, so a
+  whole-sweep test stays green when either is reverted alone; the ledger
+  contents have to be asserted directly to pin them individually
+  (`tests/test_reconcile_sweeper.py`).
+
+- **A worker's empty diff was a failure, and that failed whole plans**: with a
+  plan decomposed into "write the module" and "write its tests", task 1
+  routinely writes both files. Task 2 then has nothing to change, reports it
+  correctly, and used to be called `failed`, retried three times to the
+  identical correct answer, and take the plan down with the repository already
+  in the state the spec asked for. Measured in 4 of 4 plans across BOTH
+  harnesses; the survivors only got lucky. Both entrypoints now report
+  `no_changes` and the ORCHESTRATOR decides, by running the project's verify
+  command against the branch the leaf was cut from. Three conditions are
+  load-bearing and each has its own test: an empty transcript stays `failed`
+  (nothing ran, so a dead worker cannot silently close every leaf), an
+  untrustworthy `rev-list` count stays `failed` (the worker may have committed
+  work this run cannot see), and a failing or erroring verify stays `failed`.
+  A unit test asserting "empty diff -> failed" passes before the fix AND after
+  a bad one, so assert on the STATUS carried to the callback instead.
+
+- **`TaskStatus.NO_CHANGES` must be in `SATISFIED_STATUSES`, not merely in
+  `TERMINAL_STATUSES`**: it is terminal and it is neither a success nor a
+  failure, like `SUPERSEDED`. Leave it out of the satisfied set and every
+  dependent of a no-op leaf waits forever for a `MERGED` that cannot come, and
+  the plan never completes. Nothing raises.
+
+- **The CLI could not find the install it was standing in**: a clean shell in
+  the repo root, orchestrator running, `AUTH_TOKEN` right there in `.env`, died
+  on `Set AUTH_TOKEN (or ORCHESTRATOR_TOKEN) env var`, and neither name appears
+  anywhere in `README.md` or `docs/deployment.md`. The token and the port now
+  fall back to the nearest `.env` walking up from the working directory, parsed
+  with `cli.init.parse_env` (the product's own parser, not a second one that
+  could disagree). Explicit env vars still win, which is what keeps a CLI
+  pointed at a remote deployment from being silently redirected at whatever
+  `.env` happens to be nearby. `praxis env` prints which file and which source
+  won; every other verb stays quiet.
+
+- **`praxis init` is TTY-only unless you pass `--non-interactive`**: piping
+  newlines at the wizard does not work, and it fails in the worst way. The
+  QUESTION SET changes with state: five questions on a fresh clone, seven once
+  `.env` exists (`Reuse the AUTH_TOKEN already in .env?` first, `Update .env?`
+  last). An answer sequence tuned on the first run silently misaligns on the
+  second and answers the wrong questions. `--preset` takes a NAME, never the
+  menu index, because the index shifts whenever the settings YAML gains or
+  reorders a row. `--non-interactive` deliberately does NOT relax the unmet
+  requirements guard: that install starts, reports healthy, and fails its first
+  real task, which is exactly what the guard exists to prevent.
+
+- **`init()` cannot be called directly, `run_init(Answers(...))` can**: typer
+  rewrites a command's parameter defaults into `OptionInfo` objects, so a
+  function carrying them is only callable through the command line. The logic
+  lives in `run_init`, which takes one `Answers`; `init` is the typer shim. The
+  autouse repo-root guard in `tests/test_cli_init.py` patches `run_init` for the
+  same reason.
+
+- **Git Bash silently TRUNCATES a `bash -c` argument at 8192 bytes**: the
+  no-change entrypoint region crossed that ceiling as it grew and every agy case
+  started failing with `syntax error: unexpected end of file`, which reads as a
+  broken entrypoint. It was not: the same script parsed clean as a file, and
+  echoing argv back showed 9507 bytes sent and 8186 received. Pass a generated
+  script on STDIN (`bash -s`, `input=script`), never as an argument. Same class
+  as the brain's own argv limit, at a quarter of the size.
+
+- **Running a sliced entrypoint region against the REAL git commits to your
+  repo**: `tests/test_entrypoint_no_change_diagnostic.py` puts a spy `git` first
+  on `PATH` for exactly this reason. Debugging the slice by hand with
+  `bash -c "$(cat slice.sh)"` from the repo root skips that spy, reaches
+  `git add -A && git commit -m "agent: ${BRANCH}"`, and commits your entire
+  work in progress under the message `agent:`. Recoverable with
+  `git reset --soft`, but only if you notice.
+
+- **Writing a source file from a Python one-liner on Windows converts it to
+  CRLF**: text-mode `open(p, 'w').write(s)` expands `\n` to `\r\n`, and
+  `.gitattributes` pins this working tree to LF. Read and write in BINARY mode
+  when patching a file from a script (`open(p,'rb').read().decode()` /
+  `open(p,'wb').write(s.encode())`), and check `git diff --stat` for the
+  "CRLF will be replaced by LF" warning afterwards.

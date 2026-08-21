@@ -139,6 +139,18 @@ confirmation rather than a silent misconfiguration. The chosen preset writes
 Re-running `praxis init` to switch presets is safe. It merges only the keys it
 manages and preserves every other key, position, and comment in your `.env`.
 
+Unattended, pass the preset by NAME rather than driving the menu:
+
+```bash
+uv run praxis init --non-interactive --preset gemini-agy
+```
+
+The name is stable; the menu position is not, and shifts whenever this table
+gains or reorders a row. `--non-interactive` does not relax the requirements
+check: a preset with an unmet requirement is refused until you pass
+`--accept-preset-requirements`, which is the same assertion the interactive
+"Choose it anyway?" makes.
+
 ## Recommended defaults by capability tier
 
 Configure each seat by the *capability class* it needs, not a specific model;

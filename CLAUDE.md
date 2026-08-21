@@ -108,15 +108,17 @@ The rest of `core/`, grouped by concern:
 ```bash
 # Setup (one command, idempotent, ends by verifying)
 uv run praxis init
+uv run praxis init --non-interactive --preset <name>   # scriptable, never prompts
 
 # Diagnose (read-only against repo and DB, but spends one planner call per
 # run, cached 60s; exits non-zero on any red, and a rate limit is amber)
 uv run praxis doctor
+uv run praxis env   # which URL and token the CLI resolved, and from where
 
 # See what is parked at the merge gate, and open it
-uv run praxis pending
+uv run praxis pending                # parked tasks AND plans awaiting integration
 uv run praxis merge <task-id>        # one task
-uv run praxis merge-plan <plan-id>   # every parked task in one plan
+uv run praxis merge-plan <plan-id>   # parked tasks, then the integration PR
 
 # Setup, manual equivalent of `praxis init`
 uv venv && uv sync --extra dev && cp .env.example .env
@@ -164,7 +166,15 @@ Workflows live in `.github/workflows/` (added 2026-07-02, all verified green on 
 ```
 PENDING -> IN_PROGRESS -> REVIEWING -> PASSED -> (human approve) -> MERGED
                                     -> FAILED -> (re-dispatch, max 3)
+         -> NO_CHANGES  (work already present; verified on the base branch)
+
+Then, once every task is done:
+plan COMPLETED -> integration PR -> (human approve) -> integration_merged_at
 ```
+
+`NO_CHANGES` is terminal and is neither a success nor a failure, like
+`SUPERSEDED`. It is in `SATISFIED_STATUSES` (`core/status_vocab.py`), which is
+what unblocks dependents and lets the plan complete.
 
 ## Data Model (SQLite)
 
@@ -173,6 +183,9 @@ Tables: `users`, `projects`, `plans`, `tasks`, `agent_runs`, `opus_state`,
 
 - A default `admin` user is auto-seeded on first startup (token_hash = AUTH_TOKEN)
 - `opus_state` is a singleton row tracking `available` / `rate_limited` / `resuming`
+- `plans.integration_pr_url` / `integration_merged_at` (migration 9) are where a
+  completed plan's last step lives; without them the integration PR is invisible to
+  every read-only surface
 - **`plans.spec` was dropped (Spec 2)** — markdown docs are the source of truth, so the
   redundant free-text `spec` content column is gone. The DB is a thin execution ledger:
   `plans` keeps `opus_plan` (the runtime task graph — `TaskQueue.get_dispatchable_tasks`
@@ -296,6 +309,20 @@ a line here only if it belongs in this shortlist.
 - **`praxis merge <task-id>` / `praxis merge-plan <plan-id>` open the merge gate**;
   `praxis approve` is for improvement PLANS and 404s on a task id. `merge-plan`
   exits 1 if any task failed.
+- **A plan reaches the gate TWICE**: each task onto the plan branch, then the plan's
+  own integration PR onto the base branch. The PR url lives on
+  `plans.integration_pr_url` and `integration_merged_at` is what takes it back out of
+  `pending`. Reporting only the first stage is how "completed" came to mean "not on
+  main, and nothing says where it went".
+- **An empty worker diff is a FACT, not a verdict**: the entrypoints report
+  `no_changes`, the orchestrator decides by verifying the branch the leaf was cut
+  from. Empty transcript, untrustworthy `rev-list`, and a failing verify all stay
+  `failed`. A test asserting "empty diff -> failed" passes before AND after a bad
+  fix; assert on the status carried to the callback.
+- **The CLI falls back to the nearest `./.env`** for `AUTH_TOKEN` and `PORT`, walking
+  up from cwd; explicit env vars still win. `praxis env` says which source won.
+- **`praxis init` logic is `run_init(Answers(...))`, not `init()`**: typer turns the
+  command's defaults into `OptionInfo`, so only the plain function is callable.
 - **GitHub's PR state outranks `gh`'s exit code**: `gh pr merge` can 504 AFTER the
   merge succeeded, so `merge_pr` re-reads `gh pr view --json state` before failing.
 - **A table printing an id must fold it AND be wide enough**: `overflow="fold"` on

@@ -166,51 +166,31 @@ prefix, or activate the venv once (`.venv\Scripts\activate` on Windows,
 
 ```bash
 uv run praxis doctor   # read-only diagnostic; exits 0 when healthy, reds point at the fix
+uv run praxis env      # what URL and token the CLI resolved, and from where
 ```
+
+Run the CLI from your install directory and it reads `AUTH_TOKEN` and `PORT` out of the
+`.env` there, so a new shell needs no exports. `ORCHESTRATOR_URL` and `ORCHESTRATOR_TOKEN`
+still win when set, which is how you point it at a remote deployment.
 
 **Or let your agent set it up.** Praxis is built to be driven from an agentic harness, and
-that includes installation. `praxis init` is an interactive wizard for humans, so hand
-your agent the manual-equivalent path instead; this prompt carries the guardrails:
+that includes installation. Add `--non-interactive` and the wizard never prompts:
 
-<details>
-<summary><strong>Pasteable setup prompt for your agent</strong></summary>
-
-```text
-Set up Praxis (https://github.com/adiatmaja/praxis) on this machine. Run every
-command in the foreground and verify each step before starting the next.
-
-1. Preflight: confirm git, docker (daemon running), and uv are installed. Tell
-   me what is missing; do not install system packages without asking.
-2. Clone https://github.com/adiatmaja/praxis.git and inside it run:
-   uv venv && uv sync --extra dev
-3. Create .env from .env.example. Generate a random AUTH_TOKEN and set it.
-   Keep PORT=12323 unless it collides. Then ask me:
-   (a) a GitHub credential (fine-grained PAT or GitHub App values), or leave
-       unset for local-only mode;
-   (b) whether LM Studio is running on localhost:1234 with a coding-capable
-       model loaded (the default worker path), or another OpenAI-compatible
-       endpoint to put in LM_STUDIO_URL.
-4. Build and start:
-   docker compose --profile agents build
-   docker compose up --build -d
-   Never use bare `docker build` for the agent images: the compose profile
-   stamps a label Praxis needs for staleness detection.
-5. Verify: export AUTH_TOKEN=<the token> and
-   ORCHESTRATOR_URL=http://localhost:12323, then run `uv run praxis doctor`
-   in the foreground. Exit 0 means healthy. On a fresh install some checks
-   stay red until credentials exist; report each red with the doctor's own
-   suggested fix instead of improvising one. If the planner check is red,
-   ask me to log into my planner CLI (claude, codex, or agy) myself;
-   those logins are interactive and yours would not persist.
-6. Stop there; do not create projects or dispatch tasks. Report back: the
-   dashboard URL, the env exports I need in my own shell, and any red
-   doctor checks.
-
-Note: config/praxis.yaml is mounted into the container, so a YAML edit needs
-`docker compose restart`, never a rebuild.
+```bash
+uv run praxis init --non-interactive --preset local-lmstudio
 ```
 
-</details>
+It reuses the `AUTH_TOKEN` already in `.env`, or generates one and prints it. Add
+`--auth-token`, `--port`, or `--github-token` to pin any of them; `uv run praxis config show`
+lists the preset names. A preset needing a credential `init` cannot collect (an API key, an
+interactive login) is refused rather than half-installed, until you pass
+`--accept-preset-requirements` to say that setup is done.
+
+Two things worth telling your agent, because neither is discoverable from a failure:
+build the agent images with `docker compose --profile agents build` and never a bare
+`docker build` (the profile stamps a label Praxis needs for staleness detection), and log
+into your planner CLI yourself if the doctor's planner check is red, since that login is
+interactive and an agent's would not persist.
 
 With the orchestrator running:
 

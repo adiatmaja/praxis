@@ -618,14 +618,55 @@ def _int_or(value: str, fallback: int) -> int:
         return fallback
 
 
-def _resolve_auth_token(current: dict[str, str]) -> str:
+@dataclass(frozen=True)
+class Answers:
+    """Answers supplied on the command line instead of at a prompt.
+
+    Every field pre-answers exactly one question the wizard would ask, so the
+    two modes share one decision path rather than growing a second one that
+    can drift.
+
+    ``non_interactive`` is the only field that changes behaviour on its own:
+    it forbids prompting outright, so a question with no flag and no safe
+    default becomes an error naming the flag rather than a process that hangs
+    forever on a closed stdin.
+
+    Non-interactive matters more than it looks. The wizard's QUESTION SET
+    changes with state: five questions on a fresh clone, seven once `.env`
+    exists ("Reuse the AUTH_TOKEN already in .env?" first, "Update .env?"
+    last). Piping a fixed answer set is therefore not merely awkward, it is
+    wrong: an answer sequence that works on the first run silently misaligns
+    on the second and answers the wrong questions.
+    """
+
+    non_interactive: bool = False
+    auth_token: str | None = None
+    github_token: str | None = None
+    port: int | None = None
+    preset: str | None = None
+    accept_preset_requirements: bool = False
+
+
+def _resolve_auth_token(current: dict[str, str], answers: Answers) -> str:
     """Return the auth token to use, reusing the existing one by default.
 
     Generating a fresh token on every run would rotate the value out from
     under every MCP client already configured against this installation, and
     "hold Enter through the prompts" is exactly how a re-run is performed.
+    Non-interactive follows the same rule for the same reason.
     """
+    if answers.auth_token:
+        return answers.auth_token
     existing = current.get("AUTH_TOKEN", "")
+    if answers.non_interactive:
+        if existing:
+            return existing
+        token = generate_token()
+        # Printed, and printed prominently: this is the one generated value
+        # the operator cannot recover from the console scrollback of a prompt
+        # they never saw, and every MCP client and CLI shell needs it.
+        console.print(f"[green]Generated AUTH_TOKEN:[/green] {token}", highlight=False)
+        return token
     if existing:
         # Split out of an `and` deliberately: mypy cannot solve rich's
         # `DefaultType` overload inside a short-circuit and reports the bool
@@ -636,7 +677,17 @@ def _resolve_auth_token(current: dict[str, str]) -> str:
     return Prompt.ask("Auth token", default=generate_token())
 
 
-def _resolve_github_token(current: dict[str, str]) -> str | None:
+def _resolve_port(current: dict[str, str], answers: Answers) -> str:
+    """Return the dashboard port: flag, then the existing `.env`, then default."""
+    if answers.port is not None:
+        return str(answers.port)
+    existing = _int_or(current.get("PORT", ""), _DEFAULT_PORT)
+    if answers.non_interactive:
+        return str(existing)
+    return str(IntPrompt.ask("Dashboard port", default=existing))
+
+
+def _resolve_github_token(current: dict[str, str], answers: Answers) -> str | None:
     """Prompt for a GitHub credential, returning None for "leave it alone".
 
     None rather than "" because :func:`merge_env` reads them differently: ""
@@ -645,11 +696,20 @@ def _resolve_github_token(current: dict[str, str]) -> str | None:
 
     Args:
         current: The ``.env`` as it stands, used to phrase the prompt.
+        answers: Command-line answers; ``--github-token`` pre-answers this.
 
     Returns:
         The credential to write, or None to leave any existing line alone.
     """
+    if answers.github_token:
+        return answers.github_token
     existing = current.get("GITHUB_TOKEN", "")
+    if answers.non_interactive:
+        # None is the same answer a blank / "skip" gives interactively: keep
+        # an existing line, write none on a fresh install (local mode). It is
+        # never "" here, which would CLEAR a working credential, and an
+        # unattended run must not do that by omission.
+        return None
     if existing:
         # 'skip' is NOT offered here: an empty answer preserves the existing
         # line, so it could not do what its name promises. Say the true way.
@@ -705,7 +765,7 @@ def _default_preset_index(presets: list[dict[str, Any]]) -> int:
     return 1
 
 
-def _confirm_unmet_requirements(preset: dict[str, Any]) -> None:
+def _confirm_unmet_requirements(preset: dict[str, Any], answers: Answers) -> None:
     """Make an unsatisfiable preset an explicit choice, never a default one.
 
     ``init`` can collect none of these: there is no ``Settings`` field for an
@@ -713,8 +773,16 @@ def _confirm_unmet_requirements(preset: dict[str, Any]) -> None:
     confirmation defaults to no, so the operator who is not reading cannot
     answer it by holding Enter.
 
+    Non-interactive does NOT bypass this. A flag that skipped every prompt
+    would skip this one too, and the guard exists precisely because the
+    resulting install starts, reports healthy, and fails its first real task.
+    So an unmet requirement is refused unless
+    ``--accept-preset-requirements`` says the one-time setup is done, which is
+    the same assertion the interactive "Choose it anyway?" makes.
+
     Args:
         preset: The chosen preset.
+        answers: Command-line answers.
 
     Raises:
         typer.Exit: With code 1 when the operator declines, before anything
@@ -722,6 +790,8 @@ def _confirm_unmet_requirements(preset: dict[str, Any]) -> None:
     """
     requires = list(preset["requires"])
     if not requires:
+        return
+    if answers.accept_preset_requirements:
         return
     console.print(
         f"\n[yellow]{preset['label']} needs {', '.join(requires)}, which "
@@ -750,38 +820,70 @@ def _confirm_unmet_requirements(preset: dict[str, Any]) -> None:
         console.print(setup_hint.rstrip(), markup=False)
     if setup_doc:
         console.print(f"[dim]Full instructions: {setup_doc}[/dim]")
-    proceed: bool = Confirm.ask("Choose it anyway?", default=False)
+    proceed = (
+        False
+        if answers.non_interactive
+        else Confirm.ask("Choose it anyway?", default=False)
+    )
     if not proceed:
         console.print(
             "[red]No worker preset chosen.[/red] Complete the setup above and "
             "re-run `praxis init`, or re-run it now and pick a preset that "
             "needs no credential."
         )
+        if answers.non_interactive:
+            console.print(
+                "Non-interactive: pass --accept-preset-requirements once the "
+                "setup above is done, or --preset <name> to pick another."
+            )
         raise typer.Exit(code=1)
 
 
-def _choose_preset(presets: list[dict[str, Any]]) -> dict[str, Any]:
+def _choose_preset(presets: list[dict[str, Any]], answers: Answers) -> dict[str, Any]:
     """Print the preset menu and return the operator's choice.
+
+    ``--preset`` takes a preset NAME, never the menu index. The index is
+    positional and shifts whenever the settings YAML gains or reorders an
+    entry, so a pinned index in someone's setup script would silently start
+    selecting a different worker.
 
     Args:
         presets: The menu, in display order.
+        answers: Command-line answers; ``--preset`` pre-answers this.
 
     Returns:
         The chosen preset.
 
     Raises:
-        typer.Exit: With code 1 when the choice needs a credential ``init``
-            cannot collect and the operator declines it.
+        typer.Exit: With code 1 when the named preset does not exist, or when
+            the choice needs a credential ``init`` cannot collect and the
+            operator declines it.
     """
+    if answers.preset:
+        wanted = answers.preset.strip()
+        chosen = next((p for p in presets if p["name"] == wanted), None)
+        if chosen is None:
+            available = ", ".join(p["name"] for p in presets)
+            console.print(
+                f"[red]No worker preset named {wanted!r}.[/red] Available: {available}"
+            )
+            raise typer.Exit(code=1)
+        _confirm_unmet_requirements(chosen, answers)
+        return chosen
+
     console.print("\nWorker presets:")
     for index, preset in enumerate(presets, start=1):
         requires = ", ".join(preset["requires"])
         extra = f"  (requires: {requires})" if requires else ""
         console.print(f"  {index}. {preset['label']}{extra}")
     default = _default_preset_index(presets)
-    choice = IntPrompt.ask("Preset", default=default) - 1
-    chosen = presets[max(0, min(choice, len(presets) - 1))]
-    _confirm_unmet_requirements(chosen)
+    if answers.non_interactive:
+        chosen = presets[default - 1]
+        console.print(f"Preset: {chosen['name']} (deployment default)")
+    else:
+        choice = IntPrompt.ask("Preset", default=default) - 1
+        chosen = presets[max(0, min(choice, len(presets) - 1))]
+    _confirm_unmet_requirements(chosen, answers)
     return chosen
 
 
@@ -906,13 +1008,86 @@ def _print_next_steps(
         )
 
 
-def init() -> None:
+def init(
+    non_interactive: bool = typer.Option(
+        False,
+        "--non-interactive",
+        "-y",
+        help=(
+            "Never prompt. Take every answer from a flag, the existing .env, "
+            "or a documented default. Required when stdin is not a terminal."
+        ),
+    ),
+    auth_token: str | None = typer.Option(
+        None,
+        "--auth-token",
+        help="Auth token to write. Default: reuse .env's, else generate and print one.",
+    ),
+    preset: str | None = typer.Option(
+        None,
+        "--preset",
+        help=(
+            "Worker preset by NAME (not menu position). "
+            "Default: the deployment's configured default."
+        ),
+    ),
+    port: int | None = typer.Option(
+        None, "--port", help=f"Dashboard port. Default: .env's, else {_DEFAULT_PORT}."
+    ),
+    github_token: str | None = typer.Option(
+        None,
+        "--github-token",
+        help="GitHub credential. Omit to keep any existing one, or for local mode.",
+    ),
+    accept_preset_requirements: bool = typer.Option(
+        False,
+        "--accept-preset-requirements",
+        help=(
+            "Assert a preset's one-time setup (API key, interactive login) is "
+            "already done. Without it, a preset with unmet requirements is refused."
+        ),
+    ),
+) -> None:
     """Set up and start Praxis, then verify it.
 
+    Every flag pre-answers exactly one prompt. Add --non-interactive to forbid
+    prompting entirely, which is what makes this drivable by an agent or a
+    setup script. Exits with the doctor's verdict, so a scripted install can
+    gate on whether the result actually works.
+    """
+    # This docstring is the --help text, so the reasoning lives here instead.
+    #
+    # Why a flag rather than piping answers at the wizard: the QUESTION SET
+    # changes with state. Five questions on a fresh clone, seven once `.env`
+    # exists ("Reuse the AUTH_TOKEN already in .env?" first, "Update .env?"
+    # last). A fixed answer sequence works on the first run and silently
+    # misaligns on the second, answering the wrong questions.
+    #
+    # Why a shim over `run_init`: typer rewrites these parameters' defaults
+    # into `OptionInfo` objects, so a function carrying them cannot also be
+    # called directly. Keeping the logic in a plain function that takes one
+    # `Answers` is what lets it be driven from a test or from another entry
+    # point without going through the command line.
+    run_init(
+        Answers(
+            non_interactive=non_interactive,
+            auth_token=auth_token,
+            github_token=github_token,
+            port=port,
+            preset=preset,
+            accept_preset_requirements=accept_preset_requirements,
+        )
+    )
+
+
+def run_init(answers: Answers) -> None:
+    """Set up and start Praxis, then verify it, from resolved answers.
+
+    Args:
+        answers: Every command-line answer, already parsed.
+
     Raises:
-        typer.Exit: Always. The exit code is the doctor's verdict, so a
-            scripted install can gate on whether the result actually works,
-            or 1 when this is not the Praxis repo root.
+        typer.Exit: Always. See :func:`init`.
     """
     console.print("[bold]praxis init[/bold]\n")
 
@@ -925,16 +1100,12 @@ def init() -> None:
     existing = env_path.read_text(encoding="utf-8") if env_path.is_file() else ""
     current = parse_env(existing)
 
-    token = _resolve_auth_token(current)
-    port = str(
-        IntPrompt.ask(
-            "Dashboard port", default=_int_or(current.get("PORT", ""), _DEFAULT_PORT)
-        )
-    )
-    gh_token = _resolve_github_token(current)
+    token = _resolve_auth_token(current, answers)
+    resolved_port = _resolve_port(current, answers)
+    gh_token = _resolve_github_token(current, answers)
 
     try:
-        preset = _choose_preset(_fetch_presets_or_defaults())
+        chosen_preset = _choose_preset(_fetch_presets_or_defaults(), answers)
     except typer.Exit:
         # `_choose_preset` raises out of `_confirm_unmet_requirements` when
         # the operator declines a preset that needs a credential `init`
@@ -950,7 +1121,7 @@ def init() -> None:
         # .env?" decline path below (reached only once a preset IS chosen)
         # keeps its own guarantee that declining leaves the file untouched.
         partial = _managed_values(
-            token=token, gh_token=gh_token, port=port, preset=None
+            token=token, gh_token=gh_token, port=resolved_port, preset=None
         )
         partial_text = (
             merge_env(existing, partial) if existing else build_env_file(partial)
@@ -959,19 +1130,29 @@ def init() -> None:
         console.print(f"[green]Wrote {env_path}[/green]")
         raise
 
-    values = _managed_values(token=token, gh_token=gh_token, port=port, preset=preset)
+    values = _managed_values(
+        token=token, gh_token=gh_token, port=resolved_port, preset=chosen_preset
+    )
     env_text = merge_env(existing, values) if existing else build_env_file(values)
     preset_written = True
-    if existing and not Confirm.ask(f"Update {env_path}?", default=True):
+    # Non-interactive never asks: writing `.env` is the whole point of the
+    # run, and there is nobody to answer. The merge only touches MANAGED_KEYS
+    # and reuses the existing token by default, so this is not a clobber.
+    update = (
+        True
+        if answers.non_interactive
+        else Confirm.ask(f"Update {env_path}?", default=True)
+    )
+    if existing and not update:
         # Compose reads .env, not these variables, so the rest of the run has
         # to follow the file rather than the answers it just discarded.
         token = current.get("AUTH_TOKEN", token)
-        port = current.get("PORT", port)
+        resolved_port = current.get("PORT", resolved_port)
         # The chosen preset was never written either: what actually landed
         # in the container is whatever the file already had, so the
         # next-steps caveat has to describe THAT, not the declined choice.
-        preset = {
-            **preset,
+        chosen_preset = {
+            **chosen_preset,
             "harness": current.get("DEFAULT_WORKER_HARNESS", ""),
             "model": current.get("DEFAULT_WORKER_MODEL", ""),
         }
@@ -988,7 +1169,7 @@ def init() -> None:
     console.print("Starting the orchestrator")
     _compose(["up", "-d", "--build"], "starting the orchestrator")
 
-    api_url = f"http://127.0.0.1:{port}"
+    api_url = f"http://127.0.0.1:{resolved_port}"
     console.print(f"Waiting for {api_url}/health")
     if not _wait_for_health(api_url):
         console.print(
@@ -998,7 +1179,7 @@ def init() -> None:
         )
         raise typer.Exit(code=1)
 
-    _print_next_steps(api_url, token, preset, preset_written=preset_written)
+    _print_next_steps(api_url, token, chosen_preset, preset_written=preset_written)
 
     console.print("\nVerifying the installation:\n")
     raise typer.Exit(code=_run_doctor(api_url, token))
