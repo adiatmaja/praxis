@@ -26,9 +26,10 @@ line of defense.
 
 ---
 
-You are an agent connected to Praxis over MCP. Praxis is an AI agent orchestrator:
-you plan and reason, Praxis runs a local-LLM worker that implements the change in a
-one-shot Docker container (clone, implement, commit, open a PR), and Praxis's own
+You are an agent connected to Praxis over MCP. Praxis is the connection between this
+session and other coding harnesses: you plan and reason, Praxis runs a worker (a coding
+harness driving its configured model) that implements the change in a one-shot Docker
+container (clone, implement, commit, open a PR), and Praxis's own
 brain then reviews the PR; on pass it parks the PR for human approval (or auto-merges
 if the project opts in), and re-dispatches on fail. This guide
 explains when to hand work to Praxis and how to drive its tools.

@@ -4,6 +4,49 @@ This doc captures *why* Praxis exists, what makes it genuinely different from
 off-the-shelf tools, and an honest account of its limitations. It is the
 reference for keeping the README and marketing aligned with reality.
 
+## The framing (canonical, 2026-08-21)
+
+**Identity: Praxis is not itself a harness. It is a tool set up inside the
+harness the user already works in, enabling that harness to manage, control,
+and steer other coding harnesses from a single session, with every change
+governed by the loop instead of one-shotted.** The user stays where they
+already are (their MCP assistant primarily; the CLI and dashboard are clients
+of the same engine); Praxis runs the other harnesses and holds every change to
+the gated loop: deterministic verify, model review, PR-per-change, human merge
+gate. When Praxis does the planning, tasks are additionally capability-sized
+to the worker.
+
+Three consequences of that identity, in priority order:
+
+1. **Capability-aware task decomposition is the flagship *mechanism*, not the
+   headline.** It is the load-bearing answer to "what governs the output?",
+   and (per the 2026-08-21 landscape refresh) still shipped by no other tool.
+   Lead with the promise; prove it with this mechanism.
+2. **Two headline features, one connection: implement-a-plan and
+   auto-delegate mode.** The batch shape and the continuous shape of the same
+   engine; a single dispatched task is implement-a-plan's smallest case, not a
+   third feature. Both are unified by the theme (single session, other
+   harnesses do the work, everything gated), and the shared engine is a
+   closing note, never the pitch. Auto-delegate keeps its beta label until the
+   single-branch review-scope defect is fixed (plan:
+   `superpowers/plans/2026-08-14-review-scope-single-branch.md`). The
+   connection framing never stands alone: delegation is commodity, so the
+   governed loop is always the second beat of the pitch.
+3. **Role separation stays the supporting architecture, and cost stays a
+   consequence.** Unchanged from the 2026-07-11 framing.
+
+Wording caution: "meta-harness" and "control plane" are already claimed by
+larger projects (omnigent, ruflo, Claudexor); use descriptive phrasing ("set
+up inside the harness you already use", "lets your harness drive the others")
+rather than competing for those nouns. Never call Praxis itself a harness: it
+does not edit code or run a model loop of its own, and the claim would be both
+inaccurate and a fight with actual harnesses on their own turf. Finally, the
+public verb is **"govern"** ("governed by the loop", "how the output is
+governed"), chosen deliberately over "predictable": predictability is a
+measurable claim, and with no published benchmark the bare adjective invites
+the "show me numbers" objection. "Predictable" may return as headline wording
+once the decomposition-benefit bench numbers exist to back it.
+
 ## The problem, concretely
 
 The narrative front door, told from the buyer's seat. A developer on a
@@ -33,7 +76,7 @@ anchor the brand to the dollar figure — the story stars the budget-constrained
 developer, but the product is not "the budget orchestrator" (cost stays a
 consequence, per the guidance at the bottom).
 
-## The core reason Praxis exists
+## The supporting architecture: role separation
 
 **Software engineering is not one act.** Praxis treats it as four independent
 roles, planning, implementation, review, and verification, and lets each role
@@ -221,17 +264,17 @@ about the engine's economic foundation.
 
 ## Positioning guidance
 
-Lead with **capability-aware role separation** as the category (planning /
-implementation / review / verification, each independently configurable, with
-decomposition sized to the worker), not the generic "autonomous PR engine" or
-bare "orchestrator" framing (the orchestrator-IDE space is owned; see "Engine,
-not cockpit" above) — platform-native subagents (e.g. Claude
-Code's own fan-out) are absorbing generic orchestration, but they are single-provider
-by design. Present the **MCP / subscription→local bridge** and the two-cost-tier
-split as the flagship *deployment* of that architecture (the most economically
-striking configuration), not as the identity. Praxis's defensible niche is exactly
-*any provider per role + open-weight worker + the resulting cost efficiency*. Keep cost
-framed as a consequence of separating the roles, never as the motivation.
+Lead with the canonical framing above: **single-session control of other
+harnesses, with every change governed by the gated loop**. Do not lead with
+the generic "autonomous PR engine" or bare "orchestrator" framing (the
+orchestrator-IDE space is owned; see "Engine, not cockpit" above), and do not
+lead with capability-aware decomposition as the *name* of the product; it is
+the flagship mechanism inside the promise. Platform-native subagents (e.g.
+Claude Code's own fan-out) are absorbing generic orchestration, but they are
+single-provider by design, which is exactly the seam Praxis occupies. Present
+the **MCP / subscription→local bridge** and the two-cost-tier split as one
+striking configuration, not as the identity. Keep cost framed as a consequence
+of separating the roles, never as the motivation.
 Route examples by **aptitude**, and keep them plural and multi-directional: a
 single worked vendor pairing reads as the blessed configuration and quietly
 discourages every other one, which is the opposite of the claim. The

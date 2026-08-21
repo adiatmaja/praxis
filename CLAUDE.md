@@ -2,14 +2,25 @@
 
 ## What Is This
 
-Praxis is a capability-aware, provider-agnostic, Docker-based AI software engineering
-orchestrator. It splits the software engineering loop into four roles — **plan**, **implement**,
+Praxis is a provider-agnostic, Docker-based tool set up inside the coding harness you
+already use, letting it drive other harnesses with every change governed by a gated
+loop. It splits the software engineering loop into four roles — **plan**, **implement**,
 **review**, and **verify** — each independently configurable to any provider, model, or harness,
 and decomposes every plan to fit the capability of the model that implements it. Nothing is
 hard-wired to a single vendor.
 
-**Framing (canonical, 2026-07-11):** capability-aware task decomposition is THE main feature and
-leads in all public docs; role separation is the supporting architecture; cost is a consequence.
+**Framing (canonical, 2026-08-21, supersedes 2026-07-11):** the identity is *a tool set up
+inside the harness you already use, enabling it to manage, control, and steer other coding
+harnesses from a single session, with every change governed by the loop instead of
+one-shotted*. Praxis is NOT itself a harness. Public wording is "govern/governed", never
+"predictable" (a measurable claim with no published benchmark yet). Capability-aware task decomposition is
+the flagship MECHANISM behind that promise (still unique in the landscape), not the
+headline; the public features are implement-a-plan (a single dispatched task is its
+smallest case, not a third feature) and auto-delegate mode (beta until the review-scope
+fix), the batch and continuous shapes of one connection; role separation is the supporting
+architecture; cost is a consequence.
+Reference: `docs/positioning.md` ("The framing"), which also lists the wording to avoid
+("meta-harness" and "control plane" are claimed by larger projects).
 Flagship under development: the **Capability Calibration Loop**. Roadmap + feature/contract
 designs: `docs/superpowers/specs/2026-07-11-capability-engine-roadmap.md` (F1-F15, S1-S11,
 10-plan breakdown).

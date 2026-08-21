@@ -14,7 +14,7 @@ from cli.doctor import doctor as _doctor
 from cli.init import init as _init
 
 
-app = typer.Typer(name="orchestrator-cli", help="AI Agent Orchestrator CLI")
+app = typer.Typer(name="orchestrator-cli", help="Praxis CLI")
 console = Console()
 app.command("doctor")(_doctor)
 app.command("init")(_init)

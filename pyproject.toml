@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta:__legacy__"
 [project]
 name = "praxis"
 version = "0.1.0"
-description = "Delegate token-heavy coding tasks from paid AI subscriptions to open-weight models."
+description = "Set up inside the harness you already use, Praxis lets it drive other coding harnesses: plans decomposed to fit the worker, every change verified, reviewed, and delivered as a pull request, all from one session."
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [

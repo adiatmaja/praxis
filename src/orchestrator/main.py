@@ -186,7 +186,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         logger.info("Application shutdown complete")
 
 
-app = FastAPI(title="AI Agent Orchestrator", version="0.1.0", lifespan=lifespan)
+app = FastAPI(title="Praxis Orchestrator", version="0.1.0", lifespan=lifespan)
 
 from orchestrator.api.approvals import router as approvals_router  # noqa: E402
 from orchestrator.api.context import router as context_router  # noqa: E402

@@ -139,6 +139,54 @@ confirmation rather than a silent misconfiguration. The chosen preset writes
 Re-running `praxis init` to switch presets is safe. It merges only the keys it
 manages and preserves every other key, position, and comment in your `.env`.
 
+## Recommended defaults by capability tier
+
+Configure each seat by the *capability class* it needs, not a specific model;
+models churn, tiers don't. Praxis always starts from an existing spec or
+`plan.md`, so there is no "write the spec" seat; planning means turning that
+artifact into a task graph. Only the autonomous improvement loop reasons
+open-ended (it decides what to build next with no human artifact), so it is the
+one seat that wants a Frontier model; planning and review are structured jobs a
+High-tier model handles, and re-review drops to Low. Example models are as of
+July 2026.
+
+| Tier | Fills which seat | Claude | OpenAI · Codex | Gemini | Open-weight (hosted or local) |
+|------|------------------|--------|----------------|--------|-------------------------------|
+| **Frontier** | Autonomous improve loop | Opus 4.8 · Fable 5 | GPT-5.6 Sol | Gemini 3.1 Pro | GLM-5.2 · DeepSeek V4-Pro |
+| **High** | Plan · Implement · Review (first pass) | Sonnet 4.6 | GPT-5.6 Terra | Gemini 3.5 Flash | GLM-5.2 |
+| **Medium** | Implement (tightly-scoped leaves) | Haiku 4.5 | GPT-5.6 Luna | Gemini 3.5 Flash | Qwen3.6-27B |
+| **Low** | Review (re-review) | Haiku 4.5 | GPT-5.6 Luna | Gemini 3.5 Flash | small local model |
+| **none** | Verify | deterministic shell command: no model, any column ||||
+
+**Open-weight is not the same as local:** GLM-5.2 and DeepSeek V4-Pro are
+Frontier-class open-weight models you can serve hosted (e.g. [z.ai](https://z.ai/))
+or locally (LM Studio · Ollama); a small local model is the cost floor for the
+implement and review seats.
+
+### Field notes on specific providers
+
+These are observations that churn with model releases, not architecture; the
+seats accept any provider. **Gemini: worker seats, not the planner.** Claude,
+GPT/Codex, and Frontier-class open-weight models are the strong choices for
+planning and the autonomous improve loop. Gemini is the exception to reach for
+elsewhere: in practice it plans poorly, but its mid-tier models (Gemini 3.5
+Flash) are moderately capable at scoped implementation, review, and everything
+that is not the plan itself, trading higher token usage for that reach. So
+point Gemini at Implement / Review / Verify and keep Plan and Improve on
+Claude, GPT, or a frontier model. Gemini runs as a brain through the `agy`
+(Antigravity) CLI, which emits capturable non-interactive output as of agy
+v1.1.0; as an implementer it drives the Antigravity coding agent as a harness.
+See [gotchas.md](gotchas.md).
+
+Field observation from daily use: Claude is excellent at workflow and systems
+reasoning but has weak visual judgment, including when asked to *repair* an
+existing interface, where Gemini is noticeably stronger. Because the harness
+and model are set per project (and per call-site under **Settings → Models**),
+you can point the implement seat at Gemini via the `agy` harness for the UI
+work and keep planning and review on Claude, without changing anything else
+about the loop. The same lever applies to any split you find: a language, a
+framework, a codebase a particular model knows well.
+
 ## Arrangements
 
 A preset arranges the implement seat. An **arrangement** is a whole-loop
