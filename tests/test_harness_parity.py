@@ -75,7 +75,10 @@ def test_opencode_spawn_env_states_reasoning_effort_explicitly() -> None:
 
 @pytest.mark.unit
 def test_opencode_spawn_env_never_omits_the_effort_key() -> None:
-    # Silence is the bug this guards: an absent key means MAXIMUM effort.
+    # Silence is the bug this guards: an absent key hands the level to the
+    # server, whose default is not stable and has inverted twice. This asserts
+    # the CODE fallback (DEFAULT_WORKER_EFFORT), not the tuned value in
+    # config/praxis.yaml, which is deliberately a separate knob.
     env = _spawn_env("opencode")
     assert "WORKER_REASONING_EFFORT" in env
     assert env["WORKER_REASONING_EFFORT"] == "none"

@@ -1,9 +1,14 @@
 """Structural gate: no LM Studio payload may stay silent about thinking.
 
-qwen3.8-27b thinks by DEFAULT, so an absent ``reasoning_effort`` key requests
-MAXIMUM effort rather than none. Praxis hand-builds OpenAI-compatible payloads,
-so a new call site that simply says nothing inherits the broken default with no
-error and no failing test.
+What an absent ``reasoning_effort`` means is decided by the server, and it is
+not a stable API: on the configured endpoint it meant MAXIMUM effort on
+2026-08-15 and ZERO on 2026-08-21, with nothing in Praxis changing between.
+Praxis hand-builds OpenAI-compatible payloads, so a new call site that simply
+says nothing inherits whichever default is current, with no error and no
+failing test, and silently changes meaning the next time it flips.
+
+This gate is deliberately STRUCTURAL rather than a measurement, which is what
+lets it survive that flipping: it asserts only that a level is stated.
 
 This asserts the invariant over EVERY payload rather than the two that were
 fixed by hand. It deliberately does not assert WHICH level a payload uses: the
@@ -69,8 +74,9 @@ def test_every_lm_studio_payload_states_reasoning_effort() -> None:
         if not _STATES_THINKING.search(window)
     ]
     assert offenders == [], (
-        "these LM Studio payloads say nothing about reasoning_effort, which on "
-        "qwen3.8 means MAXIMUM effort, not off: " + ", ".join(offenders)
+        "these LM Studio payloads say nothing about reasoning_effort, so their "
+        "thinking level is whatever the current LM Studio build defaults to, "
+        "which has inverted before: " + ", ".join(offenders)
     )
 
 

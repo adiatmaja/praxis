@@ -14,7 +14,8 @@ from typing import Any
 #:
 #: ``request_option`` - praxis controls it directly in the request/provider
 #:   config, so it MUST be stated explicitly (see :mod:`orchestrator.core.thinking`:
-#:   an absent key means MAXIMUM effort on qwen3.8, not off).
+#:   an absent key hands the level to the server, whose default is not stable
+#:   and has inverted twice on the configured endpoint).
 #: ``model_name``     - the effort is encoded in the model string itself
 #:   (e.g. "Gemini 3.5 Flash (High)"); there is no separate knob to set.
 #: ``none``           - the harness exposes no effort control at all.

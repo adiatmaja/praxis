@@ -85,10 +85,26 @@ default_worker_harness: agy
 default_worker_model: "Gemini 3.7 Flash (High)"
 
 # Thinking effort for implementation workers driven through a request option
-# (OpenCode). An ABSENT reasoning_effort means MAXIMUM effort on qwen3.8, so
-# praxis always states this explicitly. Harnesses that bake effort into the
-# model string (agy) ignore it.
-worker_reasoning_effort: none
+# (OpenCode). Always STATED, never left absent: what the server does with a
+# silent payload is not a stable API and has inverted twice on this endpoint
+# (see core/thinking.py for both measurements). Harnesses that bake effort into
+# the model string (agy) ignore this.
+#
+# `medium` on measured evidence, 2026-08-21, qwen3.8-27b. Two things drove it:
+#
+#   - `none` is not a cheap default, it is a wrong one. It answers confidently
+#     and is silently incorrect on anything needing arithmetic or a schema: in
+#     the operator's bake-off it reported a warehouse DOWN 5.9% when per-day it
+#     was UP 12.9%, and emitted SQL selecting a column the aliased table does
+#     not have. Fast, well formatted, wrong.
+#   - The labels are not an ordered scale on this model. `medium` measured the
+#     MOST thinking and the best answers, above `high`; `low` and `high` were
+#     indistinguishable. Do not "upgrade" this to `high` on the assumption that
+#     higher is more.
+#
+# This is the WORKER knob only. It does not reach plan_derive's json_schema
+# extraction, which pins `none` because any thinking empties that response.
+worker_reasoning_effort: medium
 
 # Named worker configurations. Choosing one sets harness, model, and endpoint
 # together; there is no new resolution logic, only fewer fields to get right.

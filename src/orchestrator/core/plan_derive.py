@@ -495,10 +495,17 @@ async def _derive_via_lm_studio(text: str, lm_studio_url: str) -> list[dict]:
     url = lm_studio_url.rstrip("/") + "/v1/chat/completions"
     # Structural extraction into a fixed schema: there is nothing here worth
     # reasoning about, and thinking actively breaks it. MEASURED on qwen3.8-27b
-    # (2026-08-15) with this exact payload: omitting `reasoning_effort` spent
-    # ~398 tokens reasoning and returned EMPTY content, which fails json.loads
-    # below with a JSONDecodeError. At `none` the same call returns a clean
-    # 8-task object. See core/thinking.py.
+    # with this exact payload, twice, and the durable fact is about THINKING,
+    # not about omission:
+    #   2026-08-15: omitting `reasoning_effort` meant maximum effort, spent
+    #     ~398 reasoning tokens and returned EMPTY content.
+    #   2026-08-21: omission now means zero and parses fine, while `low`,
+    #     `medium` and `high` ALL return EMPTY content.
+    # Either way, empty content fails json.loads below with a JSONDecodeError
+    # out of `derive_opus_plan`. `none` has parsed cleanly on both dates, so it
+    # is pinned here rather than inherited. Raising the effort on this call site
+    # to "improve" extraction is the one change guaranteed to break it.
+    # See core/thinking.py.
     body = {
         "messages": [
             {"role": "user", "content": _DERIVE_PROMPT.format(text=text[:8000])}

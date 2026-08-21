@@ -271,8 +271,9 @@ class LLMRouter:
         import httpx
 
         url = self._lm_studio_url.rstrip("/") + "/v1/chat/completions"
-        # `reasoning_effort` is stated EXPLICITLY, never omitted: on qwen3.8 an
-        # absent key means MAXIMUM effort, not off (see core/thinking.py). This
+        # `reasoning_effort` is stated EXPLICITLY, never omitted: an absent key
+        # hands the level to the server, whose default is not stable and has
+        # inverted twice on this endpoint (see core/thinking.py). This
         # also stops the local seat from silently discarding the registry
         # `effort` that every CLI provider honors via build_argv.
         body: dict[str, object] = {

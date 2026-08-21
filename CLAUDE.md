@@ -351,7 +351,11 @@ a line here only if it belongs in this shortlist.
 - **`get_dispatchable_tasks` maps `opus_plan["tasks"]` to rows BY LIST INDEX**: anything
   touching the graph (e.g. `core/leaf_split.py`) must only APPEND; supersede, never delete.
 - **Hand-built LM Studio payloads must state `reasoning_effort` explicitly**
-  (`core/thinking.py` is the SSoT): an absent key means MAXIMUM effort, not off.
+  (`core/thinking.py` is the SSoT). Not because of any one default: the default is not a
+  stable API and INVERTED on the same endpoint, meaning maximum on 2026-08-15 and zero on
+  2026-08-21. The levels are also not monotonic (`medium` thinks more than `high`), and
+  `json_schema` extraction returns EMPTY whenever the model thinks at all, which is why
+  `plan_derive` pins `none`.
 - **Worker effort is PER-HARNESS and must be stated too**: `core/harnesses.py` declares each
   harness's `effort_channel`, `core/worker_effort.py` resolves it. `None` means "this harness
   has no knob", NOT "off". The OpenCode config key is camelCase `reasoningEffort`; snake_case

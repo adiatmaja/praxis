@@ -54,8 +54,9 @@ it. `core/harnesses.py` is that declaration, alongside the image:
 
 Adding a harness means answering both columns. `core/worker_effort.py` reads the first and
 resolves a single explicit value per spawn: harnesses driven through a request option always
-receive `WORKER_REASONING_EFFORT` (never omitted, because an absent `reasoning_effort` means
-MAXIMUM effort downstream, not off), while a harness that encodes effort in its model string
+receive `WORKER_REASONING_EFFORT` (never omitted, because an absent `reasoning_effort` hands
+the level to the server, whose default is not stable and has inverted twice on the configured
+endpoint), while a harness that encodes effort in its model string
 receives nothing rather than a variable it would silently ignore.
 
 The `/internal/agent-done` callback records the second column as `agent_runs.tokens_source`,

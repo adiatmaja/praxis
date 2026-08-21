@@ -161,13 +161,24 @@ belongs among the everyday traps.
   502 local LLM/clone failure.
 - **Every hand-built LM Studio payload must state `reasoning_effort` explicitly** —
   `core/thinking.py` is the SSoT (`effort_param`), and `tests/test_thinking_explicit.py`
-  gates the invariant over all payloads. qwen3.8-27b **thinks by default**, so an ABSENT
-  key requests MAXIMUM effort rather than none: measured on the configured endpoint
-  2026-08-15, omission produced 354 reasoning tokens, byte-identical to `high`, while
-  `none` produced 0 (`low` is 317, so `low` is NOT an off switch). This is not latent —
+  gates the invariant over all payloads. The reason is NOT any particular default, it is
+  that **the default is not a stable API and has inverted twice** on the configured
+  endpoint. Measured, same payload shape both times: on **2026-08-15** an absent key meant
+  MAXIMUM effort (354 reasoning tokens, byte-identical to `high`, while `none` produced 0);
+  on **2026-08-21** an absent key means ZERO, byte-identical to `none`. Nothing in Praxis
+  changed between those dates. A silent payload is one whose behaviour is chosen by
+  whichever LM Studio build is running, and it will flip again with no error and no failing
+  test. Two more traps in the same table: `low` has never been an off switch (317, then
+  188), and the levels are **not monotonic** — on 2026-08-21 `medium` thinks MORE than
+  `high`, and `low` and `high` are indistinguishable, so do not treat the labels as a scale.
+  This is not latent, and the blast radius moved with the default:
   `plan_derive._derive_via_lm_studio`'s `json_schema` payload returned EMPTY, unparseable
-  content with the key omitted, which raises `JSONDecodeError` out of `derive_opus_plan`
-  and breaks the promote-plan.md path; at `none` the same call returns a clean task list.
+  content **with the key omitted** in 2026-08-15, and in 2026-08-21 returns EMPTY at `low`,
+  `medium` AND `high` while omitted and `none` both parse. Either way it raises
+  `JSONDecodeError` out of `derive_opus_plan` and breaks the promote-plan.md path. The
+  durable fact under both measurements is that **structured `json_schema` extraction breaks
+  whenever the model thinks at all**, which is why that call site pins `effort_param(None)`
+  and why raising its effort to "improve" it is the one change guaranteed to break it.
   `LLMRouter._run_local` also used to DISCARD the registry `effort` that every CLI
   provider honors via `build_argv`; it now threads it through. The gate strips comment
   lines before matching, because each of these call sites carries a comment mentioning
@@ -815,8 +826,9 @@ belongs among the everyday traps.
 ## Harness parity: making delegation predictable across harnesses
 
 - **Worker thinking effort must be STATED, per harness, from the harness's declared channel**:
-  `core/thinking.py` encodes the rule for BRAIN payloads, that an absent `reasoning_effort`
-  means MAXIMUM effort on qwen3.8 and not off. Workers had the same hole and it was worse,
+  `core/thinking.py` encodes the rule for BRAIN payloads, that a thinking level is never
+  expressed as an absent key, because what the server does with a silent payload is not
+  stable and has inverted twice. Workers had the same hole and it was worse,
   because it differed by harness with nothing declaring so. OpenCode's generated provider
   config carried no effort at all, so every OpenCode worker silently ran at maximum, while agy
   takes its effort baked into the Gemini model string (`"Gemini 3.5 Flash (High)"`). The same
@@ -836,8 +848,8 @@ belongs among the everyday traps.
   snake_case `reasoning_effort` field of the actual HTTP request to LM Studio. The snake_case
   form belongs to the wire payload, never to `docker/opencode-agent/entrypoint.sh`. Writing
   snake_case in the config produces syntactically valid JSON that OpenCode's option parser
-  never finds, so the setting is dropped and the model quietly runs at its default effort,
-  which for qwen3.8 is MAXIMUM. This one was caught only because the fix was checked against
+  never finds, so the setting is dropped and the model quietly runs at whatever the server
+  defaults to, which is not stable and has inverted twice. This one was caught only because the fix was checked against
   the vendor docs rather than written from memory.
 
 - **`@ai-sdk/openai-compatible` SILENTLY DROPS model-level `options` when the provider name

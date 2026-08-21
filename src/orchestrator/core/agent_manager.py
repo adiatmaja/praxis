@@ -196,7 +196,8 @@ def build_spawn_env(
             against the harness's declared effort channel: harnesses driven
             through a request option (opencode) always get an explicit
             ``WORKER_REASONING_EFFORT`` (never omitted, since an absent value
-            means MAXIMUM effort downstream, not off); harnesses that bake
+            hands the level to the server, whose default is not stable and has
+            inverted; see ``core.thinking``); harnesses that bake
             effort into the model string (agy) get no env var at all, since a
             var they silently ignore would be a lie.
     """
