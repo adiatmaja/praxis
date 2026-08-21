@@ -166,11 +166,38 @@ async def test_probe_provider_reports_whether_the_login_state_was_measured(
         proc.wait = mocker.AsyncMock(return_value=0)
         return proc
 
+    # `shutil.which` as well as the subprocess. `_run` resolves argv[0] on PATH
+    # first and returns False when it is absent, so stubbing only the spawn
+    # left this asserting about the DEVELOPER'S MACHINE: green wherever
+    # `claude` and `codex` happen to be installed, red on any runner where they
+    # are not. It passed on Windows and failed on CI's Linux for exactly that.
+    mocker.patch("shutil.which", lambda name: f"/usr/bin/{name}")
     mocker.patch("asyncio.create_subprocess_exec", new=_fake_exec)
     result = await sys_mod._probe_provider(provider)
 
     assert result["authenticated"] is True
     assert result["auth_measured"] is measured
+
+
+@pytest.mark.unit
+async def test_a_provider_that_is_not_on_path_is_not_authenticated(
+    mocker: pytest.MonkeyPatch,
+) -> None:
+    """The other branch of the same resolution, pinned so it cannot drift.
+
+    Without this, stubbing `shutil.which` to always succeed above would hide a
+    regression that reported every uninstalled CLI as present.
+    """
+    import orchestrator.api.system as sys_mod
+
+    sys_mod._provider_probe_cache.clear()
+    mocker.patch("shutil.which", return_value=None)
+
+    result = await sys_mod._probe_provider("claude")
+
+    assert result["cli_available"] is False
+    assert result["authenticated"] is False
+    assert result["auth_measured"] is False
 
 
 @pytest.mark.integration

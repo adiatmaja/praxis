@@ -285,10 +285,19 @@ def _copyable(line: str) -> None:
     display, which keeps it one logical line for selection and one line when
     the output is redirected to a file.
 
+    ``highlight=False`` for the same reason: rich's default highlighter
+    colorizes things that look like data, and a uuid looks exactly like data,
+    so on a colour-capable terminal it wraps ANSI escapes AROUND and sometimes
+    INSIDE the id. It is invisible on screen and survives an ordinary
+    selection, but it is still markup injected into the one string whose whole
+    job is to be copied verbatim. A command is an instruction, not a value to
+    be syntax-highlighted. `_print_run_log` already prints with the same flag,
+    on the same reasoning.
+
     Args:
         line: The full command, already formatted.
     """
-    console.print(line, soft_wrap=True)
+    console.print(line, soft_wrap=True, highlight=False)
 
 
 @app.command()

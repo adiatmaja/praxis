@@ -25,6 +25,7 @@ Two rendering traps make a guard here inert, and both have shipped:
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 
 import httpx
@@ -45,10 +46,23 @@ TASK_ID = "8b1bafa2-e401-4b17-81c2-56b56c91c906"
 #: the collapsed string and no expected phrase ever matches.
 _BOX_GLYPHS = "─│┌┐└┘├┤┬┴┼━┃╭╮╰╯═║╔╗╚╝╠╣╦╩╬"
 
+#: ANSI SGR sequences. rich colorizes help when it believes the stream can take
+#: it, and that belief is PLATFORM DEPENDENT: on the Windows runner these
+#: assertions saw plain text, while on the Linux runner the escapes landed
+#: INSIDE the phrases being matched. The sibling guards in
+#: `tests/test_init_claims.py` were green locally and red on CI for exactly
+#: this, so it is stripped here before it can bite the same way.
+_ANSI = re.compile(r"\x1b\[[0-9;]*m")
+
 
 def _plain(text: str) -> str:
-    """Return help text with rich's box drawing removed, then collapsed."""
-    return " ".join(text.translate({ord(c): " " for c in _BOX_GLYPHS}).split())
+    """Return help text with ANSI and box drawing removed, then collapsed.
+
+    ANSI first: an escape can sit mid-word, so removing the glyphs or
+    collapsing whitespace ahead of it leaves it embedded in the result.
+    """
+    stripped = _ANSI.sub("", text)
+    return " ".join(stripped.translate({ord(c): " " for c in _BOX_GLYPHS}).split())
 
 
 def _patch(monkeypatch, handler, columns: str = "80") -> list[httpx.Request]:
@@ -88,7 +102,19 @@ def _json(payload: Any):
 
 def _one_line(result, needle: str) -> bool:
     """True when `needle` appears CONTIGUOUS on a single output line."""
-    return any(needle in line for line in result.stdout.splitlines())
+    return any(needle in _ANSI.sub("", line) for line in result.stdout.splitlines())
+
+
+def _flat(result) -> str:
+    """The whole output as one ANSI-free line, for prose assertions.
+
+    Every assertion in this file goes through this or `_one_line`, so none of
+    them can depend on whether the runner colorizes. That dependency is not
+    hypothetical: rich colorizes when it believes the stream can take it, the
+    belief differs by platform, and five guards in `tests/test_init_claims.py`
+    were green on Windows and red on CI's Linux for exactly that reason.
+    """
+    return " ".join(_ANSI.sub("", result.stdout).split())
 
 
 # --------------------------------------------------------------------------
@@ -249,7 +275,7 @@ def test_pending_lists_a_task_blocked_on_a_question(monkeypatch) -> None:
     result = runner.invoke(app, ["pending"])
 
     assert result.exit_code == 0
-    flat = " ".join(result.stdout.split())
+    flat = _flat(result)
     assert "Nothing awaiting approval" not in flat
     assert "blocked on a question" in flat
     assert "transliterate" in flat
@@ -283,7 +309,9 @@ def test_clarify_names_the_task_the_operator_passed(monkeypatch) -> None:
     # whole-output check passes with the confirmation line left blank, which
     # is the exact shape of guard this session keeps having to throw away.
     answered = [
-        line for line in result.stdout.splitlines() if line.startswith("Answered:")
+        stripped
+        for line in result.stdout.splitlines()
+        if (stripped := _ANSI.sub("", line)).startswith("Answered:")
     ]
     assert answered, result.stdout
     assert TASK_ID in answered[0]
@@ -317,7 +345,7 @@ def test_merge_plan_reports_tasks_merged_with_no_integration_pr(monkeypatch) -> 
     result = runner.invoke(app, ["merge-plan", PLAN_ID])
 
     assert result.exit_code == 0
-    flat = " ".join(result.stdout.split())
+    flat = _flat(result)
     assert "Merged: 3 task(s)" in flat
     assert "NOT on the base branch" in flat
     assert "no integration PR for this plan" in flat
@@ -337,7 +365,7 @@ def test_merge_plan_names_an_integration_status_it_does_not_know(monkeypatch) ->
     result = runner.invoke(app, ["merge-plan", PLAN_ID])
 
     assert result.exit_code == 0
-    assert "invented_later" in " ".join(result.stdout.split())
+    assert "invented_later" in _flat(result)
 
 
 # --------------------------------------------------------------------------
@@ -385,7 +413,7 @@ def test_plans_says_a_completed_plan_has_no_integration_pr(monkeypatch) -> None:
     result = runner.invoke(app, ["plans", PROJECT_ID])
 
     assert result.exit_code == 0
-    assert "NOT on the base branch" in " ".join(result.stdout.split())
+    assert "NOT on the base branch" in _flat(result)
 
 
 @pytest.mark.unit
@@ -450,7 +478,7 @@ def test_tasks_explains_an_empty_plan(monkeypatch) -> None:
     result = runner.invoke(app, ["tasks", PLAN_ID])
 
     assert result.exit_code == 0
-    assert "has no tasks yet" in " ".join(result.stdout.split())
+    assert "has no tasks yet" in _flat(result)
 
 
 @pytest.mark.unit
@@ -460,7 +488,7 @@ def test_plans_explains_a_project_with_no_plans(monkeypatch) -> None:
     result = runner.invoke(app, ["plans", PROJECT_ID])
 
     assert result.exit_code == 0
-    flat = " ".join(result.stdout.split())
+    flat = _flat(result)
     assert "No plans for project" in flat
     assert "praxis submit" in flat
 
@@ -483,7 +511,7 @@ def test_stop_says_the_task_was_failed_even_with_nothing_running(monkeypatch) ->
     result = runner.invoke(app, ["stop", TASK_ID])
 
     assert result.exit_code == 0
-    flat = " ".join(result.stdout.split())
+    flat = _flat(result)
     assert "now failed" in flat
     assert "worker session was cleared" in flat
 
@@ -517,7 +545,7 @@ def test_env_names_the_key_that_is_actually_in_the_file(monkeypatch, tmp_path) -
 
     result = runner.invoke(app, ["env"])
 
-    flat = " ".join(result.stdout.split())
+    flat = _flat(result)
     assert "ORCHESTRATOR_TOKEN in" in flat
     assert "AUTH_TOKEN in" not in flat
 
@@ -540,7 +568,7 @@ def test_env_offers_a_remedy_when_no_token_resolves(monkeypatch) -> None:
     result = runner.invoke(app, ["env"])
 
     assert result.exit_code == 1
-    flat = " ".join(result.stdout.split())
+    flat = _flat(result)
     assert "praxis init" in flat
 
 
@@ -566,7 +594,7 @@ def test_onboard_does_not_claim_an_empty_registry_it_never_read(monkeypatch) -> 
     result = runner.invoke(app, ["onboard"])
 
     assert result.exit_code == 0
-    flat = " ".join(result.stdout.split())
+    flat = _flat(result)
     assert "No models configured yet" not in flat
     assert "1 model(s) registered" in flat
 
@@ -578,7 +606,7 @@ def test_onboard_names_a_verb_that_can_register_a_model(monkeypatch) -> None:
     _patch(monkeypatch, _json([]))
     result = runner.invoke(app, ["onboard"])
 
-    flat = " ".join(result.stdout.split())
+    flat = _flat(result)
     assert "praxis config add-model" in flat
     assert "praxis config set-role" in flat
 
@@ -595,7 +623,7 @@ def test_onboard_says_so_when_it_could_not_read_the_configuration(
     result = runner.invoke(app, ["onboard"])
 
     assert result.exit_code == 0
-    assert "Could not read" in " ".join(result.stdout.split())
+    assert "Could not read" in _flat(result)
 
 
 # --------------------------------------------------------------------------
@@ -718,3 +746,9 @@ def test_the_help_guard_would_notice_the_wrong_claim() -> None:
     """
     bordered = "│ use the registry │\n│ default          │"
     assert _plain(bordered) == "use the registry default"
+
+    # And the colorized form, which is what CI actually renders. This exact
+    # shape turned every help guard in `tests/test_init_claims.py` red on the
+    # Linux runner while they were green on Windows.
+    colored = "Without it: \x1b[1;36m--non\x1b[0m\x1b[1;36m-interactive\x1b[0m refuses"
+    assert _plain(colored) == "Without it: --non-interactive refuses"

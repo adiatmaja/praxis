@@ -38,10 +38,25 @@ REPO = Path(__file__).resolve().parents[1]
 #: the help is right or wrong.  Strip the glyphs BEFORE collapsing.
 _BOX_GLYPHS = re.compile("[" + chr(0x2500) + "-" + chr(0x257F) + "]")
 
+#: ANSI SGR sequences.  rich colorizes help when it believes the stream can
+#: take it, and that belief is PLATFORM DEPENDENT: on the Windows runner these
+#: assertions saw plain text and passed, while on the Linux runner the same
+#: help arrived as `Without it: \x1b[1;36m--non\x1b[0m\x1b[1;36m-interactive\x1b[0m
+#: refuses such a preset`, with the escapes falling INSIDE the phrase being
+#: matched. Every guard in this file went red on CI while green locally, which
+#: is the same defect as the box glyphs one layer out: the rendered text is not
+#: the text you wrote, and what it turns into depends on where it runs.
+_ANSI = re.compile(r"\x1b\[[0-9;]*m")
+
 
 def _flatten(text: str) -> str:
-    """Return ``text`` with box glyphs removed and whitespace collapsed."""
-    return " ".join(_BOX_GLYPHS.sub(" ", text).split())
+    """Return ``text`` with ANSI and box glyphs removed, whitespace collapsed.
+
+    Order matters. ANSI first, because an escape can sit mid-word and would
+    otherwise survive into the collapsed string; box glyphs second, because
+    they are what a wrapped panel row leaves behind; whitespace last.
+    """
+    return " ".join(_BOX_GLYPHS.sub(" ", _ANSI.sub("", text)).split())
 
 
 @pytest.fixture(autouse=True)
