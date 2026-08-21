@@ -2236,3 +2236,90 @@ Everything in run #9's list, plus: the settings precedence, the killswitch
 remedy, the reject-merge verb, the doctor's amber summary and its measured-vs-
 derived wording, and the empty states on `projects`, `tasks` and `plans`. All
 verified against the running install rather than the suite.
+
+---
+
+# Run #11, 2026-08-22
+
+**Score: 9/10.** Up from 8. The loop closed end to end, all three gates were
+exercised, every carried fix held on the live install, and the walk found ONE
+new instance of the false-report class rather than four. It is not a 10 because
+it found one, and because that one had been sitting on a surface nobody had
+ever swept.
+
+Fresh clone of `9df6d73`, nothing configured, and for the first time the
+**interactive** `praxis init` rather than `--non-interactive`.
+
+## What the run did
+
+`uv venv && uv sync --extra dev` left the tree clean. Interactive `init`
+prompted for the auth token, the port, a GitHub token (or `skip`), and a worker
+preset; the agy preset's interactive-login requirement was refused with the
+exact two commands that satisfy it, and the run stopped rather than
+half-installing. Re-run, answered, images built, orchestrator up, doctor ran
+automatically.
+
+Doctor reported one FAIL: the VPN killswitch hook blocking the planner inside
+the container. Its remedy (`echo CLAUDE_VPN_KILLSWITCH_OFF=1 >> .env.container`
+then `docker compose up -d`) worked verbatim, left `git status` clean, and the
+planner row went green. The re-run summarised the remaining amber honestly:
+"No failures, but 1 check(s) could not be verified."
+
+Then: register the project, submit a spec with `--file`, watch it decompose
+into two tasks with a real dependency, dispatch to an agy worker, PR #67
+reviewed and parked, merged; the dependent task dispatched only after that
+merge, PR #68, parked, merged; plan COMPLETED, integration PR #69 surfaced at
+`praxis pending` with a copyable line, `merge-plan` integrated it. Both files
+are on `main` of `adiatmaja/playground`, confirmed through the GitHub API
+rather than from the plan's own status, and the run created exactly the two
+files the spec named. The improvement loop then fired unaided and parked a
+proposal, which `praxis reject` closed.
+
+## The one new instance
+
+**`praxis status` and `GET /api/status` named a planner the install does not
+run, and called a working worker "unknown".**
+
+- `praxis status` printed `Opus: available`. "Opus" is the internal legacy name
+  of the brain (the `opus_state` table, `OpusBridge`), not a model.
+- `agent_model.name` was `claude-opus-4-8`, read from the legacy `agent_model`
+  setting. The planner that actually runs resolves through
+  `EffectiveSettings.call_site_chain`, which a YAML role chain SHADOWS, and the
+  shipped chain is `plan: [sonnet, opus]`. The doctor, two commands away,
+  correctly said `claude-sonnet-4-6`. Two surfaces of one install disagreed
+  about which model does the planning.
+- `subagent_model` was `{"name": "unknown", "connected": false}` for an agy
+  worker that had just completed two tasks, because the probe asked LM Studio
+  regardless of the configured harness.
+
+Both halves had already been fixed ON THE DOCTOR: run #9 taught it to probe the
+configured planner, and its worker row already reports "not applicable: this
+harness does not use an OpenAI endpoint". The fix landed on the doctor and on
+nothing else. That is the same sibling-set miss this session spent its whole
+re-sweep phase hunting, surviving on a surface the re-sweep's subject list did
+not name because no earlier session had swept it either.
+
+Fixed by resolving through the same bound method `main.py` hands the router,
+and by gating the worker probe on `supports_local_llm`. Verified live: the
+status line now reads `Planner (claude-sonnet-4-6): available` and the worker
+reports its real name with an explanation instead of a false disconnection.
+
+## Confirmed fixed, live
+
+Everything in run #10's list, plus, from this session: `praxis projects` naming
+both gates (`Improve gate` and `Auto-merge`) instead of one ambiguous "Gate";
+the approvals digest naming the proposal gate on a proposal-only queue, seen
+for real when the improvement loop parked one (`count: 0`, summary
+`1 improvement proposal awaiting approval.`); `poll_plan` returning
+`integration_pr_url` on a COMPLETED plan so "completed" is distinguishable from
+"landed"; the plan summary reading `2 of 2 leaves satisfied`; `get_project`
+returning `auto_merge`; and the entrypoint printing `PR created:` with a real
+URL only on the create branch.
+
+## What to carry
+
+The lesson is narrower than run #10's and sharper: **a fix applied to the
+doctor is not applied to the product.** The doctor is where diagnosis lives, so
+it is where these corrections naturally land, and every one of them describes a
+fact some other surface also reports. When a doctor row is fixed, grep for what
+else answers the same question.

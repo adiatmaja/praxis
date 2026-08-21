@@ -845,7 +845,13 @@ def status() -> None:
     with _client() as client:
         data = _check_dict(client.get("/api/status"))
     opus_state = data["opus_state"]
-    console.print(f"Opus: [bold]{opus_state['status']}[/bold]")
+    # "Opus" is the internal legacy name of the brain (the `opus_state` table,
+    # `OpusBridge`), not the model. Printing it told an operator their planner
+    # was Opus on an install whose shipped role chain runs Sonnet, and the
+    # doctor two commands away named the real one. Name what resolved.
+    planner = str((data.get("agent_model") or {}).get("name") or "").strip()
+    label = f"Planner ({planner})" if planner else "Planner"
+    console.print(f"{label}: [bold]{opus_state['status']}[/bold]")
     if opus_state["resume_at"]:
         console.print(f"  Resume at: {opus_state['resume_at']}")
     console.print(f"  Queued actions: {opus_state['queued_count']}")

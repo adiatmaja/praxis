@@ -21,6 +21,7 @@ from orchestrator.core.doctor_probes import (
     PROVIDER_KIND_LOCAL,
     PROVIDER_KIND_UNKNOWN,
 )
+from orchestrator.core.harnesses import REGISTRY, default_harness_id
 from orchestrator.core.llm_router import (
     LOGIN_HINTS,
     UnknownProviderError,
@@ -79,6 +80,37 @@ class PlannerTarget:
 #: the only place a provider bypasses ``build_argv``; a second one added there
 #: has to be added here too, or it would be classified as unrunnable.
 _ENDPOINT_PROVIDERS = frozenset({"local"})
+
+
+#: The brain call every plan makes. ``core/roles.py`` maps it to the ``plan``
+#: role, so this is the seat a YAML role chain configures, and the seat the
+#: doctor's planner row already probes.
+_PLANNER_CALL_SITE = "plan_spec"
+
+
+async def _resolve_planner_model(es: Any) -> str:
+    """Return the model the ``plan_spec`` call site actually resolves to.
+
+    Through ``call_site_chain``, the same bound method ``main.py`` hands the
+    router, so this cannot describe a planner the loop will not use. The legacy
+    ``agent_model`` setting it replaces here defaults to ``claude-opus-4-8`` and
+    is no longer consulted for planning at all: a YAML role chain SHADOWS the
+    per-call-site config, and the shipped chain is ``plan: [sonnet, opus]``.
+    Reporting the setting therefore named opus on an install that runs sonnet.
+
+    The HEAD of the chain is the planner: the router executes entries in order
+    and only moves on when one is unavailable.
+
+    Returns:
+        The resolved model name, or "" when nothing resolves. The caller keeps
+        its previous value in that case rather than inventing one.
+    """
+    if es is None:
+        return ""
+    chain = await es.call_site_chain(_PLANNER_CALL_SITE, None)
+    if not chain:
+        return ""
+    return str(chain[0].get("model") or "")
 
 
 def planner_provider_kind(provider: str) -> str:
@@ -436,7 +468,42 @@ async def system_status(request: Request) -> dict[str, Any]:
     else:
         effective_lm_studio_url = settings.lm_studio_url
         effective_agent_model = settings.agent_model
-    subagent_info = await _probe_subagent(effective_lm_studio_url)
+
+    # Resolve the planner the way the LOOP does, not from the legacy
+    # `agent_model` setting. That field defaults to "claude-opus-4-8" and is no
+    # longer what runs: a YAML role chain SHADOWS the per-call-site config, so
+    # on the shipped config `plan_spec` resolves to sonnet while this endpoint
+    # reported opus. `praxis status` prints it, the dashboard prints it, and the
+    # doctor (which already resolves it correctly) printed something else, so
+    # two surfaces of one install disagreed about which model does the planning.
+    # Same bound method `main.py` hands the router, so they cannot drift.
+    planner_model = effective_agent_model
+    try:
+        planner_model = (await _resolve_planner_model(es)) or effective_agent_model
+    except Exception:  # noqa: BLE001 - status must answer even when unresolvable
+        logger.debug("planner resolution failed; falling back to agent_model")
+
+    # Probe the worker endpoint only when the configured harness HAS one. agy
+    # calls Google directly, so probing LM Studio for it reported
+    # `{"name": "unknown", "connected": false}` for a worker that was
+    # configured, running, and completing tasks. The doctor's worker row was
+    # fixed for exactly this; this endpoint was the sibling that was not.
+    worker_spec = (
+        REGISTRY.get(str(settings.default_worker_harness or "") or default_harness_id())
+        or REGISTRY[default_harness_id()]
+    )
+    if worker_spec.supports_local_llm:
+        subagent_info = await _probe_subagent(effective_lm_studio_url)
+    else:
+        subagent_info = {
+            "name": str(settings.default_worker_model or "") or worker_spec.id,
+            "connected": True,
+            "endpoint_required": False,
+            "detail": (
+                f"the {worker_spec.id} harness calls its own API "
+                "directly; there is no OpenAI-compatible endpoint to probe"
+            ),
+        }
     providers = [await _probe_provider(name) for name in ("claude", "codex", "agy")]
 
     return {
@@ -446,7 +513,7 @@ async def system_status(request: Request) -> dict[str, Any]:
         ),
         "total_agents": len(containers),
         "agent_model": {
-            "name": effective_agent_model,
+            "name": planner_model,
             "connected": agent_connected,
             "cli_available": claude_cli_ok,
         },

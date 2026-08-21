@@ -94,8 +94,69 @@ async def test_status_includes_agent_model(
     assert response.status_code == 200
     data = response.json()
     assert "agent_model" in data
-    assert data["agent_model"]["name"] == "claude-opus-4-8"
+    # The model the `plan_spec` call site RESOLVES to, not the legacy
+    # `agent_model` setting. That setting still defaults to "claude-opus-4-8"
+    # and is no longer consulted for planning: a YAML role chain shadows the
+    # per-call-site config, and the shipped chain is `plan: [sonnet, opus]`. So
+    # this endpoint named opus on an install that plans with sonnet, while the
+    # doctor two commands away named the real one.
+    es = client.app.state.effective_settings  # type: ignore[attr-defined]
+    chain = await es.call_site_chain("plan_spec", None)
+    assert data["agent_model"]["name"] == chain[0]["model"]
     assert isinstance(data["agent_model"]["connected"], bool)
+
+
+@pytest.mark.integration
+async def test_status_does_not_report_the_legacy_planner_setting(
+    client: AsyncClient,
+    db: Database,
+    auth_headers: dict[str, str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A role chain shadows the setting, and the payload must follow the chain.
+
+    Pins the disagreement directly: with the chain resolving one model and the
+    legacy setting holding another, the endpoint must report the chain's.
+    """
+    await seed_user(db)
+    es = client.app.state.effective_settings  # type: ignore[attr-defined]
+
+    async def chain(_call_site: str, _override: object) -> list[dict[str, str]]:
+        return [{"provider": "claude", "model": "resolved-by-the-chain"}]
+
+    async def legacy() -> str:
+        return "claude-opus-4-8"
+
+    monkeypatch.setattr(es, "call_site_chain", chain)
+    monkeypatch.setattr(es, "agent_model", legacy)
+
+    data = (await client.get("/api/status", headers=auth_headers)).json()
+    assert data["agent_model"]["name"] == "resolved-by-the-chain"
+
+
+@pytest.mark.integration
+async def test_status_does_not_call_a_working_non_endpoint_worker_unknown(
+    client: AsyncClient,
+    db: Database,
+    auth_headers: dict[str, str],
+) -> None:
+    """agy calls Google directly; probing LM Studio for it proves nothing.
+
+    With the agy harness configured, this endpoint probed LM Studio anyway and
+    reported `{"name": "unknown", "connected": false}` for a worker that was
+    configured, running, and completing tasks. The doctor's worker row was
+    fixed for exactly this condition; this endpoint was the sibling that was
+    not, so two surfaces of one install disagreed about the same worker.
+    """
+    await seed_user(db)
+    client.app.state.settings.default_worker_harness = "agy"  # type: ignore[attr-defined]
+
+    data = (await client.get("/api/status", headers=auth_headers)).json()
+
+    assert data["subagent_model"]["connected"] is True
+    assert data["subagent_model"]["name"] != "unknown"
+    assert data["subagent_model"]["endpoint_required"] is False
+    assert "no OpenAI-compatible endpoint" in data["subagent_model"]["detail"]
 
 
 @pytest.mark.integration
