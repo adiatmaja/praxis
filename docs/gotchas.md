@@ -806,11 +806,35 @@ belongs among the everyday traps.
   Studio one) but the reachability probe was not, and `if not reachable` fires
   first, so the flagged default preset `gemini-agy` could never go green. Gate both
   or neither.
-- **`docker compose restart` does NOT re-read `.env`; only `up -d` does**: the docs
-  say `restart` correctly and repeatedly about the MOUNTED `config/praxis.yaml`, and
-  Quick Start says to edit `.env`, so the pattern teaches the wrong recovery for the
-  wrong file. The `env_drift` doctor check now detects it instead of relying on the
-  operator knowing.
+- **Which command applies a `.env` edit depends on whether compose FORWARDS the key,
+  and the two answers are opposites**: this was written here as the flat rule
+  "`restart` does NOT re-read `.env`; only `up -d` does", which is half right and
+  inverted for the other half.
+
+  A key compose substitutes or passes through (`${AUTH_TOKEN}`, `${PORT}`, the bare
+  `- DEFAULT_WORKER_HARNESS` entries) is resolved when the container is CREATED and
+  baked into its environment. `restart` reuses that container, so it keeps the old
+  value; only `up -d` recreates it. That is the case the flat rule describes and the
+  case `env_drift` can see, because it compares the container's environment against
+  the file.
+
+  A key compose does NOT forward (`LOOP_INTERVAL`, `CALLBACK_GRACE`, anything else
+  with a `Settings` field and no compose line) never enters the container environment
+  at all. The process reads it from the MOUNTED `/app/.env` when it starts, so a
+  `restart` applies it, and `up -d` is a NO-OP whenever nothing in the compose config
+  itself changed. `env_drift` is blind to these by construction: it only compares keys
+  the container actually received.
+
+  Measured on a live install, 2026-08-21: with `LOOP_INTERVAL=11` appended to `.env`,
+  `docker compose up -d` reported "Container orchestrator Running" and the running
+  process kept its old value; `docker compose restart orchestrator` picked it up and
+  logged `LOOP_INTERVAL is set in the dotenv file and also in ...; the dotenv value
+  wins`. This only became reachable when the dotenv layer started beating the settings
+  file (see the precedence entry above); before that a non-forwarded `.env` key did
+  nothing whichever command you ran, so the flat rule was never wrong in practice.
+
+  **Tell an operator `up -d` and then `restart`.** It is correct for both halves and
+  costs one extra second.
 - **An unmet preset requirement must print the remedy, not just the requirement**:
   `praxis init` names what is missing AND how to supply it, from the preset's
   `setup_hint` / `setup_doc` in `config/praxis.yaml`. It also writes the collected

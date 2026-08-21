@@ -482,6 +482,25 @@ def test_tasks_explains_an_empty_plan(monkeypatch) -> None:
 
 
 @pytest.mark.unit
+def test_projects_explains_an_install_with_no_projects(monkeypatch) -> None:
+    """The first command run after `praxis init`, and it said nothing.
+
+    Found by walkthrough #10, on the live install, after `tasks` and `plans`
+    had been given empty states in the same pass. Three list surfaces, one
+    fix, and the miss landed on the one with the most first-time traffic: a
+    bare table is indistinguishable from a query returning nothing because it
+    is broken, and it names no way forward.
+    """
+    _patch(monkeypatch, _json([]))
+    result = runner.invoke(app, ["projects"])
+
+    assert result.exit_code == 0
+    flat = _flat(result)
+    assert "No projects yet" in flat
+    assert "praxis add-project" in flat
+
+
+@pytest.mark.unit
 def test_plans_explains_a_project_with_no_plans(monkeypatch) -> None:
     """And names the verb that creates one."""
     _patch(monkeypatch, _json([]))

@@ -44,9 +44,21 @@ services:
       # silently, which is the exact failure the check exists to turn into a
       # red light.
       - ./docker:/app/docker:ro
-      # .env, read-only: `praxis doctor`'s env_drift check compares the values
-      # the container is actually running against the file on disk, because
-      # `docker compose restart` does NOT re-read .env and only `up -d` does.
+      # .env, read-only, and it does TWO jobs.
+      #
+      # First, `praxis doctor`'s env_drift check compares the values the
+      # container is actually running against the file on disk, because a key
+      # compose FORWARDS is baked in when the container is created: `restart`
+      # keeps the old value and only `up -d` recreates it.
+      #
+      # Second, this mount is the only way a key compose does NOT forward
+      # (LOOP_INTERVAL, CALLBACK_GRACE) reaches the process at all, since
+      # pydantic-settings reads /app/.env at startup. For those the commands
+      # invert: `restart` applies the edit and `up -d` is a no-op whenever the
+      # compose config itself is unchanged. Tell an operator `up -d` then
+      # `restart`, which is right for both. env_drift can only see the first
+      # half, because it compares keys the container actually received.
+      #
       # Compose reads this file on the HOST to substitute variables; it never
       # enters the container on its own, so without this mount the check can
       # only ever answer "could not read .env" and the whole feature is inert.

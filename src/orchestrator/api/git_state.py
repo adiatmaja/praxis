@@ -14,7 +14,10 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 
 from orchestrator.api.auth import verify_token
 from orchestrator.core.git_ops import GitOps
-from orchestrator.core.github_credentials import build_credential_provider
+from orchestrator.core.github_credentials import (
+    CredentialError,
+    build_credential_provider,
+)
 from orchestrator.models.schemas import GitStateResponse
 
 
@@ -37,7 +40,16 @@ async def get_git_state(request: Request, project_id: str) -> GitStateResponse:
 
     base = project["default_branch"] or "main"
     repo_url = project["repo_url"]
-    git = GitOps(build_credential_provider(settings))
+    # "No credential" is a state this endpoint already knows how to report: it
+    # is one more reason the git state is unavailable, and it has a reason
+    # string ready. Uncaught, it was a 500 on every poll of a credential-less
+    # install, which is the shipped local-evaluation mode, and the dashboard
+    # polls this. The RuntimeError path four lines down exists for exactly this
+    # kind of thing; this one just was not routed into it.
+    try:
+        git = GitOps(build_credential_provider(settings))
+    except CredentialError as exc:
+        return GitStateResponse(base=base, available=False, detail=str(exc))
 
     try:
         sha = await git.remote_head_sha(repo_url, base)

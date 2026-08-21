@@ -10,7 +10,10 @@ from fastapi.responses import Response
 
 from orchestrator.api.auth import verify_token
 from orchestrator.core.git_ops import GitOps
-from orchestrator.core.github_credentials import build_credential_provider
+from orchestrator.core.github_credentials import (
+    CredentialError,
+    build_credential_provider,
+)
 from orchestrator.core.preflight import (
     PreflightError,
     assert_repo_url_allowed,
@@ -60,7 +63,27 @@ async def create_project(request: Request, body: ProjectCreate) -> dict[str, Any
         sc, detail = status_and_detail(exc)
         raise HTTPException(status_code=sc, detail=detail) from exc
 
-    provider = build_credential_provider(settings)
+    # A missing GitHub credential is the operator's configuration, not a server
+    # fault, and `build_credential_provider` already raises carrying the exact
+    # remedy. Uncaught, that became a bare `500 Internal Server Error` with the
+    # remedy left in the container log: the CLI printed nine words that say the
+    # SERVER is broken, for the single most likely first command on an install
+    # set up without GitHub credentials. Found on the live install in
+    # walkthrough #10, immediately after the doctor had reported "local mode:
+    # no GitHub credential configured, which is correct for evaluating with a
+    # file:// repo", which is true and is why this url is the thing that has to
+    # explain itself.
+    try:
+        provider = build_credential_provider(settings)
+    except CredentialError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=(
+                f"{exc}. This repo_url needs a GitHub credential; a local "
+                "file:// path needs none, and allow_local_repo_paths in the "
+                "settings file enables that mode."
+            ),
+        ) from exc
     git = GitOps(provider)
     try:
         await preflight_remote(

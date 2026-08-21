@@ -298,8 +298,18 @@ in both directions and then gets cited as authority.)
   never a rebuild. `core/settings_file.config_file_path()` is the ONLY place that path is
   decided; a hardcoded `"config/praxis.yaml"` literal in `src/` reintroduces a fixed bug and
   `tests/test_config_path.py` greps for exactly that.
-- **`docker compose restart` does NOT re-read `.env`; only `up -d` does.** The `env_drift`
-  doctor check exists for this.
+- **Which command applies a `.env` edit depends on whether compose FORWARDS the key**,
+  and the two answers are opposites. A key compose substitutes or passes through
+  (`${AUTH_TOKEN}`, bare `- DEFAULT_WORKER_HARNESS`) is baked into the container's
+  environment when the container is CREATED: `restart` reuses the old value and only
+  `up -d` recreates it. A key compose does NOT forward (`LOOP_INTERVAL`,
+  `CALLBACK_GRACE`) never enters the container environment at all; the process reads it
+  from the MOUNTED `/app/.env` at startup, so `restart` applies it and `up -d` is a
+  NO-OP when nothing in the compose config changed. Measured 2026-08-21 on a live
+  install: `up -d` after `LOOP_INTERVAL=11` printed "Container orchestrator Running"
+  and changed nothing; `restart` picked it up and logged the override line. `up -d`
+  then `restart` is correct for both and is what to tell an operator. The `env_drift`
+  doctor check covers the forwarded half only, which is all it can see.
 - **A host `~/.claude` hook blocks every brain call inside the container**, tunnel up or
   down, because that directory is mounted. Set the hook's opt-out (e.g.
   `CLAUDE_VPN_KILLSWITCH_OFF=1`) in `.env.container`, then `up -d`. That file is a

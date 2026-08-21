@@ -328,10 +328,22 @@ def projects() -> None:
             "ON" if project["approval_gate"] else "OFF",
         )
     console.print(table)
-    if data:
-        console.print()
-        for project in data:
-            _copyable(f"praxis plans {project['id']}   # {project['name']}")
+    if not data:
+        # The first command a newcomer runs after `praxis init`, and it printed
+        # a bordered table with a header row and no body and nothing else. That
+        # is indistinguishable from a query that returned nothing because it is
+        # broken, and it names no way forward. `tasks` and `plans` got this
+        # treatment in the same pass and this one was missed, which is its own
+        # small lesson: three list surfaces, one fix, and the miss landed on the
+        # surface with the most first-time traffic.
+        console.print(
+            "\nNo projects yet. Register one with "
+            "'praxis add-project <name> <repo-url>'."
+        )
+        return
+    console.print()
+    for project in data:
+        _copyable(f"praxis plans {project['id']}   # {project['name']}")
 
 
 @app.command()
