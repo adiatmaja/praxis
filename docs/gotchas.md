@@ -1113,3 +1113,85 @@ belongs among the everyday traps.
   `logs` value must be reported as "not captured" rather than printed as
   nothing, because "we could not read the container" and "the worker was
   silent" are different facts and only the second is alarming.
+
+## Prerequisites the product diagnoses but does not cure
+
+- **A host hook mounted into the container blocks every brain call, tunnel up or
+  down.** `docker-compose.yml` mounts `~/.claude` into the orchestrator so
+  `claude -p` can reach the host's subscription credentials, and that mount
+  brings the host's Claude Code **hooks** with it. A hook whose detector assumes
+  the host OS then fires inside the container on every call. The case that keeps
+  happening is a VPN killswitch: on the host it checks whether the tunnel is up,
+  in the container that check cannot succeed, so it refuses every prompt whether
+  or not the VPN is actually running. `praxis doctor` reports `planner_cli` RED
+  and quotes the hook's own message, so the diagnosis is precise.
+
+  **The remedy is one line, and it goes in exactly one place.** Add the hook's
+  own opt-out variable as a LITERAL under the orchestrator's `environment:` in
+  `docker-compose.yml`, then `docker compose up -d`:
+
+  ```yaml
+      - CLAUDE_VPN_KILLSWITCH_OFF=1
+  ```
+
+  Three ways to get this wrong, each of which fails silently:
+
+  - **Putting it in `.env`.** This is where an operator reaches first and it
+    does nothing. `Settings` uses `extra="ignore"` (see the `.env` entry above,
+    which explains why), so an unrecognised key is accepted and dropped; the
+    variable never reaches the container, the hook keeps firing, and the
+    symptom is unchanged. Nothing reports the mistake.
+  - **`docker compose restart` instead of `up -d`.** `restart` does not re-read
+    the compose file's substitutions. Same reason the `env_drift` check exists.
+  - **Assuming it is only needed while the VPN is down.** It is not. The hook
+    blocks the container in both states, which is what makes this look like a
+    Praxis bug rather than a local hook.
+
+  This cost time in five consecutive walkthroughs, because the diagnosis
+  shipped and the cure did not: the doctor's hint named the cause and pointed
+  at this page, and this page did not say what to do. The hint now states the
+  remedy inline, `docker-compose.yml` carries it as a commented block beside
+  `IS_SANDBOX`, and `tests/test_doctor_probes.py` asserts the hint names both
+  where the fix goes and where it does not. Writing a correct diagnosis is not
+  the same as shipping a fix, and a pointer to a page is only worth what the
+  page says.
+
+- **`gh pr view <branch>` resolves a branch to a PR regardless of state, and
+  both agent entrypoints used it to decide whether to reuse a PR.** Plan
+  branches are `plan/{date}-{plan_slug}` and agent branches are
+  `agent/{task_slug}`, so re-submitting the same spec on the same day
+  reproduces every branch name exactly. The lookup then returned the previous
+  plan's already-MERGED PR, and the worker's real new commit was attached to a
+  diff that had already landed. Every layer downstream then reported success on
+  work that was not there: the review fetched the old merged diff and passed,
+  `merge_pr` saw an already-merged PR and treated that as success (correctly,
+  for its own purpose: a `gh pr merge` 504 can follow a successful merge), the
+  task went to MERGED, and the commit never reached the plan branch. Measured in
+  walkthrough #6: the agent branch was `ahead=1 behind=0` against the plan
+  branch while the task pointed at a merged PR whose files belonged to the
+  previous plan.
+
+  The fix is the positive open-state lookup `_existing_integration_pr` already
+  used for the integration PR, now in both entrypoints:
+  `gh pr list --head "${BRANCH}" --base "${BASE_BRANCH}" --state open`. Only a
+  POSITIVE open hit may skip creation; anything else, including a failure of the
+  lookup itself, falls through to `gh pr create`, because treating a failure as
+  "already open" would hide a real `gh` error forever. Note the emptiness of the
+  OUTPUT is the signal and the exit status is not: `gh pr list` prints nothing
+  and still exits 0 when nothing matches.
+
+  **All three filters are load-bearing and each fails differently**, which is
+  why `tests/test_entrypoint_pr_reuse.py` gives each its own scenario against a
+  spy that models `gh pr list` rather than stubbing it: without `--state open` a
+  merged or closed PR is reused; without `--base` the same agent branch's open
+  PR against a PREVIOUS plan branch is reused, pointing the review at the wrong
+  base; without `--head` a SIBLING leaf's open PR is reused, since every leaf of
+  a plan targets the same plan branch. Proven by mutation, four mutants, each
+  killed by a different test.
+
+  **Deduplicating the slugs would not have fixed this**, and that is the reason
+  the branch names were left alone. It removes one trigger and leaves the defect:
+  a CLOSED PR on a branch this run rebuilds reaches the same state-blind lookup
+  without any collision at all. With the lookup state-aware, a colliding branch
+  name is harmless in the ordinary two-tier case, because `REUSING_BRANCH` is 0
+  there and the branch is rebuilt from base and force-pushed.

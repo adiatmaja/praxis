@@ -280,6 +280,11 @@ a line here only if it belongs in this shortlist.
   `tests/test_config_path.py` greps for exactly that.
 - **`docker compose restart` does NOT re-read `.env`; only `up -d` does.** The `env_drift`
   doctor check exists for this.
+- **A host `~/.claude` hook blocks every brain call inside the container**, tunnel up or
+  down, because that directory is mounted. Set the hook's opt-out (e.g.
+  `CLAUDE_VPN_KILLSWITCH_OFF=1`) as a LITERAL under the orchestrator's `environment:` in
+  `docker-compose.yml`, then `up -d`. NEVER in `.env`: an unrecognised key there is ignored
+  and never reaches the container, so the fix appears not to work.
 - **Agent images are standalone, NOT in compose**: rebuild `opencode-agent:latest` /
   `agy-agent:latest` after ANY `entrypoint.sh` change or a stale image runs silently.
   Staleness is judged by CONTENT (the `org.praxis.entrypoint-sha256` label), never mtime.
@@ -305,6 +310,13 @@ a line here only if it belongs in this shortlist.
   (`core/merge_policy.py`); protected branches never auto-merge at all.
 - **Brain prompts go via stdin, never argv** (argv overflows the OS limit; Windows `WinError 206`).
 - **`gh pr` calls need `--repo <owner/name>`** or they target the orchestrator's own cwd.
+- **A PR may be reused only on a POSITIVE open-state hit**: `gh pr view <branch>` resolves a
+  branch to a PR regardless of state, and identical specs reproduce identical branch names,
+  so it attached new work to an already-merged PR while every layer reported success. Both
+  entrypoints use `gh pr list --head --base --state open`, as `_existing_integration_pr`
+  does. All three filters are load-bearing and each has its own test in
+  `tests/test_entrypoint_pr_reuse.py`; the emptiness of the OUTPUT is the signal, never
+  the exit status.
 - **Verify gates FAIL CLOSED and fetch the branch first**: treat `error` like `failed`, and
   only `skipped` passes through. An `error` is never memoized, so the next tick retries.
 - **`praxis merge <task-id>` / `praxis merge-plan <plan-id>` open the merge gate**;
