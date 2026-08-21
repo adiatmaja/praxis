@@ -1627,3 +1627,188 @@ config-only leaf is the likeliest shape.
 
 Otherwise the merged-PR defect above is the top fix, and it should land before
 run #7 so that run measures a product with no known silent-work-loss path.
+
+# Run #7, 2026-08-21
+
+**Score 8.5/10.** Both open HIGHs from run #6 were fixed before this run, and
+both were verified LIVE rather than by unit test. Setup was **2m03s from
+`git clone` to an all-green doctor**, and for the first time in seven runs the
+one red that appeared was solved entirely from the product's own output, with no
+prior knowledge. One new HIGH was found, in a subsystem no previous run had
+exercised.
+
+Install: fresh clone of `5aa58e0` at `C:\working-space\praxis-newcomer`, preset
+`gemini-agy`, worker Gemini 3.7 Flash (High) via agy, target
+`adiatmaja/playground`. LM Studio was down for the whole run and never mattered:
+`derive_tasks` is the only call site defaulting to `local`, and the shipped
+`config/praxis.yaml` role chain (`plan: [sonnet, opus]`) shadows it.
+
+## Timeline
+
+| Time (UTC) | Step |
+|---|---|
+| 08:02:02 | `git clone` |
+| 08:02:27 | `uv venv && uv sync --extra dev` done, 5s |
+| 08:03:24 | `praxis init --non-interactive --preset gemini-agy` done, 41s. Doctor: 11 OK, 1 FAIL |
+| 08:03:39 | Applied the one red's stated remedy, uncommenting the line the compose file already carries |
+| 08:04:05 | `praxis doctor`: **all checks passed** |
+| 08:05:36 | Submitted the no-op spec |
+| 08:06:36 | Task closed `no_changes`, attempt 1 |
+| 08:07:56 | Submitted the real spec |
+| 08:23:24 | `praxis merge-plan` integrated onto `main` |
+
+## The killswitch remedy, closed after five runs
+
+Run #6 recorded this as the cheapest HIGH on the list, and it was. The doctor's
+red now reads:
+
+> Set that hook's own opt-out variable (e.g. `CLAUDE_VPN_KILLSWITCH_OFF=1`) as a
+> LITERAL under `environment:` in `docker-compose.yml`, then
+> `docker compose up -d`. Not in `.env`: an unrecognised key there is ignored and
+> never reaches the container.
+
+`docker-compose.yml` carries the same line as a commented block beside
+`IS_SANDBOX`, so applying it is uncommenting one line. Fifteen seconds from red
+to green, and unlike run #6's one minute, that fifteen seconds required knowing
+nothing in advance. Both halves of the hint are asserted in
+`tests/test_doctor_probes.py`: naming `docker-compose.yml` is not enough on its
+own, because `.env` is where an operator reaches first and failing there is
+silent.
+
+## The `no_changes` path, finally observed in production
+
+Two attempts in run #6 failed to provoke it. The shape that worked is a
+**config leaf over a fixed token set**. A code leaf always admits one more test
+and a docs leaf always admits a reword, so the worker can always defend writing
+something; `.gitignore` lines are exact tokens, and a second copy of a line
+already present is visibly wrong rather than merely redundant.
+
+`playground/.gitignore` already contained every entry the spec named, so the leaf
+was satisfied before the worker started, on the first submit, with no warm-up
+run.
+
+The whole chain was observed, not inferred:
+
+- entrypoint, via `praxis logs`: `No changes produced by agy`, then
+  `Reporting no_changes: the harness ran and the tree already satisfied this task.`
+- orchestrator: `verify gate passed (branch=plan/2026-08-21-python-gitignore-cache-entries, cmd=python -m pytest -q)`
+- task: `no_changes`, attempt **1**, no retry, feedback
+  `No changes needed: the repository already satisfied this task (verify passed on plan/...)`
+- `praxis pending`: `Nothing awaiting approval`, so the no-op correctly never
+  reaches the merge gate
+- no agent branch pushed and no PR opened, because there was nothing to open one
+  for
+
+`verify_cmd` was set deliberately so this took the **`passed`** branch and not
+the `skipped` one. The code's own docstring calls `skipped` the weakest link
+here, since it rests on the harness's clean exit and no independent evidence.
+This run has the evidence.
+
+## The merged-PR fix, verified against real GitHub
+
+The fix is a lookup change, so the decisive check is what the two lookups
+actually answer. Run against the real `gh` and the real repository, using the
+exact merged PR run #6 lost work to:
+
+```
+gh pr view agent/implement-format-duration        -> url=.../pull/49 state=MERGED
+gh pr list --head agent/implement-format-duration \
+           --base plan/2026-08-21-add-format-duration-helper --state open  -> (empty)
+```
+
+The old lookup hands back a merged PR; the new one returns nothing, so the
+entrypoint creates a fresh one. The normal path was exercised in the same run:
+the real spec's first task opened **new** PR #52, and the loop closed onto `main`
+through PR #54.
+
+## The review earned its seat
+
+Task 2 was told to add tests at `tests/test_bytesize.py`. It did, and the review
+FAILED it for a reason the spec author (me) had missed: `pyproject.toml` set
+`testpaths = ["src"]`, so the new file sat outside pytest discovery and would
+never have run, and task 1 had already written the same coverage under `src/`.
+Attempt 2 fixed the ROOT CAUSE, setting `testpaths = ["src", "tests"]`, rather
+than moving the file. A passing test suite that never runs is the exact
+`unit-green-seam-inert` shape, and the loop caught it rather than a human.
+
+Also confirmed: task 1 wrote task 2's file again. **Six of six plans** across
+three runs.
+
+## NEW HIGH: the improvement loop proposes work for a repo it never reads
+
+Registering the project was enough to trigger it. After the first plan completed,
+the autonomous loop produced five tasks for `playground`:
+
+- Hash auth tokens with bcrypt instead of storing plaintext
+- Add a transaction context manager to the Database class
+- Add Content-Security-Policy header to Caddyfile
+- Add rate limiting to authentication endpoints
+- Add a test suite with foundational unit and integration tests
+
+`playground` is seven files of helper functions. It has no Caddyfile, no Database
+class, no auth endpoints. Every one of those is a description of **Praxis
+itself**.
+
+The mechanism is in `core/orchestrator_improve.check_improvements` and is not
+subtle: the entire prompt is three strings.
+
+```python
+summary = (
+    f"Project: {project['name']}\n"
+    f"Repo: {project['repo_url']}\n"
+    f"Completed plan: {plan.get('plan_path') or plan.get('spec_path') or 'unknown'}"
+)
+```
+
+Nothing clones the repository or reads a single file of it. Asked what to build
+next with no information about the codebase, the planner answered from the only
+codebase in its context. This is the same family as the open F9 defect where
+`build_context_pack(".")` scans the wrong tree.
+
+**The approval gate held**, and that is worth stating precisely, because it is the
+difference between a HIGH and a critical: `approval_gate` is true by default, so
+`create_improvement_plan` was called with `activate=False`, the plan parked at
+`pending`, and nothing dispatched. With the gate off, five agents would have been
+dispatched to make Praxis-shaped changes to an unrelated repository.
+
+One caveat for anyone reading the logs while diagnosing this:
+`create_improvement_plan` calls `activate_plan` unconditionally and only
+afterwards flips the status back to `PENDING`, so the log says
+`Activated plan <id> with 5 tasks` even when the gate parks it. The status is
+correct everywhere a human looks; only the log line reads alarming.
+
+## Other findings
+
+| Sev | Finding | Age |
+|---|---|---|
+| MED | A plan whose every task is `no_changes` logs `Integration PR open failed`, quoting GitHub's `No commits between main and plan/...`. The user-visible outcome is right (`completed (no PR)`), but a correct no-op is reported as an error. Same fact-versus-verdict shape the `no_changes` work fixed one layer down, one layer up. | new |
+| LOW | Neither `add-project` nor `configure` has a `--harness` flag, so the harness cannot be set from the CLI at all. It resolved correctly here from the preset default, so nothing was broken; it simply is not settable. | new |
+| LOW | `add-project`'s help calls its third argument the "LM Studio model name", though the shipped default worker is Gemini via agy and the framing is provider-agnostic. | new |
+| LOW | The README's non-interactive example is `--preset local-lmstudio`, the one preset that requires LM Studio, while the shipped default is `gemini-agy`. | new |
+| LOW | Review feedback containing a non-CP1252 character prints as a replacement glyph on a Windows console. | new |
+| LOW | The no-op plan's branch is left on the remote, since nothing ever opened a PR from it. | new |
+| MED | The `tasks` table still folds a uuid across lines at 80 columns. `pending` and `plans` print copyable lines; `tasks` does not. | 4 runs |
+
+## Retracted while checking
+
+Two things looked like findings and were not. Recorded so run #8 does not
+re-raise them:
+
+- **"The autonomous plan starved the user's plan."** It did not. The user plan's
+  task-1 run started at 08:10:36, before the autonomous plan was rejected. The
+  empty `tasks` table read at 08:10:07 was simply taken before decomposition
+  finished.
+- **"The approval gate does not hold for improvement plans."** It holds. The
+  misleading `Activated plan ... with 5 tasks` log line is what suggested
+  otherwise; the plan status was `pending` throughout.
+
+## What run #8 should measure
+
+The improvement loop is the one subsystem no walkthrough had exercised, and the
+first run that touched it found a HIGH. Give `check_improvements` the repository
+it is reasoning about, then re-run this same registration and see whether the
+proposed tasks describe the target repo.
+
+Worth doing at the same time, because it is nearly free: teach the
+plan-completed path that a plan with no commits has nothing to integrate, so a
+correct no-op stops being logged as a failed `gh pr create`.
