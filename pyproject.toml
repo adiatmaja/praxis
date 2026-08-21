@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta:__legacy__"
 [project]
 name = "praxis"
 version = "0.1.0"
-description = "Set up inside the harness you already use, Praxis lets it drive other coding harnesses: plans decomposed to fit the worker, every change verified, reviewed, and delivered as a pull request, all from one session."
+description = "Set up inside the harness you already use, Praxis lets it drive other coding harnesses: plans decomposed to fit the worker, every change reviewed and delivered as a pull request you approve, all from one session."
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [

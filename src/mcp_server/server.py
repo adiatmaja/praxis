@@ -656,7 +656,7 @@ mcp = FastMCP(
     instructions=(
         "Praxis connects this session to other coding harnesses: it dispatches "
         "implementation to a configured worker (harness + model) and hands back "
-        "a verified, reviewed pull request. Read the praxis://guide/orchestration "
+        "a reviewed pull request. Read the praxis://guide/orchestration "
         "resource before your first dispatch. Typical loop: get_project to read a "
         "repo's configured worker, dispatch_task or execute_plan to delegate, "
         "poll_task or poll_plan until a task reports awaiting_merge, then relay "

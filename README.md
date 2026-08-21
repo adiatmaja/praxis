@@ -15,7 +15,7 @@
 
 <p align="center">
   Dispatch real coding work to other agents and models from the session you are already in,
-  and get back a verified, reviewed pull request instead of a one-shot guess.
+  and get back a reviewed pull request instead of a one-shot guess.
 </p>
 
 <p align="center">
@@ -31,8 +31,8 @@ Praxis is not another coding harness. It is an engine you set up inside the one 
 already use: wire it into your AI assistant over MCP and that assistant can dispatch real
 work to the harnesses that do the typing, OpenCode driving any OpenAI-compatible model,
 Antigravity driving Gemini. Plans are decomposed to fit the model that implements them,
-and every change is verified mechanically, reviewed by a second model, and delivered as a
-pull request that waits for your approval. One session, no copy-pasted plans, no switching
+and every change is checked by the verify gate when you configure one, reviewed by a
+second model, and delivered as a pull request that waits for your approval. One session, no copy-pasted plans, no switching
 tools by hand. (A CLI and a dashboard drive the same engine.)
 
 ```
