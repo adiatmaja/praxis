@@ -178,12 +178,13 @@ still win when set, which is how you point it at a remote deployment.
 that includes installation. Add `--non-interactive` and the wizard never prompts:
 
 ```bash
-uv run praxis init --non-interactive --preset local-lmstudio
+uv run praxis init --non-interactive --preset gemini-agy
 ```
 
 It reuses the `AUTH_TOKEN` already in `.env`, or generates one and prints it. Add
-`--auth-token`, `--port`, or `--github-token` to pin any of them; `uv run praxis config show`
-lists the preset names. A preset needing a credential `init` cannot collect (an API key, an
+`--auth-token`, `--port`, or `--github-token` to pin any of them; the preset names are the
+`worker_presets` entries in `config/praxis.yaml`, and omitting `--preset` takes the one flagged
+`default: true` there. A preset needing a credential `init` cannot collect (an API key, an
 interactive login) is refused rather than half-installed, until you pass
 `--accept-preset-requirements` to say that setup is done.
 

@@ -497,3 +497,42 @@ def test_planner_cli_amber_not_red_when_the_subscription_is_rate_limited():
     assert result.status is CheckStatus.AMBER
     assert "rate limited" in result.detail.lower()
     assert "hook" not in result.hint.lower()
+
+
+@pytest.mark.unit
+def test_an_unreachable_worker_endpoint_names_the_url_it_probed():
+    """A red must say WHICH address failed.
+
+    The URL comes from the worker preset (`local-lmstudio` hardcodes
+    host.docker.internal:1234) and is printed nowhere else, so "the worker
+    endpoint did not answer" left the operator with nothing to go fix.
+    """
+    result = probe_worker_endpoint(
+        reachable=False,
+        models=[],
+        configured_model="qwen3.8-27b",
+        error="connect timeout",
+        endpoint="http://host.docker.internal:1234",
+    )
+    assert result.status is CheckStatus.RED
+    assert "http://host.docker.internal:1234" in result.detail
+
+
+@pytest.mark.unit
+def test_a_wrong_model_red_also_names_the_url():
+    """The reachable-but-wrong-model red is the one that looks like success."""
+    result = probe_worker_endpoint(
+        reachable=True,
+        models=["some-other-model"],
+        configured_model="qwen3.8-27b",
+        endpoint="http://host.docker.internal:1234",
+    )
+    assert result.status is CheckStatus.RED
+    assert "http://host.docker.internal:1234" in result.detail
+
+
+@pytest.mark.unit
+def test_an_absent_endpoint_adds_no_dangling_preposition():
+    """Callers that pass no URL must not produce 'did not answer at '."""
+    result = probe_worker_endpoint(reachable=False, models=[], configured_model="m")
+    assert " at " not in result.detail

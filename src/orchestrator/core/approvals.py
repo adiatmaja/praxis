@@ -51,6 +51,26 @@ def plan_awaits_integration(row: dict[str, Any]) -> bool:
     )
 
 
+def plan_awaits_approval(row: dict[str, Any]) -> bool:
+    """True when an autonomous proposal is parked before any work starts.
+
+    This is a DIFFERENT gate from ``plan_awaits_integration``. That one guards
+    finished work on its way to the base branch; this one guards work the
+    improvement loop proposed and that no human has yet agreed to run. Both
+    conditions are load-bearing:
+
+    - source ``autonomous``: a user plan reaching PENDING is mid-planning, not
+      waiting on anyone. Listing it would ask the operator to approve something
+      they already submitted.
+    - status PENDING: an autonomous plan that is ACTIVE, REJECTED, or COMPLETED
+      has already been decided. Re-listing a rejected proposal is how a queue
+      becomes noise that people stop reading.
+    """
+    return bool(
+        str(row.get("source")) == "autonomous" and str(row.get("status")) == "pending"
+    )
+
+
 def summarize_pending(
     rows: list[dict[str, Any]],
     plan_rows: list[dict[str, Any]] | None = None,
@@ -62,15 +82,24 @@ def summarize_pending(
     unapproved as a parked task: counting only tasks is what let the loop
     report "nothing awaiting approval" while the work sat off ``main``.
 
+    Autonomous proposals are reported alongside, under their own key and their
+    own count. They are parked on a different gate (``praxis approve`` /
+    ``reject``, before any work runs) rather than the merge gate, so they are
+    deliberately NOT added to ``count``.
+
     Args:
         rows: Task rows; only those in ``GATED_STATUSES`` are counted.
-        plan_rows: Plan rows; only those passing ``plan_awaits_integration``
-            are counted. Omitted by callers that only hold task rows.
+        plan_rows: Plan rows. Those passing ``plan_awaits_integration`` become
+            ``plans``; those passing ``plan_awaits_approval`` become
+            ``proposals``. The two predicates are disjoint. Omitted by callers
+            that only hold task rows.
 
     Returns:
-        ``{"count", "task_count", "plan_count", "oldest_hours",
+        ``{"count", "task_count", "plan_count", "proposal_count",
+        "oldest_hours",
         "tasks": [{"task_id", "title", "branch", "pr_url", "age_hours"}],
-        "plans": [{"plan_id", "branch", "pr_url", "age_hours"}]}``.
+        "plans": [{"plan_id", "project_id", "branch", "pr_url", "age_hours"}],
+        "proposals": [{"plan_id", "project_id", "age_hours"}]}``.
     """
     parked = [r for r in rows if str(r.get("status")) in GATED_STATUSES]
     unsorted_tasks: list[dict[str, Any]] = [
@@ -109,14 +138,34 @@ def summarize_pending(
         reverse=True,
     )
 
+    # Autonomous proposals are counted SEPARATELY from `count`, not folded in.
+    # `count` feeds `digest_line`, which calls its items "PRs"; a proposal has
+    # no branch and no PR, so counting it there would make the digest state a
+    # number of pull requests that do not exist.
+    proposed = [r for r in (plan_rows or []) if plan_awaits_approval(r)]
+    proposals = sorted(
+        (
+            {
+                "plan_id": r.get("id"),
+                "project_id": r.get("project_id"),
+                "age_hours": _age_hours(r.get("created_at")),
+            }
+            for r in proposed
+        ),
+        key=_age,
+        reverse=True,
+    )
+
     ages = [entry["age_hours"] for entry in (*tasks, *plans)]
     return {
         "count": len(tasks) + len(plans),
         "task_count": len(tasks),
         "plan_count": len(plans),
+        "proposal_count": len(proposals),
         "oldest_hours": max(ages) if ages else 0.0,
         "tasks": tasks,
         "plans": plans,
+        "proposals": proposals,
     }
 
 

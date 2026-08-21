@@ -36,8 +36,17 @@ async def get_pending_approvals(request: Request) -> dict[str, Any]:
         f"SELECT * FROM tasks WHERE status IN ({placeholders})",  # nosec B608
         tuple(GATED_STATUSES),
     )
+    # Two disjoint sets of plans land here, so the WHERE clause is a union and
+    # not a single predicate: plans whose integration PR is open (work finished,
+    # waiting to reach the base branch) and autonomous proposals still PENDING
+    # (work not started, waiting for a human to agree to it). Selecting only the
+    # first left every improvement-loop proposal invisible to `praxis pending`,
+    # which is the same defect this endpoint's docstring already describes one
+    # layer up. `summarize_pending` re-checks both predicates, so this query
+    # only has to avoid excluding a row it needs.
     plan_rows = await db.fetch_all(
-        "SELECT * FROM plans WHERE integration_pr_url IS NOT NULL "
-        "AND integration_merged_at IS NULL"
+        "SELECT * FROM plans WHERE "
+        "(integration_pr_url IS NOT NULL AND integration_merged_at IS NULL) "
+        "OR (source = 'autonomous' AND status = 'pending')"
     )
     return summarize_pending(rows, plan_rows)

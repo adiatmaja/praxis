@@ -93,3 +93,42 @@ def test_tasks_prints_the_full_task_id(monkeypatch) -> None:
     assert result.exit_code == 0
     flat = "".join(result.stdout.split())
     assert TASK_ID in flat
+
+
+def test_tasks_prints_a_copyable_id_on_an_80_column_console(monkeypatch) -> None:
+    """The id must survive CONTIGUOUS at the width a default terminal has.
+
+    The sibling test above pins COLUMNS=160 and then flattens the output before
+    asserting, so it passed for five walkthroughs while `praxis tasks` was in
+    fact folding every uuid across three rows at 80 columns: `max_width=36` is
+    a maximum, and rich shrank the column to 16 when five columns competed.
+    Flattening hides exactly the damage that matters, because an operator
+    copies a LINE, not the whole screen.
+
+    Deleting the copyable-line loop in `tasks` turns this red. It turns the
+    sibling red too, now that the copyable line is the only place the id is
+    printed at all, which is the point: before this change the sibling passed
+    against output no operator could use.
+    """
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json=[
+                {
+                    "id": TASK_ID,
+                    "title": "Implement initials() helper function",
+                    "branch_name": "agent/implement-initials-function",
+                    "status": "passed",
+                    "attempt": 1,
+                }
+            ],
+        )
+
+    _patch_client(monkeypatch, handler)
+    monkeypatch.setenv("COLUMNS", "80")
+    result = runner.invoke(app, ["tasks", "plan-1"])
+
+    assert result.exit_code == 0
+    # Contiguous on ONE line, which is what makes it selectable.
+    assert any(TASK_ID in line for line in result.stdout.splitlines())

@@ -320,6 +320,7 @@ def probe_worker_endpoint(
     configured_model: str,
     error: str = "",
     endpoint_required: bool = True,
+    endpoint: str = "",
 ) -> CheckResult:
     """Green only when the endpoint answers AND the configured model is loaded.
 
@@ -345,6 +346,11 @@ def probe_worker_endpoint(
             OpenAI-compatible endpoint at all. False for a harness like
             agy/Gemini that calls its own API directly, in which case there
             is nothing here to reach and the check must stay green.
+        endpoint: The URL that was probed, echoed into the row. A red here
+            used to say only that "the worker endpoint" did not answer, while
+            the URL itself comes from a preset (``local-lmstudio`` hardcodes
+            ``host.docker.internal:1234``) and is not printed anywhere else,
+            so the operator could not tell which address to go fix.
     """
     if not endpoint_required:
         # A harness that does not talk to an OpenAI-compatible endpoint (agy
@@ -357,8 +363,9 @@ def probe_worker_endpoint(
             status=CheckStatus.GREEN,
             detail="not applicable: this harness does not use an OpenAI endpoint",
         )
+    where = f" at {endpoint}" if endpoint else ""
     if not reachable:
-        detail = "worker endpoint did not answer a usable GET /v1/models"
+        detail = f"worker endpoint{where} did not answer a usable GET /v1/models"
         return CheckResult(
             check_id="worker_endpoint",
             status=CheckStatus.RED,
@@ -370,14 +377,14 @@ def probe_worker_endpoint(
             check_id="worker_endpoint",
             status=CheckStatus.RED,
             detail=(
-                f"endpoint is up but the configured model {configured_model!r} "
-                f"is not loaded; loaded: {loaded}"
+                f"endpoint{where} is up but the configured model "
+                f"{configured_model!r} is not loaded; loaded: {loaded}"
             ),
         )
     return CheckResult(
         check_id="worker_endpoint",
         status=CheckStatus.GREEN,
-        detail=f"{configured_model or 'endpoint'} available",
+        detail=f"{configured_model or 'endpoint'} available{where}",
     )
 
 

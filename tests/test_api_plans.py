@@ -487,3 +487,41 @@ async def test_approve_merges_returns_generic_error_message(
     err_msg = body["errors"][0]["error"]
     assert err_msg == "Failed to approve task merge due to an internal error"
     assert secret_token not in err_msg
+
+
+@pytest.mark.integration
+async def test_pending_approvals_lists_an_autonomous_proposal(
+    client: AsyncClient,
+    db: Database,
+    auth_headers: dict[str, str],
+) -> None:
+    """The endpoint's own query must not filter proposals out.
+
+    `summarize_pending` can classify a proposal perfectly and still surface
+    nothing, because the WHERE clause here decides which rows it ever sees.
+    That is the seam where this fix would be unit-green and inert: the
+    predicate has tests, the CLI has tests, and `praxis pending` would still
+    print "Nothing awaiting approval" over a real proposal.
+    """
+    await seed_user(db)
+    project = await client.post(
+        "/api/projects",
+        json={"name": "App", "repo_url": "https://github.com/u/a", "model_name": "m"},
+        headers=auth_headers,
+    )
+    queue = client.app.state.task_queue  # type: ignore[attr-defined]
+    plan_id = await queue.create_plan(project.json()["id"], source="autonomous")
+
+    resp = await client.get("/api/approvals/pending", headers=auth_headers)
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["proposal_count"] == 1
+    assert body["proposals"][0]["plan_id"] == plan_id
+    # Separate gate: it is not counted among the merge-gate items.
+    assert body["count"] == 0
+
+    # ...and drops out the moment the human answers it.
+    await queue.update_plan_status(plan_id, "rejected")
+    after = await client.get("/api/approvals/pending", headers=auth_headers)
+    assert after.json()["proposal_count"] == 0

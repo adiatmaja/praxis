@@ -618,6 +618,7 @@ async def _build_probes(request: Request) -> dict[str, Any]:
             configured_model=configured_worker_model,
             error=worker_probe_error,
             endpoint_required=endpoint_required,
+            endpoint=lm_studio_url,
         )
 
     callback_url = settings.agent_callback_url

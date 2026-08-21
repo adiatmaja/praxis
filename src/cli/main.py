@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import sys
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, NoReturn
@@ -16,6 +17,34 @@ from cli.doctor import doctor as _doctor
 from cli.init import init as _init
 from cli.init import parse_env
 
+
+def _force_utf8_stdout() -> None:
+    """Emit UTF-8 even when this CLI's output is redirected.
+
+    Attached to a Windows console, Python writes through WriteConsoleW and the
+    declared encoding is irrelevant. REDIRECTED, it falls back to the locale
+    encoding, which on a Windows install is cp1252. Rich truncates a too-wide
+    cell with U+2026, and cp1252 encodes that as the single byte 0x85, which is
+    not valid UTF-8. The result was that `praxis tasks | grep ...` reported
+    "Binary file (standard input) matches" and matched nothing, so every table
+    this CLI prints became unpipeable the moment a value was long enough to
+    truncate. Reconfiguring is a no-op for the interactive case and fixes the
+    redirected one.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        encoding = getattr(stream, "encoding", None) or ""
+        if encoding.lower().replace("-", "") == "utf8":
+            continue
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[union-attr]
+        except (AttributeError, ValueError, OSError):
+            # A stream that cannot be reconfigured (already detached, or
+            # replaced by a test harness) is left alone rather than crashing
+            # the CLI over its own output encoding.
+            continue
+
+
+_force_utf8_stdout()
 
 app = typer.Typer(name="orchestrator-cli", help="Praxis CLI")
 console = Console()
@@ -218,17 +247,40 @@ def projects() -> None:
 def add_project(
     name: str = typer.Argument(..., help="Project display name"),
     repo: str = typer.Argument(..., help="GitHub repo URL"),
-    model: str = typer.Argument(..., help="LM Studio model name"),
+    # Optional because the API has always allowed `model_name` to be null and
+    # fall back to the configured worker preset. Requiring it here asked the
+    # operator for a value that is undiscoverable under the shipped default
+    # (`gemini-agy`), whose model is named only in the settings YAML and nowhere
+    # the CLI prints. Still positional, so existing invocations are unchanged.
+    model: str | None = typer.Argument(
+        None,
+        help=(
+            "Worker model name for this project. Omit to use the model from "
+            "the configured worker preset."
+        ),
+    ),
+    harness: str | None = typer.Option(
+        None,
+        "--harness",
+        help=(
+            "Coding harness this project's worker runs in, e.g. 'opencode' or "
+            "'agy'. Omit to use the registry default. The server rejects an "
+            "unknown value and names the allowed set."
+        ),
+    ),
 ) -> None:
     """Register a new GitHub repository."""
 
+    body: dict[str, Any] = {"name": name, "repo_url": repo}
+    # Send only what was supplied. A null `model_name` or `harness` in the
+    # payload is not the same as an absent one: the project row would record an
+    # explicit null and stop tracking the preset.
+    if model is not None:
+        body["model_name"] = model
+    if harness is not None:
+        body["harness"] = harness
     with _client() as client:
-        data = _check_dict(
-            client.post(
-                "/api/projects",
-                json={"name": name, "repo_url": repo, "model_name": model},
-            )
-        )
+        data = _check_dict(client.post("/api/projects", json=body))
     console.print(f"[green]Created project:[/green] {data['id']}")
 
 
@@ -246,6 +298,15 @@ def configure(
             "e.g. 'python -m pytest -q'"
         ),
     ),
+    harness: str | None = typer.Option(
+        None,
+        "--harness",
+        help=(
+            "Coding harness this project's worker runs in, e.g. 'opencode' or "
+            "'agy'. The server rejects an unknown value and names the allowed "
+            "set."
+        ),
+    ),
 ) -> None:
     """Update project settings."""
 
@@ -258,6 +319,8 @@ def configure(
         body["max_retries"] = retries
     if verify_cmd is not None:
         body["verify_cmd"] = verify_cmd
+    if harness is not None:
+        body["harness"] = harness
     if not body:
         console.print("[yellow]No settings to update[/yellow]")
         return
@@ -358,23 +421,30 @@ def tasks(plan_id: str = typer.Argument(..., help="Plan ID")) -> None:
     with _client() as client:
         data = _check_list(client.get(f"/api/plans/{plan_id}/tasks"))
     table = Table(title="Tasks")
-    # Same contract as the Projects and Plans tables above: `task`, `stop`, and
-    # `merge` all take a full task id by exact match, so printing eight
-    # characters hands the operator something the API will reject.
-    table.add_column("ID", style="dim", max_width=36, overflow="fold")
+    # No ID column. `task`, `logs`, `stop`, and `merge` all take a full task id
+    # by exact match, and `max_width=36` did NOT deliver one: it is a maximum,
+    # not a minimum, so with five columns competing for an 80-column console
+    # rich shrank the id to 16 characters and folded each uuid across three
+    # rows. Raising it to `min_width` only moved the damage, pushing Status and
+    # Attempt off the right edge. So the id goes below the table as a copyable
+    # line, exactly as `pending` and `plans` already do, and the table keeps the
+    # columns you actually scan.
     table.add_column("Title")
     table.add_column("Branch")
     table.add_column("Status")
     table.add_column("Attempt")
     for task in data:
         table.add_row(
-            task["id"],
             task["title"],
             task["branch_name"],
             task["status"],
             str(task["attempt"]),
         )
     console.print(table)
+    if data:
+        console.print()
+        for task in data:
+            console.print(f"praxis task {task['id']}   # {task['title']}")
 
 
 @app.command()
@@ -556,11 +626,17 @@ def pending() -> None:
     """List tasks and completed plans parked at the human merge gate."""
     with _client() as client:
         data = _check_dict(client.get("/api/approvals/pending"))
-    if not data["count"]:
-        console.print("[green]Nothing awaiting approval.[/green]")
-        return
     tasks = data.get("tasks") or []
     plans_awaiting = data.get("plans") or []
+    # Autonomous proposals are gated separately from `count`, so they must be
+    # tested separately here too. Reading `count` alone printed "Nothing
+    # awaiting approval" while an improvement-loop proposal sat PENDING and
+    # only `praxis plans <project-id>` would reveal it, which meant knowing
+    # both that it existed and which project it belonged to.
+    proposals = data.get("proposals") or []
+    if not data["count"] and not proposals:
+        console.print("[green]Nothing awaiting approval.[/green]")
+        return
 
     if tasks:
         table = Table(title=f"{len(tasks)} task(s) awaiting approval")
@@ -586,6 +662,19 @@ def pending() -> None:
             )
         console.print(plan_table)
 
+    if proposals:
+        proposal_table = Table(
+            title=f"{len(proposals)} improvement proposal(s) awaiting approval"
+        )
+        proposal_table.add_column("Age")
+        proposal_table.add_column("Project", overflow="fold")
+        for proposal in proposals:
+            proposal_table.add_row(
+                f"{int(proposal['age_hours'])}h",
+                proposal["project_id"] or "",
+            )
+        console.print(proposal_table)
+
     console.print()
     # A bordered table wraps unpredictably once it leaves this terminal
     # (docker logs, CI log viewers, less, older SSH clients all hard-wrap at
@@ -609,6 +698,14 @@ def pending() -> None:
         )
         if plan["pr_url"]:
             console.print(f"  PR: {plan['pr_url']}")
+    for proposal in proposals:
+        # Both verbs, because unlike the merge gate this one is genuinely
+        # two-way and rejecting is the common answer: `approve` dispatches the
+        # proposal's tasks, `reject` closes it for good.
+        console.print(
+            f"praxis approve {proposal['plan_id']}   # or: praxis reject "
+            f"{proposal['plan_id']}"
+        )
 
 
 @app.command()

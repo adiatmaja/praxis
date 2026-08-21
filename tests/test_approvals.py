@@ -7,6 +7,7 @@ import pytest
 
 from orchestrator.core.approvals import (
     digest_line,
+    plan_awaits_approval,
     plan_awaits_integration,
     should_publish_digest,
     summarize_pending,
@@ -210,3 +211,84 @@ async def test_a_failing_digest_lookup_never_stalls_the_loop(
 
     # Must complete without raising, even though the digest lookup blew up.
     await orch.run_once()
+
+
+def _proposal(hours_old: float = 1.0, **overrides) -> dict:
+    """An autonomous improvement plan parked before any work starts."""
+    base = {
+        "id": "p-auto-1",
+        "project_id": "proj-1",
+        "source": "autonomous",
+        "status": "pending",
+        "created_at": (datetime.now(UTC) - timedelta(hours=hours_old)).isoformat(),
+    }
+    base.update(overrides)
+    return base
+
+
+@pytest.mark.unit
+def test_an_autonomous_pending_plan_awaits_approval():
+    assert plan_awaits_approval(_proposal()) is True
+
+
+@pytest.mark.unit
+def test_a_user_plan_at_pending_is_not_a_proposal():
+    """Isolates the `source` condition.
+
+    A user plan reaching PENDING is mid-planning, not waiting on a human.
+    Dropping the source check makes only this red.
+    """
+    assert plan_awaits_approval(_proposal(source="user")) is False
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("decided", ["active", "rejected", "completed"])
+def test_an_already_decided_autonomous_plan_is_not_a_proposal(decided):
+    """Isolates the `status` condition.
+
+    Once approved or rejected the proposal has been answered; re-listing it is
+    how a queue becomes noise. Dropping the status check makes only this red.
+    """
+    assert plan_awaits_approval(_proposal(status=decided)) is False
+
+
+@pytest.mark.unit
+def test_summarize_surfaces_proposals_so_pending_can_show_them():
+    summary = summarize_pending([], [_proposal()])
+    assert summary["proposal_count"] == 1
+    assert summary["proposals"][0]["plan_id"] == "p-auto-1"
+    # The project id travels with it: `praxis plans` needs one to look up.
+    assert summary["proposals"][0]["project_id"] == "proj-1"
+
+
+@pytest.mark.unit
+def test_a_proposal_is_not_counted_as_a_pull_request():
+    """`count` feeds `digest_line`, which calls its items "PRs".
+
+    A proposal has no branch and no PR, so folding it into `count` would make
+    the digest announce pull requests that do not exist. This is the guard that
+    keeps the two gates separate rather than merely both visible.
+    """
+    summary = summarize_pending([], [_proposal()])
+    assert summary["count"] == 0
+    assert digest_line(summary) == ""
+
+
+@pytest.mark.unit
+def test_integration_and_proposal_gates_do_not_capture_each_other():
+    """The two plan gates are disjoint, and neither claims the other's rows."""
+    awaiting_integration = {
+        "id": "p-user-1",
+        "project_id": "proj-1",
+        "source": "user",
+        "status": "completed",
+        "plan_branch_name": "plan/2026-08-21-widget",
+        "integration_pr_url": "https://github.com/o/r/pull/9",
+        "integration_merged_at": None,
+        "created_at": datetime.now(UTC).isoformat(),
+    }
+    summary = summarize_pending([], [awaiting_integration, _proposal()])
+    assert summary["plan_count"] == 1
+    assert summary["proposal_count"] == 1
+    assert summary["plans"][0]["plan_id"] == "p-user-1"
+    assert summary["proposals"][0]["plan_id"] == "p-auto-1"
