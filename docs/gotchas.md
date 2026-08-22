@@ -431,7 +431,12 @@ belongs among the everyday traps.
   `docker/agy-agent/extract_session.py`). Malformed or unrecognized JSON makes the extractor
   exit 1, and the entrypoint falls back to treating the raw agy output as the transcript
   exactly as it did before this feature, so a wrong guess degrades to today's behavior rather
-  than breaking the task. But the agy resume happy path (an id captured, stored, and
+  than breaking the task. **That sentence was FALSE until 2026-08-22, and this doc is part of
+  why it stayed hidden**: a well-formed envelope carrying no recognized body key returned 0
+  having printed only the conversation id, so the fallback never ran and the transcript was
+  discarded whole. The extractor now returns 1 when no candidate key yields a body, and a
+  second guard in the entrypoint copies RAW_LOG whenever the split leaves OUTPUT_LOG empty.
+  But the agy resume happy path (an id captured, stored, and
   successfully replayed) has never been exercised against real output; it needs a live
   dogfood run before anyone should rely on it. Both extractors are baked into their images at
   `/usr/local/bin/extract_session.py`, so a change here needs an agent IMAGE REBUILD like any
@@ -1567,3 +1572,134 @@ as a newcomer, not by reading it.
   box-drawing glyphs before collapsing whitespace. This is the SAFE direction
   of the strip-vs-keep rule: removing borders can only make a bad string easier
   to find, and cannot let prose satisfy a check that should have failed.
+
+
+## A fix applied to the doctor is not applied to the product
+
+Walkthrough #11's only new defect. `praxis status` printed `Opus: available` and
+`GET /api/status` reported `agent_model.name = claude-opus-4-8`, while `praxis doctor`, two
+commands away on the same install, correctly said `claude-sonnet-4-6`. The same endpoint
+reported a working agy worker as `{"name": "unknown", "connected": false}`.
+
+Both halves had ALREADY been fixed on the doctor. Run #9 taught its planner row to resolve
+through `EffectiveSettings.call_site_chain` precisely because a YAML role chain SHADOWS the
+per-call-site config, and its worker row already answers "not applicable: this harness does
+not use an OpenAI endpoint". The fix landed on the doctor and on nothing else, and
+`/api/status` went on reading the legacy `agent_model` setting (still defaulting to
+`claude-opus-4-8`) and probing LM Studio regardless of the configured harness.
+
+The doctor is where diagnosis lives, so a correction about what an install actually runs
+lands there naturally and feels complete. But every doctor row describes a fact that some
+other surface also reports: a status endpoint, a CLI verb, the dashboard. Fixing the
+diagnostic while leaving the product's own answer wrong is the worst version of the split,
+because the two disagree and the one a user reads first is the wrong one.
+
+**When a doctor row is corrected, grep for what else answers the same question and fix those
+in the same commit.** A subject re-sweep derived from the session's own diff cannot catch
+this, because the doctor-only fix changed nothing in that diff.
+
+## The progress handover read a repository that was not there
+
+`_build_worker_bible` called `branch_commit_log(".", base, branch)`. Inside the orchestrator
+container `.` is `/app`, which has no `.git` and no clone of the target repo anywhere on the
+filesystem, so the call raised on every dispatch and was swallowed by a bare
+`except Exception: commits = []`. Under a bare `uvicorn` from the repo root it was worse than
+empty: `.` is the Praxis repo, so the refspec resolved against Praxis's own branches.
+
+The consequence was silent and expensive. Every re-dispatched worker was handed a PROGRESS
+section with every checklist item unticked, i.e. told that nothing had been done, while the
+Static Bible told it that committing per checklist item is "how progress is tracked across
+restarts". So the mechanism the worker was instructed to rely on had never once worked, and
+the failure mode was a worker redoing completed work.
+
+Nothing caught it because every test mocked the reader to `[]`, which is exactly what the
+broken production path also produced. That is the shape to watch for: **a mock whose return
+value is indistinguishable from the bug**.
+
+Now `GitOps.remote_branch_commit_log` reads the branch from the REMOTE via
+`gh api repos/<slug>/compare/<base>...<branch>`, needing no clone, and `render_handover`
+distinguishes three states that used to render identically:
+
+- `commits == []` -> `# PLAN (no commits on this branch yet)`
+- `commits is None` -> `# PLAN (commit history unavailable; verify before redoing work)`
+- non-empty -> `# PROGRESS (resume here)`
+
+"Nothing was done" and "I could not find out what was done" are different facts, and
+rendering the second as the first is what tells a resumed worker to start over. On attempt 1
+the branch does not exist on the remote yet, so an unreadable history there IS "no commits";
+on a re-dispatch it is genuinely unknown. The dispatcher decides which by the attempt number.
+
+## "Nothing to commit" is a fact, and `commit_and_push` now returns it
+
+`git commit` exits 1 on a clean tree. Under `check=True` that raised `CalledProcessError`,
+and the two callers that write operator-authored text propagated it as a bare 500: saving a
+spec in the dashboard editor without editing it, and approving a context draft the planner
+had produced empty (which is the ordinary outcome when the planner is rate limited or
+hook-blocked, since `ContextSync.draft` ignores the `claude -p` return code entirely).
+
+`git_ops.commit_and_push` now returns `bool`: True when it committed and pushed, False when
+the index was already clean. Emptiness is decided by `git diff --cached --quiet`, which
+answers in exit codes rather than in prose and so cannot be defeated by a locale that
+translates "nothing to commit"; any other exit code falls through to attempting the commit,
+so a real failure still raises. `write_and_commit` and `ContextSync.approve` report
+`status: "unchanged"` rather than claiming a commit that is not in the repo.
+
+## The repo-access failure family is decided in ONE place
+
+Every route that reaches a target repository ends at `clone_with_token` or
+`commit_and_push`, both `subprocess.run(..., check=True)`. So they all fail identically: a
+`CalledProcessError` whose `str()` is only `Command '[...]' returned non-zero exit status
+128.` while the reason a human can act on sits unread on `.stderr`.
+
+Six routes handled that and four did not, so the four answered a bare 500 for an install
+that was merely missing a credential. `src/orchestrator/api/repo_errors.py` now holds the
+single handler: `guard_repo_access(awaitable, what=...)` maps `FileNotFoundError` to 404
+(the document is not there, which is the caller's mistake, not the remote's) and everything
+else to 502 carrying the decoded stderr. **Use it from any new route that touches a repo.** A
+remedy that lives in six copies is a remedy that will be corrected in five of them.
+
+Related, and the same rule one layer up: `POST /api/projects/{id}/plans` answered 502 for a
+missing GitHub credential where `POST /api/projects` answered 422 with the remedy. 502 says
+"upstream is broken, retry"; a missing credential is a permanent configuration fact that no
+retry heals. Both now answer 422.
+
+## A CRLF working copy makes a mutation harness lie
+
+A harness reported EIGHT working fixes as "STILL GREEN, inert guard". Every one of them was
+present and correct. The anchors were written with `\n`, the file had CRLF, and every
+multi-line anchor matched zero times.
+
+Two traps compound:
+
+1. `pathlib.write_text` translates `\n` to `\r\n` on Windows, so every file-based patch
+   script silently converts its target. Eight source files were converted in one session
+   before anyone noticed.
+2. **`pathlib.read_text` universal-newlines the file back**, so `"\r\n" in path.read_text()`
+   reports a CRLF file as clean. A hand-written CRLF guard is defeated by the very API it
+   uses to check.
+
+`.gitattributes` pins this tree to LF and normalizes on commit, so git hides the damage
+entirely and only the local working copy is affected, which is exactly where mutation
+harnesses run.
+
+Detect with `read_bytes()`, normalize with `.replace("\r\n", "\n")` before matching, and
+write back in the file's ORIGINAL style so the harness does not convert the file it is
+testing. "The guard did not go red" is the one conclusion a mutation harness exists to
+produce; reaching it by accident destroys the evidence the whole method rests on.
+
+## The suite under FORCE_COLOR is not the suite
+
+rich colorizes when it believes the stream can take it, and that belief is platform
+dependent: the Linux CI runner colorizes typer help where the Windows runner does not.
+Running the suite as `FORCE_COLOR=1 TERM=xterm-256color pytest` turned four guards red that
+pass uncoloured, because an escape lands INSIDE the phrase being matched (`abc-\x1b[1;36m123`
+never contains `abc-123`).
+
+`tests/cli_text.py` is now the single helper: `strip_ansi` when line structure matters
+(a copyable command must survive on ONE line), `plain` for prose assertions, `on_one_line`
+and `flat` for the common cases. Order is load-bearing and identical in all of them: ANSI
+first (an escape can sit mid-word), box glyphs second, whitespace last.
+
+It exists because there were already TWO private copies and they had DRIFTED: one stripped a
+hand-listed string of box glyphs, the other the whole `U+2500-U+257F` block, so the same
+phrase was matchable in one file and not the other.

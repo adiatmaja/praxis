@@ -298,6 +298,14 @@ in both directions and then gets cited as authority.)
 - **Windows port cleanup is `taskkill //PID <pid> //F`**, never `kill -9`.
 - **`.gitattributes` pins the working tree to LF.** The Windows CI runner checks out with
   `core.autocrlf=true`; CRLF silently breaks any `entrypoint.sh` executed by a test.
+- **`pathlib.write_text` converts a file to CRLF on Windows, and `read_text` HIDES it**
+  (universal newlines), so a `\n` anchor in a patch or mutation script silently misses
+  and reports a working fix as an inert guard. Detect with `read_bytes()`, normalize
+  before matching, write back in the original style.
+- **Assert on CLI output through `tests/cli_text.py`**, never on `result.stdout`
+  directly: rich colorizes on the Linux runner and not on the Windows one, so an escape
+  lands inside the matched phrase. Run the suite once as
+  `FORCE_COLOR=1 TERM=xterm-256color pytest` before believing a help-text guard.
 
 **Config and deployment**
 
@@ -343,6 +351,15 @@ in both directions and then gets cited as authority.)
   `llm_router.build_argv` so the probe runs the flags the loop runs. The row NAMES the
   provider and model it probed. A `local` planner is AMBER (no binary to probe), never
   a red; `codex` and `agy` stay "not probed" for the reasons in `probe_provider_roundtrip`.
+  `GET /api/status` and `praxis status` resolve it the SAME way now: they used to report
+  the legacy `agent_model` setting (`claude-opus-4-8`) and probe LM Studio regardless of
+  harness, so the status surface and the doctor disagreed about one install.
+- **A fix applied to the doctor is NOT applied to the product.** The doctor is where
+  diagnosis lives, so corrections about what an install actually runs land there and feel
+  complete, but every row describes a fact a status endpoint, a CLI verb or the dashboard
+  also reports. When a doctor row is corrected, grep for what else answers the same
+  question and fix it in the same commit; a subject sweep derived from the session's own
+  diff cannot catch this, because the doctor-only fix changed nothing in that diff.
 - **A YAML role chain SHADOWS `CALL_SITE_DEFAULTS` entirely**: once a call-site has a
   role (`core/roles.ROLE_OF_CALL_SITE`) and `models.roles` declares a chain for it,
   `EffectiveSettings.call_site_chain` returns that chain and never consults the defaults
@@ -480,6 +497,20 @@ in both directions and then gets cited as authority.)
 - **An omitted `harness` must never downgrade a project**: `execute_plan` and `dispatch` pass
   `None` through, so an existing project keeps its configured harness and only a NEW project
   falls back to the registry default.
+- **The progress handover reads the REMOTE branch**
+  (`GitOps.remote_branch_commit_log`, `gh api .../compare/`), never a local clone. It used
+  to pass `"."`, which in the container is `/app`: no `.git`, no target repo, so it raised
+  on every dispatch into a swallowed `except` and the mechanism never once worked. Three
+  states must stay distinguishable: `[]` is "no commits yet", `None` is "history
+  unavailable", non-empty is "resume here". Every test mocking it to `[]` is
+  indistinguishable from the bug, which is why it survived so long.
+- **`git_ops.commit_and_push` returns `bool`**: True committed, False the index was already
+  clean. "Nothing to commit" is a FACT (`git commit` exits 1 on a clean tree), and raising
+  it turned a no-op save into a 500. Callers must report `unchanged`, not a commit.
+- **Every route that touches a target repo goes through `api/repo_errors.guard_repo_access`**:
+  `FileNotFoundError` to 404, everything else to 502 carrying the decoded `.stderr`.
+  `str(CalledProcessError)` is only the exit code, and six routes handled that while four
+  answered a bare 500 for an install missing a credential.
 - **A submitted spec travels as a repo doc, never in the DB**: `POST /plans` commits it under
   `docs/superpowers/specs/` first and stores only `spec_path`; `plan_and_activate` reads it
   back through `Orchestrator._spec_reader` and fails the plan closed if it cannot. Both ends
@@ -517,7 +548,9 @@ in both directions and then gets cited as authority.)
   continuity (`specs/2026-06-29-worker-context-continuity-design.md`), capability-aware plan
   execution (`specs/2026-06-29-capability-aware-execution-design.md`), and the MCP orchestration
   guide (`2026-06-29-mcp-orchestration-guide-*`), each with a matching plan in
-  `docs/superpowers/plans/2026-06-29-*`. Delivers the Static Bible + git-spine progress handover,
+  `docs/superpowers/plans/2026-06-29-*`. Delivers the Static Bible + git-spine progress
+  handover (whose commit-log read was passing `"."` and had therefore never worked in
+  production until 2026-08-22; see the gotcha above),
   pre-flight token budgeting, the `execute_plan` entry point (REST + MCP) that capability-gates an
   externally-authored plan against the local model before dispatch, and the static MCP **resource**
   `praxis://guide/orchestration`. A live run on `openclaw-telegram` with `qwen3.6-27b` drove
