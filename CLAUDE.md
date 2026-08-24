@@ -391,11 +391,15 @@ in both directions and then gets cited as authority.)
 
 **The loop**
 
-- **Per-task review scoping DEPENDS on auto-delegate staying sequential, and NOTHING
-  enforces it**: in single-branch mode a task is reviewed on `review_base_sha..head`, the
-  sha being the branch head recorded BEFORE its container spawned. Two workers on that
-  branch at once interleave commits, both ranges widen to include the other's files, and
-  nothing errors. A re-dispatch KEEPS the recorded sha (the retry's commits sit on top of
+- **Per-task review scoping DEPENDS on one worker at a time, and the LOOP now enforces
+  it**: in single-branch mode a task is reviewed on `review_base_sha..head`, the sha being
+  the branch head recorded BEFORE its container spawned. Two workers on that branch at once
+  interleave commits, both ranges widen to include the other's files, and nothing errors.
+  Calling the mode sequential because "the brain dispatches one at a time" was true of the
+  MCP path and false of `execute_plan`, which dispatched a whole wave: measured live, the
+  second leaf was failed for creating the first's file. `dispatch_pending_tasks` starts ONE
+  task per wave there and holds while any task is `in_progress` or `reviewing`.
+  A re-dispatch KEEPS the recorded sha (the retry's commits sit on top of
   attempt one's); only a vanished branch gets a fresh one. A NULL sha means "the whole
   pull request", which is two-tier mode and every pre-migration row.
 - **Merge is gated by default**: a review PASS parks at `PASSED` and never auto-merges

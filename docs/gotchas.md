@@ -364,10 +364,19 @@ belongs among the everyday traps.
   empty diff reviews as a trivially passing change: both backends fall back to the whole
   pull request and log it. A NULL sha means "review the whole pull request", which is the
   pre-2026-08-24 behavior and what every two-tier row uses.
-  **The landmine:** that boundary is correct only while the mode is sequential. Two workers
-  committing to the shared branch at once interleave their commits, both ranges silently
-  widen to include the other's files, and nothing errors. Whoever makes the mode concurrent
-  for throughput has to solve the scoping first. The micro-edit lane
+  **The landmine, and it fired the same day:** that boundary is correct only while ONE
+  worker is on the branch at a time. The mode was called sequential on the ground that the
+  brain dispatches one task at a time, which is true of the MCP path and FALSE of
+  `execute_plan`, where the LOOP dispatches a whole wave with no brain in it. Measured live
+  2026-08-24: a two-leaf plan dispatched both leaves at once, both recorded the same base
+  sha because neither branch existed yet, and the second was failed by its reviewer for
+  creating the first's file, three attempts running. `dispatch_pending_tasks` now starts ONE
+  task per wave in single-branch mode and holds while any task on the branch is
+  `in_progress` or `reviewing`; `passed` does not hold, its review having already happened.
+  REVIEWING has to block for a different reason from IN_PROGRESS: a review resolves its
+  range when it RUNS, so a worker committing during someone else's review widens THAT
+  task's range. Whoever makes the mode concurrent for throughput has to solve the scoping
+  first. The micro-edit lane
   (`docs/superpowers/specs/2026-08-21-micro-edit-lane.md`) inherits the same constraint
   from the other side: a brain commit landing on that branch while a worker runs breaks the
   range for both.

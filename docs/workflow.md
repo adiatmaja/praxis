@@ -89,11 +89,15 @@
    - Commits, pushes, and creates a PR targeting the plan branch
    - Calls back to `/api/internal/agent-done` when finished
 
-5. **Code review** — Orchestrator fetches the PR diff via `gh pr diff` and routes it to
+5. **Code review** — Orchestrator fetches the diff and routes it to
    the review call-site: `review_diff_first` for the first read, `review_diff_rereview`
    for a re-read after fixes. Both carry the `review` role, so both resolve through the
    role chain in `config/praxis.yaml` (`review: [sonnet, haiku]`) and both run on Sonnet;
-   Haiku is the fallback rung, not the re-review tier. `CALL_SITE_DEFAULTS` still names
+   Haiku is the fallback rung, not the re-review tier. WHICH diff it fetches depends on
+   `tasks.review_base_sha`: with one recorded (every dispatch since 2026-08-24) the task is
+   reviewed on its OWN commits, `review_base_sha..head`, through `backend.get_diff_since`;
+   with a NULL sha it is the whole pull request via `gh pr diff`, exactly as before.
+   `CALL_SITE_DEFAULTS` still names
    Haiku for `review_diff_rereview`, and that default is shadowed by the role chain
    exactly as `docs/configurations.md` describes. Returns a JSON verdict: `pass` or
    `fail` with feedback.
@@ -141,7 +145,14 @@ Auto-delegate mode is a global toggle that reframes the same loop as a daily dri
 with it ON, the brain never edits code directly. For every implementation task the brain
 designs the worker prompt, dispatches it to a single global default worker, and reviews the
 returned PR. Planning, prompt design, and review stay with the brain; the coding is always
-delegated. Mode is sequential in v1 (one delegate in flight at a time).
+delegated. Mode is sequential in v1 (one delegate in flight at a time), and that is
+load-bearing rather than a simplification: per-task review scoping depends on it. Two
+workers committing to the shared branch at once interleave their commits, both review
+ranges silently widen to include the other's files, and nothing errors. For the plans
+Praxis dispatches itself, `dispatch_pending_tasks` enforces it: one task per wave, held
+while any task on that branch is in progress or under review. A caller driving
+`dispatch_task` against the same branch still has to keep the rule itself. See the gotcha
+in `docs/gotchas.md`.
 
 Toggle it from any client:
 
@@ -156,7 +167,7 @@ PUT  /api/settings/auto-delegate        # {enabled: true|false}
 The MCP `get_mode` tool returns the same `{enabled, worker}` shape, so an MCP-driven brain can
 check whether it should delegate before touching code.
 
-Three mechanisms make the mode work:
+Four mechanisms make the mode work:
 
 1. **Global default worker (fallback).** The delegated worker is resolved from
    `default_worker_harness` / `default_worker_model` in `config/praxis.yaml` (reference config:

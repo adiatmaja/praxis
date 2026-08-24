@@ -206,6 +206,44 @@ class DispatchMixin:
             config = await self._effective_settings.difficulty_config()
             flag_below = float(config["flag_below"])
 
+        if single_branch and dispatchable:
+            # SERIALIZE. Every task in this mode pushes to ONE shared work
+            # branch, and each is reviewed on the commits it added after the
+            # branch head recorded at its dispatch. Two workers on that branch
+            # at once interleave their commits, both ranges widen to include the
+            # other's files, and nothing errors. Measured live on 2026-08-24: an
+            # execute_plan of two independent leaves dispatched both in one
+            # wave, both recorded the SAME base sha (neither branch existed
+            # yet), and the second was failed by its reviewer for creating the
+            # first's file, three attempts running.
+            #
+            # The mode was documented as sequential on the ground that the brain
+            # dispatches one task at a time. That is true of the MCP path and
+            # false here: the loop dispatches a whole wave with no brain in it.
+            # So the constraint is enforced where the branch is shared rather
+            # than assumed.
+            #
+            # REVIEWING blocks too, and not only IN_PROGRESS: a review resolves
+            # its range when it runs, so a worker committing while another task
+            # is under review widens THAT task's range instead. PASSED does not
+            # block, its review having already happened.
+            busy = [
+                t
+                for t in all_tasks
+                if t["status"] in (TaskStatus.IN_PROGRESS, TaskStatus.REVIEWING)
+            ]
+            if busy:
+                logger.info(
+                    "Plan %s is in single-branch mode with %d task(s) still "
+                    "active on %s; holding the next dispatch so per-task review "
+                    "scoping stays correct",
+                    plan_id,
+                    len(busy),
+                    plan.get("plan_branch_name") or project["default_branch"],
+                )
+                return
+            dispatchable = dispatchable[:1]
+
         for task in dispatchable:
             prompt = self._task_prompt(task, project)
 

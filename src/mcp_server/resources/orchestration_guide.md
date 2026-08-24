@@ -105,12 +105,16 @@ runs in the background, and you poll for the result. The MCP connection is blind
 calls: nothing streams to you, so you must poll.
 
 **In auto-delegate mode, dispatch ONE task at a time and let it reach a terminal status
-before dispatching the next.** Nothing enforces this, and it is not only a courtesy to the
-worker: every task in that mode pushes to one shared work branch, and each task's review is
-bounded to the commits it added after the branch head recorded when it was dispatched. Two
-workers committing to that branch at once interleave their commits, so both reviews silently
-widen to include the other's files, which is exactly the out-of-scope failure the scoping
-removes. Nothing errors when this happens.
+before dispatching the next.** Every task in that mode pushes to one shared work branch, and
+each task's review is bounded to the commits it added after the branch head recorded when it
+was dispatched. Two workers committing to that branch at once interleave their commits, so
+both reviews silently widen to include the other's files, which is exactly the out-of-scope
+failure the scoping removes, and nothing errors when it happens.
+
+Praxis enforces this for the plans IT dispatches: in single-branch mode the loop starts one
+task per wave and holds while any task on the branch is in progress or under review. It
+cannot enforce it for you when you drive `dispatch_task` yourself against the same branch,
+so the rule above is still yours to keep.
 
 ## 2. Picking the tool
 
