@@ -82,8 +82,11 @@ than re-deriving; they were argued word by word.
   Praxis takes the plan from there.
 - **README opening paragraph:** leads with the same definition, then the
   mechanism chain (decompose to the worker model's capability, dispatch to a
-  pluggable harness in Docker, verify, review, PR parked for approval),
-  closing on "Never a blind dispatch."
+  pluggable harness in Docker, verify, review, PR parked for approval).
+  "Never a blind dispatch" closes the decomposition paragraph in the governed
+  section instead, where "dispatch" has been defined; in the opening it landed
+  before a first-time reader knew what a dispatch was (Fable newcomer audit,
+  2026-08-24).
 
 ## The problem, concretely
 

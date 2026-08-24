@@ -24,21 +24,31 @@
 
 Praxis is a provider-agnostic orchestrator for the execution phase of spec-driven
 development, the workflow where you brainstorm, spec, and plan before any code is
-written: do those three wherever you like, then hand Praxis the plan. Set up inside
+written. Do those three wherever you like, then hand Praxis the plan. Set up inside
 the coding assistant you already use and wired in over MCP (Model Context Protocol),
-it decomposes the plan to fit the worker model that implements it, dispatches each
-task to the harnesses that do the typing (OpenCode, an open-source coding harness,
-driving any OpenAI-compatible model; Antigravity, Google's Gemini harness, driven via
-its `agy` CLI), and gates every change: checked by the verify gate when
-you configure one, reviewed by a second model, and delivered as a pull request that
-waits for your approval. Never a blind dispatch. One session, no copy-pasted plans,
-no switching tools by hand. (A CLI and a dashboard drive the same engine.)
+it decomposes the plan to fit the worker model that implements it and dispatches each
+task to the harnesses that do the typing. Every change is gated: the verify gate runs
+when you configure one, a second model reviews the diff, and the result is a pull
+request that waits for your approval. One session, no copy-pasted plans, no switching
+tools by hand. (A CLI and a dashboard drive the same engine.)
 
 > [!NOTE]
-> **"Harness"** here means any agentic coding tool: Claude Code, OpenCode, Antigravity,
-> Codex CLI. Concretely: if you use Claude Code, Praxis lets it hand a coding task to
-> Gemini or a local open-weight model working in a disposable container, then review the
-> pull request that comes back. Nothing merges until you approve it.
+> **"Harness"** here means any agentic coding tool: Claude Code, OpenCode (open source,
+> drives any OpenAI-compatible model), Antigravity (Google's Gemini harness; its CLI is
+> `agy`), Codex CLI. Concretely: if you use Claude Code, Praxis lets it hand a coding
+> task to Gemini or a local open-weight model working in a disposable container, then
+> review the pull request that comes back. Nothing merges until you approve it.
+
+The shape of a session, so you see the loop close before the architecture:
+
+```
+you        "use praxis to implement docs/plans/rate-limit.md on my-api"
+assistant  plan accepted: 4 tasks, each sized for the configured worker
+              ...workers run in containers; your session keeps going...
+assistant  4/4 tasks passed verify and review, PRs parked for your approval:
+           https://github.com/you/my-api/pull/17 ...
+you        "merge them" -> praxis merge-plan <plan-id>, or the dashboard's Merge button
+```
 
 ```
   ┌──────────────────────────────────────────────────────────┐
@@ -66,13 +76,24 @@ no switching tools by hand. (A CLI and a dashboard drive the same engine.)
                                ▼
   ┌──────────────────────────────────────────────────────────┐
   │  reviewed pull requests, parked for your approval        │
-  │  GitHub · branches + PRs (the one platform contract)     │
+  │  GitHub · branches + pull requests                       │
   └──────────────────────────────────────────────────────────┘
 ```
 
 GitHub is the one intentional platform dependency, because inspectable, revertible PRs
 are the loop's unit of trust. No GitLab or Bitbucket support today; a local-only mode
 works without any remote.
+
+## Table of Contents
+
+- [Why Praxis exists](#why-praxis-exists)
+- [Features](#features)
+- [How the output is governed](#how-the-output-is-governed)
+- [Quick Start](#quick-start)
+- [Status](#status)
+- [Documentation](#documentation)
+- [Security Model](#security-model)
+- [Contributing](#contributing) · [License](#license)
 
 ## Why Praxis exists
 
@@ -114,7 +135,8 @@ single-branch review flow is still being hardened; treat it as a preview.
 **Capability-aware task decomposition.** The core mechanism. Praxis keeps a capability
 profile of the implementing model and decomposes every plan against it, so no task asks
 for more than the worker can deliver; what still exceeds its reach is escalated instead
-of quietly failing, and recorded outcomes tune the difficulty gate for next time.
+of quietly failing, and recorded outcomes tune the difficulty gate for next time. Never
+a blind dispatch.
 
 **A deterministic verify gate before any model reviews.** Tests, lint, or a build command
 run first when configured; a non-zero exit fails the task cheaply, before a review model
@@ -129,8 +151,8 @@ branch without you.
 fresh from `origin`; your working tree is never touched, and only the pushed branch and
 its PR remain.
 
-Five more behaviors round out the loop, each recorded as a fact rather than
-surfaced as an error:
+Five more behaviors round out the loop; each is a normal, recorded outcome, not
+an error:
 
 - **A worker can ask instead of guessing.** A task that needs a human decision
   parks at the clarification gate and waits indefinitely; `praxis pending` lists
@@ -146,8 +168,8 @@ surfaced as an error:
   completes, an improvement pass surveys the repository and may park a follow-up
   proposal at `praxis pending`; nothing runs until you approve it.
 - **A rate limit pauses the loop, it does not break it.** When a subscription
-  window closes (Claude's five-hour limit is the archetype), brain calls queue
-  and the loop resumes on its own once the window reopens.
+  window closes (Claude's five-hour limit is the archetype), planner and reviewer
+  calls queue up, and the loop resumes on its own once the window reopens.
 
 The planner turns a spec or `plan.md` into a dependency-ordered task graph; tasks run in
 parallel where dependencies allow, each on its own `agent/{task-slug}` branch under a
@@ -196,7 +218,9 @@ What you need before starting:
 
 A local worker model additionally needs [LM Studio](https://lmstudio.ai/) and hardware
 that can serve it; tiers and sizing in
-[docs/open-weight-models-complete.md](docs/open-weight-models-complete.md).
+[docs/open-weight-models-complete.md](docs/open-weight-models-complete.md). The
+smallest tryout needs none of that: Docker, uv, one subscription CLI, the default
+preset, and a single dispatched task will close the whole loop.
 
 ```bash
 git clone https://github.com/adiatmaja/praxis.git
@@ -264,7 +288,9 @@ OpenAI-compatible endpoint. Full setup and deployment modes:
 Praxis is 0.1.0, pre-1.0, and under active development; expect breaking changes until
 1.0. Implement-a-plan is the mature path: it is regularly exercised end to end, cold
 install to merged PR on a real repository. Auto-delegate mode is beta, as flagged
-above.
+above. OpenCode and Antigravity (`agy`) are the worker harnesses shipped and tested;
+the harness contract is deliberately pluggable, so others should work once wired in,
+but none have been tested.
 
 ## Documentation
 
