@@ -27,16 +27,16 @@
   <a href="https://github.com/adiatmaja/praxis/stargazers"><img alt="Stars" src="https://img.shields.io/github/stars/adiatmaja/praxis?style=social"></a>
 </p>
 
-Praxis is a provider-agnostic orchestrator for the execution phase of spec-driven
-development, the workflow where you brainstorm, spec, and plan before any code is
-written. Do those three wherever you like, then hand Praxis the plan. Set up inside
+You did the planning with a strong model; Praxis takes it from there. Set up inside
 the coding assistant you already use and wired in over MCP (Model Context Protocol),
-it decomposes the plan to fit the worker model that implements it and dispatches each
-task to the harnesses that do the typing. Every change is gated: the verify command
+it decomposes your plan to fit the worker model that implements it, dispatches each
+task to the harnesses that do the typing, and gates every change: the verify command
 you set per project (tests, lint, a build) runs first, a second model reviews the
-diff, and the result is a pull
-request that waits for your approval. One session, no copy-pasted plans, no switching
-tools by hand. (A CLI and a dashboard drive the same engine.)
+diff, and the result is a pull request that waits for your approval. In one phrase:
+a provider-agnostic orchestrator for the execution phase of spec-driven development,
+the workflow where brainstorm, spec, and plan come before code; do those three
+wherever you like, then hand Praxis the plan. One session, no copy-pasted plans, no
+switching tools by hand. (A CLI and a dashboard drive the same engine.)
 
 > [!NOTE]
 > **"Harness"** here means any agentic coding tool: Claude Code,
@@ -52,7 +52,7 @@ The shape of a session, so you see the loop close before the architecture:
 you        "use praxis to implement docs/plans/rate-limit.md on my-api"
 assistant  plan accepted: 4 tasks, each sized for the configured worker
               ...workers run in containers; your session keeps going...
-assistant  4/4 tasks passed verify and review, PRs parked for your approval:
+assistant  4/4 tasks passed verify and review, PRs waiting for your approval:
            https://github.com/you/my-api/pull/17 ...
 you        "merge them" -> praxis merge-plan <plan-id>, or the dashboard's Merge button
 ```
@@ -89,7 +89,7 @@ you        "merge them" -> praxis merge-plan <plan-id>, or the dashboard's Merge
 
 Pull requests are the loop's unit of trust: inspectable, revertible, approved by you.
 GitHub is the one platform Praxis speaks today (no GitLab or Bitbucket); local-only
-mode keeps the same gates on local branches, no remote involved.
+mode runs the same loop against local branches, merging without PRs or any remote.
 
 ## Table of Contents
 
@@ -109,7 +109,8 @@ the ask to what the model can actually do, nothing checked the result, no second
 before it lands. The usual workaround, planning with a strong model and pasting the plan
 into a cheaper one, breaks differently: the worker never sees the context the plan was
 written with, some tasks are simply beyond it, and nothing warns you about either. Praxis
-is the governing layer that closes both gaps. The harnesses stay interchangeable; the
+closes both gaps: it carries the plan's context to the worker intact, and it sizes and
+checks every task on the way through. The harnesses stay interchangeable; the
 discipline around them does not.
 
 ## Features
@@ -140,7 +141,9 @@ single-branch review flow is still being hardened; treat it as a preview.
 ```
 
 **Capability-aware task decomposition.** The core mechanism. Praxis keeps a capability
-profile of the implementing model and decomposes every plan against it, so no task asks
+profile of the implementing model, built from the model's context window plus the
+recorded outcomes of its past tasks on your install, and decomposes every plan against
+it, so no task asks
 for more than the worker can deliver; what still exceeds its reach is escalated, split
 smaller or sent to a stronger model, instead of quietly failing, and recorded outcomes
 tune the difficulty gate for next time. Never a blind dispatch.
@@ -200,8 +203,8 @@ Interchangeable examples, not a blessed pairing:
   │   capability  │    │  pull request │    │      gate     │    │     merge     │
   └───────────────┘    └───────────────┘    └───────────────┘    └───────────────┘
      any provider        any harness +         any command          any provider
-   (Claude · GLM ·     open-weight model     (tests · lint ·      (Claude · GLM ·
-    Codex · local)      (LM Studio · …)           build)            GPT · local)
+   (Claude · GPT ·     open-weight model     (tests · lint ·      (Claude · Qwen ·
+    Codex · local)      (LM Studio · …)           build)             GPT · local)
 ```
 
 Tier recommendations, worker presets, and whole-loop arrangements:
@@ -222,7 +225,7 @@ What you need before starting:
 |----------|-----|
 | Docker | the orchestrator and every worker container |
 | Python 3.11+ and [uv](https://docs.astral.sh/uv/) | the CLI |
-| One planner CLI on a subscription: `claude`, `codex`, or `agy` | the planning and review seats |
+| One planner CLI on a subscription: `claude`, `codex`, or `agy` (Antigravity) | the planning and review seats |
 | A GitHub token, or answer `skip` for local-only mode | branches and pull requests |
 
 A local worker model additionally needs [LM Studio](https://lmstudio.ai/) and hardware
@@ -317,9 +320,10 @@ but none have been tested.
 
 ## Security Model
 
-Praxis is designed for a **single trusted operator on hardware they control**. Treat
-`AUTH_TOKEN` as root on the host, prefer a GitHub App over a broad PAT, and keep the merge
-gate enforced with branch protection. Read the full model in
+Praxis is designed for a **single trusted operator on hardware they control**. A worker
+container sees its cloned repo and the GitHub token you provide, so scope that token to
+the repositories Praxis should touch. Treat `AUTH_TOKEN` as root on the host, prefer a
+GitHub App over a broad PAT, and keep the merge gate enforced with branch protection. Read the full model in
 [docs/deployment.md](docs/deployment.md#security--trust-model) before exposing it beyond localhost.
 Found a vulnerability? Report it privately: [SECURITY.md](SECURITY.md).
 

@@ -80,9 +80,13 @@ than re-deriving; they were argued word by word.
   "orchestrator" framing the guidance below cautions against, and it names
   the slot: brainstorm, spec, and plan happen wherever the user likes;
   Praxis takes the plan from there.
-- **README opening paragraph:** leads with the same definition, then the
-  mechanism chain (decompose to the worker model's capability, dispatch to a
-  pluggable harness in Docker, verify, review, PR parked for approval).
+- **README opening paragraph:** leads PLAIN ("you did the planning with a strong
+  model; Praxis takes it from there"), then the mechanism chain (decompose to the
+  worker model's capability, dispatch, verify, review, PR parked for approval),
+  and demotes the formal definition to an "In one phrase:" second beat. Two
+  independent Fable newcomer audits (2026-08-24) scored the definition-first
+  opening as the page's main defect; the definition itself is unchanged, only
+  its position.
   "Never a blind dispatch" closes the decomposition paragraph in the governed
   section instead, where "dispatch" has been defined; in the opening it landed
   before a first-time reader knew what a dispatch was (Fable newcomer audit,
