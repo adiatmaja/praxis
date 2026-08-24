@@ -9,24 +9,31 @@ loop. It splits the software engineering loop into four roles - **plan**, **impl
 and decomposes every plan to fit the capability of the model that implements it. Nothing is
 hard-wired to a single vendor.
 
-**Framing (canonical, 2026-08-22):** the identity is *a tool for agentic AI to govern other
-coding harnesses* - set up inside the harness you already use, every change governed by the
-loop instead of one-shotted. Praxis is NOT itself a harness. Public wording is
-"govern/governed", never "predictable" (unbenchmarked claim); avoid "meta-harness" and
-"control plane" (claimed by larger projects). **Implement-a-plan is the flagship FEATURE**
-(a single dispatched task is its smallest case); auto-delegate mode is the companion
-feature (still beta until a walkthrough live-verifies the 2026-08-24 review-scope fix),
-presented after the flagship, never beside it. Capability-aware task decomposition is the
-flagship MECHANISM (unique in the landscape); role separation is the supporting
-architecture; cost is a consequence. SSoT: `docs/positioning.md` ("The framing").
-Flagship mechanism under development: the **Capability Calibration Loop** -
-`docs/superpowers/specs/2026-07-11-capability-engine-roadmap.md` (F1-F15, S1-S11).
+**Framing (canonical, 2026-08-22; presentation updated 2026-08-24):** the identity is *a
+tool for agentic AI to govern other coding harnesses* - set up inside the harness you
+already use, every change governed by the loop instead of one-shotted. Praxis is NOT
+itself a harness. The public presentation names its SLOT: the **execution phase of
+spec-driven development** - brainstorm, spec, and plan happen wherever the user likes,
+Praxis takes the plan from there (same identity, stated by workflow position). Public
+wording is "govern/governed", never "predictable" (unbenchmarked claim); avoid
+"meta-harness" and "control plane" (claimed by larger projects). **Implement-a-plan is
+the flagship FEATURE** (a single dispatched task is its smallest case); auto-delegate
+mode is the companion feature (still beta until a walkthrough live-verifies the
+2026-08-24 review-scope fix), presented after the flagship, never beside it.
+Capability-aware task decomposition is the flagship MECHANISM (unique in the landscape);
+role separation is the supporting architecture; cost is a consequence. **The exact public
+copy - README headline ("Govern any coding harness from inside the one you already
+use."), GitHub About, README opener - is frozen in `docs/positioning.md` ("Canonical
+copy (2026-08-24)"): copy it verbatim, never re-derive it.** SSoT: `docs/positioning.md`
+("The framing"). Flagship mechanism under development: the **Capability Calibration
+Loop** - `docs/superpowers/specs/2026-07-11-capability-engine-roadmap.md` (F1-F15, S1-S11).
 
 The reference configuration pairs a subscription reasoning model (e.g. Claude via `claude -p`)
 for planning/review with an open-weight model (e.g. via LM Studio) driving a pluggable coding
 harness in Docker for implementation, but any role can point at any supported provider
 (`claude`, `codex`, `agy`, or a `local` OpenAI-compatible endpoint) via the LLM router.
-Harnesses are pluggable too: OpenCode is the default, Antigravity (agy/Gemini) experimental.
+Worker harnesses are pluggable too: OpenCode (default) and Antigravity (agy/Gemini) ship
+and are both tested; the harness contract supports others, but none are tested.
 
 ## Tech Stack
 

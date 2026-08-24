@@ -4,7 +4,7 @@ This doc captures *why* Praxis exists, what makes it genuinely different from
 off-the-shelf tools, and an honest account of its limitations. It is the
 reference for keeping the README and marketing aligned with reality.
 
-## The framing (canonical, 2026-08-22)
+## The framing (canonical, 2026-08-22; presentation updated 2026-08-24)
 
 **Identity: Praxis is not itself a harness. It is a tool set up inside the
 harness the user already works in, enabling that harness to manage, control,
@@ -18,6 +18,17 @@ of the same engine); Praxis runs the other harnesses and holds every change to
 the gated loop: deterministic verify, model review, PR-per-change, human merge
 gate. When Praxis does the planning, tasks are additionally capability-sized
 to the worker.
+
+**The slot (presentation, 2026-08-24):** the public copy names where Praxis
+sits in a workflow: the **execution phase of spec-driven development**.
+Brainstorm, spec, and plan happen wherever the user likes; Praxis takes the
+plan from there. This is the same identity stated by workflow position rather
+than by capability: "implement-a-plan is the flagship feature" and "the
+execution phase is Praxis's slot" are one claim, phrased for two audiences.
+"Spec-driven development" is used deliberately: it is the term GitHub and
+Microsoft are standardizing (Spec Kit's specify/plan/tasks/implement), it is
+searchable and rising, and it positions Praxis as completing the SDD
+toolchain instead of competing with spec/plan tooling.
 
 Three consequences of that identity, in priority order:
 
