@@ -148,11 +148,12 @@ returned PR. Planning, prompt design, and review stay with the brain; the coding
 delegated. Mode is sequential in v1 (one delegate in flight at a time), and that is
 load-bearing rather than a simplification: per-task review scoping depends on it. Two
 workers committing to the shared branch at once interleave their commits, both review
-ranges silently widen to include the other's files, and nothing errors. For the plans
-Praxis dispatches itself, `dispatch_pending_tasks` enforces it: one task per wave, held
-while any task on that branch is in progress or under review. A caller driving
-`dispatch_task` against the same branch still has to keep the rule itself. See the gotcha
-in `docs/gotchas.md`.
+ranges silently widen to include the other's files, and nothing errors. `dispatch_pending_tasks`
+enforces it at the BRANCH: one task per wave, held while any task on that branch is in
+progress or under review, across every plan in the project. The cross-plan scope is what
+makes it cover a caller too, since each `dispatch_task` becomes its own one-task plan that
+this same loop then picks up. What is still unenforceable is a commit pushed to that branch
+from outside Praxis. See the gotcha in `docs/gotchas.md`.
 
 Toggle it from any client:
 

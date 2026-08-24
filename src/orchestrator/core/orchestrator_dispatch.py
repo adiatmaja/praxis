@@ -288,10 +288,13 @@ class DispatchMixin:
                 # ``review_base_sha`` (see the plan named in
                 # ``_resolve_review_base_sha``). That boundary is correct only
                 # while the mode stays sequential, one delegate in flight.
-                # For the plans THIS loop dispatches, the hold above enforces
-                # it; a caller driving MCP ``dispatch_task`` against the same
-                # branch is outside that hold and keeps the rule itself, told
-                # to by ``src/mcp_server/resources/orchestration_guide.md``.
+                # The hold above covers a caller's dispatches too, and that is
+                # the whole reason it is keyed on the branch across the project
+                # rather than on one plan: each MCP ``dispatch_task`` becomes
+                # its own one-task plan, which THIS loop then picks up, so it
+                # is inside the hold exactly like a task the loop chose itself.
+                # What is still unenforceable is a commit pushed to this branch
+                # from outside Praxis; nothing can hold a commit it never saw.
                 # Two workers committing to this branch at once interleave
                 # their commits, so both ranges silently widen to include the
                 # other's files, which is the out-of-scope failure the scoping

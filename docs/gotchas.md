@@ -202,10 +202,16 @@ belongs among the everyday traps.
   It also requires a **4-backtick outer fence** around any embedded file content that
   itself contains a ` ```lang ` block — a 3-backtick outer fence renders malformed (even
   on GitHub). The renderer only repairs single fences; this is the source-side fix.
-- **`/api/status` Planner availability is CLI-probed, not DB-only** — `api/system.py`
-  `_probe_claude_cli` runs `claude --version` (cached 60s) and gates `agent_model.connected`
-  on it, so a missing `claude` binary no longer reports "available" off the `opus_state` row
-  alone. The response also carries `agent_model.cli_available` and the effective `lm_studio_url`.
+- **`/api/status` probes the planner's OWN provider, and says when it did not** —
+  `api/system._resolve_planner_target` resolves the `plan_spec` chain head to
+  `{provider, model}` and `_probe_provider` probes THAT provider, but only when
+  `planner_provider_kind` says it is a CLI. It used to run an unconditional
+  `claude --version`, so an install whose plan chain resolves to `local`, `codex` or `agy`
+  named the right model beside the wrong binary's availability. For a non-CLI or
+  unresolved planner the response carries `connected_measured: false` and a `detail`
+  saying why, rather than a verdict nobody measured; `agent_model.provider` names what
+  resolved. The top-level `agents_reachable` does the same job for the container counts:
+  `0 / 0` used to mean "idle" and "could not ask the daemon" identically.
 - **LM Studio URL shown in the dashboard is the effective (global) one** — the agent uses
   `EffectiveSettings.lm_studio_url()` (global override → env default), NOT the per-project
   `projects.lm_studio_url` column. The project config panel reads `lm_studio_url` from

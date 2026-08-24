@@ -27,6 +27,7 @@ from orchestrator.core.harnesses import default_harness_id
 from orchestrator.core.merge_policy import is_protected_branch
 from orchestrator.core.preflight import (
     PreflightError,
+    PreflightKind,
     assert_repo_url_allowed,
     credential_configured,
     preflight_remote,
@@ -44,7 +45,9 @@ def _slugify(text: str) -> str:
     return f"{base}-{uuid.uuid4().hex[:6]}"
 
 
-async def _preflight(body: DispatchRequest, settings: Any) -> list[str]:
+async def _preflight(
+    body: DispatchRequest, settings: Any, *, work_branch_may_be_new: bool = False
+) -> list[str]:
     """Validate remote state before writing any DB rows.
 
     Delegates read-only remote checks to the shared :func:`preflight_remote`
@@ -53,6 +56,10 @@ async def _preflight(body: DispatchRequest, settings: Any) -> list[str]:
     Args:
         body: The incoming dispatch request.
         settings: Application settings (must expose ``github_token``).
+        work_branch_may_be_new: True when ``body.branch`` names the shared WORK
+            branch of auto-delegate mode rather than a base branch. Praxis
+            creates that branch itself, so its absence is reported as a warning
+            instead of refusing the dispatch.
 
     Returns:
         A (possibly empty) list of non-fatal warning strings.
@@ -109,6 +116,7 @@ async def _preflight(body: DispatchRequest, settings: Any) -> list[str]:
         provider = PatCredentialProvider("")
     git = GitOps(provider)
 
+    warnings: list[str] = []
     try:
         warnings = await preflight_remote(
             git,
@@ -120,6 +128,28 @@ async def _preflight(body: DispatchRequest, settings: Any) -> list[str]:
             credential_configured=cred_configured,
         )
     except PreflightError as exc:
+        if exc.kind is PreflightKind.MISSING_BRANCH and work_branch_may_be_new:
+            # In auto-delegate mode ``branch`` is the caller-named WORK branch,
+            # not a base that must already exist, and Praxis is what creates
+            # it: the worker's entrypoint on its first push, or the micro-edit
+            # lane from the base branch. Refusing it here made the mode's very
+            # first step fail, with a message that reads as the caller's
+            # mistake, and it made the lane's create-the-branch path
+            # unreachable through the API that is the only way to enter it.
+            # Found live in walkthrough #13.
+            #
+            # Downgraded rather than skipped: the check still ran, and the
+            # answer still travels, so a caller that mistyped a branch it
+            # believed existed can see that in ``warnings`` instead of
+            # discovering it as a mysterious second branch. Every other
+            # preflight kind (auth, network, missing repo) still fails closed.
+            return [
+                *warnings,
+                (
+                    f"branch {body.branch} does not exist on the remote yet; "
+                    "auto-delegate mode will create it on the first commit"
+                ),
+            ]
         http_status, detail = status_and_detail(exc)
         raise HTTPException(
             status_code=http_status,
@@ -134,7 +164,7 @@ async def _preflight(body: DispatchRequest, settings: Any) -> list[str]:
     return warnings
 
 
-async def _preflight_micro_edit(request: Request, body: DispatchRequest) -> None:
+def _preflight_micro_edit(body: DispatchRequest, *, auto_delegate: bool) -> None:
     """Reject a micro edit the lane cannot honestly run, at the boundary.
 
     Both conditions are checked again where the lane actually executes, because
@@ -144,8 +174,8 @@ async def _preflight_micro_edit(request: Request, body: DispatchRequest) -> None
     itself and one that has to read a task's feedback to find out.
 
     Args:
-        request: The live request, for ``app.state.effective_settings``.
         body: The dispatch payload.
+        auto_delegate: Whether auto-delegate mode is on right now.
 
     Raises:
         HTTPException: 422 when no branch was named, or when auto-delegate is
@@ -163,11 +193,7 @@ async def _preflight_micro_edit(request: Request, body: DispatchRequest) -> None
                 "and nothing to bound."
             ),
         )
-    es = getattr(request.app.state, "effective_settings", None)
-    enabled = False
-    if es is not None:
-        enabled = await es.auto_delegate_enabled()
-    if not enabled:
+    if not auto_delegate:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=(
@@ -191,9 +217,17 @@ async def dispatch_task(request: Request, body: DispatchRequest) -> dict[str, An
     queue = request.app.state.task_queue
     settings = request.app.state.settings
 
+    # Resolved ONCE and shared: the mode decides both whether a micro edit is
+    # allowed and whether an absent branch is an error, and reading it twice
+    # could answer differently for the two if it were toggled in between.
+    es = getattr(request.app.state, "effective_settings", None)
+    auto_delegate = bool(es is not None and await es.auto_delegate_enabled())
+
     # Preflight: validate remote state before touching the database.
-    warnings = await _preflight(body, settings)
-    await _preflight_micro_edit(request, body)
+    warnings = await _preflight(
+        body, settings, work_branch_may_be_new=auto_delegate and body.branch is not None
+    )
+    _preflight_micro_edit(body, auto_delegate=auto_delegate)
 
     user = await db.fetch_one("SELECT id FROM users LIMIT 1")
     if user is None:

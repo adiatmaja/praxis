@@ -306,7 +306,7 @@ Interactive docs available at `/docs` (Swagger UI) when the server is running.
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `GET` | `/api/status` | Orchestrator status (Opus state + agent counts; Planner `available` is gated on a real `claude --version` probe; returns `agent_model.cli_available`, effective `lm_studio_url`, a `providers` list carrying `{cli_available, authenticated, login_hint}` per brain provider, and `bench_mode` / `verify_gate_disabled`, the two booleans from `core/bench_mode.py` read live on every request so `bench/runner.py` can refuse a run against an orchestrator in the wrong arm) |
+| `GET` | `/api/status` | Orchestrator status (Opus state + agent counts; Planner `connected`/`cli_available` come from probing whichever provider the `plan_spec` chain actually resolves to, never an unconditional `claude --version`; for a `local` or unresolved planner `agent_model.connected_measured` is false and `agent_model.detail` says why, and `agent_model.provider` names what resolved. `agents_reachable` distinguishes "asked, got zero containers" from "could not ask at all". Also returns effective `lm_studio_url`, a `providers` list carrying `{cli_available, authenticated, login_hint}` per brain provider, and `bench_mode` / `verify_gate_disabled`, the two booleans from `core/bench_mode.py` read live on every request so `bench/runner.py` can refuse a run against an orchestrator in the wrong arm) |
 | `GET` | `/api/lm-models` | List models loaded in LM Studio (`/v1/models` proxy) for the New-Project model dropdown |
 | `GET` | `/api/opus/state` | Opus availability and queue |
 | `GET` | `/api/events` | SSE event stream (long-lived) |
@@ -644,7 +644,7 @@ Praxis supports a named model registry and per-role ordered fallback chains (`pl
 | Every task fails with no commits, agent log shows the model chatting code | Worker model too small for the edit format. Use a mid-size coding model (see [open-weight-models-complete.md](open-weight-models-complete.md)). |
 | Agent callbacks 404, tasks only finish via reconcile | Orchestrator running on a non-default port without `AGENT_CALLBACK_URL` set. Keep `PORT`, `PRAXIS_BASE_URL`, and callbacks in sync. |
 | MCP tools error or hang | Praxis server not running, or `PRAXIS_BASE_URL` points at the wrong port. Ask your assistant to run `list_providers` to test connectivity. |
-| Planner shows unavailable | `claude` CLI not installed or not logged in on the orchestrator host (`claude --version`, then log in). |
+| Planner shows unavailable | Read `agent_model.provider` and `agent_model.detail` in `/api/status` first. For a CLI provider: not installed, or not logged in on the orchestrator host (`claude --version`, then log in). For a `local` planner this endpoint does not probe it at all and reports `connected_measured: false`; `praxis doctor` is where it is measured. |
 | Dispatch fails with a Docker image error | The harness image for the project isn't built. Build it per [Docker Images](#docker-images). |
 | No models in the New Project dropdown | LM Studio isn't running or isn't reachable at `LM_STUDIO_URL`. |
 | `.env` changes have no effect after `docker compose restart orchestrator` | `.env` is read at container-creation time only. Use `docker compose up -d` to recreate the container and apply `.env` changes. Use `docker compose restart` only for `config/praxis.yaml` changes (which are bind-mounted). |
