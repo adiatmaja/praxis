@@ -54,7 +54,7 @@ assistant  plan accepted: 4 tasks, each sized for the configured worker
               ...workers run in containers; your session keeps going...
 assistant  4/4 tasks passed verify and review, PRs waiting for your approval:
            https://github.com/you/my-api/pull/17 ...
-you        "merge them" -> praxis merge-plan <plan-id>, or the dashboard's Merge button
+you        "merge them", or yourself: praxis merge-plan <plan-id>, or the dashboard
 ```
 
 ```
@@ -89,7 +89,8 @@ you        "merge them" -> praxis merge-plan <plan-id>, or the dashboard's Merge
 
 Pull requests are the loop's unit of trust: inspectable, revertible, approved by you.
 GitHub is the one platform Praxis speaks today (no GitLab or Bitbucket); local-only
-mode runs the same loop against local branches, merging without PRs or any remote.
+mode runs the same loop against local branches with no remote, where the reviewed,
+gated branch merge plays the PR's role.
 
 ## Table of Contents
 
@@ -146,7 +147,16 @@ recorded outcomes of its past tasks on your install, and decomposes every plan a
 it, so no task asks
 for more than the worker can deliver; what still exceeds its reach is escalated, split
 smaller or sent to a stronger model, instead of quietly failing, and recorded outcomes
-tune the difficulty gate for next time. Never a blind dispatch.
+tune the difficulty gate for next time. On a fresh install the profile starts from the
+context window alone and tightens as outcomes accumulate. Never a blind dispatch.
+
+```
+  plan.md: "add rate limiting to the API"
+   -> task 1  add a token-bucket helper and its unit tests    fits, dispatched
+   -> task 2  wire the helper into the request path           fits, dispatched
+   -> task 3  redesign middleware for pluggable policies      too hard for this
+              worker: flagged, split into two smaller tasks before dispatch
+```
 
 **A deterministic verify gate before any model reviews.** Tests, lint, or a build command
 run first when configured; a non-zero exit fails the task cheaply, before a review model
@@ -232,7 +242,8 @@ A local worker model additionally needs [LM Studio](https://lmstudio.ai/) and ha
 that can serve it; tiers and sizing in
 [docs/open-weight-models-complete.md](docs/open-weight-models-complete.md). The
 smallest tryout needs none of that: Docker, uv, one subscription CLI, the default
-preset, and a single dispatched task will close the whole loop.
+preset (a one-time `agy login`), and a single dispatched task will close the whole
+loop.
 
 ```bash
 git clone https://github.com/adiatmaja/praxis.git
