@@ -108,6 +108,8 @@ class _FakeAgents:
     def __init__(self, status: dict[str, Any] | None) -> None:
         self._status = status
         self.status_calls = 0
+        self.stopped: list[str] = []
+        self.stop_raises = False
 
     def get_container_status(self, container_id: str) -> dict[str, Any] | None:
         self.status_calls += 1
@@ -115,6 +117,12 @@ class _FakeAgents:
 
     def get_container_logs(self, container_id: str, tail: int | str = 500) -> str:
         return ""
+
+    async def stop_agent(self, container_id: str) -> None:
+        if self.stop_raises:
+            message = "docker refused"
+            raise RuntimeError(message)
+        self.stopped.append(container_id)
 
 
 async def _orch_with_running_run(
@@ -189,15 +197,50 @@ async def test_reconcile_closes_out_a_superseded_parents_run(db: Database) -> No
     run = await tq.get_agent_run(run_id)
     assert run is not None
     assert run["status"] == "stopped"
+    # "stopped" is a claim about a container, so the container is contacted.
+    # Closing the row with that word while contacting nothing left the
+    # container running, still pushing commits, and still due to POST
+    # agent-done; Praxis has already fixed this exact shape once, in the
+    # task-stop endpoint.
+    assert agents.stopped == ["container-xyz"]
 
     task = await tq.get_task(task_id)
     assert task is not None
     assert task["status"] == TaskStatus.SUPERSEDED
     assert task["attempt"] == 1
     assert events.empty()
-    # The skip precedes the Docker round-trip, so no container call is made.
+    # The skip still precedes the container-STATUS round-trip: nothing here
+    # needs to know what state the abandoned container was in.
     assert agents.status_calls == 0
     bus.unsubscribe(events)
+
+
+@pytest.mark.integration
+async def test_a_superseded_run_docker_will_not_stop_is_not_called_stopped(
+    db: Database,
+) -> None:
+    """A container that could not be stopped may still be running.
+
+    Recording "stopped" for it is the same false claim in a quieter form, so
+    the run is closed as failed and the row says what is actually true.
+    """
+    agents = _FakeAgents({"status": "exited", "exit_code": 1})
+    agents.stop_raises = True
+    orch, tq, bus, task_id, run_id = await _orch_with_running_run(db, agents)
+    await db.execute(
+        "UPDATE tasks SET status = ? WHERE id = ?",
+        (TaskStatus.SUPERSEDED, task_id),
+    )
+
+    await orch.reconcile_runs()
+
+    run = await tq.get_agent_run(run_id)
+    assert run is not None
+    assert run["status"] == "failed"
+    assert "may still be running" in (run["logs"] or "")
+    task = await tq.get_task(task_id)
+    assert task is not None
+    assert task["status"] == TaskStatus.SUPERSEDED
 
 
 @pytest.mark.integration

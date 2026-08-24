@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, cast
@@ -24,6 +25,11 @@ if TYPE_CHECKING:
 
 
 logger = logging.getLogger(__name__)
+
+#: git's exact wording when a branch of that name already exists. Anchored on
+#: the ``fatal:`` prefix and the opening quote so it cannot be satisfied by a
+#: worker's prose in the same transcript.
+_GIT_BRANCH_EXISTS_RE = re.compile(r"fatal: a branch named '", re.IGNORECASE)
 
 # Small cap on consecutive per-branch delete failures. The delete itself is
 # known-safe by hand (see the module docstring in git_ops.py), so a repeated
@@ -174,6 +180,34 @@ class ReconcileMixin:
         except Exception:  # noqa: BLE001 - log fetch is best-effort
             return ""
 
+    async def _stop_superseded_container(self, run: dict[str, Any]) -> bool:
+        """Stop the container of a superseded task's abandoned run.
+
+        Args:
+            run: The agent-run row being closed out.
+
+        Returns:
+            True when Docker was asked and did not refuse, which is what
+            entitles the caller to record the run as ``stopped``. False when the
+            agent manager is absent or the stop raised: the container may still
+            be running, and saying otherwise is the false report this exists to
+            prevent.
+        """
+        if self._agents is None:
+            return False
+        try:
+            await self._agents.stop_agent(run["container_id"])
+        except Exception:  # noqa: BLE001 - a stop failure must not wedge the sweep
+            logger.warning(
+                "Could not stop the container of superseded run %s (%s); it may "
+                "still be running",
+                run["id"],
+                run["container_id"],
+                exc_info=True,
+            )
+            return False
+        return True
+
     async def reconcile_runs(self) -> None:
         """Reconcile every running agent run with its container's real state.
 
@@ -204,11 +238,28 @@ class ReconcileMixin:
                         # is abandoned work, not a run to retry. Reconciling it
                         # normally would fail_task then retry_task, silently
                         # resurrecting the parent as pending.
+                        # Actually stop it before recording that it stopped.
+                        # This closed the run row with the word "stopped" while
+                        # contacting nothing, so the container kept running,
+                        # kept pushing commits and eventually POSTed
+                        # agent-done. Praxis has already fixed this exact shape
+                        # once, in the task-stop endpoint, which separates
+                        # "run rows closed" from "containers actually
+                        # contacted". A container Docker will not stop is
+                        # recorded as ``failed`` with the reason, because
+                        # "stopped" would be the same false claim in a quieter
+                        # form.
+                        stopped = await self._stop_superseded_container(run)
                         await self._tq.complete_agent_run(
                             run["id"],
-                            "stopped",
+                            "stopped" if stopped else "failed",
                             str(run.get("logs") or "")
-                            or "Task superseded; agent run abandoned.",
+                            or (
+                                "Task superseded; agent container stopped."
+                                if stopped
+                                else "Task superseded, but its agent container "
+                                "could not be stopped and may still be running."
+                            ),
                         )
                         continue
                     status = self._agents.get_container_status(run["container_id"])
@@ -242,107 +293,122 @@ class ReconcileMixin:
 
             git_ops = getattr(self, "_git", None)
             if default_branch_by_repo and git_ops is not None:
-                open_pr_rows = await self._tq._db.fetch_all(
-                    "SELECT branch_name FROM tasks WHERE pr_url IS NOT NULL AND pr_url != '' AND status NOT IN ('failed', 'merged')"
+                # EVERY ledger set is per repository. They used to be global
+                # while the sweep below runs per remote, so a failed task in
+                # repository A nominated an identically named branch in
+                # repository B for irreversible deletion. Two projects in one
+                # install is the ordinary case, the DB is routinely reset with
+                # `rm data/orchestrator.db` while the remotes are not, and
+                # `agent/{slug}` names are derived from task titles, so a
+                # collision across repos is expected rather than a coincidence.
+                # branch_sweeper's own standard is that a branch is deleted only
+                # when POSITIVELY known to be finished with, and a row in
+                # another repository is not that knowledge.
+                task_rows = await self._tq._db.fetch_all(
+                    "SELECT p.repo_url AS repo_url, t.branch_name AS branch_name, "
+                    "t.status AS status, t.pr_url AS pr_url "
+                    "FROM tasks t "
+                    "LEFT JOIN plans pl ON t.plan_id = pl.id "
+                    "LEFT JOIN projects p ON pl.project_id = p.id"
                 )
-                # A plan branch with an unmerged integration PR bears an open
-                # PR just as literally as a task branch does, and this is the
-                # veto that wins outright. Stated explicitly rather than left
-                # to the merged_plan query alone: two independent signals have
-                # to agree before that branch can be deleted, and deleting it
-                # would close the integration PR based on it.
-                integration_pr_rows = await self._tq._db.fetch_all(
-                    "SELECT plan_branch_name FROM plans "
-                    "WHERE integration_pr_url IS NOT NULL "
-                    "AND integration_merged_at IS NULL "
-                    "AND plan_branch_name IS NOT NULL AND plan_branch_name != ''"
+                plan_rows = await self._tq._db.fetch_all(
+                    "SELECT p.repo_url AS repo_url, "
+                    "pl.plan_branch_name AS plan_branch_name, "
+                    "pl.status AS status, "
+                    "pl.integration_pr_url AS integration_pr_url, "
+                    "pl.integration_merged_at AS integration_merged_at "
+                    "FROM plans pl "
+                    "LEFT JOIN projects p ON pl.project_id = p.id"
                 )
-                open_pr_branches = {
-                    row["branch_name"] for row in open_pr_rows if row.get("branch_name")
-                } | {
-                    row["plan_branch_name"]
-                    for row in integration_pr_rows
-                    if row.get("plan_branch_name")
-                }
 
-                tf_task_rows = await self._tq._db.fetch_all(
-                    "SELECT branch_name FROM tasks WHERE status = 'failed'"
-                )
-                tf_plan_rows = await self._tq._db.fetch_all(
-                    "SELECT plan_branch_name FROM plans WHERE status IN ('failed', 'rejected') AND plan_branch_name IS NOT NULL AND plan_branch_name != ''"
-                )
-                terminal_failed = {
-                    row["branch_name"] for row in tf_task_rows if row.get("branch_name")
-                } | {
-                    row["plan_branch_name"]
-                    for row in tf_plan_rows
-                    if row.get("plan_branch_name")
-                }
+                open_pr_by_repo: dict[str, set[str]] = {}
+                terminal_failed_by_repo: dict[str, set[str]] = {}
+                merged_plan_by_repo: dict[str, set[str]] = {}
+                live_by_repo: dict[str, set[str]] = {}
+                # A row whose repository cannot be resolved (a LEFT JOIN that
+                # found nothing) can only ever SPARE a branch, never condemn
+                # one: it joins every repo's live set and none of the dead sets.
+                # Same fail-safe polarity as the live/dead complement below.
+                unresolved_live: set[str] = set()
 
-                # "completed" does NOT mean the plan branch is reclaimable. It
-                # means every task merged ONTO that branch; the work then sits
-                # there, off the base branch, until the integration PR is
-                # merged. Treating completed-with-an-open-PR as merged_plan
-                # classified a branch carrying the whole plan's work as dead,
-                # and deleting it would also have closed the integration PR
-                # based on it (docs/gotchas.md). So the branch is reclaimable
-                # only once integration actually landed.
-                #
-                # The delete path is separately broken (it shells `git push`
-                # with no repository and is refused unconditionally), which is
-                # the only reason this misclassification never destroyed
-                # anything. Fixing the classification first is deliberate: the
-                # order the other way round arms a deleter whose opening move
-                # is a merged plan branch.
-                mp_rows = await self._tq._db.fetch_all(
-                    "SELECT plan_branch_name FROM plans "
-                    "WHERE (status = 'merged' OR "
-                    "       (status = 'completed' AND integration_merged_at IS NOT NULL)) "
-                    "AND plan_branch_name IS NOT NULL AND plan_branch_name != ''"
-                )
-                merged_plan = {
-                    row["plan_branch_name"]
-                    for row in mp_rows
-                    if row.get("plan_branch_name")
-                }
+                def _bucket(store: dict[str, set[str]], repo: str) -> set[str]:
+                    return store.setdefault(repo, set())
 
-                # Branches something unfinished is still using. Since Task 8,
-                # tasks.branch_name records the branch actually pushed to, so
-                # in single-branch (auto-delegate) mode many rows share one
-                # work branch and ONE of them failing is enough to put that
-                # shared branch into terminal_failed while siblings are still
-                # running on it. open_pr_branches cannot cover this: a task
-                # still in progress has not opened a PR yet.
-                #
-                # Both halves are computed by complementing the terminal sets
-                # rather than by listing the live statuses, so a status added
-                # later counts as LIVE. That polarity is the whole point: a
-                # false "live" leaves a stale ref lying around, a false "dead"
-                # deletes a container's uncommitted work irreversibly.
-                live_task_rows = await self._tq._db.fetch_all(
-                    "SELECT branch_name, status FROM tasks"
-                )
-                live_plan_rows = await self._tq._db.fetch_all(
-                    "SELECT plan_branch_name, status FROM plans"
-                )
-                live_branches = {
-                    row["branch_name"]
-                    for row in live_task_rows
-                    if row.get("branch_name")
-                    and row.get("status") not in TERMINAL_STATUSES
-                } | {
-                    row["plan_branch_name"]
-                    for row in live_plan_rows
-                    if row.get("plan_branch_name")
-                    and row.get("status") not in TERMINAL_PLAN_STATUSES
-                }
+                for row in task_rows:
+                    branch = (row.get("branch_name") or "").strip()
+                    if not branch:
+                        continue
+                    repo = (row.get("repo_url") or "").strip()
+                    if not repo:
+                        unresolved_live.add(branch)
+                        continue
+                    status = row.get("status")
+                    pr_url = (row.get("pr_url") or "").strip()
+                    if pr_url and status not in ("failed", "merged"):
+                        _bucket(open_pr_by_repo, repo).add(branch)
+                    if status == "failed":
+                        _bucket(terminal_failed_by_repo, repo).add(branch)
+                    # The live half is computed by complementing the terminal
+                    # set rather than by listing the live statuses, so a status
+                    # added later counts as LIVE. That polarity is the whole
+                    # point: a false "live" leaves a stale ref lying around, a
+                    # false "dead" deletes a container's uncommitted work
+                    # irreversibly.
+                    #
+                    # Since tasks.branch_name records the branch actually pushed
+                    # to, single-branch (auto-delegate) mode has many rows
+                    # sharing one work branch, and ONE of them failing is enough
+                    # to put that shared branch into terminal_failed while
+                    # siblings still run on it. The open-PR veto cannot cover
+                    # that: a task still in progress has opened no PR yet.
+                    if status not in TERMINAL_STATUSES:
+                        _bucket(live_by_repo, repo).add(branch)
 
-                ledger = {
-                    "open_pr_branches": open_pr_branches,
-                    "terminal_failed": terminal_failed,
-                    "merged_plan": merged_plan,
-                    "live_branches": live_branches,
-                }
+                for row in plan_rows:
+                    branch = (row.get("plan_branch_name") or "").strip()
+                    if not branch:
+                        continue
+                    repo = (row.get("repo_url") or "").strip()
+                    if not repo:
+                        unresolved_live.add(branch)
+                        continue
+                    status = row.get("status")
+                    # A plan branch with an unmerged integration PR bears an
+                    # open PR just as literally as a task branch does, and this
+                    # is the veto that wins outright. Stated explicitly rather
+                    # than left to the merged-plan rule alone: two independent
+                    # signals have to agree before that branch can be deleted,
+                    # and deleting it would close the integration PR based on
+                    # it.
+                    if row.get("integration_pr_url") and not row.get(
+                        "integration_merged_at"
+                    ):
+                        _bucket(open_pr_by_repo, repo).add(branch)
+                    if status in ("failed", "rejected"):
+                        _bucket(terminal_failed_by_repo, repo).add(branch)
+                    # "completed" does NOT mean the plan branch is reclaimable.
+                    # It means every task merged ONTO that branch; the work then
+                    # sits there, off the base branch, until the integration PR
+                    # is merged. Treating completed-with-an-open-PR as merged
+                    # classified a branch carrying the whole plan's work as
+                    # dead, and deleting it would also have closed the
+                    # integration PR based on it (docs/gotchas.md). So the
+                    # branch is reclaimable only once integration actually
+                    # landed.
+                    #
+                    # The delete path is ARMED: GitOps.delete_remote_branch
+                    # shells a real `git push <repo_url> --delete <branch>` and
+                    # logs the deletion. A comment here used to say it was inert
+                    # and refused unconditionally, which was already false when
+                    # it was written, and it read as a blanket assurance that
+                    # classification bugs on this path could not destroy
+                    # anything.
+                    if status == "merged" or (
+                        status == "completed" and row.get("integration_merged_at")
+                    ):
+                        _bucket(merged_plan_by_repo, repo).add(branch)
+                    if status not in TERMINAL_PLAN_STATUSES:
+                        _bucket(live_by_repo, repo).add(branch)
 
                 # Per-branch delete-failure streaks, kept for the process's
                 # lifetime (an in-memory dict on the instance, lazily
@@ -369,7 +435,16 @@ class ReconcileMixin:
                         repo_url=repo_url,
                         list_remote_branches=git_ops.list_remote_branches,
                         delete_remote_branch=git_ops.delete_remote_branch,
-                        ledger={**ledger, "protected_branches": repo_defaults},
+                        ledger={
+                            "open_pr_branches": open_pr_by_repo.get(repo_url, set()),
+                            "terminal_failed": terminal_failed_by_repo.get(
+                                repo_url, set()
+                            ),
+                            "merged_plan": merged_plan_by_repo.get(repo_url, set()),
+                            "live_branches": live_by_repo.get(repo_url, set())
+                            | unresolved_live,
+                            "protected_branches": repo_defaults,
+                        },
                         failure_counts=branch_delete_failures,
                     )
         except Exception:  # noqa: BLE001 - sweeper call is best-effort
@@ -441,30 +516,49 @@ class ReconcileMixin:
         current = await self._tq.get_agent_run(run["id"])
         if current is None or current["status"] != "running":
             return
-        exit_code = status.get("exit_code") if status else None
         logs = self._safe_logs(run["container_id"]) or str(current["logs"] or "")
-        reason = (
-            f"Agent container exited (code {exit_code}) without a completion callback"
-        )
+        if status is None:
+            # ``get_container_status`` returns None for docker NotFound ONLY,
+            # which is "Docker has no such container", not "the container
+            # exited". monitor_run breaks on that too and used to hand it
+            # straight here, where it became "exited (code None)" and sent the
+            # operator looking at the worker and the model for a fault that was
+            # Docker losing the container (a prune, a `docker rm -f`, a Docker
+            # Desktop or WSL2 restart). reconcile_runs already reports the same
+            # answer honestly one screen up.
+            reason = (
+                "Agent container is no longer known to Docker (removed, pruned, "
+                "or the daemon lost it) and no completion callback arrived"
+            )
+        else:
+            reason = (
+                f"Agent container exited (code {status.get('exit_code')}) "
+                "without a completion callback"
+            )
         # If the container logs reveal a gh/GraphQL PR-create failure (e.g. zero
         # commits), surface a clear explanation instead of the generic exit reason.
-        if logs and ("No commits between" in logs or "no commits" in logs.lower()):
+        if logs and "No commits between" in logs:
+            # gh's exact wording only. ``"no commits" in logs.lower()`` matched
+            # the worker's own prose anywhere in the transcript, so a run that
+            # failed for an unrelated reason after the model wrote "there are no
+            # commits on this branch yet" was explained to the operator as a
+            # zero-commit weak-model failure.
             reason = self._classify_pr_failure(logs)
         # A deterministic branch-setup failure (protected base) will recur on
         # every attempt, so it must NOT burn the retry budget. Detect the
         # entrypoint sentinel / git "branch already exists" message and mark it
         # terminal.
-        if logs and self._is_nonretryable(logs):
-            reason = (
-                "Deterministic branch-setup failure: the base branch is protected "
-                "(workers must never target main/master/release*). Re-dispatch "
-                "with a feature branch. Original: " + reason
+        deterministic = self._nonretryable_reason(logs) if logs else None
+        if deterministic is not None:
+            await self._resolve_failed_run(
+                run, f"{deterministic} Original: {reason}", logs=logs, can_retry=False
             )
-            await self._resolve_failed_run(run, reason, logs=logs, can_retry=False)
             return
-        # Docker is available on this path (we observed the container exit),
-        # so a fresh dispatch can succeed — allow a bounded retry. However,
-        # provider/gateway errors are transient and must not burn the budget.
+        # A bounded retry is allowed on both branches. On the exit branch we
+        # observed the container exit, so Docker is answering; on the missing
+        # branch Docker answered too (NotFound is an answer), and the container
+        # being gone is exactly the condition a fresh dispatch fixes.
+        # Provider/gateway errors are transient and must not burn the budget.
         await self._resolve_failed_run_or_pause(run, reason, logs=logs, can_retry=True)
 
     async def _fail_orphan(self, run: dict[str, Any], reason: str) -> None:
@@ -492,10 +586,24 @@ class ReconcileMixin:
         completion callback self-recover instead of stalling.
         """
         log_text = logs if logs is not None else self._safe_logs(run["container_id"])
-        await self._tq.complete_agent_run(run["id"], "failed", log_text or reason)
+        # ``log_text``, never ``log_text or reason``. This column is what
+        # ``praxis logs <task-id>`` prints as the worker's captured output, and
+        # its empty-log branch exists to say "an empty value means it could not
+        # read the container, not that the worker was silent". Substituting the
+        # orchestrator's own reason made that branch unreachable for exactly the
+        # case it was written for, and it also broke the provider-error streak,
+        # which reads this column back: a genuine provider failure whose logs
+        # Docker could not serve stopped matching and reset the count.
+        await self._tq.complete_agent_run(run["id"], "failed", log_text)
 
         task = await self._tq.get_task(run["task_id"])
         max_retries = 0
+        # Bound before the branch that assigns it: the else arm below reads
+        # ``project`` unconditionally, so a task deleted between the running-run
+        # query and this read (a race with DELETE /api/projects/{id}, which
+        # removes agent_runs before tasks) raised UnboundLocalError after the
+        # run row was already marked failed, and the task never got its verdict.
+        project: dict[str, Any] | None = None
         if task is not None:
             plan = await self._tq.get_plan(task["plan_id"])
             project = (
@@ -566,7 +674,7 @@ class ReconcileMixin:
     @staticmethod
     def _classify_pr_failure(raw: str) -> str:
         """Turn an opaque gh/GraphQL PR-create error into an explained failure."""
-        if "No commits between" in raw or "no commits" in raw.lower():
+        if "No commits between" in raw:
             return (
                 "Worker produced zero commits: the agent made no changes "
                 "(model likely too weak for this task, or the plan was unclear). "
@@ -575,25 +683,44 @@ class ReconcileMixin:
         return raw.strip()
 
     @staticmethod
-    def _is_nonretryable(logs: str) -> bool:
-        """Return True when logs reveal a deterministic branch-setup failure.
+    def _nonretryable_reason(logs: str) -> str | None:
+        """Return the reason a branch-setup failure is deterministic, or None.
 
-        These failures recur identically on every attempt (the base branch is
-        protected), so a bounded retry only wastes the budget. Detected via the
-        entrypoint sentinel ``PRAXIS_FATAL_PROTECTED_BASE`` or the git message
-        emitted when a clone already sits on the target branch
-        (``a branch named '<x>' already exists``).
+        These failures recur identically on every attempt, so a bounded retry
+        only wastes the budget. There are TWO of them and they are unrelated,
+        which is why this returns the reason rather than a bool: both used to
+        produce the protected-base sentence, so a worker whose prose happened to
+        contain the git phrasing was reported as having targeted a protected
+        base, told to "re-dispatch with a feature branch" it had already been
+        given, and denied its retries. The entrypoint's own protected-base guard
+        had passed.
+
+        The git test is anchored on ``fatal: a branch named '``, git's exact
+        wording. It used to be two unanchored substrings ANDed over the WHOLE
+        container log, which is the full worker transcript: the two phrases did
+        not have to be on the same line or in the same context, or even come
+        from git.
 
         Args:
             logs: Full container log text.
 
         Returns:
-            True when the failure is deterministic and must not be retried.
+            A sentence naming the deterministic failure, or None when the
+            failure is not one of them and the retry budget applies.
         """
         if "PRAXIS_FATAL_PROTECTED_BASE" in logs:
-            return True
-        lowered = logs.lower()
-        return "a branch named" in lowered and "already exists" in lowered
+            return (
+                "Deterministic branch-setup failure: the base branch is protected "
+                "(workers must never target main/master/release*). Re-dispatch "
+                "with a feature branch."
+            )
+        if _GIT_BRANCH_EXISTS_RE.search(logs):
+            return (
+                "Deterministic branch-setup failure: git refused to create the "
+                "work branch because one of that name already exists in the "
+                "clone. This is not about the base branch."
+            )
+        return None
 
     @staticmethod
     def is_provider_error(logs: str) -> bool:
@@ -707,7 +834,17 @@ class ReconcileMixin:
         runs = await self._tq.get_runs_for_task(task_id)
         streak = 0
         for run in reversed(runs):
+            if run["status"] == "completed":
+                # A completed run PROVED the endpoint reachable, so the streak
+                # cannot span it. Skipping every non-failed run counted two
+                # provider errors either side of a successful call as
+                # consecutive, and at the cap told the operator the worker
+                # endpoint was unreachable with a successful call to it sitting
+                # in the same task's run history.
+                break
             if run["status"] != "failed":
+                # ``stopped`` is abandoned work: it neither proves nor disproves
+                # reachability, so it is passed over rather than counted.
                 continue
             if self.is_provider_error(str(run["logs"] or "")):
                 streak += 1

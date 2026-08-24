@@ -241,24 +241,54 @@ async def test_provider_error_does_not_consume_retry(db: Database) -> None:
 
 
 @pytest.mark.unit
-def test_is_nonretryable_detects_protected_base_sentinel() -> None:
+def test_nonretryable_reason_detects_protected_base_sentinel() -> None:
     logs = (
         "=== agent starting ===\n"
         "PRAXIS_FATAL_PROTECTED_BASE: base branch 'main' is protected; "
         "workers must never target it\n"
     )
-    assert ReconcileMixin._is_nonretryable(logs) is True
+    reason = ReconcileMixin._nonretryable_reason(logs)
+    assert reason is not None
+    assert "protected" in reason
 
 
 @pytest.mark.unit
-def test_is_nonretryable_detects_branch_already_exists() -> None:
-    logs = "fatal: a branch named 'main' already exists"
-    assert ReconcileMixin._is_nonretryable(logs) is True
+def test_nonretryable_reason_detects_branch_already_exists() -> None:
+    """A different fact, and it must not be reported as the protected base.
+
+    Both are deterministic and neither should burn a retry, but the messages
+    are acted on: the protected-base sentence tells the operator to re-dispatch
+    with a feature branch, which for this failure is advice about something
+    that was never wrong.
+    """
+    reason = ReconcileMixin._nonretryable_reason(
+        "fatal: a branch named 'agent/x' already exists"
+    )
+    assert reason is not None
+    assert "already exists" in reason
+    assert "protected" not in reason
 
 
 @pytest.mark.unit
-def test_is_nonretryable_ignores_normal_failure() -> None:
-    assert ReconcileMixin._is_nonretryable("TypeError: boom\nexit code 1") is False
+def test_nonretryable_reason_ignores_normal_failure() -> None:
+    assert ReconcileMixin._nonretryable_reason("TypeError: boom\nexit code 1") is None
+
+
+@pytest.mark.unit
+def test_worker_prose_about_branches_is_not_a_branch_setup_failure() -> None:
+    """The transcript is the whole worker conversation, not just git's output.
+
+    Two unanchored substrings ANDed over it need not be on the same line or
+    even come from git. A worker musing about branches, on a task whose base is
+    an ordinary feature branch, was stamped terminal, told the base was
+    protected, and denied its retries.
+    """
+    logs = (
+        "I checked whether a branch named 'agent/x' would collide.\n"
+        "The docs say the tag already exists, so I reused it.\n"
+        "TypeError: boom\n"
+    )
+    assert ReconcileMixin._nonretryable_reason(logs) is None
 
 
 @pytest.mark.integration
