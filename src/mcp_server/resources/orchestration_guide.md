@@ -150,7 +150,36 @@ so the rule above is still yours to keep.
   queue, so you usually see it there first.
 
 
-## 3. What context to pass
+## 3. Designing the worker prompt
+
+The `title` and `description` you pass to `dispatch_task` ARE the worker's task. Praxis
+wraps them in its own scaffolding (scope rules, test-first default, report format,
+acceptance command), so do not restate those; your job is the WHAT.
+
+**Write for the least capable model that might implement it.** The worker is typically a
+small open-weight model, and capability is asymmetric: a frontier model loses nothing
+from floor-level explicitness, a floor model loses the whole task without it. Concretely:
+
+- **Imperative and concrete.** Name exact file paths, symbols, and commands.
+  "Add `retry_on_429()` to `src/client.py`; call it from `request()`" beats
+  "improve the client's error handling".
+- **One action per sentence.** A sentence hiding three edits gets one of them done.
+- **State the output format explicitly, with a short example when format matters.**
+  Small models imitate examples far more reliably than they follow abstract rules.
+- **Self-contained.** The worker sees only this task, in a fresh clone, with no
+  conversation history: no "as discussed", no references to other tasks' content.
+- **Give a runnable acceptance check.** "`pytest tests/test_client.py` passes" lets the
+  worker loop until verified; "make sure it works" does not.
+- **Do not enumerate prohibitions beyond what matters.** Praxis already injects scope
+  discipline; long "do not" lists measurably degrade small-model output. State the one
+  or two constraints specific to THIS task, positively when possible.
+
+Transform vague asks before dispatching: "add validation" -> "reject empty `name` and
+malformed `email` in `POST /users`; add tests for both rejects in
+`tests/test_users.py`". `execute_plan` applies the same rules automatically when it
+decomposes a plan into leaves; `dispatch_task` trusts you to apply them yourself.
+
+### What context to pass
 
 Both `dispatch_task` and `execute_plan` take an optional `context` field. Pass a focused,
 task-relevant slice: conventions, architecture notes, and the relevant plan slice that

@@ -1756,3 +1756,36 @@ first (an escape can sit mid-word), box glyphs second, whitespace last.
 It exists because there were already TWO private copies and they had DRIFTED: one stripped a
 hand-listed string of box glyphs, the other the whole `U+2500-U+257F` block, so the same
 phrase was matchable in one file and not the other.
+
+## The worker prompt has a wire contract and a register, and both are invisible in a diff
+
+`core/agent_prompt.py` and `core/worker_bible.py` look like prose, but two things about
+them are load-bearing in ways an editor cannot see:
+
+**The wire contract.** Both agent entrypoints parse the worker's final report from its
+output log: `grep -oE '^Status:[[:space:]]*[A-Z_]+'` (last match wins) decides the run's
+status, and an awk block collects everything from a line starting `Concerns` to the next
+line starting `====` as the question relayed to a human when the status is `BLOCKED` or
+`NEEDS_CONTEXT`. Moving those labels off the start of the line, renaming them, or putting
+a `====` separator between "Concerns" and the question text breaks clarification silently:
+the run still completes, the status still parses, and the question arrives empty.
+`tests/test_agent_prompt.py` and `tests/test_worker_prompt_honesty.py` pin the labels.
+
+**The register.** The prompts are written for the LEAST capable worker model that might
+receive them (a small open-weight model), on the asymmetry that a frontier model loses a
+few hundred tokens to floor-level explicitness while a floor model loses the whole task to
+frontier-level abstraction. Concretely (verified against small-model prompting research,
+2026-08-24): short imperative lines, one instruction per line; an explicit output format
+with a worked example to imitate (small models imitate examples far more reliably than
+they follow abstract rules); the critical rules repeated at the end (prompt repetition
+measurably improves compliance, 47/70 benchmark wins, 0 losses, arXiv 2512.14982); and no
+prohibitions beyond the measured-live ones already there - long "do not" lists degrade
+small-model output. An edit that "improves" the template into flowing prose is a
+regression that no test can catch, because the damage only shows up in worker behavior.
+
+The same register governs what the BRAIN writes: the task `description` is the worker's
+task. The rules live in the MCP resource (`orchestration_guide.md`, "Designing the worker
+prompt") for the auto-delegate path, and inside the decompose prompt
+(`core/plan_review.py`) for the `execute_plan` path, so both entrances teach the same
+floor-model style. If one of the three surfaces (template, guide, decompose prompt) is
+corrected, check the other two in the same commit; they answer the same question.

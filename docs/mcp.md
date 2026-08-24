@@ -99,6 +99,14 @@ nothing commits.
 Not sure the connection is working? Ask your assistant to run `list_providers`, it returns the
 planner providers and worker models Praxis can see, which confirms the server is reachable.
 
+**Writing the task for the worker:** the `title` and `description` the assistant passes ARE the
+worker's task, and the worker is usually a small open-weight model. Write them for the least
+capable model that might receive them: exact file paths and symbols, one action per sentence, an
+explicit output format (with a short example when format matters), a runnable acceptance check,
+and no references to conversation the worker never saw. The full ruleset lives in the
+`praxis://guide/orchestration` resource, section "Designing the worker prompt"; `execute_plan`
+applies the same rules automatically when decomposing a plan into leaves.
+
 ### Implementing a whole plan (not just one task)
 
 `dispatch_task` is for a single unit of work. When you already have a multi-step plan, for

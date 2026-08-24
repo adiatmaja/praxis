@@ -70,6 +70,18 @@ Sizing rules (apply in order):
    model's max complexity, or when parts are truly independent (different
    subsystems, no shared state).
 
+Write every leaf's "description" and checklist for the WEAKEST model that
+might implement it. A stronger model loses nothing from this style; a weaker
+one loses the whole task without it:
+- Imperative and concrete: name exact file paths, symbols, and commands.
+  "Add retry_on_429() to src/client.py" beats "improve error handling".
+- One action per checklist item; no item that hides several edits.
+- State the expected output or format explicitly; show a short example when
+  the format matters. Never rely on the worker inferring it.
+- Each leaf must be understandable ALONE: the worker sees only its own leaf,
+  never the rest of the plan, so no "as described above" or references to
+  other leaves' content.
+
 For every leaf you MUST also include "plan_text": the VERBATIM excerpt of the
 plan that defines this leaf's contract -- exact function/type signatures, API
 shapes, and named requirements. Do not paraphrase; copy the relevant lines so a
