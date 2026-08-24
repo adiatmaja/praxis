@@ -134,6 +134,51 @@ async def _preflight(body: DispatchRequest, settings: Any) -> list[str]:
     return warnings
 
 
+async def _preflight_micro_edit(request: Request, body: DispatchRequest) -> None:
+    """Reject a micro edit the lane cannot honestly run, at the boundary.
+
+    Both conditions are checked again where the lane actually executes, because
+    the mode can be toggled between this call and the dispatch. Checking here
+    as well is what turns "the task failed" into "the request was refused, and
+    here is why", which is the difference between a caller that can correct
+    itself and one that has to read a task's feedback to find out.
+
+    Args:
+        request: The live request, for ``app.state.effective_settings``.
+        body: The dispatch payload.
+
+    Raises:
+        HTTPException: 422 when no branch was named, or when auto-delegate is
+            off.
+    """
+    if body.micro_edit is None:
+        return
+    if body.branch is None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=(
+                "micro_edit requires branch: the lane commits to the shared "
+                "work branch you name, and bounds the review to the commit it "
+                "makes there. Without a branch there is nothing to commit to "
+                "and nothing to bound."
+            ),
+        )
+    es = getattr(request.app.state, "effective_settings", None)
+    enabled = False
+    if es is not None:
+        enabled = await es.auto_delegate_enabled()
+    if not enabled:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=(
+                "micro_edit requires auto-delegate mode, which is off. v1 of "
+                "the lane is scoped to the single shared work branch that mode "
+                "creates; turn it on with `praxis mode on`, or dispatch this "
+                "as an ordinary task."
+            ),
+        )
+
+
 @router.post(
     "/dispatch",
     status_code=status.HTTP_201_CREATED,
@@ -148,6 +193,7 @@ async def dispatch_task(request: Request, body: DispatchRequest) -> dict[str, An
 
     # Preflight: validate remote state before touching the database.
     warnings = await _preflight(body, settings)
+    await _preflight_micro_edit(request, body)
 
     user = await db.fetch_one("SELECT id FROM users LIMIT 1")
     if user is None:
@@ -222,6 +268,8 @@ async def dispatch_task(request: Request, body: DispatchRequest) -> dict[str, An
         task_dict["verification"] = body.verification
     if body.neighbor_contracts is not None:
         task_dict["neighbor_contracts"] = body.neighbor_contracts
+    if body.micro_edit is not None:
+        task_dict["micro_edit"] = body.micro_edit.model_dump()
 
     opus_plan = {"tasks": [task_dict]}
     branch_name = body.branch or f"plan/mcp-{slug}"

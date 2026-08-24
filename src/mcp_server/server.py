@@ -80,6 +80,7 @@ async def dispatch_task_impl(
     files: list[str] | None = None,
     verification: str | None = None,
     neighbor_contracts: str | None = None,
+    micro_edit: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Dispatch a single implementation task to a non-Anthropic worker model."""
     payload: dict[str, Any] = {
@@ -103,6 +104,8 @@ async def dispatch_task_impl(
         payload["verification"] = verification
     if neighbor_contracts is not None:
         payload["neighbor_contracts"] = neighbor_contracts
+    if micro_edit is not None:
+        payload["micro_edit"] = micro_edit
     try:
         result = cast(dict[str, Any], await client.post("/api/dispatch", payload))
     except PraxisClientError as exc:
@@ -794,6 +797,7 @@ async def dispatch_task(
     files: list[str] | None = None,
     verification: str | None = None,
     neighbor_contracts: str | None = None,
+    micro_edit: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Dispatch one implementation task to a configured worker inside Praxis.
 
@@ -848,6 +852,27 @@ async def dispatch_task(
 
     neighbor_contracts: Optional signatures of directly-adjacent functions or
     endpoints the worker must not break while implementing this task.
+
+    micro_edit: Optional {path, content, commit_message} for the MICRO-EDIT
+    LANE. Pass it and NO worker is spawned: Praxis commits that one file to
+    ``branch`` itself, then governs it exactly as it governs a worker's change
+    (verify gate, review, human merge gate, outcome row). The lane skips the
+    worker, never the governance. ``content`` is the file's FULL new content,
+    not a patch. ``instructions`` is still required and is what the review
+    judges the change against.
+
+    Use it only when ALL of these hold: a single file, a handful of lines, and
+    NO logic change (a typo, a comment or docstring, prose in docs, a config
+    value, a version string, a renamed doc reference). Everything else
+    dispatches as normal. When in doubt, delegate: an ordinary dispatch of a
+    small task wastes a few minutes, while a micro edit of a logic-bearing
+    change skips the isolation that change needed.
+
+    Requires ``branch`` and requires auto-delegate mode; both are rejected with
+    a 422 rather than silently downgraded. A micro edit whose verify gate fails
+    is failed TERMINALLY and never retried or escalated to a worker, so a
+    mis-sized estimate stays visible and the decision to dispatch it properly
+    stays yours.
     """
     return await _with_client(
         dispatch_task_impl,
@@ -862,6 +887,7 @@ async def dispatch_task(
         files=files,
         verification=verification,
         neighbor_contracts=neighbor_contracts,
+        micro_edit=micro_edit,
     )
 
 

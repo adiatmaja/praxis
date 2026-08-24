@@ -10,6 +10,77 @@ related:
 
 # Micro-Edit Lane for Auto-Delegate Mode
 
+## Corrections against the code, 2026-08-25
+
+Read before the body. The spec was written on 2026-08-21 against the code as it
+was understood then, and four of its statements disagree with what is actually
+there. Each correction below is proven by the file it names, and the body has
+NOT been rewritten around them: it stays as the design record, and these
+override it where they conflict.
+
+**1. `brainstorm.write_and_commit` does not use the GitHub contents API.** Open
+question 1 offers "a server-side temporary clone" and "the GitHub contents API
+(as `brainstorm.write_and_commit` already does)" as two options and prefers the
+second as "cheaper and already proven on this codebase". It is not proven,
+because it is not what that method does: `core/brainstorm.py` calls
+`_clone_repo` (which is `git_ops.clone_with_token`, a depth-50 clone) into a
+temporary workspace, writes the file, and calls `git_ops.commit_and_push`. The
+two options collapse into one, and the proven mechanism is the SERVER-SIDE
+CLONE. **Decision: the lane clones.** Nothing is lost: the clone is not
+single-file limited, and the v1 rubric keeps it to one file anyway.
+
+Two properties of that path are load-bearing and are carried into the lane.
+`commit_and_push` returns `bool`, where False means the index was already clean,
+which is a FACT and not a failure: for a micro edit it means the file already
+holds the requested content. And the write is guarded against a path escaping
+the workspace, which the lane repeats because its path comes from a caller.
+
+**2. Attribution already has a mechanism, and it is not a new outcome field.**
+The spec asks the lane to record `implement_harness = "brain"` on the outcome
+row. The columns `tasks.implement_harness` and `tasks.implement_model` already
+exist (`database.py`), are already set for an ESCALATED leaf, and are already
+read by `orchestrator_review._record` into `record_outcome(harness=...,
+model_name=...)`. The lane sets those two columns and the existing recorder
+attributes it correctly with no new surface. `capability_history` selects
+`WHERE model_name = ?`, so a sentinel model name is never folded into a real
+worker's history; it is simply never selected.
+
+**3. The re-review tier does NOT route to a cheaper model on a stock install,
+and claiming it does would ship a false cost claim.** The spec says the review
+runs at "the re-review tier (`review_diff_rereview`, which `CALL_SITE_DEFAULTS`
+already routes to a cheap model)". `CALL_SITE_DEFAULTS` does route it to haiku,
+and that is irrelevant on a stock install: `core/roles.py` maps BOTH
+`review_diff_first` and `review_diff_rereview` to the `review` role, and
+`effective_settings.call_site_chain` returns the ROLE CHAIN whenever one is
+configured, ignoring the call site entirely. The shipped `config/praxis.yaml`
+carries `review: [sonnet, haiku]`, so both tiers resolve to sonnet and the tier
+changes nothing at all.
+
+The tier is still passed, because it is correct on an install that configures
+per-call-site models and it is the honest label for what the lane wants. But
+**the lane's saving is the container spawn, the clone and the worker turn**,
+which is where the two orders of magnitude actually are, and no document may
+claim the review got cheaper.
+
+**4. The serialization guard belongs in the existing hold, and that hold has a
+gap of its own.** The spec (and the session brief) assume the lane bypasses
+`dispatch_pending_tasks` and therefore needs a second guard. It does not have
+to: the lane runs INSIDE `dispatch_pending_tasks`, at the point where the shared
+branch is chosen, so it inherits the hold added on 2026-08-24. Two guards for
+one invariant is how they drift apart.
+
+Except the hold as shipped is PLAN-scoped: `busy` is computed from
+`get_tasks_for_plan(plan_id)`. Auto-delegate's own path is MCP `dispatch_task`,
+and `api/dispatch.py` creates a NEW one-task plan on every call, so several
+plans share one caller-named work branch and each of them holds only against
+itself. With one task per plan the hold can never fire there, and two workers
+can be dispatched onto the same branch in the same tick. **The hold is widened
+to BRANCH scope across the project**, which closes that gap for workers and
+covers the lane in the same enforcement point. This is the 2026-08-24 lesson
+applied where it was learned: enforce at the shared resource, once.
+
+---
+
 **Goal:** stop auto-delegate mode from spawning a container, cloning a
 repository, and running a full brain review to change one line, without ever
 letting a change reach the base branch outside the governed loop.

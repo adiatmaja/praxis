@@ -582,6 +582,57 @@ class SettingsResponse(BaseModel):
     readonly: SettingsReadonly
 
 
+class MicroEdit(BaseModel):
+    """A single-file change the BRAIN authored, for the micro-edit lane.
+
+    Present on a dispatch means "do not spawn a worker for this; commit it
+    yourself and govern it exactly as if you had". The lane skips the worker,
+    never the governance: the verify gate, the review, the merge gate and the
+    outcome row all still run. See
+    ``docs/superpowers/specs/2026-08-21-micro-edit-lane.md``.
+
+    ``content`` is the file's FULL new content rather than a patch or an
+    old/new pair. A patch can fail to apply and an old/new pair can match in
+    more than one place, and both failure modes arrive after the lane has
+    already been chosen; full content cannot be ambiguous about what the file
+    is supposed to end up as.
+    """
+
+    path: str
+    """Repository-relative path of the one file to write."""
+    content: str
+    """The file's full new content, written verbatim."""
+    commit_message: str
+    """The commit subject. Written by the brain, so it says what and why."""
+
+    @field_validator("path", "commit_message")
+    @classmethod
+    def validate_non_blank(cls, value: str) -> str:
+        if not value.strip():
+            msg = "field must not be empty"
+            raise ValueError(msg)
+        return value
+
+    @field_validator("path")
+    @classmethod
+    def validate_relative_path(cls, value: str) -> str:
+        """Reject a path that is absolute or climbs out of the repository.
+
+        The lane checks this again against the real workspace, where the
+        answer is authoritative. Rejecting here as well means the caller is
+        told at the API boundary, with a 422 it can act on, instead of at
+        dispatch time as a failed task.
+        """
+        candidate = value.strip().replace("\\", "/")
+        if candidate.startswith("/") or ":" in candidate.split("/")[0]:
+            msg = "path must be relative to the repository root"
+            raise ValueError(msg)
+        if any(part == ".." for part in candidate.split("/")):
+            msg = "path must not climb out of the repository"
+            raise ValueError(msg)
+        return candidate
+
+
 class DispatchRequest(BaseModel):
     """Request payload for MCP single-task dispatch."""
 
@@ -625,6 +676,21 @@ class DispatchRequest(BaseModel):
     """Signatures of direct neighbors the worker should not break
     (decomposition-standard rank 4, optional), the same shape as
     ``LeafTask.neighbor_contracts``."""
+    micro_edit: MicroEdit | None = None
+    """Take the MICRO-EDIT LANE instead of dispatching a worker.
+
+    When set, no container is spawned: the orchestrator commits this file to
+    the work branch itself and then governs it exactly like a worker's change
+    (verify gate, review, merge gate, outcome row). ``instructions`` is still
+    required and still becomes the task's description, because it is what the
+    review judges the change against.
+
+    v1 requires auto-delegate mode, and requires ``branch``: the lane's
+    reasoning about which commits belong to which task is built on one shared
+    caller-named work branch. The rubric for when to use it lives in the mode
+    contract (``praxis://guide/orchestration``), not in the engine: size is
+    only reliably knowable AFTER a change is made and the lane must be chosen
+    before, so the estimate belongs to whoever wrote the task."""
 
     @field_validator("repo_url")
     @classmethod

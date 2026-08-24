@@ -111,10 +111,48 @@ was dispatched. Two workers committing to that branch at once interleave their c
 both reviews silently widen to include the other's files, which is exactly the out-of-scope
 failure the scoping removes, and nothing errors when it happens.
 
-Praxis enforces this for the plans IT dispatches: in single-branch mode the loop starts one
-task per wave and holds while any task on the branch is in progress or under review. It
-cannot enforce it for you when you drive `dispatch_task` yourself against the same branch,
-so the rule above is still yours to keep.
+Praxis enforces this at the branch. In single-branch mode the loop starts one task per wave
+and holds while ANY task on that branch is in progress or under review, across every plan in
+the project, so a `dispatch_task` you send while another is still running is held rather than
+started (each `dispatch_task` becomes its own one-task plan, which is why the hold has to be
+keyed on the branch and not on the plan). What is still yours to keep: do not commit to that
+branch from outside Praxis while a task is running on it. Nothing can hold a commit the
+orchestrator never saw.
+
+### Micro edits: skip the worker, never the governance
+
+A typo, a comment, a config value bumped from 3 to 5. Delegating a one-line edit is not
+delegation, it is ceremony: a container spawn, a full clone and a worker turn for a change
+you already know verbatim.
+
+Pass `micro_edit={path, content, commit_message}` to `dispatch_task` and Praxis commits that
+one file to the work branch itself. No container, no clone, no worker. Everything that makes
+the change governed still runs: the verify gate, a review with a real verdict, the human
+merge gate, and an outcome row attributed to you rather than to the worker model.
+
+Take the lane only when ALL of these hold:
+
+- a single file,
+- a handful of lines,
+- **no logic change**: typos, comments, docstrings, prose in docs, a config value, a version
+  string, a renamed doc reference.
+
+Everything else dispatches as normal. **When in doubt, delegate.** An ordinary dispatch of a
+small task wastes a few minutes; a micro edit of a logic-bearing change skips the isolation
+that change needed. The threshold lives here rather than in the engine because size is only
+reliably knowable AFTER a change is made and the lane has to be chosen before, so the
+estimate is yours.
+
+`content` is the file's FULL new content, not a patch and not an old/new pair: a patch can
+fail to apply and a pair can match in more than one place, and both fail after the lane is
+already chosen. `instructions` is still required and is what the review judges the change
+against, so write it as you would any task description.
+
+Requires `branch`, and requires auto-delegate mode; either missing is a 422, never a silent
+downgrade to a worker. If the file already holds that content, nothing is committed and the
+task closes as `no_changes`, which is a success with no PR. If the verify gate fails, the
+task fails TERMINALLY: it is never retried and never escalated to a worker, because a
+mis-sized estimate has to stay visible, and dispatching it properly is your call.
 
 ## 2. Picking the tool
 

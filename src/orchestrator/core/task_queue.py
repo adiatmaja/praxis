@@ -193,6 +193,47 @@ class TaskQueue:
             (plan_id,),
         )
 
+    async def get_active_tasks_on_branch(
+        self, project_id: str, branch: str
+    ) -> list[dict[str, Any]]:
+        """Return this project's tasks currently holding ``branch``.
+
+        Active means IN_PROGRESS or REVIEWING: a worker is pushing to the
+        branch, or a review is resolving a commit range on it. PASSED does not
+        hold, its review having already happened.
+
+        Scoped to the PROJECT and keyed on the branch rather than on a plan,
+        because the resource being protected is the branch. Single-branch
+        (auto-delegate) mode reaches Praxis through MCP ``dispatch_task``, and
+        ``api/dispatch.py`` creates a NEW one-task plan on every call, so
+        several plans share one caller-named work branch. A hold computed from
+        one plan's own tasks can never fire there: with one task per plan there
+        is never a second task in the plan to hold against.
+
+        ``branch_name`` is the branch a task was ACTUALLY dispatched against,
+        written after the container started, so an active task on this branch
+        is recorded here whichever plan it belongs to.
+
+        Args:
+            project_id: The project whose tasks to search.
+            branch: The branch name to match exactly.
+
+        Returns:
+            The matching task rows, empty when the branch is free.
+        """
+        return await self._db.fetch_all(
+            "SELECT tasks.* FROM tasks "
+            "JOIN plans ON tasks.plan_id = plans.id "
+            "WHERE plans.project_id = ? AND tasks.branch_name = ? "
+            "AND tasks.status IN (?, ?) ORDER BY tasks.rowid",
+            (
+                project_id,
+                branch,
+                TaskStatus.IN_PROGRESS.value,
+                TaskStatus.REVIEWING.value,
+            ),
+        )
+
     async def update_task_status(self, task_id: str, status: TaskStatus | str) -> None:
         now = datetime.now(UTC).isoformat()
         await self._db.execute(

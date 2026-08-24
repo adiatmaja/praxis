@@ -16,6 +16,8 @@ from orchestrator.core.agent_manager import detect_context_limit
 from orchestrator.core.bench_mode import verify_gate_disabled
 from orchestrator.core.harnesses import default_harness_id
 from orchestrator.core.leaf_validator import is_runnable_verification
+from orchestrator.core.log_context import task_logger
+from orchestrator.core.micro_edit import BRAIN_IMPLEMENTER, apply_micro_edit
 from orchestrator.core.orchestrator_review import (
     _SKIP_BENCH_MODE_DISABLED,
     _SKIP_NO_VERIFY_CMD,
@@ -227,10 +229,29 @@ class DispatchMixin:
             # its range when it runs, so a worker committing while another task
             # is under review widens THAT task's range instead. PASSED does not
             # block, its review having already happened.
+            #
+            # Two queries, because the hold as first written could not fire on
+            # the path this mode actually uses. It looked only at THIS plan's
+            # tasks, and auto-delegate reaches Praxis through MCP
+            # ``dispatch_task``, where ``api/dispatch.py`` creates a NEW
+            # one-task plan per call: several plans, one shared work branch,
+            # and never a second task within a plan to hold against. The
+            # branch-scoped query is the one that protects the shared resource;
+            # the plan-scoped list is kept beside it so a task active on some
+            # OTHER branch of this plan still holds, exactly as before.
+            shared_branch = plan.get("plan_branch_name") or project["default_branch"]
             busy = [
                 t
                 for t in all_tasks
                 if t["status"] in (TaskStatus.IN_PROGRESS, TaskStatus.REVIEWING)
+            ]
+            busy_ids = {t["id"] for t in busy}
+            busy += [
+                t
+                for t in await self._tq.get_active_tasks_on_branch(
+                    project["id"], shared_branch
+                )
+                if t["id"] not in busy_ids
             ]
             if busy:
                 logger.info(
@@ -239,7 +260,7 @@ class DispatchMixin:
                     "scoping stays correct",
                     plan_id,
                     len(busy),
-                    plan.get("plan_branch_name") or project["default_branch"],
+                    shared_branch,
                 )
                 return
             dispatchable = dispatchable[:1]
@@ -267,14 +288,14 @@ class DispatchMixin:
                 # ``review_base_sha`` (see the plan named in
                 # ``_resolve_review_base_sha``). That boundary is correct only
                 # while the mode stays sequential, one delegate in flight.
-                # Nothing here enforces that: the brain obeys it, told to by
-                # ``src/mcp_server/resources/orchestration_guide.md``. Two
-                # workers committing to this branch at once interleave their
-                # commits, so both ranges silently widen to include the other's
-                # files, which is the out-of-scope failure the scoping removed,
-                # returning without any error. The micro-edit lane inherits the
-                # same constraint from the other side: a brain commit landing
-                # here while a worker runs breaks the range for both.
+                # For the plans THIS loop dispatches, the hold above enforces
+                # it; a caller driving MCP ``dispatch_task`` against the same
+                # branch is outside that hold and keeps the rule itself, told
+                # to by ``src/mcp_server/resources/orchestration_guide.md``.
+                # Two workers committing to this branch at once interleave
+                # their commits, so both ranges silently widen to include the
+                # other's files, which is the out-of-scope failure the scoping
+                # removed, returning without any error.
                 branch = plan.get("plan_branch_name") or project["default_branch"]
                 base_branch = project["default_branch"]
             else:
@@ -290,6 +311,19 @@ class DispatchMixin:
                 # under single-branch mode this is byte-identical.
                 branch = f"agent/{task_slug}"
                 base_branch = plan.get("plan_branch_name") or project["default_branch"]
+
+            # The micro-edit lane, taken BEFORE anything is built for a worker
+            # that will not exist. It runs here, inside the hold above, rather
+            # than beside it: the hold is where the shared branch is chosen, so
+            # the lane inherits the serialization instead of carrying a second
+            # copy of it that can drift. A brain commit landing while a worker
+            # runs would break the commit range for both.
+            micro_edit = plan_task.get("micro_edit")
+            if micro_edit is not None:
+                await self._run_micro_edit_lane(
+                    task, project, plan, micro_edit, branch, base_branch, single_branch
+                )
+                continue
 
             # Where this task's own work starts on ``branch``. Resolved and
             # written BEFORE the container is spawned: the worker's first push
@@ -405,6 +439,170 @@ class DispatchMixin:
                     "difficulty_flagged": flagged,
                 }
             )
+
+    async def _run_micro_edit_lane(
+        self,
+        task: dict[str, Any],
+        project: dict[str, Any],
+        plan: dict[str, Any],
+        micro_edit: Any,
+        branch: str,
+        base_branch: str,
+        single_branch: bool,
+    ) -> None:
+        """Commit a brain-authored one-file change and hand it to the reviewer.
+
+        Skips the WORKER, never the governance: this ends with the task in
+        REVIEWING on a pull request, which is the same place a worker's
+        callback leaves it, so the verify gate, the review, the merge gate and
+        the outcome row all run untouched. See
+        ``docs/superpowers/specs/2026-08-21-micro-edit-lane.md``.
+
+        Every exit is terminal for this dispatch. Nothing here re-dispatches:
+        the lane was chosen by a caller that estimated this change as trivial,
+        and silently escalating a mis-sized estimate to a worker is exactly
+        what would make the estimate unobservable.
+
+        Args:
+            task: The task row taking the lane.
+            project: Its project row.
+            plan: Its plan row, for the no-change evidence.
+            micro_edit: The raw payload from the plan graph.
+            branch: The shared work branch to commit on.
+            base_branch: The branch it is cut from, and the PR's base.
+            single_branch: Whether auto-delegate mode is on right now.
+        """
+        task_id = task["id"]
+        log = task_logger(logger, plan_id=task.get("plan_id"), task_id=task_id)
+
+        # Re-checked here and not only at the API. The mode is global and can be
+        # turned off between the request and this tick, and v1's reasoning about
+        # which commits belong to which task is built on the shared branch that
+        # mode creates.
+        if not single_branch:
+            await self._tq.fail_task(
+                task_id,
+                "This task carries a micro edit, which v1 of the lane runs only "
+                "in auto-delegate mode, and the mode is off. Turn it on with "
+                "`praxis mode on` and re-dispatch, or dispatch it as an "
+                "ordinary task without the micro_edit payload.",
+            )
+            return
+
+        # The payload came through a Pydantic model at the API, but the plan
+        # graph is JSON in the database and ``execute_plan`` leaves can write it
+        # too. A malformed payload must fail loudly here rather than fall
+        # through to a worker the caller did not ask for.
+        raw = micro_edit if isinstance(micro_edit, Mapping) else {}
+        edit_path = raw.get("path")
+        edit_content = raw.get("content")
+        edit_message = raw.get("commit_message")
+        if not (
+            isinstance(edit_path, str)
+            and isinstance(edit_content, str)
+            and isinstance(edit_message, str)
+        ):
+            await self._tq.fail_task(
+                task_id,
+                "The micro_edit payload is malformed: it needs string `path`, "
+                "`content` and `commit_message` fields, and it carried "
+                f"{micro_edit!r}.",
+            )
+            return
+
+        # Positive lookup for an already-open pull request on this branch, the
+        # same one the integration path uses. In single-branch mode the branch
+        # usually already has one, and `gh pr create` refuses a second for the
+        # same (base, head) pair.
+        existing_pr = await cast(Any, self)._existing_integration_pr(
+            project["repo_url"], base_branch, branch
+        )
+
+        try:
+            result = await apply_micro_edit(
+                self._git,
+                repo_url=project["repo_url"],
+                branch=branch,
+                base_branch=base_branch,
+                path=edit_path,
+                content=edit_content,
+                commit_message=edit_message,
+                pr_title=f"{task['title']}",
+                pr_body=(
+                    "Opened by Praxis for a brain-authored micro edit. The "
+                    "worker was skipped; the verify gate, the review and the "
+                    "merge gate were not."
+                ),
+                existing_pr=existing_pr,
+            )
+        except Exception as exc:  # noqa: BLE001 - report it, never wedge the loop
+            log.warning("micro edit failed on %s: %s", branch, exc)
+            await self._tq.fail_task(
+                task_id, f"The micro edit could not be applied: {exc}"
+            )
+            return
+
+        if not result.committed:
+            # A FACT, not a verdict: the file already held this content. Decided
+            # by the same governance a worker's empty diff goes through, which
+            # runs the project's verify command against the branch this task was
+            # cut from rather than taking the absence of a diff as proof.
+            closed, why = await cast(Any, self).no_change_outcome(
+                task_id, project, plan
+            )
+            if not closed:
+                await self._tq.fail_task(
+                    task_id,
+                    f"The micro edit left {edit_path} unchanged, so it was "
+                    f"already correct, and {why}",
+                )
+            return
+
+        if result.pr_url is None:
+            # Committed with nowhere to review it. Reported rather than left in
+            # REVIEWING forever: review_task returns immediately on a NULL
+            # pr_url, which would wedge the plan short of COMPLETED with one log
+            # line per tick as the only symptom.
+            await self._tq.fail_task(
+                task_id,
+                f"The micro edit was committed to {branch} but no pull request "
+                "could be opened for it, so there is nothing to review or "
+                "merge. The commit is on the branch.",
+            )
+            return
+
+        await self._tq._db.execute(
+            """UPDATE tasks
+               SET branch_name = ?, review_base_sha = ?, implement_harness = ?,
+                   implement_model = ?, updated_at = ?
+               WHERE id = ?""",
+            (
+                branch,
+                result.base_sha,
+                BRAIN_IMPLEMENTER,
+                BRAIN_IMPLEMENTER,
+                datetime.now(UTC).isoformat(),
+                task_id,
+            ),
+        )
+        await self._tq.set_task_pr_url(task_id, result.pr_url)
+        await self._tq.update_task_status(task_id, TaskStatus.REVIEWING)
+        log.info(
+            "micro edit committed to %s after %s and sent to review (pr=%s)",
+            branch,
+            result.base_sha,
+            result.pr_url,
+        )
+        self._bus.publish(
+            {
+                "type": "micro_edit_committed",
+                "plan_id": task.get("plan_id"),
+                "task_id": task_id,
+                "path": result.path,
+                "pr_url": result.pr_url,
+                "branch": branch,
+            }
+        )
 
     async def _resolve_review_base_sha(
         self,

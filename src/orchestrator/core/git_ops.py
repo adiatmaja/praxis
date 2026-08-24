@@ -188,6 +188,29 @@ def _nothing_staged(workspace: str) -> bool:
     return probe.returncode == 0
 
 
+def local_head_sha(workspace: str) -> str:
+    """Return the commit ``HEAD`` points at in an existing clone.
+
+    Used by the micro-edit lane to record where its own work starts, read
+    AFTER the branch is checked out and BEFORE anything is written. The
+    ordering is the whole point: a sha read after the commit already contains
+    the change, and the review range bounded by it would be empty, which
+    reviews as a trivially passing change.
+
+    Raises:
+        subprocess.CalledProcessError: If ``git rev-parse`` fails. A sha that
+            could not be read is not a sha, and the caller must not fall back
+            to a guess: NULL already means "review the whole pull request".
+    """
+    result = subprocess.run(  # noqa: S603 - fixed argv, no shell
+        ["git", "-C", workspace, "rev-parse", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return result.stdout.strip()
+
+
 def commit_and_push(
     workspace: str,
     token: str,
