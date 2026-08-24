@@ -147,6 +147,47 @@ async def test_failed_callback_retries_when_budget_remains(
 
 
 @pytest.mark.integration
+async def test_a_retried_worker_is_told_why_the_last_attempt_failed(
+    client: AsyncClient,
+    db: Database,
+    auth_headers: dict[str, str],
+) -> None:
+    """The reason is computed and was thrown away at the one place it helps.
+
+    ``worker_bible`` has a ``review_feedback`` slot and
+    ``dispatch_pending_tasks`` fills it from this exact column, so a retry that
+    does not write it re-dispatches a worker knowing nothing about why the last
+    attempt failed, holding whatever the previous attempt left or nothing at
+    all. The review path (``_fail_and_maybe_retry``) has always stored it
+    first; only the callback path did not.
+    """
+    task_id, run_id = await _seed_in_progress_task(
+        client, db, auth_headers, attempt=1, max_retries=3
+    )
+    queue: TaskQueue = client.app.state.task_queue  # type: ignore[attr-defined]
+
+    resp = await client.post(
+        "/api/internal/agent-done",
+        headers={"X-Praxis-Callback-Token": "test-auth"},
+        json={
+            "task_id": task_id,
+            "run_id": run_id,
+            "status": "failed",
+            "question": "pytest exited 1: test_thing.py::test_a assert 2 == 3",
+        },
+    )
+    assert resp.status_code == 200
+
+    task = await queue.get_task(task_id)
+    assert task["status"] == TaskStatus.PENDING
+    assert int(task["attempt"]) == 2, "storing the reason must not cost an attempt"
+    assert "assert 2 == 3" in (task["review_feedback"] or ""), (
+        "the next dispatch's Bible reads this column; empty means the retried "
+        f"worker is told nothing, got {task['review_feedback']!r}"
+    )
+
+
+@pytest.mark.integration
 async def test_failed_callback_marks_failed_when_budget_exhausted(
     client: AsyncClient,
     db: Database,

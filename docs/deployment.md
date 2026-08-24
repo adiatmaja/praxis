@@ -316,7 +316,7 @@ Interactive docs available at `/docs` (Swagger UI) when the server is running.
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `POST` | `/api/internal/agent-done` | Agent completion callback (no auth) |
+| `POST` | `/api/internal/agent-done` | Agent completion callback. NOT unauthenticated: it requires the `X-Praxis-Callback-Token` header, which `AgentManager` passes into each agent container. It is exempt from the `Authorization: Bearer` dependency the other routers carry, which is a different thing. |
 
 ## Prerequisites
 

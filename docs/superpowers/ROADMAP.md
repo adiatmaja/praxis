@@ -59,7 +59,7 @@ dispatched sonnet agents; the 3 harness agent images were rebuilt after the entr
 - [x] **#1 HIGH — protected-branch guard.** (a) `execute_plan` + `dispatch` reject a protected
   base (`main`/`master`/`release*`) with 422, reusing `is_protected_branch` from
   `core/merge_policy.py` (project-create left alone: `default_branch` legitimately is `main`).
-  (b) All 3 harness entrypoints hard-exit before any clone/push/PR when `BASE_BRANCH` is
+  (b) Both harness entrypoints hard-exit before any clone/push/PR when `BASE_BRANCH` is
   protected, printing the sentinel `PRAXIS_FATAL_PROTECTED_BASE`. (c) `orchestrator_reconcile`
   treats that sentinel (and `a branch named ... already exists`) as non-retryable, so a
   deterministic branch-setup failure no longer burns the 3 retries.

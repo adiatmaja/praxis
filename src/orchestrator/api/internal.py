@@ -318,7 +318,21 @@ async def agent_done(request: Request, body: AgentDonePayload) -> dict[str, str]
                 _scrub(feedback),
             )
         elif int(task["attempt"]) < max_retries:
-            # Normal failure: consume a retry.
+            # Normal failure: consume a retry, and STORE THE REASON FIRST.
+            #
+            # ``feedback`` is computed above for all three branches and this one
+            # used to drop it on the floor, so a worker retried from the
+            # callback path was re-dispatched knowing nothing about why the last
+            # attempt failed: ``worker_bible`` has a ``review_feedback`` slot,
+            # ``dispatch_pending_tasks`` fills it from this exact column, and the
+            # column was still holding whatever the previous attempt left, or
+            # nothing at all. The worker then repeated the same mistake with the
+            # same budget.
+            #
+            # ``fail_task`` then ``retry_task`` is the order the review path
+            # already uses (``orchestrator_review._fail_and_maybe_retry``); the
+            # two paths differing on the same question is what let this sit.
+            await queue.fail_task(body.task_id, feedback)
             await queue.retry_task(body.task_id)
             request.app.state.event_bus.publish(
                 {
