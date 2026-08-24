@@ -39,10 +39,15 @@ Three consequences of that identity, in priority order:
    its smallest case, not a second feature. Auto-delegate mode is the
    companion feature, the continuous shape of the same connection; it is
    presented after the flagship, never beside it. It keeps its beta label for
-   now: the single-branch review-scope defect that failed every task after the
+   now. The single-branch review-scope defect that failed every task after the
    first was fixed on 2026-08-24 (plan:
-   `superpowers/plans/2026-08-14-review-scope-single-branch.md`), and the label
-   drops once a walkthrough verifies the mode end to end on a live repository. Both are unified by the
+   `superpowers/plans/2026-08-14-review-scope-single-branch.md`) and walkthrough
+   #13 verified it end to end on a live repository, driven by a brain calling
+   MCP `dispatch_task` one task at a time. The label did not drop, because the
+   same walk found five defects on the mode's own path, three of them fixed
+   hours before the run that verified it. **The criterion is now a walkthrough
+   that drives the mode end to end and finds NO new defect in it**: verifying
+   what you just fixed is weaker evidence than a run that finds nothing. Both are unified by the
    theme (single session, other harnesses do the work, everything gated), the
    shared engine is a closing note, never the pitch, and delegation alone is
    commodity, so the governed loop is always the second beat of the pitch.

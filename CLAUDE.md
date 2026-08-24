@@ -18,8 +18,10 @@ Praxis takes the plan from there (same identity, stated by workflow position). P
 wording is "govern/governed", never "predictable" (unbenchmarked claim); avoid
 "meta-harness" and "control plane" (claimed by larger projects). **Implement-a-plan is
 the flagship FEATURE** (a single dispatched task is its smallest case); auto-delegate
-mode is the companion feature (still beta until a walkthrough live-verifies the
-2026-08-24 review-scope fix), presented after the flagship, never beside it.
+mode is the companion feature (still beta: run #13 live-verified the review-scope
+fix through MCP `dispatch_task` AND found five defects on the mode's own path, so
+the criterion is now a walkthrough that finds NO new defect in it), presented
+after the flagship, never beside it.
 Capability-aware task decomposition is the flagship MECHANISM (unique in the landscape);
 role separation is the supporting architecture; cost is a consequence. **The exact public
 copy - README headline ("Govern any coding harness from inside the one you already

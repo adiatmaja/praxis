@@ -2423,3 +2423,272 @@ both ways from run #10 still holding.
 think of.** Run #11's lesson was that a fix on the doctor is not a fix on the
 product. This one is its sibling: a rule written in three documents is not a
 rule, and the surface that violated it was the orchestrator itself.
+
+---
+
+# Run #13, 2026-08-25
+
+Warm Docker, a fresh clone, and for the first time an install shared with
+another live session. That last part was an accident and it found two of the
+three worst defects of the run.
+
+The mission was to close the one defect run #12 left open, build the micro-edit
+lane, and drive auto-delegate end to end through MCP `dispatch_task` so its beta
+label could finally drop.
+
+## Setup, from a fresh clone
+
+`praxis init --non-interactive --preset local-lmstudio` took **38.5 seconds**
+with the agent images already built, and ended on the doctor as designed. Two
+reds, both with remedies exact enough to paste:
+
+- the VPN killswitch hook blocking every brain call inside the container, fixed
+  by `echo CLAUDE_VPN_KILLSWITCH_OFF=1 >> .env.container` then `up -d`,
+- the worker endpoint at `host.docker.internal:1234`, which is not where LM
+  Studio lives on this machine any more.
+
+Both cleared on the first attempt, twelve checks green. Nothing new to report
+about setup: it is the third run in a row where the doctor said exactly what to
+do and doing it worked.
+
+## The defect run #12 left open, closed
+
+**A completed single-branch plan logged `Integration PR open failed`.**
+`_plan_branch_has_nothing_to_integrate` compared two known SHAs, and a DELETED
+branch has none, so a correct outcome fell through to an attempt that could only
+fail. It is now `_nothing_to_integrate_reason` and settles two facts, returning
+the one that applied so the log says which: the branches are identical, or the
+branch is absent.
+
+The reason the absent arm is safe is worth writing down, because the old
+docstring asserted the opposite: `GitOps.remote_head_sha` returns `None` ONLY
+when `git ls-remote` succeeded and the ref was not in its output, and RAISES on
+a non-zero exit. `None` is an ANSWER here. "Could not ask" arrives as the
+exception and still falls through to the attempt, which is the direction that
+cannot silently stop opening integration PRs.
+
+Verified live later the same run: with the work branch already carrying an open
+PR, the loop logged `integration PR skipped: branch=... already has an open PR
+against base=main, reusing #73`. No false failure.
+
+## The micro-edit lane, and four corrections to its own spec
+
+The spec was written on 2026-08-21 and disagreed with the code in four places.
+All four are recorded at the top of it, and the third would have shipped a false
+claim:
+
+1. `brainstorm.write_and_commit` does NOT use a contents API, it clones
+   server-side. The spec's two options were one option, and the proven mechanism
+   is the clone.
+2. Attribution already had a mechanism: `tasks.implement_harness` /
+   `implement_model`, which `review_task` already reads into `record_outcome`.
+   No new outcome field was needed.
+3. **The re-review tier buys nothing on a stock install.** `core/roles.py` maps
+   both review call sites to the `review` role, and a YAML role chain shadows
+   the call site entirely, so the shipped `review: [sonnet, haiku]` runs sonnet
+   either way. The tier is still passed because it is correct where per-call-site
+   models are configured, but the lane's saving is the container, the clone and
+   the worker turn, and no document may say the review got cheaper.
+4. The serialization guard belongs INSIDE the existing hold, not beside it.
+
+That fourth correction found a hole in run #12's own headline fix.
+
+## The hold from run #12 could not fire on the path it was written for
+
+`dispatch_pending_tasks` holds single-branch dispatch while a task is active on
+the shared branch. It computed `busy` from `get_tasks_for_plan(plan_id)`.
+
+Auto-delegate reaches Praxis through MCP `dispatch_task`, and `api/dispatch.py`
+creates a NEW one-task plan on every call. Several plans, one caller-named work
+branch, one task per plan, and therefore never a second task IN the plan to hold
+against. On the mode's own path the hold could not fire at all.
+
+It is now keyed on the BRANCH across the project. Verified live, twice, and the
+second time is the better evidence: a micro edit dispatched to the branch a
+worker from a DIFFERENT plan was actively committing to was held, tick after
+tick, with the reason in the log. The lane inherits the guard instead of
+carrying a second copy of it.
+
+## Then the walk itself found five more
+
+**1. The mode's first dispatch was refused.** The contract is "one caller-named
+work branch", so the brain names a branch and dispatches. The preflight answered
+`422 branch not found on remote`. That check is right for the two-tier reading
+of `branch`, where it is a BASE the worker cuts from, and wrong for the mode,
+where it is the branch Praxis itself creates. It also made the micro-edit lane's
+create-the-branch arm unreachable through the only API that enters it, while
+every unit test of that arm passed. A MISSING_BRANCH is now a warning when the
+mode is on, and only that kind; the check still runs and its answer still
+travels, so a mistyped branch is visible rather than becoming a surprise second
+branch.
+
+**2. A worker retried from the callback path was told nothing about why.**
+`api/internal.py` computes `feedback` for all three outcomes of a failed
+callback and the retry branch dropped it. `worker_bible` has a `review_feedback`
+slot that `dispatch_pending_tasks` fills from exactly that column, so the retried
+worker was re-dispatched blind and spent an attempt repeating itself. The review
+path has always stored it first. Two paths answering the same question
+differently is what let it sit.
+
+**3. One plan's failure starved every other plan on the install.** This is the
+one that needed the accident. `run_once` iterates `get_runnable_plans()` and
+called `process_plan_once` with no guard. The other session's project had a repo
+path outside the container's allowed working directory, its brain call raised a
+`ValueError` out of the JSON extractor, and that aborted the whole pass. The
+order is stable, so the same plan aborted it again every tick, and a task
+dispatched against a completely different project sat at `pending` for four
+minutes without ever starting a container.
+
+Neither side looked broken. The loop logged one "Orchestration loop iteration
+failed" per tick, which reads as a transient hiccup, and the starved task showed
+an ordinary `pending`. `_publish_approvals_digest` one level down already
+carries this exact guard with a docstring saying a digest failure must never
+wedge the loop. The rule was never applied to the loop over plans.
+
+**4. Two checkouts on one machine silently swap databases.**
+`docker-compose.yml` hardcodes `container_name: orchestrator`, and a container
+name is GLOBAL to the daemon. This project's own dogfooding workflow creates a
+second checkout, so the two fight over the name, and whichever `docker compose`
+ran last owns it AND points it at its own data volume. The loser's database
+appears to have vanished: a fresh migration log, a re-seeded admin user, every
+task 404. It happened twice before I understood it, and the second time I was
+reading a green doctor table that described an install I was not standing in.
+
+The doctor cannot DECIDE this: the CLI knows which checkout it ran from and the
+server does not. What it can do is say where the thing answering came from, so
+the build-stamp row now ends `; started from C:\working-space\praxis`. That one
+clause would have cost me twenty minutes.
+
+**5. One MCP dispatch opted a whole repository into autonomous unapproved
+work.** Watched happening: one `dispatch_task` of a one-line task, and minutes
+later Praxis was running an improvement plan it had written for itself against
+the same repository, spawning its own worker container, with nobody asked.
+
+`database.py` declares `approval_gate INTEGER NOT NULL DEFAULT 1` and
+`ProjectCreate` defaults it True. Both MCP creation paths passed False
+explicitly, and `process_plan_once` reads that column as
+`activate=not approval_gate`, so False is not "no gate configured", it is "start
+it running". The name is presumably how it survived: `get_project` already
+renames the field `improvement_plan_approval_gate` with a comment explaining
+that `approval_gate: false` reads like "merges are automatic here" and is not
+that. All that care went into REPORTING the field and none into the two places
+that set it. `auto_merge` was never involved and a test now pins the two apart.
+
+## The two never-swept surfaces
+
+**`bench/` was the worst finding of the run.** Every `resolved` and `plausible`
+number it has ever produced was False, unconditionally. `grade.py` read the
+official harness's AGGREGATE report and looked each instance up as a top-level
+key; verified against the harness source fetched on the day, that file's
+top-level keys are counters and sorted id lists, never an instance id. So the
+lookup missed on every instance of every run and took the branch documented for
+a crashed attempt. Every resolve rate, every McNemar p-value and every
+plausible-but-wrong count was a permanent silent zero indistinguishable from an
+honest 0%, and the existing tests hand-built the per-instance shape directly, so
+they stayed green.
+
+An unrecognized report shape now refuses to grade at all rather than writing a
+file full of False. Two more from the same sweep: `paired_comparison` keyed on
+instance id alone while the config defines two workers and two seeds, so a
+second seed silently overwrote the first and could erase a genuine discordant
+pair before the test ran; and the cost table claimed unconditionally that tokens
+cost no money because the worker is local, which is false the moment the hosted
+worker appears in a run.
+
+**`api/system.py`** named the configured planner and then probed the `claude`
+binary regardless of which provider that planner uses. `api/doctor.py` has
+answered this correctly for a while, using two helpers that already live in
+`api/system.py`. The doctor fix never reached the product, which is run #11's
+lesson arriving again in a surface nobody had swept.
+
+## What the walk confirmed working
+
+The scoped review is live and legible: `review: this task's own commits after
+04ce97f... carries no diff` names the range rather than the pull request. The
+`no_changes` decision closed a task whose work was already present and disclosed
+its own weak evidence in the same sentence ("no verify_cmd configured"). The
+hold logged its reason on two different branches. Reconcile noticed a worker
+container I had removed by hand and re-dispatched the task. And the worker
+prompt rewritten for the floor model in the previous session visibly worked: the
+worker checked its own diff against the prompt's checklist, confirmed it had
+touched only its two files, and said so before committing.
+
+## The loop, closed end to end through MCP
+
+The point of the run. Auto-delegate ON, and every step driven by a brain calling
+`dispatch_task` one task at a time on `adiatmaja/playground`, against one
+caller-named work branch:
+
+1. **Task 1** (`slugify`) closed `no_changes`. Its work was already on the
+   branch from an earlier attempt, the scoped range was empty, and the decision
+   disclosed its own weak evidence in the same sentence: "no verify_cmd
+   configured; harness exited clean".
+2. **Task 2** (`titlecase`) dispatched only after task 1 was terminal, recorded
+   its own base sha, and PASSED. The review says "No other files were touched",
+   on a branch that already carried task 1's two files. That is the review
+   scoping doing exactly the job it was built for, on the path it was built for.
+3. **A micro edit** dispatched to that same branch WHILE task 2 was still
+   running was held, tick after tick, with the reason logged. When task 2
+   parked, it ran: no container, `implement_harness=brain`, its own
+   `review_base_sha` pointing at task 2's commit, PR #73 reused rather than a
+   second one opened, and a PASS scoped to the one README commit.
+4. **The merge gate** took both, by hand. All three pieces of work are on
+   `main`: `slugify.py`, `titlecase.py`, and the README line.
+
+The second merge is worth noting: both tasks were parked on the SAME pull
+request, so by the time the micro edit was approved its PR was already merged.
+`merge_pr` re-read the PR state, found `MERGED`, and reported merged instead of
+failing on the exit code. That carve-out was written for a 504 and it covered
+this without anyone thinking about it.
+
+## And the lane did not work the first time
+
+Worth stating plainly, because it is the sharpest thing this run has to teach.
+The micro-edit lane was built with 17 unit tests and 13 byte-level mutations,
+all green, all red-without-the-fix. The first time it touched a real repository
+it checked out the branch, wrote the file, committed, and died on `git push`
+with exit 128, leaving a commit and no pull request.
+
+`commit_and_push` ends in a bare `git push`, which needs an upstream, and
+neither branch the lane can be on has one. Every one of those 17 tests mocked
+`commit_and_push`. **The mock was the bug's hiding place.** The fix splits the
+commit from the push so the seam is visible in the API, and the two new tests
+target exactly what a double cannot see: one asserts the explicit `-u` push, and
+one runs the commit step against REAL git in a repository with no remote at all.
+
+## Score: 8/10
+
+The loop closed end to end on a real repository, all three gates were exercised,
+both never-swept surfaces were swept and each held a HIGH, and the review
+scoping that cost run #12 its point is now verified on the path it exists for.
+
+It is not higher for one reason above the others: **a feature I built in this
+same session shipped broken into the live run, and the tests I wrote for it
+could not have caught it.** Thirteen mutations proved the guards were live and
+none of them proved the thing worked. Add the five product defects the walk
+found on auto-delegate's own path, two of them severe enough to change what an
+operator's repository does without being asked, and this is not a run that gets
+to call the mode finished.
+
+## Auto-delegate stays beta, and the criterion is now sharper
+
+The stated condition for dropping the label was a walkthrough that live-verifies
+the review-scope fix. That condition is MET: task 2 was reviewed on its own
+commits, on a shared branch carrying another task's work, and said so.
+
+The label stays anyway, and it should. This run found five defects on the mode's
+own path, three of them fixed hours before the walk that verified it, and the
+fixes have not themselves been walked. **The new criterion: drop the label when
+a walkthrough drives the mode end to end and finds NO new defect in it.**
+Verifying the thing you just fixed is weaker evidence than a run that finds
+nothing, and only the second kind justifies the word.
+
+## What to carry
+
+**A mock can be where the bug lives.** Run #11's lesson was that a doctor fix is
+not a product fix; run #12's was that a precondition you cannot enforce is a bug
+waiting for a caller you did not name. This one is their sibling and it is the
+harshest of the three: every test passing is not evidence the code runs, when
+the tests all agreed to pretend about the same call. Ask of any green suite
+which single line, if mocked everywhere, would hide a total failure. Then go
+write the test that does not mock it.
