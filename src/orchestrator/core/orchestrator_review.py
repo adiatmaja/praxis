@@ -245,12 +245,66 @@ class ReviewMixin:
                 }
             )
 
+    async def _review_diff_for(
+        self,
+        backend: Any,
+        ref: PullRequestRef,
+        task: dict[str, Any],
+        log: Any,
+    ) -> tuple[str, str]:
+        """Return the diff to review and a phrase naming what it covers.
+
+        In single-branch (auto-delegate) mode every task pushes to one shared
+        work branch, so the pull request accumulates every task's commits. A
+        reviewer shown all of them failed every task after the first for
+        touching files outside its scope, and ``core/outcome_recorder`` wrote
+        that FAIL against a worker that had done its own task correctly. With a
+        base sha recorded at dispatch the range can be bounded to this task's
+        own commits. See
+        ``docs/superpowers/plans/2026-08-14-review-scope-single-branch.md``.
+
+        Args:
+            backend: The resolved git backend.
+            ref: The pull request being reviewed.
+            task: The task row, for ``review_base_sha``.
+            log: The task-scoped logger.
+
+        Returns:
+            ``(diff, scope)``. ``scope`` describes what the diff covers and is
+            carried into the empty-diff decision, because "this pull request has
+            no commits" and "this task added no commits of its own" are
+            different facts about the same review.
+        """
+        base_sha = task.get("review_base_sha")
+        pr_scope = f"the pull request {task['pr_url']}"
+        if not base_sha:
+            # NULL is the pre-column behavior and every two-tier row's normal
+            # state: the per-task branch already carries only this task's work.
+            return await backend.get_diff(ref), pr_scope
+
+        scoped = getattr(backend, "get_diff_since", None)
+        if scoped is None:
+            # A backend that predates the capability. The degradation is safe,
+            # but silence is not: the review would then be scoped differently
+            # from what the task row says, with nothing recording it.
+            log.warning(
+                "backend %r cannot bound a diff by sha; reviewing the whole "
+                "pull request instead of this task's own commits",
+                getattr(backend, "name", backend),
+            )
+            return await backend.get_diff(ref), pr_scope
+        return (
+            await scoped(ref, base_sha),
+            f"this task's own commits after {base_sha}",
+        )
+
     async def _decide_empty_pr_diff(
         self,
         task: dict[str, Any],
         project: dict[str, Any],
         plan: dict[str, Any] | None,
         log: Any,
+        scope: str | None = None,
     ) -> None:
         """Decide what a pull request with no diff means, without asking the brain.
 
@@ -270,19 +324,26 @@ class ReviewMixin:
             project: Its project row.
             plan: The plan row, for the branch the leaf was cut from.
             log: The task-scoped logger ``review_task`` already built.
+            scope: What was empty, as a phrase. Defaults to the pull request
+                itself. In single-branch mode it is usually the task's own
+                commit range instead, on a pull request that is full of other
+                tasks' commits, and reporting THAT as "the pull request carries
+                no diff" is a statement anyone can open the pull request and
+                disprove.
         """
         task_id = task["id"]
+        subject = scope or f"the pull request {task['pr_url']}"
         log.warning(
-            "review: pull request %s carries no diff; deciding it as a fact "
+            "review: %s carries no diff; deciding it as a fact "
             "rather than sending an empty change to the reviewer",
-            task["pr_url"],
+            subject,
         )
         if await self.resolve_no_change_run(task_id, project, plan):
             return
         feedback = (
-            f"Review could not start: the pull request {task['pr_url']} "
-            "carries no diff, and the branch it was cut from did not verify "
-            "clean, so the work is genuinely missing."
+            f"Review could not start: {subject} carries no diff, and the "
+            "branch it was cut from did not verify clean, so the work is "
+            "genuinely missing."
         )
         await self._fail_and_maybe_retry(task_id, task, project, feedback)
 
@@ -401,20 +462,25 @@ class ReviewMixin:
             # fail the task; on gate failure the diff is unused (verdict is fail).
             diff = ""
             if review is None:
-                diff = await backend.get_diff(ref)
+                diff, scope = await self._review_diff_for(backend, ref, task, log)
                 if not diff.strip():
-                    # An empty diff is a FACT, not a verdict, and the fact is
-                    # about the PULL REQUEST: it carries no commits. Both
-                    # backends fetch it through a checked command, so a
-                    # non-zero exit raises and "" can only mean the command
-                    # succeeded and printed nothing.
+                    # An empty diff is a FACT, not a verdict. Both backends
+                    # fetch it through a checked command, so a non-zero exit
+                    # raises and "" can only mean the command succeeded and
+                    # printed nothing.
                     #
                     # Handing that to the brain as "the change" is how a
                     # review of nothing became a PASS parked at the merge gate
                     # with "parked at merge gate awaiting approval". The
                     # governance for an empty diff already exists one layer
                     # down and is reused rather than re-decided here.
-                    await self._decide_empty_pr_diff(task, project, plan, log)
+                    #
+                    # ``scope`` is what the emptiness is ABOUT, and the two are
+                    # different facts: a whole pull request with no commits, or
+                    # a task that added none of its own to a branch that is full
+                    # of other tasks' work. Reporting the second as the first is
+                    # a statement anyone can open the pull request and disprove.
+                    await self._decide_empty_pr_diff(task, project, plan, log, scope)
                     return
                 review = await self._opus.review_diff(
                     diff,
