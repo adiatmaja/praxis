@@ -39,12 +39,14 @@ wherever you like, then hand Praxis the plan. One session, no copy-pasted plans,
 switching tools by hand. (A CLI and a dashboard drive the same engine.)
 
 > [!NOTE]
-> **"Harness"** here means any agentic coding tool: Claude Code,
+> **"Harness"** here means any agentic coding tool: Claude Code, Codex CLI,
 > [OpenCode](https://github.com/sst/opencode) (open source, drives any OpenAI-compatible
 > model), [Antigravity](https://antigravity.google/) (Google's Gemini harness; its CLI
-> is `agy`), Codex CLI. Concretely: if you use Claude Code, Praxis lets it hand a coding
-> task to Gemini or a local open-weight model working in a disposable container, then
-> review the pull request that comes back. Nothing merges until you approve it.
+> is `agy`). Praxis sits inside YOUR harness and dispatches to WORKER harnesses:
+> OpenCode and Antigravity ship as workers today. Concretely: if you use Claude Code,
+> Praxis lets it hand a coding task to Gemini or a local open-weight model working in a
+> disposable container, then review the pull request that comes back. Nothing merges
+> until you approve it.
 
 The shape of a session, so you see the loop close before the architecture:
 
@@ -241,9 +243,9 @@ What you need before starting:
 A local worker model additionally needs [LM Studio](https://lmstudio.ai/) and hardware
 that can serve it; tiers and sizing in
 [docs/open-weight-models-complete.md](docs/open-weight-models-complete.md). The
-smallest tryout needs none of that: Docker, uv, one subscription CLI, the default
-preset (a one-time `agy login`), and a single dispatched task will close the whole
-loop.
+smallest tryout needs none of that, and exactly two logins: the planner CLI you
+already pay for (e.g. `claude`), plus a one-time `agy login` with a Google account
+for the default worker preset. Then a single dispatched task closes the whole loop.
 
 ```bash
 git clone https://github.com/adiatmaja/praxis.git
