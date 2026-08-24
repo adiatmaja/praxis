@@ -116,8 +116,37 @@ async def test_escalation_index_defaults_to_zero(tmp_path):
 
 
 @pytest.mark.unit
-def test_current_schema_version_is_nine():
-    assert CURRENT_SCHEMA_VERSION == 9
+def test_current_schema_version_is_ten():
+    assert CURRENT_SCHEMA_VERSION == 10
+
+
+@pytest.mark.unit
+async def test_migration_adds_review_base_sha_defaulting_to_null(tmp_path):
+    """A task can record where its own work starts on a shared branch.
+
+    NULL is the value every pre-existing row has and it is load-bearing: it
+    means "review the whole pull request", which is what the loop did before
+    this column existed. A NOT NULL column or a non-NULL default would silently
+    re-scope every historical row's review.
+    """
+    db = Database(f"sqlite+aiosqlite:///{tmp_path / 'basesha.db'}")
+    await db.initialize()
+    await db.execute("INSERT INTO users (id, name, token_hash) VALUES ('u1', 'U', 'h')")
+    await db.execute(
+        "INSERT INTO projects (id, user_id, name, repo_url) "
+        "VALUES ('proj1', 'u1', 'P', 'https://example.com/repo')"
+    )
+    await db.execute(
+        "INSERT INTO plans (id, project_id, status) VALUES ('p1', 'proj1', 'pending')"
+    )
+    await db.execute(
+        "INSERT INTO tasks (id, plan_id, title, description, branch_name) "
+        "VALUES ('t1', 'p1', 'T', 'D', 'agent/t')"
+    )
+    row = await db.fetch_one("SELECT review_base_sha FROM tasks WHERE id = 't1'")
+    assert row is not None
+    assert row["review_base_sha"] is None
+    await db.close()
 
 
 @pytest.mark.unit

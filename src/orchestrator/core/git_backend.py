@@ -204,6 +204,10 @@ class GitBackend(Protocol):
         """Return the unified diff of the change."""
         ...
 
+    async def head_sha(self, branch: str) -> str | None:
+        """Return the commit at ``branch`` on the remote, or None if absent."""
+        ...
+
     async def checkout(self, ref: PullRequestRef, dest: str) -> str:
         """Clone and check out the change's head into ``dest``; return ``dest``."""
         ...
@@ -222,14 +226,21 @@ class GitHubBackend:
 
     name = "github"
 
-    def __init__(self, git_ops: Any) -> None:
+    def __init__(self, git_ops: Any, repo_url: str | None = None) -> None:
         """Wrap a ``GitOps`` instance.
 
         Args:
             git_ops: The orchestrator's ``GitOps``, typed loosely so tests can
                 pass a mock without importing the concrete class.
+            repo_url: The project's repository URL. Needed only by
+                :meth:`head_sha`, which reads a branch that has no pull request
+                yet and so cannot get the repository from a ``PullRequestRef``.
+                Optional so the many existing call sites that construct this
+                class with a mock keep working; ``head_sha`` reports None
+                without it rather than guessing a repository.
         """
         self._git = git_ops
+        self._repo_url = repo_url
 
     def _repo(self, ref: PullRequestRef) -> str:
         """Return the ``owner/name`` slug every ``gh pr`` call must target.
@@ -267,6 +278,28 @@ class GitHubBackend:
         return cast(
             str, await self._git.get_pr_diff(".", ref.number, repo=self._repo(ref))
         )
+
+    async def head_sha(self, branch: str) -> str | None:
+        """Return the commit at ``refs/heads/<branch>`` on the remote.
+
+        Args:
+            branch: Branch name, without the ``refs/heads/`` prefix.
+
+        Returns:
+            The commit sha, None if the branch does not exist on the remote,
+            and None when this backend was built without a repository URL (an
+            older call site or a test double), because a branch head has no
+            meaning without one.
+
+        Raises:
+            RuntimeError: If the underlying ``git ls-remote`` fails. The caller
+                decides what an unreadable remote means; it must not be
+                confused with "the branch is not there", which is the ordinary
+                first-dispatch case and has a different consequence.
+        """
+        if not self._repo_url:
+            return None
+        return cast(str | None, await self._git.remote_head_sha(self._repo_url, branch))
 
     async def checkout(self, ref: PullRequestRef, dest: str) -> str:
         """Clone the PR head into ``dest``.
@@ -340,6 +373,24 @@ class LocalGitBackend:
         return await self._run_checked(
             ["git", "-C", self._path, "diff", f"{merge_base}..{ref.branch}"]
         )
+
+    async def head_sha(self, branch: str) -> str | None:
+        """Return the commit at ``refs/heads/<branch>`` in the bare repo.
+
+        Args:
+            branch: Branch name, without the ``refs/heads/`` prefix.
+
+        Returns:
+            The commit sha, or None if the branch does not exist. ``rev-parse``
+            exits non-zero for an unknown ref, which here is a fact and not an
+            error: the first task on a fresh branch always lands on it.
+        """
+        code, out, _err = await self._run(
+            ["git", "-C", self._path, "rev-parse", "--verify", f"refs/heads/{branch}"]
+        )
+        if code != 0:
+            return None
+        return out.strip() or None
 
     async def checkout(self, ref: PullRequestRef, dest: str) -> str:
         """Clone the bare repo and check the branch out into ``dest``."""
@@ -428,4 +479,4 @@ def resolve_backend(repo_url: str, git_ops: Any) -> GitBackend:
     """
     if is_local_repo_url(repo_url):
         return LocalGitBackend(repo_url)
-    return GitHubBackend(git_ops)
+    return GitHubBackend(git_ops, repo_url)

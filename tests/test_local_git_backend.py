@@ -174,3 +174,22 @@ async def test_a_file_url_and_a_plain_path_behave_identically(bare_repo, ref):
         "file:///" + str(bare_repo).replace("\\", "/").lstrip("/")
     ).get_diff(ref)
     assert from_path == from_url
+
+
+@pytest.mark.integration
+async def test_head_sha_returns_the_branch_head(bare_repo):
+    """The dispatch-time base sha, read straight from the bare repo."""
+    expected = _git("rev-parse", "refs/heads/agent/x", cwd=bare_repo)
+
+    assert await LocalGitBackend(str(bare_repo)).head_sha("agent/x") == expected
+
+
+@pytest.mark.integration
+async def test_head_sha_is_none_for_a_branch_that_does_not_exist(bare_repo):
+    """The ordinary first-dispatch case: the branch has not been pushed yet.
+
+    None, not an exception: an absent branch is a fact the caller acts on (it
+    records the base branch head instead), and raising here would strand every
+    first dispatch.
+    """
+    assert await LocalGitBackend(str(bare_repo)).head_sha("agent/never") is None

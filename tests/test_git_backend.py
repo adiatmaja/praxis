@@ -250,3 +250,28 @@ async def test_github_backend_refuses_any_ref_without_a_repo(
     git.clone_pr_head.assert_not_awaited()
     git.comment_on_pr.assert_not_awaited()
     git.merge_pr.assert_not_awaited()
+
+
+@pytest.mark.unit
+async def test_github_backend_head_sha_delegates_with_the_repo_url():
+    git = _git_ops_mock()
+    git.remote_head_sha.return_value = "abc123"
+    backend = GitHubBackend(git, "https://github.com/o/r")
+
+    assert await backend.head_sha("plan/x") == "abc123"
+    git.remote_head_sha.assert_awaited_once_with("https://github.com/o/r", "plan/x")
+
+
+@pytest.mark.unit
+async def test_github_backend_head_sha_is_none_without_a_repo_url():
+    """A branch head has no meaning without a repository, so do not guess one.
+
+    ``GitHubBackend(git_ops)`` with no URL is how many existing call sites and
+    doubles build it. Returning None keeps them on the whole-pull-request review
+    path instead of resolving a branch against some other repository.
+    """
+    git = _git_ops_mock()
+    backend = GitHubBackend(git)
+
+    assert await backend.head_sha("plan/x") is None
+    git.remote_head_sha.assert_not_awaited()

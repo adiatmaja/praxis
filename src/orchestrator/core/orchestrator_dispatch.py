@@ -240,6 +240,19 @@ class DispatchMixin:
                 branch = f"agent/{task_slug}"
                 base_branch = plan.get("plan_branch_name") or project["default_branch"]
 
+            # Where this task's own work starts on ``branch``. Resolved and
+            # written BEFORE the container is spawned: the worker's first push
+            # moves the branch head, so a SHA read afterwards would already
+            # contain the work and the review range would be empty.
+            review_base_sha = await self._resolve_review_base_sha(
+                task, project, branch, base_branch
+            )
+            if review_base_sha != task.get("review_base_sha"):
+                await self._tq._db.execute(
+                    "UPDATE tasks SET review_base_sha = ?, updated_at = ? WHERE id = ?",
+                    (review_base_sha, datetime.now(UTC).isoformat(), task["id"]),
+                )
+
             # Build the Static Bible (goal + git-spine progress handover +
             # conventions), scrubbed and trimmed to the model's window, so the
             # goal/progress survive compaction and cross-run re-dispatch.
@@ -341,6 +354,83 @@ class DispatchMixin:
                     "difficulty_flagged": flagged,
                 }
             )
+
+    async def _resolve_review_base_sha(
+        self,
+        task: dict[str, Any],
+        project: dict[str, Any],
+        branch: str,
+        base_branch: str,
+    ) -> str | None:
+        """Return the commit this task's own work starts after, or None.
+
+        Bounds the per-task review to the task's own commits on a branch that
+        several tasks may share. See
+        ``docs/superpowers/plans/2026-08-14-review-scope-single-branch.md``.
+
+        A re-dispatch KEEPS whatever is already recorded. A retried worker
+        pushes to the same branch and its first attempt's commits are still
+        there, so re-recording would scope the review to the fixup commit alone:
+        the reviewer would judge a fragment as though it were the whole task,
+        and ``core/outcome_recorder`` would write a verdict for work nobody
+        looked at. The one case that does need a fresh SHA is a branch that has
+        VANISHED from the remote (swept, recreated), which orphans the stored
+        one. A branch that was force-pushed keeps its name, so the stored SHA
+        survives this check and is caught instead at review time, where
+        ``get_diff_since`` falls back to the whole pull request rather than
+        returning the empty diff an orphaned range would produce.
+
+        Args:
+            task: The task row about to be dispatched.
+            project: Its project row, for the repository URL.
+            branch: The branch the worker will push to.
+            base_branch: The branch ``branch`` is cut from, used when ``branch``
+                does not exist on the remote yet, which is the ordinary case for
+                the first task.
+
+        Returns:
+            The base sha, or None. None is a supported value meaning "review the
+            whole pull request", which is what every row did before this column
+            existed, so every failure here degrades to unchanged behavior rather
+            than costing the task its dispatch.
+        """
+        recorded: str | None = task.get("review_base_sha")
+        backend = cast(Any, self)._resolve_backend(project["repo_url"])
+        head_sha = getattr(backend, "head_sha", None)
+        if head_sha is None:
+            # A backend double that predates this capability. Same fact as a
+            # failed lookup, and stated once here so no caller has to.
+            logger.info(
+                "Backend %r cannot resolve a branch head; task %s will be "
+                "reviewed on the whole pull request",
+                getattr(backend, "name", backend),
+                task["id"],
+            )
+            return recorded
+
+        async def _head(name: str) -> str | None:
+            value = await head_sha(name)
+            # An AsyncMock hands back a MagicMock, and str() of one is a value
+            # no git command can resolve. Treat anything that is not a real sha
+            # string as absent rather than writing it into the column.
+            return value if isinstance(value, str) and value.strip() else None
+
+        try:
+            current = await _head(branch)
+            if recorded and current is not None:
+                return recorded
+            if current is not None:
+                return current
+            return await _head(base_branch)
+        except Exception:  # noqa: BLE001 - a lookup failure must not strand the task
+            logger.warning(
+                "Could not resolve a review base sha for task %s on %s; "
+                "it will be reviewed on the whole pull request",
+                task["id"],
+                branch,
+                exc_info=True,
+            )
+            return recorded
 
     async def _wave_verify_gate(
         self,

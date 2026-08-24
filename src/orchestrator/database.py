@@ -306,6 +306,30 @@ async def _migration_0009_plan_integration(connection: aiosqlite.Connection) -> 
         )
 
 
+async def _migration_0010_review_base_sha(connection: aiosqlite.Connection) -> None:
+    """Add tasks.review_base_sha: where this task's own work starts on a branch.
+
+    In single-branch (auto-delegate) mode every task pushes to one shared work
+    branch, so the pull request it carries accumulates every task's commits and
+    the per-task reviewer was shown all of them. Every task after the first
+    failed review for touching files outside its scope, and
+    ``core/outcome_recorder`` wrote that FAIL against a worker that had done its
+    task correctly, poisoning the calibration signal.
+
+    A branch name cannot say where one task's commits begin on a branch several
+    tasks share. A SHA can, so the review can be bounded to
+    ``review_base_sha..head``.
+
+    Nullable, and that is load-bearing: every row that predates this column has
+    no such SHA and must keep taking the whole-pull-request path unchanged, as
+    must two-tier rows whose lookup failed.
+    """
+    cursor = await connection.execute("PRAGMA table_info(tasks)")
+    cols = {row[1] for row in await cursor.fetchall()}
+    if "review_base_sha" not in cols:
+        await connection.execute("ALTER TABLE tasks ADD COLUMN review_base_sha TEXT")
+
+
 MIGRATIONS: list[Migration] = [
     Migration(1, "baseline: schema as of 2026-07-02", _migration_0001_baseline),
     Migration(
@@ -347,6 +371,11 @@ MIGRATIONS: list[Migration] = [
         9,
         "add plans integration PR columns (integration_pr_url, integration_merged_at)",
         _migration_0009_plan_integration,
+    ),
+    Migration(
+        10,
+        "add tasks.review_base_sha so a review can be scoped to one task",
+        _migration_0010_review_base_sha,
     ),
 ]
 
