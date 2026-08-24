@@ -39,17 +39,21 @@ no switching tools by hand. (A CLI and a dashboard drive the same engine.)
 
 ```
   ┌──────────────────────────────────────────────────────────┐
-  │  THE HARNESS YOU ALREADY USE                             │
-  │  (your agentic AI, with Praxis wired in over MCP)        │
+  │  YOUR USUAL WORKFLOW, in the harness you already use     │
+  │  brainstorm ─▶ spec ─▶ plan  (Praxis wired in over MCP)  │
   └────────────────────────────┬─────────────────────────────┘
-                               │  dispatch · steer · approve
+                               │  hand it the plan · steer · approve
                                ▼
   ┌──────────────────────────────────────────────────────────┐
-  │  PRAXIS ENGINE                    FastAPI · SQLite · Git │
+  │  PRAXIS, the execution phase       FastAPI · SQLite · Git│
   │  implement a plan · auto-delegate mode (beta)            │
-  │  every change governed: verify ─▶ review ─▶ merge gate   │
+  │                                                          │
+  │  decompose ── tasks sized to the worker, too-hard flagged│
+  │  pre-flight ─ context budget · disk, before any spawn    │
+  │  dispatch ─── one task per isolated Docker container     │
+  │  govern ───── verify ─▶ review ─▶ merge gate             │
   └────────────────────────────┬─────────────────────────────┘
-                               │  one task per isolated container
+                               │  the task, with the plan's context carried over
                                ▼
   ┌──────────────────────────────────────────────────────────┐
   │  WORKER HARNESSES, doing the typing (a pluggable set)    │
@@ -150,6 +154,23 @@ a capable hosted one.
                                                                     ▼
                                                           retry ×3 with feedback
 ```
+
+Four more behaviors round out the loop, each recorded as a fact rather than
+surfaced as an error:
+
+- **A worker can ask instead of guessing.** A task that needs a human decision
+  parks at the clarification gate and waits indefinitely; `praxis pending` lists
+  it, `praxis clarify <task-id> "answer"` resumes it. Nothing but a person
+  advances it.
+- **Retries resume, they do not restart.** Every dispatch carries the plan text
+  verbatim plus a progress handover read from the branch itself, so attempt two
+  continues on top of attempt one's commits instead of starting from zero.
+- **Work already present is a result, not a failure.** A worker that finds
+  nothing to change says so; Praxis verifies the claim on the branch and records
+  `no_changes`, which unblocks dependent tasks without inventing a diff.
+- **The loop proposes its own work, behind the same gate.** After a plan
+  completes, an improvement pass surveys the repository and may park a follow-up
+  proposal at `praxis pending`; nothing runs until you approve it.
 
 The planner turns a spec or `plan.md` into a dependency-ordered task graph; tasks run in
 parallel where dependencies allow, each on its own `agent/{task-slug}` branch under a
