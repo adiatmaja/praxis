@@ -160,6 +160,10 @@ class _DockerFacts:
     #: the same thing as absent: unknown, and reported as such.
     image_errors: dict[str, str] = field(default_factory=dict)
     published_port: int | None = None
+    #: The HOST directory the running orchestrator's compose stack was started
+    #: from, read off this container's own compose labels. None when it could
+    #: not be read (not started by compose, no docker socket, older daemon).
+    compose_working_dir: str | None = None
 
 
 def _in_container() -> bool:
@@ -167,23 +171,44 @@ def _in_container() -> bool:
     return Path("/.dockerenv").exists()
 
 
-def _resolve_published_port(client: Any) -> int | None:
-    """Return this container's HOST-published port, or None if undeterminable.
+def _resolve_self(client: Any) -> tuple[int | None, str | None]:
+    """Return this container's HOST-published port and compose working dir.
 
     ``settings.port`` is the in-container listening port (always 8080 per
     docker-compose.yml); the host maps that to ``${PORT:-12323}``. Asking the
     daemon to inspect THIS container's own port bindings is the only way to
     recover the host-side value from inside the container.
+
+    The compose working dir comes off the same inspect, and it answers a
+    question nothing else can. ``docker-compose.yml`` hardcodes
+    ``container_name: orchestrator``, and a container name is GLOBAL to the
+    daemon, so two checkouts of Praxis on one machine (which this project's own
+    dogfooding workflow creates: the repo, plus a fresh clone to walk through)
+    fight over it. Whichever ``docker compose`` command ran last owns the name
+    AND points it at its own data volume, so the other install's database
+    appears to have vanished: a fresh migration log, a re-seeded admin user, and
+    every task 404. Measured live on 2026-08-25, twice.
+
+    The build-stamp row cannot catch that on its own, because a container
+    mounts no working tree and has no commit to compare against. It can say
+    WHERE the thing answering this request came from, which is enough for an
+    operator to see that it is not the directory they are standing in.
     """
+    port: int | None = None
+    working_dir: str | None = None
     try:
         container = client.containers.get(socket.gethostname())
         bindings = container.attrs.get("NetworkSettings", {}).get("Ports", {})
         host_bindings = bindings.get("8080/tcp") or []
         if host_bindings and host_bindings[0].get("HostPort"):
-            return int(host_bindings[0]["HostPort"])
-    except Exception as exc:  # noqa: BLE001 - an unknown port is a degraded fact
-        logger.debug("could not resolve the published port: %s", exc)
-    return None
+            port = int(host_bindings[0]["HostPort"])
+        labels = container.attrs.get("Config", {}).get("Labels") or {}
+        candidate = labels.get("com.docker.compose.project.working_dir")
+        if isinstance(candidate, str) and candidate.strip():
+            working_dir = candidate
+    except Exception as exc:  # noqa: BLE001 - an unknown origin is a degraded fact
+        logger.debug("could not inspect this container: %s", exc)
+    return port, working_dir
 
 
 def _gather_docker_facts(resolve_port: bool) -> _DockerFacts:
@@ -216,13 +241,16 @@ def _gather_docker_facts(resolve_port: bool) -> _DockerFacts:
             logger.warning("could not inspect image %s: %s", tag, exc)
             image_errors[tag] = f"{type(exc).__name__}: {exc}"
 
-    published_port = _resolve_published_port(client) if resolve_port else None
+    published_port, compose_working_dir = (
+        _resolve_self(client) if resolve_port else (None, None)
+    )
     return _DockerFacts(
         reachable=True,
         image_present=image_present,
         image_labels=image_labels,
         image_errors=image_errors,
         published_port=published_port,
+        compose_working_dir=compose_working_dir,
     )
 
 
@@ -648,7 +676,9 @@ async def _build_probes(request: Request) -> dict[str, Any]:
         )
     else:
         result_map["build_stamp"] = probes.probe_build_stamp(
-            baked_commit=baked_commit, live_commit=live_commit
+            baked_commit=baked_commit,
+            live_commit=live_commit,
+            started_from=docker_facts.compose_working_dir,
         )
 
     result_map["auth_token"] = probes.probe_auth_token(

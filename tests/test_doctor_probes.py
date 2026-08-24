@@ -328,6 +328,57 @@ def test_build_stamp_amber_when_no_working_tree_is_available():
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize(
+    ("live_commit", "expected"),
+    [
+        (None, CheckStatus.AMBER),
+        ("abc1234", CheckStatus.GREEN),
+        ("def5678", CheckStatus.RED),
+    ],
+)
+def test_build_stamp_names_where_the_orchestrator_was_started_from(
+    live_commit, expected
+):
+    """Every verdict names it, because the wrong install can produce any of them.
+
+    ``docker-compose.yml`` hardcodes ``container_name: orchestrator`` and a
+    container name is global to the daemon, so two checkouts on one machine
+    take the name from each other along with the data volume behind it, and the
+    loser's database appears to have vanished. Measured live twice on
+    2026-08-25. The operator is then reading a doctor table about an
+    orchestrator that is not the one they are standing in, and every row in it
+    is true of the wrong install.
+
+    This row cannot decide it: the CLI knows which checkout it ran from and the
+    server does not. Naming the directory is what it CAN do, and a green row
+    that stays silent about it is the case that misleads hardest.
+    """
+    result = probe_build_stamp(
+        baked_commit="abc1234",
+        live_commit=live_commit,
+        started_from=r"C:\working-space\praxis-newcomer",
+    )
+    assert result.status is expected
+    assert "praxis-newcomer" in result.detail, (
+        "an operator standing in a different checkout has no other way to see "
+        f"which install answered; got {result.detail!r}"
+    )
+
+
+@pytest.mark.unit
+def test_build_stamp_says_nothing_about_an_origin_it_does_not_know():
+    """An unknown origin must not become a claim about one.
+
+    ``compose_working_dir`` is None whenever the container was not started by
+    compose, or the docker socket is not mounted, or the daemon is too old for
+    the label. Rendering that as an empty or placeholder directory would be a
+    fact nobody established.
+    """
+    result = probe_build_stamp(baked_commit="abc1234", live_commit="abc1234")
+    assert "started from" not in result.detail
+
+
+@pytest.mark.unit
 def test_agent_images_green_when_all_present():
     result = probe_agent_images(
         present={"opencode-agent:latest": True, "agy-agent:latest": True}

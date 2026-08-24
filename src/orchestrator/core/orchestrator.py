@@ -516,7 +516,32 @@ class Orchestrator(DispatchMixin, ReviewMixin, ReconcileMixin, ImprovementMixin)
                     plan["id"],
                 )
                 continue
-            await self.process_plan_once(plan["id"], project)
+            try:
+                await self.process_plan_once(plan["id"], project)
+            except Exception:  # noqa: BLE001 - one plan must not starve the rest
+                # A plan's failure is THAT plan's problem. Without this the
+                # first raising plan aborts the whole pass, and since
+                # ``get_runnable_plans`` returns a stable order, the same plan
+                # aborts it again on the next tick and every plan behind it is
+                # starved forever. Nothing looks broken: the loop logs one
+                # "Orchestration loop iteration failed" per tick and every
+                # other plan simply sits at pending.
+                #
+                # Measured live in walkthrough #13, on an install shared by two
+                # projects. One project's repo path was outside the container's
+                # allowed working directory, its brain call raised a ValueError
+                # out of the JSON extractor, and a task dispatched against a
+                # completely different project never started at all.
+                #
+                # Same rule ``_publish_approvals_digest`` already follows, one
+                # level down and for the same reason; it was never applied to
+                # the loop over plans.
+                logger.exception(
+                    "Plan %s (project %s) failed this pass; continuing with "
+                    "the remaining plans",
+                    plan["id"],
+                    plan["project_id"],
+                )
 
     async def _publish_approvals_digest(self) -> None:
         """Publish a rate-limited digest of work parked at the merge gate.

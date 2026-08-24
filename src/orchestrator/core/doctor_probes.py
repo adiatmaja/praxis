@@ -47,34 +47,58 @@ def probe_orchestrator_health(healthy: bool) -> CheckResult:
     )
 
 
-def probe_build_stamp(baked_commit: str, live_commit: str | None) -> CheckResult:
+def probe_build_stamp(
+    baked_commit: str, live_commit: str | None, started_from: str | None = None
+) -> CheckResult:
     """Green when the running build's commit matches the live working tree.
 
     ``live_commit`` is None when this process has no working tree to compare
     against (a production container mounts no ``.git``); that is an
     environment limit, not evidence of drift, so it resolves amber rather
     than a false red.
+
+    ``started_from`` is the HOST directory the running orchestrator's compose
+    stack was started from, and it is named in EVERY detail below because it
+    answers the question this row exists for in the case the commit cannot.
+    ``docker-compose.yml`` hardcodes ``container_name: orchestrator`` and a
+    container name is global to the daemon, so two checkouts on one machine
+    take the name from each other along with the data volume behind it, and the
+    loser's database appears to have vanished. The operator is then reading a
+    doctor table about an orchestrator that is not the one they are standing
+    in, and every row in it is true of the wrong install. Naming the directory
+    is the whole fix here: this row cannot compare it, because the CLI knows
+    which checkout it ran from and the server does not.
+
+    Args:
+        baked_commit: The commit stamped into the running image.
+        live_commit: The working tree's commit, or None when unavailable.
+        started_from: The compose stack's host working directory, if known.
+
+    Returns:
+        The check result.
     """
+    origin = f"; started from {started_from}" if started_from else ""
     if live_commit is None:
         return CheckResult(
             check_id="build_stamp",
             status=CheckStatus.AMBER,
             detail=(
                 f"running commit {baked_commit}; no working tree available "
-                "here to compare against"
+                f"here to compare against{origin}"
             ),
         )
     if baked_commit == live_commit:
         return CheckResult(
             check_id="build_stamp",
             status=CheckStatus.GREEN,
-            detail=f"running commit {baked_commit} matches the working tree",
+            detail=f"running commit {baked_commit} matches the working tree{origin}",
         )
     return CheckResult(
         check_id="build_stamp",
         status=CheckStatus.RED,
         detail=(
-            f"running commit {baked_commit} but the working tree is at {live_commit}"
+            f"running commit {baked_commit} but the working tree is at "
+            f"{live_commit}{origin}"
         ),
     )
 
