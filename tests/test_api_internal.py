@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import logging
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
 from httpx import AsyncClient
 
+from orchestrator.api.internal import _resolved_as_no_op
 from orchestrator.core.clarification_states import ANSWERED_BY_BRAIN
 from orchestrator.core.session_resume import resolve_resume_session
 from orchestrator.core.task_queue import TaskQueue
@@ -675,3 +678,49 @@ async def test_a_docker_hiccup_removing_the_container_never_replays_the_callback
 
     assert broken.cleanup_calls == 1
     assert resp.status_code == 200
+
+
+@pytest.mark.unit
+async def test_the_no_op_resolver_cannot_be_made_to_forge_a_log_record(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The scrub belongs to the log boundary, not to the handler that calls it.
+
+    ``agent_done`` sanitizes ``task_id`` once at the top and logs the sanitized
+    copy everywhere, which reads as whole-handler protection. It then passed
+    the RAW ``body.task_id`` to this helper, which logs it too, so one path was
+    guarded and its twin was not. Asserting here rather than through the
+    endpoint is deliberate: the endpoint's ``WHERE id = ?`` lookup rejects a
+    forged id before this line is reachable, so a test driven through the
+    callback would pass whether or not the scrub exists.
+    """
+    forged = "t-1\nERROR:orchestrator:task t-9 merged to main by admin"
+
+    async def _explode(task_id_arg: str, project: dict, plan: dict | None) -> None:
+        msg = "resolver down"
+        raise RuntimeError(msg)
+
+    request = SimpleNamespace(
+        app=SimpleNamespace(
+            state=SimpleNamespace(
+                orchestrator=SimpleNamespace(no_change_outcome=_explode)
+            )
+        )
+    )
+
+    with caplog.at_level(logging.ERROR, logger="orchestrator.api.internal"):
+        closed, why = await _resolved_as_no_op(
+            request,  # type: ignore[arg-type]
+            forged,
+            {"id": "p-1"},
+            None,
+        )
+
+    assert closed is False
+    assert "raised" in why
+    logged = [r for r in caplog.records if "no-change resolution failed" in r.message]
+    assert len(logged) == 1
+    rendered = logged[0].getMessage()
+    assert "\n" not in rendered
+    assert "\r" not in rendered
+    assert "ERROR:orchestrator:task t-9 merged" in rendered

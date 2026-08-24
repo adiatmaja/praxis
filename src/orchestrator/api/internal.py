@@ -19,6 +19,19 @@ router = APIRouter(tags=["internal"])
 _CALLBACK_TOKEN_HEADER = "x-praxis-callback-token"  # nosec B105 — header name, not a password
 
 
+def _scrub(value: str) -> str:
+    """Strip the line breaks that let a payload forge log records.
+
+    Applied at every point a callback-supplied string reaches the logger, not
+    once at the top of the handler: the handler already sanitized ``task_id``
+    for its own log lines while passing the RAW value to a helper that logs it
+    too, so the sanitized copy read as protection the second path never had.
+    A precondition no caller is forced to honour is a defect waiting for the
+    next caller, so the scrub lives at the boundary that needs it.
+    """
+    return value.replace("\r", "").replace("\n", "")
+
+
 class AgentDonePayload(BaseModel):
     """Agent completion callback payload."""
 
@@ -94,7 +107,7 @@ async def _resolved_as_no_op(
         closed, why = await orchestrator.no_change_outcome(task_id, project, plan)
         return bool(closed), str(why)
     except Exception:  # noqa: BLE001 - fall through to the failure path
-        logger.exception("no-change resolution failed for task %s", task_id)
+        logger.exception("no-change resolution failed for task %s", _scrub(task_id))
         return False, "the no-op check itself raised, so nothing was established"
 
 
@@ -156,8 +169,8 @@ async def agent_done(request: Request, body: AgentDonePayload) -> dict[str, str]
     _verify_callback_token(request)
 
     # Sanitize inputs to prevent log injection
-    task_id = body.task_id.replace("\r", "").replace("\n", "")
-    status_str = body.status.replace("\r", "").replace("\n", "")
+    task_id = _scrub(body.task_id)
+    status_str = _scrub(body.status)
 
     queue = request.app.state.task_queue
     task = await queue.get_task(body.task_id)
@@ -298,13 +311,11 @@ async def agent_done(request: Request, body: AgentDonePayload) -> dict[str, str]
                     "reason": feedback,
                 }
             )
-            safe_task_id = str(task_id).replace("\r", "").replace("\n", "")
-            safe_feedback = feedback.replace("\r", "").replace("\n", "")
             logger.warning(
                 "Task %s worker provider/gateway error; re-queued without "
                 "consuming a retry attempt: %s",
-                safe_task_id,
-                safe_feedback,
+                task_id,
+                _scrub(feedback),
             )
         elif int(task["attempt"]) < max_retries:
             # Normal failure: consume a retry.

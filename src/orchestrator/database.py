@@ -257,7 +257,9 @@ async def _migration_0007_leaf_triage(connection: aiosqlite.Connection) -> None:
     )
     for name, decl in additions:
         if name not in cols:
-            await connection.execute(f"ALTER TABLE tasks ADD COLUMN {name} {decl}")  # nosec B608 - fixed literal column names, no user input
+            # `name` and `decl` come from the frozen `additions` tuple above,
+            # never from a caller, so the f-string interpolates literals only.
+            await connection.execute(f"ALTER TABLE tasks ADD COLUMN {name} {decl}")
     await connection.execute(
         "CREATE INDEX IF NOT EXISTS idx_tasks_parent ON tasks (parent_task_id)"
     )
