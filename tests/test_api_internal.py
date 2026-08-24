@@ -183,11 +183,16 @@ async def test_no_changes_callback_closes_the_task_as_a_no_op(
     )
     queue: TaskQueue = client.app.state.task_queue  # type: ignore[attr-defined]
 
-    async def _accept(task_id_arg: str, project: dict, plan: dict | None) -> bool:
+    async def _accept(
+        task_id_arg: str, project: dict, plan: dict | None
+    ) -> tuple[bool, str]:
         await queue.mark_no_changes(task_id_arg, "already satisfied")
-        return True
+        return True, "verify passed on the base branch"
 
-    monkeypatch.setattr(client.app.state.orchestrator, "resolve_no_change_run", _accept)
+    # ``no_change_outcome``, not the ``resolve_no_change_run`` wrapper: the
+    # callback path takes the reason as well as the answer. Patching the
+    # wrapper leaves the real check running and the test measures nothing.
+    monkeypatch.setattr(client.app.state.orchestrator, "no_change_outcome", _accept)
 
     resp = await client.post(
         "/api/internal/agent-done",
@@ -219,13 +224,13 @@ async def test_a_rejected_no_changes_callback_falls_through_to_the_failure_path(
     )
     queue: TaskQueue = client.app.state.task_queue  # type: ignore[attr-defined]
 
-    async def _explode(task_id_arg: str, project: dict, plan: dict | None) -> bool:
+    async def _explode(
+        task_id_arg: str, project: dict, plan: dict | None
+    ) -> tuple[bool, str]:
         msg = "verify blew up"
         raise RuntimeError(msg)
 
-    monkeypatch.setattr(
-        client.app.state.orchestrator, "resolve_no_change_run", _explode
-    )
+    monkeypatch.setattr(client.app.state.orchestrator, "no_change_outcome", _explode)
 
     resp = await client.post(
         "/api/internal/agent-done",
@@ -237,6 +242,51 @@ async def test_a_rejected_no_changes_callback_falls_through_to_the_failure_path(
     task = await queue.get_task(task_id)
     assert task["status"] == TaskStatus.PENDING
     assert int(task["attempt"]) == 2
+
+
+@pytest.mark.integration
+async def test_a_declined_no_change_records_which_fact_declined(
+    client: AsyncClient,
+    db: Database,
+    auth_headers: dict[str, str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The stored reason names what happened, not one fixed sentence.
+
+    The check declines for at least six unrelated facts and only ONE of them is
+    "the branch did not verify clean". This path asserted that one for all of
+    them, and ``core/worker_bible`` injects the stored feedback verbatim into
+    the next worker's prompt, so a worker was sent to fix a verification nobody
+    had run. The review path was corrected for exactly this on 2026-08-24 while
+    this path, the one both harness entrypoints actually take, kept the string.
+
+    Asserted on the retries-exhausted branch because that is where the feedback
+    is written; the retry branch stores none.
+    """
+    task_id, run_id = await _seed_in_progress_task(
+        client, db, auth_headers, attempt=1, max_retries=1
+    )
+    queue: TaskQueue = client.app.state.task_queue  # type: ignore[attr-defined]
+
+    async def _declined(
+        task_id_arg: str, project: dict, plan: dict | None
+    ) -> tuple[bool, str]:
+        return False, "the verify gate on plan/x was skipped (no credential)"
+
+    monkeypatch.setattr(client.app.state.orchestrator, "no_change_outcome", _declined)
+
+    resp = await client.post(
+        "/api/internal/agent-done",
+        headers={"X-Praxis-Callback-Token": "test-auth"},
+        json={"task_id": task_id, "run_id": run_id, "status": "no_changes"},
+    )
+    assert resp.status_code == 200
+
+    task = await queue.get_task(task_id)
+    assert task["status"] == TaskStatus.FAILED
+    feedback = task["review_feedback"] or ""
+    assert "was skipped" in feedback
+    assert "did not verify clean" not in feedback
 
 
 @pytest.mark.integration

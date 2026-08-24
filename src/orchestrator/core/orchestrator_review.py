@@ -319,8 +319,9 @@ class ReviewMixin:
         callback goes through, applied at the other end of the loop: the
         absence of a change is a fact, and what it MEANS is governance. So the
         evidence is the same evidence, the project's own verify command run
-        against the branch the leaf was cut from, via
-        ``resolve_no_change_run``.
+        against the branch the leaf was cut from, via ``no_change_outcome``
+        (``resolve_no_change_run`` is the boolean wrapper over it, kept for
+        callers that want only the answer).
 
         A review is NOT that evidence. An empty diff sent to the reviewer is a
         question about nothing, and a model that answers "pass" to it parked
@@ -1540,7 +1541,7 @@ class ReviewMixin:
             verify_cmd: The project's configured verification command. Raw as
                 read from the project row; normalized here rather than at the
                 callers because this method is the single funnel for both of
-                them (``resolve_no_change_run`` and ``on_plan_completed``), so
+                them (``no_change_outcome`` and ``on_plan_completed``), so
                 one normalization cannot leave the other caller behind.
             disabled_reason: What to report when ``verify_cmd`` is absent
                 because the CALLER suppressed it rather than because none is

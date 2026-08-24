@@ -323,7 +323,7 @@ belongs among the everyday traps.
   aggregate gate). Now an `error` status is treated like `failed` (the wave is parked /
   `plan_verify_failed` is published), but an `error` is NOT memoized in
   `_wave_verify_state`, so a transient clone/network fault is retried on the next loop
-  tick; only `skipped` (no `verify_cmd`, no plan branch, or no credential) passes through.
+  tick; only `skipped` (no `verify_cmd`, bench mode disabling the gate deliberately, no plan branch, or no credential) passes through.
   Set the project `verify_cmd` mypy scope to match CI (`mypy src/`, not
   `mypy src/orchestrator/`) so the loop gates cover the same surface CI does — a narrower
   scope lets `src/mcp_server` / `src/cli` type errors slip past the worker and whole-plan
@@ -1123,11 +1123,18 @@ belongs among the everyday traps.
 
 - **The sweeper counted every `completed` plan as reclaimable**: so a plan
   branch carrying the whole plan's merged work was classified dead while its
-  integration PR was open, and deleting it would also have closed that PR. Only
-  the delete being separately broken (it shells `git push <url> --delete` with
-  no repository, which git refuses unconditionally) kept this from destroying
-  anything. Fix the classification BEFORE fixing the delete, or the first thing
-  the repaired deleter does is destroy merged work. Note the two guards that now
+  integration PR was open, and deleting it would also have closed that PR. This
+  used to add that the delete was "separately broken (it shells `git push` with
+  no repository, which git refuses unconditionally)", and **that was already
+  false when it was written**: `GitOps.delete_remote_branch` passes `repo_url`
+  as the push target and logs `Deleted remote branch %s on %s`. The deleter is
+  ARMED, so a classification bug here destroys work rather than being caught by
+  an inert delete; the assurance was the more dangerous half of the entry.
+  Corrected 2026-08-24, together with the other half of the same defect: every
+  ledger query was GLOBAL while the sweep runs per remote, so a failed task in
+  repository A nominated an identically named branch in repository B for
+  deletion. The sets are per repository now, and a row whose repository cannot
+  be resolved can only ever SPARE a branch. Note the two guards that now
   protect it are co-extensive by construction, both reading
   `integration_pr_url`/`integration_merged_at` off the same row, so a
   whole-sweep test stays green when either is reverted alone; the ledger

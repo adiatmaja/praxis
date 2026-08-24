@@ -69,12 +69,43 @@ async def fetch_recent_outcomes(
     return [dict(r) for r in await db.fetch_all(base_sql, tuple(params_base))]
 
 
+def _measured(value: object) -> int:
+    """Return a measurement as an int, treating "not measured" as zero.
+
+    Zero is correct HERE and only here: this feeds a running maximum, so an
+    unmeasured row must contribute nothing rather than raise or invent a size.
+    It is not written anywhere, which is what separates it from the 0 the
+    outcome recorder used to store as though it were a measurement.
+
+    Args:
+        value: A nullable count from a ``task_outcomes`` row.
+
+    Returns:
+        The count, or 0 when it is None or unusable.
+    """
+    if isinstance(value, bool) or not isinstance(value, int | float | str):
+        return 0
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
+
+
 def summarize_outcomes(runs: list[dict]) -> str:
     """Return a short per-task-type pass/fail summary.
 
+    ``files_touched`` and ``loc_delta`` are NULLABLE and a NULL is a real
+    answer: the review path records one whenever the verify gate failed before
+    any diff was fetched, because the size of that change was never measured.
+    ``int(r.get("files_touched", 0))`` raised on it, and the default hid the
+    bug: the key IS present, so the default never applied. One such row for a
+    model made every later ``decompose_plan`` for that model raise before the
+    brain was called.
+
     Args:
-        runs: Rows with ``task_type``, ``files_touched``, ``loc_delta``,
-            ``outcome`` ("pass"/"fail").
+        runs: Rows with ``task_type``, ``outcome`` ("pass"/"fail"), and
+            ``files_touched`` / ``loc_delta``, either of which may be None
+            meaning "not measured".
     """
     if not runs:
         return "(no prior run history for this model)"
@@ -85,8 +116,8 @@ def summarize_outcomes(runs: list[dict]) -> str:
         t = by_type[r.get("task_type") or "unknown"]
         outcome = "pass" if r.get("outcome") == "pass" else "fail"
         t[outcome] += 1
-        t["max_files"] = max(t["max_files"], int(r.get("files_touched", 0)))
-        t["max_loc"] = max(t["max_loc"], int(r.get("loc_delta", 0)))
+        t["max_files"] = max(t["max_files"], _measured(r.get("files_touched")))
+        t["max_loc"] = max(t["max_loc"], _measured(r.get("loc_delta")))
     lines = ["Observed local-model outcomes by task type:"]
     for ttype, s in sorted(by_type.items()):
         lines.append(

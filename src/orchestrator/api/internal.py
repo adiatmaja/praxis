@@ -65,7 +65,7 @@ async def _resolved_as_no_op(
     task_id: str,
     project: dict | None,
     plan: dict | None,
-) -> bool:
+) -> tuple[bool, str]:
     """Ask the orchestrator whether an empty diff was a legitimate no-op.
 
     Kept as a guarded call rather than inlined so the ``else`` branch below
@@ -74,15 +74,28 @@ async def _resolved_as_no_op(
     the normal retry/fail handling, which is the safe direction. A no-op
     closes a leaf permanently with no PR and no review, so it must be a
     POSITIVE answer, never the residue of a failed check.
+
+    Returns:
+        ``(closed, why)``. ``why`` names WHICH fact declined, because there are
+        at least six and only one of them is "the branch did not verify clean".
+        It is stored on the task and injected into the next worker's prompt by
+        the Bible, so the caller must not substitute a fixed sentence for it:
+        that told a worker to fix a verification nobody had run, and it is the
+        defect the review path was corrected for on 2026-08-24 while this path,
+        the one both harness entrypoints actually take, kept the old string.
     """
     orchestrator = getattr(request.app.state, "orchestrator", None)
     if orchestrator is None or project is None:
-        return False
+        return False, (
+            "the no-op check could not run here (no orchestrator or no project "
+            "on this request), so nothing was established either way"
+        )
     try:
-        return bool(await orchestrator.resolve_no_change_run(task_id, project, plan))
+        closed, why = await orchestrator.no_change_outcome(task_id, project, plan)
+        return bool(closed), str(why)
     except Exception:  # noqa: BLE001 - fall through to the failure path
         logger.exception("no-change resolution failed for task %s", task_id)
-        return False
+        return False, "the no-op check itself raised, so nothing was established"
 
 
 def _best_effort_logs(agent_manager: object, container_id: str, task_id: str) -> str:
@@ -219,6 +232,16 @@ async def agent_done(request: Request, body: AgentDonePayload) -> dict[str, str]
     reviewable_pr_url = (body.pr_url or task["pr_url"] or "").strip()
     completed_without_pr = body.status == "completed" and not reviewable_pr_url
 
+    # Resolved once, before the chain, so the failure branch can state WHICH
+    # fact declined instead of asserting one. Only a no_changes callback asks
+    # the question at all.
+    no_op_closed = False
+    no_op_reason = ""
+    if body.status == "no_changes":
+        no_op_closed, no_op_reason = await _resolved_as_no_op(
+            request, body.task_id, project, plan
+        )
+
     if body.status == "completed" and not completed_without_pr:
         await queue.update_task_status(body.task_id, TaskStatus.REVIEWING)
         logger.info("Task %s ready for review", task_id)
@@ -226,9 +249,7 @@ async def agent_done(request: Request, body: AgentDonePayload) -> dict[str, str]
         question = body.question or "Worker reported a blocker without details."
         await queue.mark_needs_clarification(body.task_id, question)
         logger.info("Task %s is awaiting clarification", task_id)
-    elif body.status == "no_changes" and await _resolved_as_no_op(
-        request, body.task_id, project, plan
-    ):
+    elif body.status == "no_changes" and no_op_closed:
         logger.info("Task %s closed as a no-op (no changes were needed)", task_id)
     else:
         from orchestrator.core.orchestrator_reconcile import ReconcileMixin
@@ -250,11 +271,11 @@ async def agent_done(request: Request, body: AgentDonePayload) -> dict[str, str]
         elif body.status == "no_changes":
             # Reaching here means the no-op check ran and said no. Say which
             # question was answered, or the operator reads a bare "finished
-            # with status no_changes" as the product not understanding it.
-            feedback = (
-                "Worker produced no changes, and the branch it was cut from "
-                "did not verify clean, so the work is genuinely missing."
-            )
+            # with status no_changes" as the product not understanding it. The
+            # reason comes from the check rather than being asserted here: it
+            # declines for at least six unrelated facts and only one of them is
+            # "the branch did not verify clean".
+            feedback = f"Worker produced no changes, and {no_op_reason}."
         else:
             feedback = body.question or f"Agent finished with status {body.status}"
 

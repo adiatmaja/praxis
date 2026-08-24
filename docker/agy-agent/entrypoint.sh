@@ -570,18 +570,20 @@ if git diff --cached --quiet; then
         # Explain the run instead of merely asserting it. This container is
         # destroyed seconds from now, so anything not printed here is gone
         # for good, including whether the harness said something, said
-        # nothing, or refused. This evidence does NOT currently reach the
-        # orchestrator's data model: a no-change run reports STATUS=failed to
-        # /api/internal/agent-done, which routes a non-"completed" status
-        # straight to the retry/fail branch (api/internal.py) without ever
-        # moving the task to REVIEWING, so orchestrator_review.review_task --
-        # the only place a FailureClass is assigned and the only caller of
+        # nothing, or refused. This evidence does NOT reach the orchestrator's
+        # data model. This branch reports STATUS=no_changes (see the callback
+        # below), which api/internal.py routes through the no-op check to a
+        # terminal NO_CHANGES or to the retry/fail branch; either way the task
+        # never moves to REVIEWING, so orchestrator_review.review_task -- the
+        # only place a FailureClass is assigned and the only caller of
         # record_outcome -- never runs for this run, and no task_outcomes row
-        # or failure_class is ever produced for it. Printing this here is
-        # still worth doing: it is the only place this evidence exists at
-        # all, the container log that reaches agent_runs.logs. Nobody should
-        # build on the claim that it reaches failure_taxonomy; it does not,
-        # yet.
+        # or failure_class is ever produced for it. (This comment used to say
+        # the branch reports STATUS=failed; it has not since no_changes was
+        # introduced, and the conclusion below never depended on which of the
+        # two it was.) Printing this here is still worth doing: it is the only
+        # place this evidence exists at all, the container log that reaches
+        # agent_runs.logs. Nobody should build on the claim that it reaches
+        # failure_taxonomy; it does not, yet.
         #
         # harness_rc is ALWAYS 0 here: a non-zero harness rc exits far above,
         # long before the commit block. Printing it is still correct and

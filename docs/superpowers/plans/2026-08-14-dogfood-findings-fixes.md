@@ -864,12 +864,16 @@ returned SATISFIED on all five tasks and missed every item below.
   projects.
 - The clarification park (`_park_awaiting_human`) is still silent; only the
   merge-gate park is logged.
-- The sweeper ledger is global rather than per-project, which matters more now
-  that branch names can be human-chosen and collide across projects.
+- ~~The sweeper ledger is global rather than per-project~~ **CLOSED 2026-08-24**:
+  every ledger set is per repository now, and a row whose repository cannot be
+  resolved can only SPARE a branch. The same commit corrected the comment that
+  claimed the deleter was inert; it is armed and always was.
 - `docs/superpowers/plans/2026-07-01-worker-quality-gates.md` repeats the false
   dashboard-sets-verify_cmd claim.
-- Task 6 is decided but NOT implemented: see
-  `docs/superpowers/plans/2026-08-14-review-scope-single-branch.md`.
+- ~~Task 6 is decided but NOT implemented~~ **CLOSED 2026-08-24**: executed, with
+  three corrections recorded at the top of
+  `docs/superpowers/plans/2026-08-14-review-scope-single-branch.md`. The one that
+  changes the design is that a RE-DISPATCH keeps the recorded base sha.
 
 ### Two items deliberately not absorbed, as the plan asked
 

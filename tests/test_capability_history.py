@@ -214,3 +214,37 @@ async def test_fetch_returns_empty_when_no_matching_rows(db):
 
     results = await fetch_recent_outcomes(db, model_name="model-m", project_id="proj-A")
     assert results == []
+
+
+@pytest.mark.unit
+def test_an_unmeasured_outcome_row_does_not_crash_the_summary():
+    """``files_touched`` / ``loc_delta`` are NULLABLE, and a NULL is an answer.
+
+    The review path records one whenever the verify gate failed before any diff
+    was fetched, because the size of that change was never measured. That row is
+    a ``fail`` with class VERIFY_FAIL, which is exactly what
+    ``fetch_recent_outcomes`` selects, so ONE of them for a model made every
+    later ``decompose_plan`` for that model raise ``int(None)`` before the brain
+    was called. The ``.get(..., 0)`` default could not help: the key IS present.
+    """
+    summary = summarize_outcomes(
+        [
+            {
+                "task_type": "function_add",
+                "outcome": "fail",
+                "files_touched": None,
+                "loc_delta": None,
+            },
+            {
+                "task_type": "function_add",
+                "outcome": "pass",
+                "files_touched": 3,
+                "loc_delta": 40,
+            },
+        ]
+    )
+
+    assert "function_add" in summary
+    # The unmeasured row contributes nothing to the maximum rather than
+    # raising, and rather than being counted as a zero-file change.
+    assert "3 files / 40 LOC" in summary

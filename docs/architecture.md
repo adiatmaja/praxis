@@ -309,7 +309,7 @@ DOMAIN=praxis.example.com docker compose --profile hosted up --build
 
 When the review phase reaches a terminal verdict for a task, `record_outcome` writes a single
 `task_outcomes` row containing the review decision, attribution (via `counts_against_worker`),
-and measured diff statistics. The write is fire-and-forget — DB or emit errors are swallowed so
+and measured diff statistics (NULL when the verify gate failed before any diff was fetched, because nothing measured that change). The write is fire-and-forget — DB or emit errors are swallowed so
 the review pipeline never stalls. On the next decomposition, `decompose_plan` calls
 `fetch_recent_outcomes` (scoped to the worker model, widening from the current project to all
 projects) and feeds those historical results into the decompose prompt's history slot, allowing

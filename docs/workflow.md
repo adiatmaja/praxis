@@ -174,7 +174,14 @@ Three mechanisms make the mode work:
    deletes them via `orchestrator_reconcile.sweep_dead_branches`, a MODULE-LEVEL function
    that `reconcile_runs` calls bare rather than a method on `ReconcileMixin`; patch it on
    the module or the patch does nothing. It is fail-safe: a sweep error is logged and never
-   wedges the loop.
+   wedges the loop. The ledger it reads is PER REPOSITORY: the queries used to be global
+   while the sweep runs per remote, so a failed task in one repository nominated an
+   identically named branch in another for deletion.
+4. **Per-task review scoping.** Every task on the shared branch is reviewed on the commits
+   it added after the branch head recorded at its dispatch (`tasks.review_base_sha`).
+   Without it the reviewer saw the whole accumulated branch and failed every task after the
+   first for touching files outside its scope, and the outcome recorder wrote that FAIL
+   against a worker that had done its own task correctly.
 
 ## Per-Project Settings
 
