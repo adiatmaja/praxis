@@ -26,10 +26,12 @@ Three consequences of that identity, in priority order:
    connection, the shape where capability-sizing actually engages, and the
    shape with a clean live-verified loop today. A single dispatched task is
    its smallest case, not a second feature. Auto-delegate mode is the
-   companion feature, the continuous shape of the same connection; it keeps
-   its beta label until the single-branch review-scope defect is fixed (plan:
-   `superpowers/plans/2026-08-14-review-scope-single-branch.md`) and is
-   presented after the flagship, never beside it. Both are unified by the
+   companion feature, the continuous shape of the same connection; it is
+   presented after the flagship, never beside it. It keeps its beta label for
+   now: the single-branch review-scope defect that failed every task after the
+   first was fixed on 2026-08-24 (plan:
+   `superpowers/plans/2026-08-14-review-scope-single-branch.md`), and the label
+   drops once a walkthrough verifies the mode end to end on a live repository. Both are unified by the
    theme (single session, other harnesses do the work, everything gated), the
    shared engine is a closing note, never the pitch, and delegation alone is
    commodity, so the governed loop is always the second beat of the pitch.

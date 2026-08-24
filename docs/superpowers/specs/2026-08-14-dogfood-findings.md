@@ -213,13 +213,18 @@ that should be stated wherever the concurrency limit is enforced.
 
 ### Status
 
-Decided, not implemented. It needs a schema migration, a change to the dispatch
-path, and a diff-by-range capability on the git backend seam, which is more than
-this plan's remaining phases carry. The implementation is specified in
-`docs/superpowers/plans/2026-08-14-review-scope-single-branch.md`. Until that
-lands, per-task review in auto-delegate mode is known to fail every task after
-the first whenever the prompt constrains scope, and that is a documented
-limitation of the mode rather than an open bug of unknown cause.
+**Implemented 2026-08-24** (migration 10 `tasks.review_base_sha`, a dispatch-time
+write resolved through `backend.head_sha`, and `backend.get_diff_since` on both
+backends). The plan carries three corrections made when it was executed; the one
+that changes the design here is that a RE-DISPATCH keeps the recorded sha rather
+than taking a fresh one, because a retried worker pushes to the same branch and
+its first attempt's commits are still there.
+
+The concurrency dependency above is now recorded in three places rather than
+promised: the `single_branch` arm of `dispatch_pending_tasks`, `docs/gotchas.md`,
+and the orchestration guide the brain reads. There is no enforcement point to put
+it at, which is itself worth knowing: the mode is sequential because the brain
+obeys, not because anything stops it.
 
 ## Non-goals
 

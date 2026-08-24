@@ -16,8 +16,9 @@ change governed by the loop instead of one-shotted. Praxis is NOT itself a harne
 wording is "govern/governed", never "predictable" (a measurable claim with no published
 benchmark yet). **Implement-a-plan is the flagship FEATURE** (a single dispatched task is
 its smallest case, not a second feature); auto-delegate mode is the companion feature
-(beta until the review-scope fix), the continuous shape of the same connection, presented
-after the flagship, never beside it. Capability-aware task decomposition is the flagship
+(still beta: the review-scope defect that broke every task after the first landed fixed on
+2026-08-24, and the label drops once a walkthrough verifies it live), the continuous shape
+of the same connection, presented after the flagship, never beside it. Capability-aware task decomposition is the flagship
 MECHANISM behind the promise (still unique in the landscape), not the headline; role
 separation is the supporting architecture; cost is a consequence.
 Reference: `docs/positioning.md` ("The framing"), which also lists the wording to avoid
@@ -274,7 +275,9 @@ the brain does NOT edit code directly. For each implementation task it designs t
 prompt, calls the MCP `dispatch_task` (which uses the global default worker — reference:
 Gemini 3.7 Flash High via agy), then reviews the resulting PR. Planning, prompt design, and
 review stay with the brain. Mode is sequential (one delegate in flight at a time) and uses a
-single caller-named work branch; dead branches are swept by the reconcile loop. Toggle:
+single caller-named work branch; dead branches are swept by the reconcile loop. The
+sequential rule is load-bearing, not stylistic: per-task review scoping depends on it and
+nothing enforces it (see the gotcha). Toggle:
 `praxis mode on|off|status`.
 
 ## Gotchas
@@ -388,6 +391,13 @@ in both directions and then gets cited as authority.)
 
 **The loop**
 
+- **Per-task review scoping DEPENDS on auto-delegate staying sequential, and NOTHING
+  enforces it**: in single-branch mode a task is reviewed on `review_base_sha..head`, the
+  sha being the branch head recorded BEFORE its container spawned. Two workers on that
+  branch at once interleave commits, both ranges widen to include the other's files, and
+  nothing errors. A re-dispatch KEEPS the recorded sha (the retry's commits sit on top of
+  attempt one's); only a vanished branch gets a fresh one. A NULL sha means "the whole
+  pull request", which is two-tier mode and every pre-migration row.
 - **Merge is gated by default**: a review PASS parks at `PASSED` and never auto-merges
   (`core/merge_policy.py`); protected branches never auto-merge at all.
 - **A blank `verify_cmd` is "not configured", never a pass**: `"   "` is TRUTHY, so it
@@ -539,11 +549,12 @@ in both directions and then gets cited as authority.)
 - **Design spec:** `docs/superpowers/specs/2026-06-01-ai-agent-orchestrator-design.md`
 - **Capability-engine roadmap (canonical, 2026-07-11):** `docs/superpowers/specs/2026-07-11-capability-engine-roadmap.md`: features F1-F15, standardization contracts S1-S11, 10-plan breakdown; next up = Plan 3 `outcome-recording`
 - **Implementation plans:** `docs/superpowers/plans/` (sequential plans)
-- **Auto-delegate, written and unexecuted, ORDER MATTERS:** review-scope single-branch
-  (`plans/2026-08-14-review-scope-single-branch.md`) must land BEFORE the micro-edit lane
-  (`specs/2026-08-21-micro-edit-lane.md`), which commits to the same shared branch with no
-  dispatch and so depends on the base-SHA column the former adds. The lane skips the
-  WORKER, never the governance: verify gate and a cheap review still run, on the same PR
+- **Auto-delegate: review-scope is DONE (2026-08-24), the micro-edit lane is next.**
+  `plans/2026-08-14-review-scope-single-branch.md` landed, so the base-SHA column
+  (`tasks.review_base_sha`) and the range-bounded diff the lane depends on now exist. The
+  lane (`specs/2026-08-21-micro-edit-lane.md`) commits to the same shared branch with no
+  dispatch and must record its OWN base SHA at the commit; it skips the WORKER, never the
+  governance: verify gate and a cheap review still run, on the same PR
 - **Implemented + merged (2026-06-29 epic, live e2e-verified 2026-07-01):** worker context
   continuity (`specs/2026-06-29-worker-context-continuity-design.md`), capability-aware plan
   execution (`specs/2026-06-29-capability-aware-execution-design.md`), and the MCP orchestration

@@ -347,6 +347,30 @@ belongs among the everyday traps.
   `reconcile_runs` calls it bare, so a test that patches it on the mixin (or on
   `core.orchestrator`) patches nothing and the real sweep still runs.
   Mode is sequential in v1 (one delegate in flight at a time).
+- **Per-task review scoping DEPENDS on auto-delegate staying sequential, and nothing
+  enforces it.** Every task in single-branch mode pushes to one shared work branch, so the
+  pull request that branch carries accumulates every task's commits. Before 2026-08-24 the
+  per-task reviewer was shown all of them and failed every task after the first for
+  touching files outside its scope, and `core/outcome_recorder` wrote that FAIL against a
+  worker that had done its own task correctly, so the mode was quietly poisoning the
+  calibration signal as well as being unusable past task one. The fix records
+  `tasks.review_base_sha` at dispatch (the branch head the task starts from, resolved
+  through `backend.head_sha` BEFORE the container spawns, because the worker's first push
+  moves it) and bounds the review to `review_base_sha..head` via `backend.get_diff_since`.
+  A re-dispatch KEEPS the recorded sha: a retried worker pushes to the same branch and its
+  first attempt's commits are still there, so re-recording would scope the review to the
+  fixup commit alone. Only a branch that has VANISHED from the remote gets a fresh sha.
+  An ORPHANED sha (force push, recreated branch) never yields an empty diff, because an
+  empty diff reviews as a trivially passing change: both backends fall back to the whole
+  pull request and log it. A NULL sha means "review the whole pull request", which is the
+  pre-2026-08-24 behavior and what every two-tier row uses.
+  **The landmine:** that boundary is correct only while the mode is sequential. Two workers
+  committing to the shared branch at once interleave their commits, both ranges silently
+  widen to include the other's files, and nothing errors. Whoever makes the mode concurrent
+  for throughput has to solve the scoping first. The micro-edit lane
+  (`docs/superpowers/specs/2026-08-21-micro-edit-lane.md`) inherits the same constraint
+  from the other side: a brain commit landing on that branch while a worker runs breaks the
+  range for both.
 - **`config/praxis.yaml` is MOUNTED, not baked**: both compose files bind-mount
   `./config` read-only at `/app/config`, and the base file sets
   `PRAXIS_CONFIG_PATH` to point at it, so a YAML edit takes effect on

@@ -224,6 +224,19 @@ class DispatchMixin:
             context_text: str | None = plan_task.get("context_text")
 
             if single_branch:
+                # Every task in this mode pushes to ONE shared work branch, and
+                # each task's review is bounded to the commits it added after
+                # ``review_base_sha`` (see the plan named in
+                # ``_resolve_review_base_sha``). That boundary is correct only
+                # while the mode stays sequential, one delegate in flight.
+                # Nothing here enforces that: the brain obeys it, told to by
+                # ``src/mcp_server/resources/orchestration_guide.md``. Two
+                # workers committing to this branch at once interleave their
+                # commits, so both ranges silently widen to include the other's
+                # files, which is the out-of-scope failure the scoping removed,
+                # returning without any error. The micro-edit lane inherits the
+                # same constraint from the other side: a brain commit landing
+                # here while a worker runs breaks the range for both.
                 branch = plan.get("plan_branch_name") or project["default_branch"]
                 base_branch = project["default_branch"]
             else:

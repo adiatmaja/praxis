@@ -104,6 +104,14 @@ The flow is asynchronous and one-shot. You get a `task_id` back immediately, the
 runs in the background, and you poll for the result. The MCP connection is blind between
 calls: nothing streams to you, so you must poll.
 
+**In auto-delegate mode, dispatch ONE task at a time and let it reach a terminal status
+before dispatching the next.** Nothing enforces this, and it is not only a courtesy to the
+worker: every task in that mode pushes to one shared work branch, and each task's review is
+bounded to the commits it added after the branch head recorded when it was dispatched. Two
+workers committing to that branch at once interleave their commits, so both reviews silently
+widen to include the other's files, which is exactly the out-of-scope failure the scoping
+removes. Nothing errors when this happens.
+
 ## 2. Picking the tool
 
 - `dispatch_task` - one self-contained change you have already sized small. Use when you
