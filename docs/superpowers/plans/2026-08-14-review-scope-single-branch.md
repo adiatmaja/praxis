@@ -49,6 +49,46 @@ is complete and correct on its own.
 
 ---
 
+## Plan corrections, 2026-08-24 (read before Task 1)
+
+The plan was written on 2026-08-14 and executed on 2026-08-24. Eight sessions of
+changes landed in between. Three points did not survive the re-read; the steps
+below are amended in place and the reasons recorded here.
+
+**1. A re-dispatch must KEEP the recorded SHA, not replace it.** As written,
+Task 1 Steps 5 and 7 demanded a fresh SHA on every attempt. That is wrong on
+this codebase: a re-dispatched worker pushes to the SAME branch and its first
+attempt's commits are still there. `_build_worker_bible` states it outright
+(`orchestrator_dispatch.py`, the `remote_branch_commit_log` fallback comment:
+"On a re-dispatch the branch does exist"). Re-recording at attempt 2 would scope
+the review to the retry's delta alone, so the reviewer would judge a fixup
+commit as though it were the whole task and `core/outcome_recorder` would write
+a PASS for work the reviewer never saw. That is a worse version of the defect
+this plan exists to remove, and it fails the plan's own standing requirement
+that the per-task row stay truthful. The case the original step was reaching for
+is an ORPHANED SHA (a swept, recreated or force-pushed branch), which Task 2
+Step 4's ancestor check already handles at review time. The rule is therefore:
+record on the first dispatch, keep it on every re-dispatch, and re-record only
+when the branch no longer exists on the remote.
+
+**2. The dispatch-time SHA goes on the git backend seam, not on `GitOps`.**
+`GitOps.remote_head_sha` resolves a credential through the GitHub token provider
+and is GitHub-shaped. The bench runs entirely on `LocalGitBackend`. The plan's
+own trap ("implemented on BOTH or the local git mode and the bench break")
+applies to this capability as much as to the diff, so `head_sha` joins
+`get_diff_since` on the `GitBackend` protocol and both are implemented twice.
+
+**3. Task 4's premise is false: nothing enforces the one-in-flight limit.**
+There is no such code. The mode is sequential because the brain dispatches one
+task at a time, told to by `src/mcp_server/resources/orchestration_guide.md`,
+`docs/workflow.md` and `docs/gotchas.md`. So the constraint is recorded where
+the shared branch is CHOSEN (the `single_branch` arm of `dispatch_pending_tasks`)
+and where the mode is DESCRIBED to the caller who obeys it, rather than at an
+enforcement point that does not exist. Writing "see the sequential limit" next
+to no limit would itself be a false report.
+
+---
+
 ## Task 1: record the branch head SHA at dispatch time
 
 **Files:**
@@ -67,18 +107,20 @@ The `tasks` table records `branch_name` and no SHA of any kind. A branch name ca
 - [ ] **Step 1: Write the failing test.** Dispatching a task records, on the task row, the head SHA of the branch the worker will push to, resolved BEFORE the container is spawned.
 - [ ] **Step 2: Run it and confirm it fails for the stated reason** (the column does not exist).
 - [ ] **Step 3: Add the migration.** A nullable `review_base_sha TEXT` on `tasks`. Nullable matters: every existing row has no such SHA and must keep working, taking the whole-PR path.
-- [ ] **Step 4: Implement the dispatch-time write.** Resolve the remote head of the target branch. When the branch does not exist yet, which is the normal case for the first task on a fresh branch, record the base branch head instead, and make that explicit rather than incidental.
-- [ ] **Step 5: Add the re-dispatch test.** A re-dispatched task records a NEW SHA. If it kept the first attempt's SHA, a retry would be reviewed against the abandoned attempt's commits.
+- [ ] **Step 4: Implement the dispatch-time write.** Resolve the head of the target branch THROUGH THE BACKEND SEAM (`backend.head_sha`, implemented on both backends; see correction 2). When the branch does not exist yet, which is the normal case for the first task on a fresh branch, record the base branch head instead, and make that explicit rather than incidental. A failed lookup must NOT block the dispatch: leave the column NULL and log, which takes the unchanged whole-PR path.
+- [ ] **Step 5: Add the re-dispatch test (amended, see correction 1).** A re-dispatched task KEEPS its recorded SHA, so the reviewer sees the whole of that task's work and not just the retry's delta. A sibling test: when the branch has vanished from the remote (swept, recreated), the SHA IS re-recorded from the base branch head, because the old one is orphaned.
 - [ ] **Step 6: Mutation.** Record the SHA AFTER spawning the container instead of before. The first test must fail. This is the mutation that catches a race in which the worker's own first commit is already inside the recorded base.
-- [ ] **Step 7: Mutation.** Make re-dispatch reuse the stored SHA. The Step 5 test must fail.
-- [ ] **Step 8: Full suite, then commit.**
+- [ ] **Step 7: Mutation (amended).** Make re-dispatch overwrite the stored SHA. The Step 5 test must fail.
+- [ ] **Step 8: Mutation.** Make a failed `head_sha` lookup raise instead of leaving the column NULL. The dispatch-survives-a-lookup-failure test must fail.
+- [ ] **Step 9: Full suite, then commit.**
 
 Message: `feat(dispatch): record the branch head a task starts from`
 
 ### Acceptance criteria
 
 - Every dispatch records a base SHA, resolved before the container starts.
-- A re-dispatch overwrites it.
+- A re-dispatch KEEPS it, unless the branch is gone from the remote.
+- A lookup failure leaves it NULL and does not block the dispatch.
 - Existing rows with a NULL SHA are unaffected.
 
 ---
@@ -150,7 +192,10 @@ Message: `fix(review): judge a task on its own commits, not the whole branch`
 ## Task 4: state the concurrency constraint where it is enforced
 
 **Files:**
-- Modify: wherever auto-delegate's one-in-flight limit is enforced
+- Modify: the `single_branch` arm of `dispatch_pending_tasks` (where the shared
+  branch is chosen) and `src/mcp_server/resources/orchestration_guide.md` (where
+  the sequential rule is stated to the brain that obeys it). See correction 3:
+  there is no enforcement point.
 - Modify: `CLAUDE.md` and `docs/gotchas.md`
 
 **Depends on:** Task 3
@@ -169,7 +214,7 @@ make the mode concurrent finds both dependencies in one place rather than one.
 
 ### Steps
 
-- [ ] **Step 1:** Add a comment at the point the sequential limit is enforced, saying that review scoping depends on it and naming this plan.
+- [ ] **Step 1:** Add a comment where the shared branch is chosen, saying that review scoping depends on the mode staying sequential and naming this plan, and state the same dependency in the orchestration guide the brain reads. Do NOT write "see the sequential limit" next to code that enforces no limit.
 - [ ] **Step 2:** Add the one-line gotcha to `CLAUDE.md` and the narrative to `docs/gotchas.md`, keeping the two in step as the existing convention requires.
 - [ ] **Step 3:** Check the line endings of each file you touch individually rather than trusting a rule, and confirm with `git diff --numstat` that you did not flip a whole file.
 - [ ] **Step 4: Commit.**
