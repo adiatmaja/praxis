@@ -150,7 +150,9 @@ async def test_an_empty_scoped_diff_is_reported_as_the_task_adding_nothing(
         "UPDATE tasks SET review_base_sha = 'sha-after-task-one' WHERE id = ?",
         (task_id,),
     )
-    orch.resolve_no_change_run = AsyncMock(return_value=False)  # type: ignore[method-assign]
+    orch.no_change_outcome = AsyncMock(  # type: ignore[method-assign]
+        return_value=(False, "the branch it was cut from did not verify clean")
+    )
 
     with caplog.at_level("WARNING", logger="orchestrator.core.orchestrator_review"):
         await _review(orch, task_id, project)

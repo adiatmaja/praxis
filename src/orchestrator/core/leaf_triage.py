@@ -118,6 +118,24 @@ _ESCALATION_EXHAUSTED = (
 )
 
 
+def _unknown(value: Any) -> str:
+    """Render a missing measurement as "unknown", never as a number.
+
+    An absent measurement printed as ``None`` reads as noise; printed as ``0``
+    it reads as a positive claim, and zero files touched is the signature of a
+    worker that did nothing, which pushes the triage decision toward escalate
+    or human. The brain is entitled to know the difference between "nothing
+    changed" and "nobody looked".
+
+    Args:
+        value: The measurement, or None.
+
+    Returns:
+        The value as a string, or ``"unknown (not measured)"``.
+    """
+    return "unknown (not measured)" if value is None else str(value)
+
+
 def _render_attempt(attempt: dict[str, Any]) -> str:
     diff = str(attempt.get("diff") or "")
     if len(diff) > _DIFF_CHARS_PER_ATTEMPT:
@@ -127,9 +145,9 @@ def _render_attempt(attempt: dict[str, Any]) -> str:
         tail = tail[-_VERIFY_TAIL_CHARS:]
     return (
         f"Attempt {attempt.get('attempt')}:\n"
-        f"  files touched: {attempt.get('files_touched')}\n"
-        f"  LOC delta: {attempt.get('loc_delta')}\n"
-        f"  verify exit code: {attempt.get('verify_exit_code')}\n"
+        f"  files touched: {_unknown(attempt.get('files_touched'))}\n"
+        f"  LOC delta: {_unknown(attempt.get('loc_delta'))}\n"
+        f"  verify exit code: {_unknown(attempt.get('verify_exit_code'))}\n"
         f"  verify output tail:\n{tail}\n"
         f"  reviewer verdict reason: {attempt.get('review_reason')}\n"
         f"  diff:\n{diff}\n"

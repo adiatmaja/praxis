@@ -123,9 +123,13 @@ def _no_op_evidence(verdict: _PlanVerifyResult, base_branch: str) -> str | None:
 
     - ``passed``: the gate ran on the branch the leaf was cut from and the
       tree there already satisfies it.
-    - ``skipped`` BECAUSE no verify command is configured: no independent
-      evidence, only the harness's clean exit. Deliberate, documented, and the
-      weakest link here; the measured alternative is worse.
+    - ``skipped`` BECAUSE no verify command is configured, or because bench
+      mode disabled the gate on purpose: no independent evidence, only the
+      harness's clean exit. Deliberate, documented, and the weakest link here;
+      the measured alternative is worse. The two share the carve-out because
+      the DECISION is the same for both, and are kept apart in the stored
+      string because the STATEMENT is not: a bench run whose project does
+      configure a verify command used to record that it had none.
 
     The other two skips (``_SKIP_NO_CREDENTIAL_PROVIDER``, ``_SKIP_NO_TOKEN``)
     mean a verify command IS configured and the gate could not reach the
@@ -144,7 +148,10 @@ def _no_op_evidence(verdict: _PlanVerifyResult, base_branch: str) -> str | None:
     """
     if verdict.status == "passed":
         return f"verify passed on {base_branch}"
-    if verdict.status == "skipped" and verdict.reason == _SKIP_NO_VERIFY_CMD:
+    if verdict.status == "skipped" and verdict.reason in (
+        _SKIP_NO_VERIFY_CMD,
+        _SKIP_BENCH_MODE_DISABLED,
+    ):
         return f"{verdict.reason}; harness exited clean on {base_branch}"
     return None
 
@@ -338,13 +345,15 @@ class ReviewMixin:
             "rather than sending an empty change to the reviewer",
             subject,
         )
-        if await self.resolve_no_change_run(task_id, project, plan):
+        closed, why = await self.no_change_outcome(task_id, project, plan)
+        if closed:
             return
-        feedback = (
-            f"Review could not start: {subject} carries no diff, and the "
-            "branch it was cut from did not verify clean, so the work is "
-            "genuinely missing."
-        )
+        # ``why`` rather than one fixed sentence: the decision above declines
+        # for four unrelated facts and only ONE of them is "the branch did not
+        # verify clean". This string is stored on the task, published, and
+        # injected into the next worker's prompt by the Bible, so a wrong one
+        # sends a worker to fix a verification that never ran.
+        feedback = f"Review could not start: {subject} carries no diff, and {why}."
         await self._fail_and_maybe_retry(task_id, task, project, feedback)
 
     async def review_task(self, task_id: str, project: dict[str, Any]) -> None:
@@ -430,6 +439,10 @@ class ReviewMixin:
                 else normalize_verify_cmd(project.get("verify_cmd"))
             )
             review: dict[str, Any] | None = None
+            # Set only when a CONFIGURED gate did not run. A gate that is not
+            # configured is not a skip anyone needs warning about; one that is
+            # configured and could not run is the whole point of this variable.
+            gate_skipped: str | None = None
             if verify_cmd and checkout is not None:
                 passed, gate_output = await run_verify(checkout, verify_cmd)
                 if passed:
@@ -448,8 +461,17 @@ class ReviewMixin:
                         ),
                     }
             elif verify_cmd and checkout is None:
-                log.info(
-                    "verify gate skipped: %s (`%s`)",
+                # WARNING, and carried onto the merge gate below. This is the
+                # same class of fault _verify_plan_branch already logs at
+                # WARNING for the plan gate: a project that CONFIGURED a
+                # mechanical gate did not get one, because the PR head could
+                # not be cloned. At INFO, and with nothing on the parked-PR
+                # event, the human at the merge gate sees a clean PASS and has
+                # no way to know the gate never ran.
+                gate_skipped = _SKIP_CHECKOUT_UNAVAILABLE
+                log.warning(
+                    "verify gate skipped: %s (`%s`); the reviewer verdict is "
+                    "the ONLY evidence for this task",
                     _SKIP_CHECKOUT_UNAVAILABLE,
                     verify_cmd,
                 )
@@ -490,7 +512,12 @@ class ReviewMixin:
                     plan_text=plan_text_for_review,
                     cwd=checkout,
                 )
-        verdict = str(review["verdict"]).lower()
+        # Stripped. Everything that is not exactly "pass" falls through to the
+        # failure path, which comments on the PR, retries, and writes a `fail`
+        # row that counts against the worker in the calibration data. A model
+        # answering "pass " or "Pass" is agreeing, and the review contract
+        # (models/schemas.OpusReviewPayload) is not applied on this path.
+        verdict = str(review["verdict"]).strip().lower()
         feedback = str(review.get("feedback", ""))
 
         # The verdict itself, not just the verify gate that may precede it.
@@ -506,7 +533,20 @@ class ReviewMixin:
             log.warning("review verdict: %s (pr=%s)", verdict, task["pr_url"])
 
         # Outcome recording: compute diff stats once, define helper.
-        files_touched, loc_delta = diff_stats(diff)
+        #
+        # ``None``, not ``diff_stats("")``, when the verify gate failed before
+        # the diff was ever fetched. ``diff_stats("")`` is ``(0, 0)``, and zero
+        # files touched is the signature of a worker that did nothing: it is
+        # written into ``task_outcomes`` as a positive claim (the columns are
+        # nullable, and ``context_tokens_est=None`` is passed right beside it
+        # for exactly this "unknown" case) and it is handed to the triage brain
+        # as evidence, where it pushes the decision toward escalate or human.
+        # The gate failing establishes nothing at all about the size of the
+        # change.
+        gate_failed_before_diff = not diff
+        files_touched, loc_delta = (
+            (None, None) if gate_failed_before_diff else diff_stats(diff)
+        )
 
         async def _record(outcome: str, failure_class: str | None) -> None:
             await record_outcome(
@@ -613,7 +653,17 @@ class ReviewMixin:
             # Default: park the reviewed PR for explicit human approval.
             await _record("pass", None)
             await self._tq.mark_passed(task_id, feedback)
-            log.info("parked at merge gate awaiting approval (pr=%s)", task["pr_url"])
+            if gate_skipped:
+                log.warning(
+                    "parked at merge gate awaiting approval (pr=%s), but the "
+                    "configured verify gate did NOT run: %s",
+                    task["pr_url"],
+                    gate_skipped,
+                )
+            else:
+                log.info(
+                    "parked at merge gate awaiting approval (pr=%s)", task["pr_url"]
+                )
             self._bus.publish(
                 {
                     "type": "task_awaiting_merge",
@@ -622,6 +672,10 @@ class ReviewMixin:
                     "verdict": verdict,
                     "review_summary": feedback,
                     "branch": task["branch_name"],
+                    # None on the ordinary path. Non-null means the project's
+                    # own mechanical gate did not run for this PASS, which the
+                    # human approving the merge is entitled to see.
+                    "verify_gate_skipped": gate_skipped,
                 }
             )
             return
@@ -671,8 +725,8 @@ class ReviewMixin:
         project: dict[str, Any],
         plan: dict[str, Any] | None,
         feedback: str,
-        files_touched: int,
-        loc_delta: int,
+        files_touched: int | None,
+        loc_delta: int | None,
         diff: str,
     ) -> bool:
         """Triage a twice-failed leaf and act on the decision.
@@ -682,8 +736,11 @@ class ReviewMixin:
             project: Its project row.
             plan: The plan row, or None when the task has no plan graph.
             feedback: The reviewer's verdict text.
-            files_touched: Files changed by the failed attempt.
-            loc_delta: Net lines changed by the failed attempt.
+            files_touched: Files changed by the failed attempt, or None when
+                the verify gate failed before any diff was fetched, so the
+                size of the change is genuinely unknown.
+            loc_delta: Net lines changed by the failed attempt, or None for the
+                same reason.
             diff: The failed attempt's diff.
 
         Returns:
@@ -734,7 +791,14 @@ class ReviewMixin:
                     "files_touched": files_touched,
                     "loc_delta": loc_delta,
                     "diff": diff,
-                    "verify_exit_code": 1,
+                    # None, not 1. This attempt reaches triage from two paths:
+                    # a verify command that exited non-zero (``run_verify``
+                    # returns a bool, so the code is not known even then) and a
+                    # reviewer verdict on a change that no verify command ever
+                    # ran against. Stating 1 told the triage brain a
+                    # verification had failed on the second path, where none
+                    # had been attempted.
+                    "verify_exit_code": None,
                     "verify_tail": feedback[-_VERIFY_OUTPUT_MAX:],
                     "review_reason": feedback,
                 }
@@ -928,6 +992,13 @@ class ReviewMixin:
             float(result.get("confidence") or 0.0) >= threshold
         )
         answer = str(result.get("answer", ""))
+        # An answer is what "resolved" MEANS here. record_clarification_answer
+        # writes this into the worker's progress note under "ANSWER TO YOUR
+        # EARLIER QUESTION (act on this now)", so an empty one redispatches a
+        # blocked worker having told it that its question was answered. A reply
+        # that claims resolution without one has not resolved anything, and
+        # _park_awaiting_human is the honest branch.
+        resolved = resolved and bool(answer.strip())
 
         if resolved:
             await self._tq.record_clarification_answer(
@@ -1012,7 +1083,38 @@ class ReviewMixin:
         project: dict[str, Any],
         plan: dict[str, Any] | None,
     ) -> bool:
+        """Return whether an empty diff was closed as a no-op.
+
+        Thin wrapper over :meth:`no_change_outcome`, kept because the callback
+        endpoint and every existing caller want the boolean and nothing else.
+
+        Args:
+            task_id: The task whose run produced no diff.
+            project: Project dict (needs ``repo_url``, ``verify_cmd``).
+            plan: The task's plan, for the branch it was cut from.
+
+        Returns:
+            True when the leaf was closed as a no-op.
+        """
+        closed, _why = await self.no_change_outcome(task_id, project, plan)
+        return closed
+
+    async def no_change_outcome(
+        self,
+        task_id: str,
+        project: dict[str, Any],
+        plan: dict[str, Any] | None,
+    ) -> tuple[bool, str]:
         """Decide whether a worker's empty diff is a no-op or a real failure.
+
+        Returns the decision AND the reason for it. The reason exists because
+        this returns False for four unrelated facts: the base branch could not
+        be resolved, the gate FAILED, the gate ERRORED, or the gate skipped for
+        a reason that establishes nothing. The caller writes its answer into
+        ``tasks.review_feedback``, publishes it, and the Bible injects it into
+        the next worker's prompt, so a caller that renders all four as "the
+        branch did not verify clean" tells a worker to fix a verification that
+        never ran and burns a retry on it.
 
         A worker that produces no diff is reporting a FACT, not a verdict:
         "the tree already satisfies this leaf". Deciding what that means is
@@ -1053,8 +1155,10 @@ class ReviewMixin:
                 falls back to the project's default branch.
 
         Returns:
-            True when the leaf was closed as a no-op; False when the caller
-            should treat the run as a normal failure.
+            ``(closed, why)``. ``closed`` is True when the leaf was closed as a
+            no-op; False when the caller should treat the run as a normal
+            failure. ``why`` states which of the four facts produced that
+            answer, in a form fit to show a human and a worker.
         """
         repo_url = project.get("repo_url")
         base_branch = (plan or {}).get("plan_branch_name") or project.get(
@@ -1068,10 +1172,25 @@ class ReviewMixin:
                 repo_url,
                 base_branch,
             )
-            return False
+            return False, (
+                "the branch it was cut from could not be resolved "
+                f"(repo_url={repo_url!r}, branch={base_branch!r}), so nothing "
+                "could be checked"
+            )
 
-        verify_cmd = None if verify_gate_disabled() else project.get("verify_cmd")
-        verdict = await self._verify_plan_branch(repo_url, base_branch, verify_cmd)
+        bench_disabled = verify_gate_disabled()
+        verify_cmd = None if bench_disabled else project.get("verify_cmd")
+        verdict = await self._verify_plan_branch(
+            repo_url,
+            base_branch,
+            verify_cmd,
+            # Without this the gate cannot tell bench mode's deliberate
+            # disabling apart from an operator who configured no command, and
+            # reports the second. That reason is stored on the task and rides
+            # the no-op event, so a bench run's own records would say the
+            # project had no verify command when it has one.
+            disabled_reason=_SKIP_BENCH_MODE_DISABLED if bench_disabled else None,
+        )
         evidence = _no_op_evidence(verdict, base_branch)
         if evidence is None:
             logger.warning(
@@ -1082,7 +1201,24 @@ class ReviewMixin:
                 verdict.status,
                 verdict.reason or "-",
             )
-            return False
+            if verdict.status == "failed":
+                why = (
+                    f"the branch it was cut from ({base_branch}) did not verify "
+                    "clean, so the work is genuinely missing"
+                )
+            elif verdict.status == "error":
+                why = (
+                    f"the branch it was cut from ({base_branch}) could not be "
+                    "verified at all (the clone, checkout or command raised), so "
+                    "this could not be established as a no-op"
+                )
+            else:
+                why = (
+                    f"the verify gate on {base_branch} was skipped "
+                    f"({verdict.reason or 'no reason recorded'}), which "
+                    "establishes nothing either way"
+                )
+            return False, why
 
         reason = (
             "No changes needed: the repository already satisfied this task "
@@ -1103,7 +1239,7 @@ class ReviewMixin:
             }
         )
         logger.info("Task %s closed as a no-op: %s", task_id, reason)
-        return True
+        return True, reason
 
     async def approve_plan_integration(
         self, plan_id: str, project: dict[str, Any]
@@ -1137,10 +1273,21 @@ class ReviewMixin:
             raise ValueError(msg)
         pr_url = plan.get("integration_pr_url")
         if not pr_url:
-            msg = (
-                f"Plan {plan_id} has no integration PR "
-                "(it has not completed, or the PR could not be opened)"
-            )
+            # Three causes, not two, and the third is the one that misleads:
+            # on_plan_completed opens the PR and then records it in a separate
+            # step whose failure is deliberately non-fatal, so a real open PR
+            # can exist with this column NULL. Telling that operator the PR
+            # "could not be opened" invites them to open a second one. The plan
+            # status separates the cases we can distinguish from here.
+            if str(plan.get("status") or "") != "completed":
+                detail = f"it is {plan.get('status') or 'in an unknown state'}, not completed"
+            else:
+                detail = (
+                    "the plan completed, so either the PR could not be opened or "
+                    "it was opened and the URL could not be recorded; check the "
+                    f"remote for an open PR from {plan.get('plan_branch_name') or 'the plan branch'}"
+                )
+            msg = f"Plan {plan_id} has no integration PR recorded ({detail})"
             raise ValueError(msg)
         if plan.get("integration_merged_at"):
             return str(pr_url)
@@ -1275,6 +1422,11 @@ class ReviewMixin:
                 clone_with_token(repo_url, ws, github_token)
 
                 flipped = False
+                # Counts the plan files that were actually FOUND in the clone.
+                # Without it, "no unchecked item found" is also emitted when no
+                # plan file was located at all, which is an absent search
+                # reported as a negative result.
+                searched = 0
                 for row in rows:
                     # row["path"] is relative to the orchestrator's docs tree;
                     # use only the filename/tail to locate it inside the clone.
@@ -1292,30 +1444,57 @@ class ReviewMixin:
                         )
                         if candidate is None:
                             continue
+                    searched += 1
                     text = candidate.read_text(encoding="utf-8")
                     updated = flip_checklist_item(text, title)
                     if updated != text:
                         candidate.write_text(updated, encoding="utf-8")
                         # Path relative to clone root for git add.
                         git_rel = str(candidate.relative_to(ws))
-                        commit_and_push(
+                        # commit_and_push returns False when the index was
+                        # already clean, i.e. nothing was pushed. Discarding it
+                        # and logging "Flipped" reports a push that did not
+                        # happen; git_ops documents that the caller must be
+                        # able to tell the two apart.
+                        pushed = commit_and_push(
                             ws,
                             github_token,
                             f"docs: mark '{title}' complete",
                             paths=[git_rel],
                         )
-                        logger.info(
-                            "Flipped checkbox for '%s' in %s (target repo %s)",
-                            title,
-                            git_rel,
-                            repo_url,
-                        )
+                        if pushed:
+                            logger.info(
+                                "Flipped checkbox for '%s' in %s (target repo %s)",
+                                title,
+                                git_rel,
+                                repo_url,
+                            )
+                        else:
+                            logger.warning(
+                                "Rewrote the checkbox for '%s' in %s but git had "
+                                "nothing to commit, so nothing was pushed "
+                                "(target repo %s)",
+                                title,
+                                git_rel,
+                                repo_url,
+                            )
                         flipped = True
                         break
 
-                if not flipped:
+                if not flipped and searched:
                     logger.debug(
-                        "_sync_plan_checkbox: no unchecked item '%s' found in plan files",
+                        "_sync_plan_checkbox: no unchecked item '%s' in the %d "
+                        "plan file(s) found in the clone",
+                        title,
+                        searched,
+                    )
+                elif not flipped:
+                    logger.warning(
+                        "_sync_plan_checkbox: none of the %d indexed plan files "
+                        "exists in the clone of %s, so no checkbox was searched "
+                        "for '%s'",
+                        len(rows),
+                        repo_url,
                         title,
                     )
 
@@ -1331,6 +1510,7 @@ class ReviewMixin:
         repo_url: str,
         plan_branch: str,
         verify_cmd: str | None,
+        disabled_reason: str | None = None,
     ) -> _PlanVerifyResult:
         """Run the project's verify command against the accumulated plan branch.
 
@@ -1362,6 +1542,13 @@ class ReviewMixin:
                 callers because this method is the single funnel for both of
                 them (``resolve_no_change_run`` and ``on_plan_completed``), so
                 one normalization cannot leave the other caller behind.
+            disabled_reason: What to report when ``verify_cmd`` is absent
+                because the CALLER suppressed it rather than because none is
+                configured. Bench condition C passes ``None`` for a project
+                that does have a command, and without this the skip reason
+                would say the operator configured none. That reason is stored
+                on the task and rides the no-op event, so it is a statement
+                about the project, not a debug detail.
 
         Returns:
             The gate verdict.
@@ -1374,10 +1561,9 @@ class ReviewMixin:
         # ran.  Normalized, it reports ``skipped`` and says so.
         verify_cmd = normalize_verify_cmd(verify_cmd)
         if verify_cmd is None:
-            logger.info(
-                "verify gate skipped: %s (branch=%s)", _SKIP_NO_VERIFY_CMD, plan_branch
-            )
-            return _PlanVerifyResult("skipped", reason=_SKIP_NO_VERIFY_CMD)
+            reason = disabled_reason or _SKIP_NO_VERIFY_CMD
+            logger.info("verify gate skipped: %s (branch=%s)", reason, plan_branch)
+            return _PlanVerifyResult("skipped", reason=reason)
 
         backend = self._resolve_backend(repo_url)
         if backend.name == "local":
@@ -1635,10 +1821,14 @@ class ReviewMixin:
             # degrades to a warning + a verify_status, never wedges the loop.
             # Bench condition C disables the mechanical gate at every level;
             # see core/bench_mode.py.
+            plan_gate_disabled = verify_gate_disabled()
             verify_status = await self._verify_plan_branch(
                 repo_url,
                 plan_branch,
-                None if verify_gate_disabled() else project.get("verify_cmd"),
+                None if plan_gate_disabled else project.get("verify_cmd"),
+                disabled_reason=(
+                    _SKIP_BENCH_MODE_DISABLED if plan_gate_disabled else None
+                ),
             )
 
             pr_url: str | None = None
@@ -1722,10 +1912,20 @@ class ReviewMixin:
                         "plan_id": plan_id,
                         "plan_branch": plan_branch,
                         "base_branch": base,
+                        # Keyed on the STATUS, not on the emptiness of the
+                        # output. A verify command is free to print nothing and
+                        # exit non-zero (`test -f dist/bundle.js`), and that is
+                        # a real cross-task regression; saying the gate RAISED
+                        # sends the reader to a different fault with a
+                        # different remedy.
+                        "status": verify_status.status,
                         "output": verify_status.output
                         or (
                             "plan verify gate errored (clone/checkout/verify "
                             "raised); see orchestrator logs"
+                            if verify_status.status == "error"
+                            else "plan verify gate FAILED and the command "
+                            "printed nothing; the exit status is the verdict"
                         ),
                         "pr_url": pr_url,
                     }

@@ -95,7 +95,12 @@ def _verify(orch: Orchestrator, status: str, reason: str = "") -> list[str]:
 
     seen: list[str] = []
 
-    async def _stub(repo_url: str, branch: str, verify_cmd: str | None):
+    async def _stub(
+        repo_url: str,
+        branch: str,
+        verify_cmd: str | None,
+        disabled_reason: str | None = None,
+    ):
         seen.append(branch)
         return _PlanVerifyResult(status, reason=reason)
 

@@ -214,7 +214,12 @@ async def test_an_empty_pr_diff_on_an_unverifiable_branch_stays_a_failure(
     opus = _make_opus("pass")
     orch = _orchestrator(tq, _make_git(""), opus)
 
-    async def _failing_gate(repo_url: str, branch: str, verify_cmd: str | None):
+    async def _failing_gate(
+        repo_url: str,
+        branch: str,
+        verify_cmd: str | None,
+        disabled_reason: str | None = None,
+    ):
         return _PlanVerifyResult("failed", output="1 failed")
 
     monkeypatch.setattr(orch, "_verify_plan_branch", _failing_gate)
