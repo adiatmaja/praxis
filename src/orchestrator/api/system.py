@@ -46,10 +46,8 @@ def _opus_state_response(state: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-# Cache the claude CLI probe so /api/status (polled every 5s) does not spawn a
-# subprocess on every request. (monotonic_ts, available) or None.
-_claude_probe_cache: tuple[float, bool] | None = None
-__all__ = ["_claude_probe_cache"]
+# Shared TTL for every subprocess-spawning probe below, so /api/status (polled
+# every 5s) does not shell out on each request.
 _CLAUDE_PROBE_TTL = 60.0
 
 # Per-provider probe cache: name -> (monotonic_ts, result_dict)
@@ -88,8 +86,8 @@ _ENDPOINT_PROVIDERS = frozenset({"local"})
 _PLANNER_CALL_SITE = "plan_spec"
 
 
-async def _resolve_planner_model(es: Any) -> str:
-    """Return the model the ``plan_spec`` call site actually resolves to.
+async def _resolve_planner_target(es: Any) -> PlannerTarget:
+    """Return the ``{provider, model}`` the ``plan_spec`` call site resolves to.
 
     Through ``call_site_chain``, the same bound method ``main.py`` hands the
     router, so this cannot describe a planner the loop will not use. The legacy
@@ -101,16 +99,27 @@ async def _resolve_planner_model(es: Any) -> str:
     The HEAD of the chain is the planner: the router executes entries in order
     and only moves on when one is unavailable.
 
+    Mirrors ``api/doctor._resolve_planner`` but never raises: this is the
+    5s-polled ``/api/status`` surface and must always answer, so an
+    unresolvable chain comes back as an empty ``PlannerTarget`` rather than an
+    exception, and the caller falls back to the legacy setting for the NAME
+    only (a model name says nothing about which provider serves it).
+
     Returns:
-        The resolved model name, or "" when nothing resolves. The caller keeps
-        its previous value in that case rather than inventing one.
+        The resolved ``PlannerTarget``. An empty ``provider`` means nothing
+        resolved; the caller must not probe or report connectivity in that
+        case, only fall back to the previous model name.
     """
     if es is None:
-        return ""
+        return PlannerTarget(provider="")
     chain = await es.call_site_chain(_PLANNER_CALL_SITE, None)
     if not chain:
-        return ""
-    return str(chain[0].get("model") or "")
+        return PlannerTarget(provider="")
+    head = chain[0]
+    return PlannerTarget(
+        provider=str(head.get("provider") or ""),
+        model=str(head.get("model") or ""),
+    )
 
 
 def planner_provider_kind(provider: str) -> str:
@@ -389,37 +398,6 @@ async def probe_provider_roundtrip(target: str | PlannerTarget) -> RoundTripResu
     return result
 
 
-async def _probe_claude_cli() -> bool:
-    """Return True if the ``claude`` CLI is installed and runnable.
-
-    The Planner ("agent") is only truly available when the CLI that drives
-    ``claude -p`` exists; the opus_state DB row alone can report "available"
-    even when the binary is missing (the bug this probe closes).
-    """
-    global _claude_probe_cache
-    now = time.monotonic()
-    if (
-        _claude_probe_cache is not None
-        and now - _claude_probe_cache[0] < _CLAUDE_PROBE_TTL
-    ):
-        return _claude_probe_cache[1]
-    ok = False
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            "claude",
-            "--version",
-            stdout=asyncio.subprocess.DEVNULL,
-            stderr=asyncio.subprocess.DEVNULL,
-        )
-        await asyncio.wait_for(proc.wait(), timeout=10.0)
-        ok = proc.returncode == 0
-    except (TimeoutError, OSError) as exc:
-        logger.debug("claude CLI probe failed: %s", exc)
-        ok = False
-    _claude_probe_cache = (now, ok)
-    return ok
-
-
 async def _probe_subagent(lm_studio_url: str) -> dict[str, Any]:
     """Probe LM Studio for the currently loaded subagent model."""
     try:
@@ -444,22 +422,21 @@ async def system_status(request: Request) -> dict[str, Any]:
     agent_manager = getattr(request.app.state, "agent_manager", None)
     settings = request.app.state.settings
     containers: list[dict[str, Any]] = []
+    # Distinguishes "asked, got zero" from "could not ask at all": an absent
+    # agent_manager (no Docker on this host, a documented state) and a raised
+    # listing both used to collapse into an empty `containers` list, so
+    # `active_agents`/`total_agents` read 0/0 identically for "idle" and for
+    # "cannot ask". A reader cannot tell those apart from the counts alone.
+    agents_reachable = False
     if agent_manager is not None:
         try:
             containers = agent_manager.list_agent_containers()
+            agents_reachable = True
         except Exception as exc:
             logger.debug("Agent container listing failed: %s", exc)
             containers = []
 
     opus_status = opus_state["status"]
-    # "available" must reflect reality: the claude CLI has to exist, not just the
-    # opus_state DB row. A missing binary previously still reported "available".
-    claude_cli_ok = await _probe_claude_cli()
-    agent_connected = claude_cli_ok and opus_status in (
-        "available",
-        "rate_limited",
-        "resuming",
-    )
     # Use effective_settings for live override support (lm_studio_url, agent_model)
     es = getattr(request.app.state, "effective_settings", None)
     if es is not None:
@@ -478,10 +455,63 @@ async def system_status(request: Request) -> dict[str, Any]:
     # two surfaces of one install disagreed about which model does the planning.
     # Same bound method `main.py` hands the router, so they cannot drift.
     planner_model = effective_agent_model
+    planner_target = PlannerTarget(provider="")
     try:
-        planner_model = (await _resolve_planner_model(es)) or effective_agent_model
+        planner_target = await _resolve_planner_target(es)
+        planner_model = planner_target.model or effective_agent_model
     except Exception:  # noqa: BLE001 - status must answer even when unresolvable
         logger.debug("planner resolution failed; falling back to agent_model")
+
+    # Probe the RESOLVED planner's own provider, never an unconditional
+    # `claude --version`. `_resolve_planner_target` names whatever provider the
+    # `plan_spec` chain head resolves to (`local`, `codex`, `agy`, ...), and the
+    # old unconditional `claude --version` probe measured a binary that provider
+    # may never touch: a `local` planner could report "connected" purely
+    # because an unrelated `claude` binary happened to be on PATH, or a working
+    # `codex` planner could report "disconnected" for the same reason. Mirrors
+    # `api/doctor._build_probes`, which resolves this correctly already: three
+    # outcomes, not two, via the same `planner_provider_kind` classifier.
+    planner_kind = (
+        planner_provider_kind(planner_target.provider)
+        if planner_target.provider
+        else ""
+    )
+    if planner_kind == PROVIDER_KIND_CLI:
+        planner_provider_probe = await _probe_provider(planner_target.provider)
+        planner_cli_ok = bool(planner_provider_probe["cli_available"])
+        agent_connected = planner_cli_ok and opus_status in (
+            "available",
+            "rate_limited",
+            "resuming",
+        )
+        connected_measured = True
+        agent_model_detail = ""
+    else:
+        # `local`, an unrecognized provider, or a planner that failed to
+        # resolve at all: this poll cannot measure connectivity here, and
+        # reporting False would read as "checked and it's down" rather than
+        # "not checked". Mirrors the pattern this file already uses twice:
+        # `_probe_provider`'s `auth_measured=False` and the non-local-LLM
+        # branch of `subagent_info` below, both of which name what was NOT
+        # measured instead of fabricating a verdict.
+        planner_cli_ok = False
+        agent_connected = False
+        connected_measured = False
+        if planner_kind == PROVIDER_KIND_LOCAL:
+            agent_model_detail = (
+                f"the planner runs on the '{planner_target.provider}' provider, "
+                "which has no CLI binary to probe here; `praxis doctor` measures "
+                "it with a live round trip"
+            )
+        elif planner_kind == PROVIDER_KIND_UNKNOWN:
+            agent_model_detail = (
+                f"the planner's provider '{planner_target.provider}' is not a "
+                "recognized CLI provider; see `praxis doctor`"
+            )
+        else:
+            agent_model_detail = (
+                "the planner could not be resolved on this poll; see `praxis doctor`"
+            )
 
     # Probe the worker endpoint only when the configured harness HAS one. agy
     # calls Google directly, so probing LM Studio for it reported
@@ -512,10 +542,24 @@ async def system_status(request: Request) -> dict[str, Any]:
             [container for container in containers if container["status"] == "running"]
         ),
         "total_agents": len(containers),
+        # False when the agent manager is absent (no Docker on this host, a
+        # documented state) OR the listing raised (daemon down): both used to
+        # leave `containers` empty exactly like a genuinely idle system, so
+        # 0/0 meant "idle" and "cannot ask" identically. A reader needs this
+        # to tell them apart; the counts themselves stay real counts.
+        "agents_reachable": agents_reachable,
         "agent_model": {
             "name": planner_model,
             "connected": agent_connected,
-            "cli_available": claude_cli_ok,
+            "cli_available": planner_cli_ok,
+            "provider": planner_target.provider,
+            # True only when `connected`/`cli_available` above came from an
+            # actual probe of the RESOLVED planner's provider. False for
+            # `local`, an unrecognized provider, or a planner that failed to
+            # resolve: reporting `connected: false` there would read as a
+            # measured verdict rather than "not measured here".
+            "connected_measured": connected_measured,
+            "detail": agent_model_detail,
         },
         "subagent_model": subagent_info,
         "lm_studio_url": effective_lm_studio_url,
@@ -532,7 +576,7 @@ async def system_status(request: Request) -> dict[str, Any]:
         # label and the wrong arm. Nothing downstream recomputes the gate, so no
         # number in the report can contradict them.
         #
-        # Deliberately NOT cached, unlike _probe_claude_cli above. That cache
+        # Deliberately NOT cached, unlike the provider probes above. That cache
         # exists to avoid spawning a subprocess every 5 s; these are two dict
         # lookups. More importantly, the field's job is to confirm that a
         # restart took effect, and a cached value would answer with the mode

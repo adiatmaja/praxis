@@ -135,6 +135,128 @@ async def test_status_does_not_report_the_legacy_planner_setting(
 
 
 @pytest.mark.integration
+async def test_status_probes_the_planners_own_provider_when_it_is_a_cli(
+    client: AsyncClient,
+    db: Database,
+    auth_headers: dict[str, str],
+    mocker: pytest.MonkeyPatch,
+) -> None:
+    """A CLI-shaped planner (the shipped default, `claude`) is really measured.
+
+    Before this fix, `/api/status` always spawned `claude --version`
+    regardless of which provider `plan_spec` actually resolved to.  For the
+    shipped default that happens to be the same binary, so this pins the
+    happy path stays correctly measured: `connected_measured` is True and
+    `cli_available` tracks the real probe result, not a fabricated value.
+    """
+    import orchestrator.api.system as sys_mod
+
+    sys_mod._provider_probe_cache.clear()
+    await seed_user(db)
+
+    async def _fake_exec(*args: object, **kwargs: object) -> object:
+        proc = mocker.MagicMock()
+        proc.returncode = 0
+        proc.wait = mocker.AsyncMock(return_value=0)
+        return proc
+
+    mocker.patch("asyncio.create_subprocess_exec", new=_fake_exec)
+
+    data = (await client.get("/api/status", headers=auth_headers)).json()
+
+    assert data["agent_model"]["provider"] == "claude"
+    assert data["agent_model"]["connected_measured"] is True
+    assert data["agent_model"]["cli_available"] is True
+
+
+@pytest.mark.integration
+async def test_status_does_not_fabricate_connectivity_for_a_local_planner(
+    client: AsyncClient,
+    db: Database,
+    auth_headers: dict[str, str],
+    mocker: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A `local` planner (LM Studio, no CLI) must be reported as UNMEASURED.
+
+    Before this fix, this endpoint always probed the unrelated `claude`
+    binary, so a `local` planner could read "connected" purely because some
+    `claude` CLI happened to be on PATH, or "disconnected" for a perfectly
+    working local planner. Neither is a real measurement of the `local`
+    provider, so this endpoint must say so instead of fabricating a verdict
+    in either direction: `connected_measured` False, `connected` False (never
+    invented True), and a detail naming the actual provider.
+    """
+    import orchestrator.api.system as sys_mod
+
+    sys_mod._provider_probe_cache.clear()
+    await seed_user(db)
+    es = client.app.state.effective_settings  # type: ignore[attr-defined]
+
+    async def chain(_call_site: str, _override: object) -> list[dict[str, str]]:
+        return [{"provider": "local", "model": ""}]
+
+    monkeypatch.setattr(es, "call_site_chain", chain)
+
+    # Every CLI would answer healthy if probed; the endpoint's job is to NOT
+    # probe one for a `local` planner at all, so success here must not turn
+    # into a fabricated `connected: true` for the planner.
+    async def _fake_exec(*args: object, **kwargs: object) -> object:
+        proc = mocker.MagicMock()
+        proc.returncode = 0
+        proc.wait = mocker.AsyncMock(return_value=0)
+        return proc
+
+    mocker.patch("asyncio.create_subprocess_exec", new=_fake_exec)
+
+    data = (await client.get("/api/status", headers=auth_headers)).json()
+
+    assert data["agent_model"]["provider"] == "local"
+    assert data["agent_model"]["connected_measured"] is False
+    assert data["agent_model"]["connected"] is False
+    assert "local" in data["agent_model"]["detail"]
+
+
+@pytest.mark.integration
+async def test_status_reports_active_agents_reachable_when_docker_answers(
+    client: AsyncClient,
+    db: Database,
+    auth_headers: dict[str, str],
+) -> None:
+    """The default test double answers the listing, so `agents_reachable` is True."""
+    await seed_user(db)
+
+    data = (await client.get("/api/status", headers=auth_headers)).json()
+
+    assert data["agents_reachable"] is True
+    assert data["active_agents"] == 0
+    assert data["total_agents"] == 0
+
+
+@pytest.mark.integration
+async def test_status_distinguishes_idle_from_cannot_ask(
+    client: AsyncClient,
+    db: Database,
+    auth_headers: dict[str, str],
+) -> None:
+    """0/0 for "idle" and 0/0 for "cannot ask" must not read the same.
+
+    Before this fix, an absent agent manager (no Docker on this host, a
+    documented state) and a raised container listing both collapsed into an
+    empty `containers` list, so `active_agents`/`total_agents` were 0/0
+    either way and a reader could not tell "idle" from "could not ask".
+    """
+    await seed_user(db)
+    client.app.state.agent_manager = None  # type: ignore[attr-defined]
+
+    data = (await client.get("/api/status", headers=auth_headers)).json()
+
+    assert data["agents_reachable"] is False
+    assert data["active_agents"] == 0
+    assert data["total_agents"] == 0
+
+
+@pytest.mark.integration
 async def test_status_does_not_call_a_working_non_endpoint_worker_unknown(
     client: AsyncClient,
     db: Database,

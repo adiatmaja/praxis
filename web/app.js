@@ -2039,7 +2039,19 @@
       try {
         const status = await api("GET", "/api/status");
         if (status.lm_studio_url) effectiveLmStudioUrl = status.lm_studio_url;
-        document.getElementById("stat-agents").textContent = status.active_agents;
+        const agentsStat = document.getElementById("stat-agents");
+        // `agents_reachable` is false when the agent manager is absent (no
+        // Docker on this host) or the container listing raised (daemon down).
+        // Both used to leave active_agents at 0, indistinguishable from a
+        // genuinely idle system with zero agents running: a reader could not
+        // tell "0 because idle" from "0 because we could not ask".
+        if (status.agents_reachable) {
+          agentsStat.textContent = status.active_agents;
+          agentsStat.title = "";
+        } else {
+          agentsStat.textContent = "?";
+          agentsStat.title = "could not reach the agent manager; Docker may be unavailable";
+        }
         document.getElementById("stat-queue").textContent = status.opus_state.queued_count;
         window.__opusStatus = status.opus_state ? status.opus_state.status : "unknown";
         // Re-render the opus pill in-place so it reflects the fresh status without
@@ -2159,12 +2171,37 @@
     // known (e.g. the LM Studio endpoint behind the Implementer slot), show
     // it instead of a bare "unknown": the dashboard previously named no
     // target at all, so there was nothing to go check.
+    //
+    // `info.connected_measured === false` means /api/status did not actually
+    // probe connectivity for this one (a `local` planner has no CLI to probe,
+    // an unrecognized provider, or a planner that failed to resolve at all).
+    // Painting a confident green or red dot for a fact nobody measured reads
+    // as a real answer; a caller that only reads a binary dot cannot tell
+    // "confirmed up" from "confirmed down" from "never checked". Other
+    // `info` shapes (subagent_model) never carry this key, so `!== false`
+    // treats a missing field as "measured", which keeps this backward
+    // compatible.
     function setConnection(prefix, info, status, endpointUrl) {
       const dot = document.getElementById(prefix + "-dot");
       const model = document.getElementById(prefix + "-model");
       const connected = info && info.connected;
-      dot.className = "conn-dot " + (status === "rate_limited" ? "rate_limited" : connected ? "connected" : "disconnected");
-      if (!connected && endpointUrl) {
+      const measured = !info || info.connected_measured !== false;
+      let dotClass;
+      if (!measured) {
+        // No CSS rule targets "unmeasured" on purpose: the dot falls back to
+        // the base .conn-dot neutral gray instead of a colour that would
+        // assert a verdict.
+        dotClass = "unmeasured";
+      } else if (status === "rate_limited") {
+        dotClass = "rate_limited";
+      } else {
+        dotClass = connected ? "connected" : "disconnected";
+      }
+      dot.className = "conn-dot " + dotClass;
+      if (!measured) {
+        model.textContent = info && info.name ? info.name : "unknown";
+        model.title = (info && info.detail) || "not measured here";
+      } else if (!connected && endpointUrl) {
         model.textContent = "unreachable (" + endpointUrl + ")";
         model.title = endpointUrl;
       } else {

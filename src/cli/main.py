@@ -845,19 +845,42 @@ def status() -> None:
     with _client() as client:
         data = _check_dict(client.get("/api/status"))
     opus_state = data["opus_state"]
+    agent_model = data.get("agent_model") or {}
     # "Opus" is the internal legacy name of the brain (the `opus_state` table,
     # `OpusBridge`), not the model. Printing it told an operator their planner
     # was Opus on an install whose shipped role chain runs Sonnet, and the
     # doctor two commands away named the real one. Name what resolved.
-    planner = str((data.get("agent_model") or {}).get("name") or "").strip()
+    planner = str(agent_model.get("name") or "").strip()
     label = f"Planner ({planner})" if planner else "Planner"
     console.print(f"{label}: [bold]{opus_state['status']}[/bold]")
     if opus_state["resume_at"]:
         console.print(f"  Resume at: {opus_state['resume_at']}")
     console.print(f"  Queued actions: {opus_state['queued_count']}")
-    console.print(
-        f"Active agents: {data['active_agents']} / {data['total_agents']} total"
-    )
+    # `connected_measured` is False for a `local` planner, an unrecognized
+    # provider, or one `/api/status` failed to resolve at all: that endpoint
+    # never probes those, since only a CLI-shaped provider has a binary to
+    # check. Printing "connected"/"disconnected" in that case would assert a
+    # measurement nobody took; `praxis doctor` is where it IS measured (a live
+    # round trip for a CLI provider still not covered by this poll).
+    if agent_model.get("connected_measured"):
+        cli_state = "connected" if agent_model.get("connected") else "disconnected"
+        console.print(f"  CLI: {cli_state}")
+    else:
+        detail = str(agent_model.get("detail") or "not probed by this endpoint")
+        console.print(f"  CLI: [dim]not measured here[/dim] - {detail}")
+    # `agents_reachable` is False when the agent manager is absent (no Docker
+    # on this host) or the container listing raised (daemon down): both used
+    # to leave `active_agents`/`total_agents` at 0/0, indistinguishable from a
+    # genuinely idle system with zero agents running.
+    if data.get("agents_reachable"):
+        console.print(
+            f"Active agents: {data['active_agents']} / {data['total_agents']} total"
+        )
+    else:
+        console.print(
+            "[yellow]Active agents: unknown[/yellow] (could not reach the "
+            "agent manager; Docker may be unavailable)"
+        )
 
 
 @app.command()

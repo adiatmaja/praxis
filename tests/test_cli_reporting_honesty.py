@@ -512,6 +512,132 @@ def test_stop_says_the_task_was_failed_even_with_nothing_running(monkeypatch) ->
 
 
 # --------------------------------------------------------------------------
+# praxis status: a measured verdict must not look like an invented one
+# --------------------------------------------------------------------------
+
+STATUS_BASE = {
+    "opus_state": {
+        "status": "available",
+        "resume_at": None,
+        "queued_count": 0,
+    },
+    "active_agents": 0,
+    "total_agents": 0,
+    "agents_reachable": True,
+}
+
+
+@pytest.mark.unit
+def test_status_shows_a_measured_verdict_for_a_cli_planner(monkeypatch) -> None:
+    """`connected_measured: true` prints a plain connected/disconnected line."""
+    payload = {
+        **STATUS_BASE,
+        "agent_model": {
+            "name": "claude-sonnet-4-6",
+            "connected": True,
+            "cli_available": True,
+            "provider": "claude",
+            "connected_measured": True,
+            "detail": "",
+        },
+    }
+    _patch(monkeypatch, _json(payload))
+    result = runner.invoke(app, ["status"])
+
+    assert result.exit_code == 0
+    flat = _flat(result)
+    assert "CLI: connected" in flat
+    assert "not measured" not in flat
+
+
+@pytest.mark.unit
+def test_status_does_not_claim_connectivity_for_an_unmeasured_planner(
+    monkeypatch,
+) -> None:
+    """A `local` planner has no CLI to probe; the CLI must say so, not guess.
+
+    Before the fix, `/api/status` always probed the unrelated `claude`
+    binary and this command had no way to tell a real measurement from a
+    fabricated one, so a `local` planner could print "connected" or
+    "disconnected" for a fact nobody checked.
+    """
+    payload = {
+        **STATUS_BASE,
+        "agent_model": {
+            "name": "some-local-model",
+            "connected": False,
+            "cli_available": False,
+            "provider": "local",
+            "connected_measured": False,
+            "detail": "the planner runs on the 'local' provider, which has no "
+            "CLI binary to probe here; `praxis doctor` measures it with a "
+            "live round trip",
+        },
+    }
+    _patch(monkeypatch, _json(payload))
+    result = runner.invoke(app, ["status"])
+
+    assert result.exit_code == 0
+    flat = _flat(result)
+    assert "not measured here" in flat
+    assert "CLI: connected" not in flat
+    assert "CLI: disconnected" not in flat
+
+
+@pytest.mark.unit
+def test_status_reports_active_agents_normally_when_reachable(monkeypatch) -> None:
+    payload = {
+        **STATUS_BASE,
+        "active_agents": 2,
+        "total_agents": 3,
+        "agent_model": {
+            "name": "claude-sonnet-4-6",
+            "connected": True,
+            "cli_available": True,
+            "provider": "claude",
+            "connected_measured": True,
+            "detail": "",
+        },
+    }
+    _patch(monkeypatch, _json(payload))
+    result = runner.invoke(app, ["status"])
+
+    assert result.exit_code == 0
+    assert "Active agents: 2 / 3 total" in _flat(result)
+
+
+@pytest.mark.unit
+def test_status_does_not_print_zero_zero_when_docker_is_unreachable(
+    monkeypatch,
+) -> None:
+    """0/0 for "idle" and 0/0 for "cannot ask" must not read the same.
+
+    Before the fix, an absent or failing agent manager still printed
+    "Active agents: 0 / 0 total", which reads exactly like a genuinely idle
+    system with zero agents running.
+    """
+    payload = {
+        **STATUS_BASE,
+        "agents_reachable": False,
+        "agent_model": {
+            "name": "claude-sonnet-4-6",
+            "connected": True,
+            "cli_available": True,
+            "provider": "claude",
+            "connected_measured": True,
+            "detail": "",
+        },
+    }
+    _patch(monkeypatch, _json(payload))
+    result = runner.invoke(app, ["status"])
+
+    assert result.exit_code == 0
+    flat = _flat(result)
+    assert "Active agents: 0 / 0 total" not in flat
+    assert "Active agents: unknown" in flat
+
+
+# --------------------------------------------------------------------------
 # praxis env: the one verb whose whole job is naming the source that won
 # --------------------------------------------------------------------------
 
