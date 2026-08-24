@@ -29,13 +29,20 @@
 
 Praxis is a provider-agnostic orchestrator for the execution phase of spec-driven
 development: brainstorm, spec, and plan wherever you like, then hand it the plan. Set
-up inside the coding assistant you already use and wired in over MCP, it decomposes
+up inside the coding assistant you already use and wired in over MCP (Model Context
+Protocol), it decomposes
 the plan to fit the worker model that implements it, dispatches each task to the
 harnesses that do the typing (OpenCode driving any OpenAI-compatible model,
 Antigravity driving Gemini), and gates every change: checked by the verify gate when
 you configure one, reviewed by a second model, and delivered as a pull request that
 waits for your approval. Never a blind dispatch. One session, no copy-pasted plans,
 no switching tools by hand. (A CLI and a dashboard drive the same engine.)
+
+> [!NOTE]
+> **"Harness"** here means any agentic coding tool: Claude Code, OpenCode, Antigravity,
+> Codex CLI. Concretely: if you use Claude Code, Praxis lets it hand a coding task to
+> Gemini or a local open-weight model working in a disposable container, then review the
+> pull request that comes back. Nothing merges until you approve it.
 
 ```
   ┌──────────────────────────────────────────────────────────┐
@@ -93,7 +100,7 @@ smallest case is a single task: say
 "use praxis to fix X on this repo" and a worker picks it up in an isolated container
 while your session moves on (`dispatch_task`). Harness and model are chosen per project
 or per call, so work goes to whichever model is actually good at it, for example UI
-repair to Gemini via `agy` while planning and review stay on Claude.
+repair to Gemini via `agy` (the Antigravity CLI) while planning and review stay on Claude.
 
 **Auto-delegate mode (beta).** The continuous shape: a global toggle after which your
 reasoning model stops editing files and becomes a planner and reviewer full time,
@@ -103,6 +110,14 @@ single-branch review flow is still being hardened; treat it as a preview.
 `praxis mode on|off|status`, mechanics in [docs/workflow.md](docs/workflow.md).
 
 ## How the output is governed
+
+```
+  decompose ──▶ dispatch ──▶ implement ──▶ open PR ──▶ verify ──▶ review ──▶ merge gate
+  (planner)    (parallel)     (worker)     (branch)    (gate)   (reviewer)     (park)
+                                                                    │ fail
+                                                                    ▼
+                                                          retry ×3 with feedback
+```
 
 **Capability-aware task decomposition.** The core mechanism. Praxis keeps a capability
 profile of the implementing model and decomposes every plan against it, so no task asks
@@ -122,40 +137,7 @@ branch without you.
 fresh from `origin`; your working tree is never touched, and only the pushed branch and
 its PR remain.
 
-**Every seat independently configurable.** Provider, model, and harness are chosen per
-role and per project, and swapping a seat never changes the architecture around it.
-Interchangeable examples, not a blessed pairing:
-
-```
-  ┌───────────────┐    ┌───────────────┐    ┌───────────────┐    ┌───────────────┐
-  │    PLANNER    │    │  IMPLEMENTER  │    │    VERIFIER   │    │    REVIEWER   │
-  │  decompose to │    │   write the   │    │    run the    │    │  inspect the  │
-  │  match worker │    │  code, open a │    │   mechanical  │    │  PR, gate the │
-  │   capability  │    │  pull request │    │      gate     │    │     merge     │
-  └───────────────┘    └───────────────┘    └───────────────┘    └───────────────┘
-     any provider        any harness +         any command          any provider
-   (Claude · GLM ·     open-weight model     (tests · lint ·      (Claude · GLM ·
-    Codex · local)      (LM Studio · …)           build)            GPT · local)
-```
-
-The verifier seat is deterministic, a shell command rather than a model.
-
-Tier recommendations, worker presets, and whole-loop arrangements:
-[docs/configurations.md](docs/configurations.md). A useful consequence: the token-heavy
-implement seat can run on a free open-weight model while the judgment-heavy seats run on
-a capable hosted one.
-
-## How the loop runs
-
-```
-  decompose ──▶ dispatch ──▶ implement ──▶ open PR ──▶ verify ──▶ review ──▶ merge gate
-  (planner)    (parallel)     (worker)     (branch)    (gate)   (reviewer)     (park)
-                                                                    │ fail
-                                                                    ▼
-                                                          retry ×3 with feedback
-```
-
-Four more behaviors round out the loop, each recorded as a fact rather than
+Five more behaviors round out the loop, each recorded as a fact rather than
 surfaced as an error:
 
 - **A worker can ask instead of guessing.** A task that needs a human decision
@@ -171,13 +153,58 @@ surfaced as an error:
 - **The loop proposes its own work, behind the same gate.** After a plan
   completes, an improvement pass surveys the repository and may park a follow-up
   proposal at `praxis pending`; nothing runs until you approve it.
+- **A rate limit pauses the loop, it does not break it.** When a subscription
+  window closes (Claude's five-hour limit is the archetype), brain calls queue
+  and the loop resumes on its own once the window reopens.
 
 The planner turns a spec or `plan.md` into a dependency-ordered task graph; tasks run in
 parallel where dependencies allow, each on its own `agent/{task-slug}` branch under a
 `plan/{date}-{slug}` branch; when all tasks land, an integration PR to `main` parks for
 your approval. Full cycle and swimlane diagram: [docs/workflow.md](docs/workflow.md).
 
+### Every seat independently configurable
+
+Provider, model, and harness are chosen per role and per project, and swapping a seat
+never changes the architecture around it. Interchangeable examples, not a blessed
+pairing:
+
+```
+  ┌───────────────┐    ┌───────────────┐    ┌───────────────┐    ┌───────────────┐
+  │    PLANNER    │    │  IMPLEMENTER  │    │    VERIFIER   │    │    REVIEWER   │
+  │  decompose to │    │   write the   │    │    run the    │    │  inspect the  │
+  │  match worker │    │  code, open a │    │   mechanical  │    │  PR, gate the │
+  │   capability  │    │  pull request │    │      gate     │    │     merge     │
+  └───────────────┘    └───────────────┘    └───────────────┘    └───────────────┘
+     any provider        any harness +         any command          any provider
+   (Claude · GLM ·     open-weight model     (tests · lint ·      (Claude · GLM ·
+    Codex · local)      (LM Studio · …)           build)            GPT · local)
+```
+
+The verifier seat is deterministic, a shell command rather than a model. Tier
+recommendations, worker presets, and whole-loop arrangements:
+[docs/configurations.md](docs/configurations.md).
+
+> [!NOTE]
+> **What it costs:** Praxis itself is free, Apache-2.0, and self-hosted; there is no
+> service and no metered billing of its own. Running it costs whatever the seats cost,
+> typically model subscriptions you already pay for, and the token-heavy implement seat
+> can run on a free local open-weight model while the judgment-heavy seats stay on a
+> capable hosted one.
+
 ## Quick Start
+
+What you need before starting:
+
+| You need | For |
+|----------|-----|
+| Docker | the orchestrator and every worker container |
+| Python 3.11+ and [uv](https://docs.astral.sh/uv/) | the CLI |
+| One planner CLI on a subscription: `claude`, `codex`, or `agy` | the planning and review seats |
+| A GitHub token, or answer `skip` for local-only mode | pull requests, the loop's unit of trust |
+
+A local worker model additionally needs [LM Studio](https://lmstudio.ai/) and hardware
+that can serve it; tiers and sizing in
+[docs/open-weight-models-complete.md](docs/open-weight-models-complete.md).
 
 ```bash
 git clone https://github.com/adiatmaja/praxis.git
@@ -220,20 +247,24 @@ lists the names `--preset` accepts and works before the orchestrator is running;
 key, an interactive login) is refused rather than half-installed, until
 `--accept-preset-requirements` says that setup is done.
 
-Two traps to tell your agent about, because neither is discoverable from a failure: build
-the agent images with `docker compose --profile agents build`, never a bare `docker build`
-(the profile stamps a label Praxis needs for staleness detection); and log into your
-planner CLI yourself if the doctor's planner check is red, since that login is interactive
-and an agent's would not persist.
+> [!WARNING]
+> Two traps to tell your agent about, because neither is discoverable from a failure:
+>
+> - Build the agent images with `docker compose --profile agents build`, never a bare
+>   `docker build`: the profile stamps a label Praxis needs for staleness detection.
+> - If the doctor's planner check is red, log into the planner CLI yourself: that login
+>   is interactive, and an agent's login would not persist.
 
 With the orchestrator running:
 
 - **MCP:** wire `praxis-mcp` into your assistant and drive everything from there
   ([docs/mcp.md](docs/mcp.md))
 - **Dashboard:** http://localhost:12323 · **API docs:** http://localhost:12323/docs
-- **CLI:** `uv run praxis projects`, `submit`, `pending`, `merge <task-id>`, `mode on`
+- **CLI:** `uv run praxis projects`, `submit`, `pending`, `merge <task-id>` or
+  `reject-merge <task-id>`, `clarify <task-id> "answer"`, `mode on`
 
-Point at least one planner CLI (`claude`, `codex`, or `agy`) at your subscription. The
+Point at least one planner CLI (`claude`, `codex`, or `agy`) at a subscription you
+already have, for example the Claude Pro plan behind your Claude Code login. The
 implementer seat comes from your worker preset: the shipped default drives Gemini via
 `agy` (one-time `agy login`), or pick `local-lmstudio` to serve an open-weight model over
 an OpenAI-compatible endpoint ([LM Studio](https://lmstudio.ai/)). Full setup and
