@@ -95,7 +95,8 @@ The rest of `core/`, grouped by concern:
   `opus_bridge` (legacy name, all brain calls), `thinking`, `provider_errors`,
   `escalation`, `worker_presets`, `bench_mode`
 - **Execution:** `task_queue`, `agent_manager`, `agent_prompt`, `worker_bible`, `harnesses`,
-  `preflight`, `session_resume`, `progress_handover`, `clarification_states`, `token_budget`
+  `preflight`, `session_resume`, `progress_handover`, `clarification_states`,
+  `token_budget`, `micro_edit`
 - **Git & platform:** `git_ops`, `git_backend` (GitHub / local), `github_credentials`,
   `repo_url_policy`, `merge_policy`, `branch_sweeper`, `diff_guard`, `diff_stats`
 - **Capability engine:** `execute_plan_decompose`, `plan_derive`, `plan_graph`, `plan_review`,
@@ -145,7 +146,16 @@ docker compose --profile hosted up --build                                      
 # Run - bare uvicorn (quick one-off only; process dies with the terminal and orphans in-flight tasks)
 uv run uvicorn orchestrator.main:app --host 127.0.0.1 --port 8080
 
-# Tests
+# Tests. Run the NARROWEST selection that covers the change; the full suite is
+# ~4.5 minutes and 2880 tests, and running it after every edit is the single
+# most expensive habit in this repo.
+uv run pytest tests/test_<the_file_you_touched>.py -q
+uv run pytest -q -k "<subject>"
+
+# Full suite: only when it is actually needed. That means before a commit that
+# lands, after a change to a shared seam (database.py, task_queue.py, schemas.py,
+# a mixin), or when a narrow run comes back green on a change you do not fully
+# trust. Not after every edit, and never twice for the same tree.
 uv run pytest --cov=orchestrator --cov-report=term-missing -v
 
 # Lint & format
@@ -267,11 +277,23 @@ does NOT edit code directly: per task it designs the worker prompt (see the guid
 above), calls MCP `dispatch_task` (global default worker), then reviews the resulting PR.
 Planning, prompt design, and review stay with the brain. Mode is sequential (one delegate
 in flight) on a single caller-named work branch; dead branches are swept by reconcile.
-The sequential rule is load-bearing: per-task review scoping depends on it, and since
-2026-08-24 `dispatch_pending_tasks` ENFORCES it for the plans Praxis dispatches itself
-(one task per wave, held while any task on that branch is `in_progress` or `reviewing`).
-It cannot enforce it for a caller driving `dispatch_task` against the same branch - there
-the rule is still the caller's to keep. Toggle: `praxis mode on|off|status`.
+The sequential rule is load-bearing (per-task review scoping depends on it) and
+`dispatch_pending_tasks` ENFORCES it at the BRANCH: one task per wave, held while any task
+on that branch is `in_progress` or `reviewing`, **across every plan in the project**. The
+cross-plan scope is what makes it work here at all: each MCP `dispatch_task` becomes its
+own one-task plan, so a plan-scoped hold never had a second task to hold against and could
+not fire on this path (fixed 2026-08-25). What is STILL unenforceable: a commit pushed to
+that branch from outside Praxis. Toggle: `praxis mode on|off|status`.
+
+**Micro-edit lane (2026-08-25):** pass `micro_edit={path, content, commit_message}` to
+`dispatch_task` and NO container is spawned - `core/micro_edit.py` clones server-side,
+commits that one file to the work branch, and the task goes straight to `reviewing`. It
+skips the WORKER, never the governance: the verify gate, the review, the merge gate and
+the outcome row all run. The lane records its OWN `review_base_sha` at the commit (read
+after checkout, before the write) and sets `implement_harness`/`implement_model` to
+`"brain"` so calibration is never taught the worker did it. Requires `branch` and
+auto-delegate mode (422 otherwise). A failed micro edit is TERMINAL, never retried.
+Rubric lives in the mode contract (`praxis://guide/orchestration`), not in the engine.
 
 ## Gotchas
 
@@ -369,10 +391,11 @@ story. New gotchas go in `docs/gotchas.md` first. (No count is quoted on purpose
 - **The improvement loop must be given the REPOSITORY and fails closed without it**
   (`core/repo_survey.py`): no readable repo means NO proposal.
 - **A plan with no commits has nothing to integrate**: decided by
-  `_plan_branch_has_nothing_to_integrate` on a positive check (two known equal SHAs).
-  **KNOWN GAP (walkthrough #12):** a DELETED branch has no SHA, falls through, and a
-  correctly-COMPLETED single-branch plan logs a false `Integration PR open failed`. Fix:
-  treat an absent branch as the same fact.
+  `_nothing_to_integrate_reason` on a positive check, which settles TWO facts. Two known
+  equal SHAs (every task a no-op), and an ABSENT plan branch (single-branch mode, where
+  merging the task PRs IS the integration and deletes the branch). `remote_head_sha`
+  returns None for an absent branch and RAISES when it cannot ask, so None is an ANSWER;
+  only the exception falls through to the creation attempt.
 - **A plan reaches the gate TWICE**: each task onto the plan branch, then the plan's own
   integration PR. The URL lives on `plans.integration_pr_url`; `integration_merged_at`
   takes it back out of `pending`.
@@ -450,10 +473,11 @@ story. New gotchas go in `docs/gotchas.md` first. (No count is quoted on purpose
   `docs/superpowers/specs/2026-07-11-capability-engine-roadmap.md` (F1-F15, S1-S11);
   next up = Plan 3 `outcome-recording`
 - **Implementation plans:** `docs/superpowers/plans/` (sequential)
-- **Auto-delegate: review-scope is DONE (2026-08-24); the micro-edit lane is next.**
-  The base-SHA column and range-bounded diff exist; the lane
-  (`specs/2026-08-21-micro-edit-lane.md`) commits to the shared branch with no dispatch,
-  must record its OWN base SHA at the commit, and skips the WORKER, never the governance.
+- **Auto-delegate: review-scope DONE (2026-08-24), micro-edit lane DONE (2026-08-25).**
+  `specs/2026-08-21-micro-edit-lane.md` carries four corrections against the code at its
+  top, written before any of it was built; they override the body where they conflict.
+  Not built, and deliberately: the engine-side difficulty hint that would give the brain
+  a second opinion on the rubric, and widening the lane beyond auto-delegate mode.
 - **Implemented + merged (2026-06-29 epic, e2e-verified 2026-07-01):** worker context
   continuity, capability-aware plan execution, MCP orchestration guide (specs + plans in
   `docs/superpowers/`). Delivers the Static Bible, git-spine progress handover,

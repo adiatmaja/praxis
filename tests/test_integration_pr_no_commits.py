@@ -18,6 +18,15 @@ The check is POSITIVE and sufficient rather than necessary, matching
 `_existing_integration_pr`: identical head SHAs prove there is nothing to
 integrate. A branch that merely trails its base is not detected and falls
 through to the normal creation attempt, which is the safe direction.
+
+Walkthrough #12, 2026-08-24, added the second fact. In single-branch mode the
+task PRs already target the base branch, so merging them IS the integration and
+the merge deletes the shared branch. The plan branch is then ABSENT rather than
+equal, `gh pr create` fails with "Head ref must be a branch", and the same
+false `Integration PR open failed` was logged over a plan whose work was
+already on `main`. `remote_head_sha` returns None for an absent branch and
+RAISES when it cannot ask, so the absence is an answered lookup; only the
+exception falls through.
 """
 
 from __future__ import annotations
@@ -68,7 +77,7 @@ async def _seed(db: Database) -> tuple[TaskQueue, str]:
     return task_queue, plan_id
 
 
-def _git(plan_branch_sha: str) -> MagicMock:
+def _git(plan_branch_sha: str | None) -> MagicMock:
     git = MagicMock()
     git.remote_head_sha = AsyncMock(
         side_effect=lambda _repo, branch: (
@@ -191,17 +200,73 @@ async def test_a_non_string_sha_answer_falls_through_to_creation(
 async def test_an_unanswerable_sha_lookup_falls_through_to_creation(
     db: Database,
 ) -> None:
-    """`None` means "could not ask", which is not evidence of no commits.
+    """An unresolvable BASE settles nothing, so creation is still attempted.
 
-    Only a POSITIVE match of two known SHAs may skip creation. Treating an
-    unanswered lookup as "nothing to integrate" would silently stop opening
-    integration PRs the first time the network hiccupped, and the plan would
-    complete with no PR and no error, which is precisely the failure mode this
-    codebase keeps rediscovering.
+    ``base`` anchors both facts this check can establish. Without a SHA for it
+    there is nothing to compare against and nothing to call the plan branch
+    absent relative to, so the question is unanswered. Treating an unanswered
+    lookup as "nothing to integrate" would silently stop opening integration
+    PRs the first time the network hiccupped, and the plan would complete with
+    no PR and no error, which is precisely the failure mode this codebase
+    keeps rediscovering.
     """
     task_queue, plan_id = await _seed(db)
     git = _git(plan_branch_sha=BASE_SHA)
     git.remote_head_sha = AsyncMock(return_value=None)
+
+    await _orchestrator(task_queue, git).on_plan_completed(plan_id)
+
+    git.open_integration_pr.assert_awaited_once()
+
+
+@pytest.mark.integration
+async def test_a_deleted_plan_branch_is_not_a_failed_pr_creation(
+    db: Database, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Walkthrough #12: single-branch mode leaves no branch to open a PR from.
+
+    The task PRs already target the base branch, so merging them IS the
+    integration and the merge deletes the shared branch. `gh pr create` then
+    fails with "No commits between main and <branch>" plus "Head ref must be a
+    branch", and the loop logged `Integration PR open failed` over a plan that
+    was correctly COMPLETED with all of its work already on `main`.
+
+    ``remote_head_sha`` returns None for an absent branch and RAISES when the
+    lookup fails, so an absent head is an answered lookup, the same fact the
+    identical-SHA case already handled.
+    """
+    task_queue, plan_id = await _seed(db)
+    git = _git(plan_branch_sha=None)
+
+    with caplog.at_level(logging.INFO):
+        await _orchestrator(task_queue, git).on_plan_completed(plan_id)
+
+    git.open_integration_pr.assert_not_awaited()
+    assert "Integration PR open failed" not in caplog.text, (
+        "a branch that was deleted by merging its own task PRs is not a "
+        "failed PR creation"
+    )
+    assert "nothing to integrate" in caplog.text.lower()
+    assert "not on the remote" in caplog.text, (
+        "the skip must say WHICH fact settled it, or the operator cannot tell "
+        "a merged-and-deleted branch from an all-no-op plan; got:\n" + caplog.text
+    )
+
+
+@pytest.mark.integration
+async def test_a_raising_sha_lookup_falls_through_to_creation(
+    db: Database,
+) -> None:
+    """ "Could not ask" arrives as an exception and must never read as a skip.
+
+    ``remote_head_sha`` raises on a non-zero ``git ls-remote``, which is the
+    only way this codebase says "I could not answer". If that were folded into
+    the absent-branch case, one network hiccup would stop opening integration
+    PRs entirely, silently.
+    """
+    task_queue, plan_id = await _seed(db)
+    git = _git(plan_branch_sha=BASE_SHA)
+    git.remote_head_sha = AsyncMock(side_effect=RuntimeError("ls-remote failed"))
 
     await _orchestrator(task_queue, git).on_plan_completed(plan_id)
 

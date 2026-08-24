@@ -42,6 +42,7 @@ from orchestrator.core.leaf_split import child_slugs
 from orchestrator.core.leaf_triage import TriageEvidence, triage_leaf
 from orchestrator.core.log_context import task_logger
 from orchestrator.core.merge_policy import auto_merge_eligible
+from orchestrator.core.micro_edit import BRAIN_IMPLEMENTER
 from orchestrator.core.outcome_recorder import record_outcome
 from orchestrator.core.plan_graph import (
     build_graph_index,
@@ -234,6 +235,23 @@ class ReviewMixin:
             feedback: Message stored as ``review_feedback`` and published.
         """
         await self._tq.fail_task(task_id, feedback)
+        if task.get("implement_harness") == BRAIN_IMPLEMENTER:
+            # A micro edit is never retried. There is no worker to send it back
+            # to, and re-running the lane would rewrite the identical content,
+            # find the index clean, and close as a no-op, which would report
+            # "already correct" for a change its own verify gate had just
+            # rejected. The caller estimated this as trivial and the estimate
+            # was wrong, which is exactly the fact the rubric needs to stay
+            # observable: it decides whether to dispatch this properly.
+            logger.info(
+                "task %s took the micro-edit lane; failing it terminally rather "
+                "than retrying, so a mis-sized estimate stays visible",
+                task_id,
+            )
+            self._bus.publish(
+                {"type": "task_failed", "task_id": task_id, "feedback": feedback}
+            )
+            return
         if int(task["attempt"]) < int(project["max_retries"]):
             await self._tq.retry_task(task_id)
             self._bus.publish(
@@ -505,11 +523,30 @@ class ReviewMixin:
                     # a statement anyone can open the pull request and disprove.
                     await self._decide_empty_pr_diff(task, project, plan, log, scope)
                     return
+                # A micro edit is reviewed at the re-review tier. On a micro
+                # edit the mechanical gate carries nearly all the value: a
+                # typo fix is not caught by a model reading a diff, it is
+                # caught by `verify_cmd` running the repository's tests.
+                #
+                # This buys nothing on a STOCK install and the lane never
+                # claims it does. `core/roles.py` maps both review call sites
+                # to the `review` role, and `call_site_chain` returns the ROLE
+                # CHAIN whenever one is configured, ignoring the call site, so
+                # the shipped `review: [sonnet, haiku]` runs sonnet either
+                # way. The tier is correct on an install that configures
+                # per-call-site models, and the lane's real saving is the
+                # container, the clone and the worker turn.
+                tier = (
+                    "rereview"
+                    if task.get("implement_harness") == BRAIN_IMPLEMENTER
+                    else "first"
+                )
                 review = await self._opus.review_diff(
                     diff,
                     task["description"] or task["title"],
                     model=project.get("agent_model"),
                     effort=project.get("agent_model_effort"),
+                    tier=tier,
                     plan_text=plan_text_for_review,
                     cwd=checkout,
                 )
@@ -1667,37 +1704,50 @@ class ReviewMixin:
 
         return _verify_outcome(passed, output, plan_branch, verify_cmd)
 
-    async def _plan_branch_has_nothing_to_integrate(
+    async def _nothing_to_integrate_reason(
         self, repo_url: str, base: str, head: str
-    ) -> bool:
-        """Positively establish that ``head`` carries no commits beyond ``base``.
+    ) -> str | None:
+        """Positively establish that there is no integration PR to open.
 
-        True ONLY when both branches resolve to the same SHA, which proves the
-        plan branch has nothing of its own: every task closed as a no-op, so
-        the repository already satisfied the spec. `gh pr create` refuses that
-        case with "No commits between ...", and reporting a refusal the code
-        could have predicted as `Integration PR open failed` misfiled a correct
-        outcome as an error.
+        Returns a reason ONLY for a fully answered lookup that settles the
+        question. `gh pr create` refuses both cases below, and reporting a
+        refusal the code could have predicted as `Integration PR open failed`
+        misfiles a correct outcome as an error.
+
+        Two facts qualify, and they are different facts:
+
+        - **The branches resolve to the same SHA.** The plan branch has nothing
+          of its own: every task closed as a no-op, so the repository already
+          satisfied the spec. `gh pr create` says "No commits between ...".
+        - **The plan branch is absent from the remote.** There is no head ref
+          to open a PR from at all; `gh pr create` says "Head ref must be a
+          branch". Single-branch (auto-delegate) mode reaches this routinely:
+          the task PRs already target the base branch, so merging them IS the
+          integration and the merge deletes the shared branch (walkthrough
+          #12). What the absence MEANS is not asserted here, only the fact
+          that there is no head to open a PR from.
+
+        ``remote_head_sha`` returns ``None`` for an absent branch and RAISES
+        when the lookup itself fails, so ``None`` is an ANSWER, not a shrug.
+        "Could not ask" arrives as the exception below and always falls
+        through to the creation attempt: treating an unanswered lookup as a
+        skip would stop opening integration PRs the first time the network
+        hiccupped, and the plan would complete with no PR and no error, which
+        is exactly the class of silent gap this loop keeps rediscovering.
+
+        ``base`` is the anchor for BOTH facts, so it must be a real non-empty
+        ``str`` or nothing is established and this falls through. That is not
+        defensive clutter: "equal" is only meaningful for two answers, and any
+        other object being equal to itself would make this skip integration
+        for every plan while looking correct. It was measured doing exactly
+        that against a loose test double before the check was tightened.
 
         Sufficient, not necessary, and deliberately so. A branch that merely
-        TRAILS its base also has nothing to integrate but is not detected here;
-        it falls through to the normal creation attempt and the old error path.
-        That is the safe direction, and it is the same rule
+        TRAILS its base also has nothing to integrate but is not detected
+        here; it falls through to the normal creation attempt and the old
+        error path. That is the safe direction, and it is the same rule
         ``_existing_integration_pr`` follows: only a POSITIVE, fully answered
         check may change the flow.
-
-        A ``None`` from either lookup means "could not ask", never "no
-        commits". Treating an unanswered lookup as a skip would stop opening
-        integration PRs the first time the network hiccupped, and the plan
-        would complete with no PR and no error, which is exactly the class of
-        silent gap this loop keeps rediscovering.
-
-        Both values must be actual non-empty ``str``, which is what
-        ``remote_head_sha`` is declared to return. That is not defensive
-        clutter: "equal" is only meaningful for two answers, and any other
-        object being equal to itself would make this skip integration for
-        every plan while looking correct. It was measured doing exactly that
-        against a loose test double before the check was tightened.
 
         Args:
             repo_url: The project's repository.
@@ -1705,7 +1755,8 @@ class ReviewMixin:
             head: The plan's branch.
 
         Returns:
-            True only when both SHAs are known, are strings, and are equal.
+            A human-readable reason to log, or None when the question is not
+            positively settled.
         """
         try:
             head_sha = await self._git.remote_head_sha(repo_url, head)
@@ -1718,10 +1769,24 @@ class ReviewMixin:
                 base,
                 exc,
             )
-            return False
-        if not isinstance(head_sha, str) or not isinstance(base_sha, str):
-            return False
-        return bool(head_sha) and head_sha == base_sha
+            return None
+        if not isinstance(base_sha, str) or not base_sha:
+            return None
+        if head_sha is None:
+            return (
+                f"branch={head} is not on the remote, so there is no head ref "
+                f"to open an integration PR from; in single-branch mode "
+                f"merging the task PRs integrates the work into base={base} "
+                f"and deletes the branch"
+            )
+        if not isinstance(head_sha, str):
+            return None
+        if head_sha == base_sha:
+            return (
+                f"branch={head} is identical to base={base}, so there is no "
+                f"diff to open a PR for"
+            )
+        return None
 
     async def _existing_integration_pr(
         self, repo_url: str, base: str, head: str
@@ -1848,23 +1913,23 @@ class ReviewMixin:
                     base,
                     existing_pr,
                 )
-            elif await self._plan_branch_has_nothing_to_integrate(
+            elif nothing_to_integrate := await self._nothing_to_integrate_reason(
                 repo_url, base, plan_branch
             ):
-                # Not a failure. A plan whose tasks all closed as no-ops leaves
-                # its branch identical to base, and `gh pr create` then refuses
-                # with "No commits between main and plan/...". Attempting it
+                # Not a failure. Two shapes reach here, and neither is an
+                # error: a plan whose tasks all closed as no-ops leaves its
+                # branch identical to base ("No commits between main and
+                # plan/...", walkthrough #7), and a single-branch plan whose
+                # task PRs were merged has no branch left at all ("Head ref
+                # must be a branch", walkthrough #12). Attempting creation
                 # anyway logged `Integration PR open failed` over a completely
-                # correct outcome (walkthrough #7). This is the same
-                # fact-versus-verdict split as `no_changes` one layer down: the
-                # absence of a diff is a fact, and what it MEANS is decided
-                # here.
+                # correct outcome. This is the same fact-versus-verdict split
+                # as `no_changes` one layer down: the absence is a fact, and
+                # what it MEANS is decided here.
                 log.info(
-                    "nothing to integrate for plan %s: branch=%s is identical "
-                    "to base=%s, so there is no diff to open a PR for",
+                    "nothing to integrate for plan %s: %s",
                     plan_id,
-                    plan_branch,
-                    base,
+                    nothing_to_integrate,
                 )
             else:
                 try:

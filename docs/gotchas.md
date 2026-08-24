@@ -376,10 +376,48 @@ belongs among the everyday traps.
   REVIEWING has to block for a different reason from IN_PROGRESS: a review resolves its
   range when it RUNS, so a worker committing during someone else's review widens THAT
   task's range. Whoever makes the mode concurrent for throughput has to solve the scoping
-  first. The micro-edit lane
-  (`docs/superpowers/specs/2026-08-21-micro-edit-lane.md`) inherits the same constraint
-  from the other side: a brain commit landing on that branch while a worker runs breaks the
-  range for both.
+  first.
+  **The hold had a second hole, closed 2026-08-25: it was PLAN-scoped and the mode it
+  protects is not.** `busy` came from `get_tasks_for_plan(plan_id)`, and auto-delegate
+  reaches Praxis through MCP `dispatch_task`, where `api/dispatch.py` creates a NEW
+  one-task plan on every call. Several plans, one caller-named work branch, and one task
+  per plan means there was never a second task IN the plan to hold against, so on the
+  mode's own path the hold could not fire at all. It is now keyed on the BRANCH across the
+  project (`TaskQueue.get_active_tasks_on_branch`), with the plan-scoped list kept beside
+  it so a task active on some other branch of the same plan still holds. Same lesson as
+  the wave bug one paragraph up, one level out: enforce at the shared resource, and the
+  resource is the branch.
+  The micro-edit lane (`core/micro_edit.py`) inherits this rather than carrying a second
+  copy: it runs INSIDE `dispatch_pending_tasks`, at the point where the branch is chosen,
+  so the same hold covers a brain commit. Two guards for one invariant is how they drift.
+  What is still unenforceable is a commit pushed to that branch from outside Praxis
+  entirely; nothing can hold a commit the orchestrator never saw.
+
+- **The micro-edit lane skips the WORKER, never the governance.** `micro_edit={path,
+  content, commit_message}` on `dispatch_task` spawns no container: `core/micro_edit.py`
+  clones server-side, checks out the work branch (creating it from the base when absent),
+  and commits the one file. Then the task goes to `reviewing` on a pull request, which is
+  exactly where a worker's callback leaves it, so the verify gate, the review, the merge
+  gate and the outcome row all run untouched.
+  Four things about it fail silently if changed. **The base sha is read AFTER checkout and
+  BEFORE the write**: read it after the commit and the review range is empty, and an empty
+  diff reviews as a trivially passing change. **`implement_harness`/`implement_model` are
+  set to `"brain"`**, because `orchestrator_review._record` passes those columns straight
+  into `record_outcome`, and leaving them unset files the edit against the project's
+  configured worker model, teaching the capability loop that the worker succeeded at a task
+  it never saw (`capability_history` selects `WHERE model_name = ?`, so the sentinel is
+  never selected into a real model's history). **A failure is TERMINAL**: re-running the
+  lane would rewrite identical content, find the index clean, and close as a no-op,
+  reporting "already correct" for a change its own verify gate had just rejected.
+  **The file is written with `newline=""`**: the default would rewrite every `\n` to
+  `\r\n` on Windows, and this tree is pinned to LF, so a reviewer would be shown a
+  whole-file line-ending change with the actual edit buried in it.
+  The review runs at the `rereview` tier, and **that buys nothing on a stock install**:
+  `core/roles.py` maps both review call sites to the `review` role and a YAML role chain
+  shadows the call site entirely, so the shipped `review: [sonnet, haiku]` runs sonnet
+  either way. The tier is correct where per-call-site models are configured. The lane's
+  real saving is the container, the clone and the worker turn; no doc may claim the review
+  got cheaper.
 - **`config/praxis.yaml` is MOUNTED, not baked**: both compose files bind-mount
   `./config` read-only at `/app/config`, and the base file sets
   `PRAXIS_CONFIG_PATH` to point at it, so a YAML edit takes effect on
@@ -1385,30 +1423,39 @@ belongs among the everyday traps.
   attempting it anyway logged `Integration PR open failed` over a completely
   correct outcome. Same fact-versus-verdict split as `no_changes` one layer
   down: the absence of a diff is a fact and the orchestrator decides what it
-  means. `_plan_branch_has_nothing_to_integrate` now makes that call BEFORE
-  attempting creation.
+  means. `_nothing_to_integrate_reason` now makes that call BEFORE attempting
+  creation.
+
+  **It settles TWO facts, and they are different facts.** Two known, equal SHAs
+  means every task was a no-op and the branch has nothing of its own. An ABSENT
+  plan branch means there is no head ref to open a PR from at all, which in
+  single-branch mode is the ORDINARY ending rather than an edge case (found
+  live in walkthrough #12): the task PRs already target the base branch, so
+  merging them IS the integration and the merge deletes the shared branch.
+  Before that arm existed, `on_plan_completed` logged `Integration PR open
+  failed` with gh's `No commits between main and <branch>` AND `Head ref must
+  be a branch`, for a plan whose work was on `main`, which was correctly
+  COMPLETED, and which `praxis pending` correctly did not list. Only the log
+  line was wrong, and it read as a failure an operator should act on.
+
+  **A `None` head is an ANSWER here, not a shrug**, and that is the whole
+  reason the second arm is safe: `GitOps.remote_head_sha` returns `None` only
+  when `git ls-remote` succeeded and the ref was not in its output, and RAISES
+  on a non-zero exit. "Could not ask" therefore arrives as the exception, which
+  falls through to the creation attempt. Folding the two together would stop
+  opening integration PRs entirely the first time the network hiccupped, with
+  no error anywhere.
 
   The check is POSITIVE and deliberately sufficient rather than necessary,
-  exactly like `_existing_integration_pr`: only two known, equal SHAs skip
-  creation. A branch that merely TRAILS its base also has nothing to integrate,
-  is not detected, and falls through to the normal attempt. That is the safe
-  direction. A `None` from either lookup means "could not ask", never "no
-  commits".
+  exactly like `_existing_integration_pr`. A branch that merely TRAILS its base
+  also has nothing to integrate, is not detected, and falls through to the
+  normal attempt. That is the safe direction. The reason is returned as a
+  string and logged verbatim, so the operator can tell a merged-and-deleted
+  branch from an all-no-op plan; both used to print the same "identical to
+  base" line, and only one of them would have been true.
 
-  **KNOWN GAP, still open, found live in walkthrough #12 (2026-08-24).** A
-  DELETED branch has no SHA at all, so it falls through too, and in
-  single-branch mode that is the ORDINARY ending rather than an edge case: the
-  task PRs already target the base branch, so merging them IS the integration
-  and the merge deletes the shared branch. `on_plan_completed` then logs
-  `Integration PR open failed` with gh's `No commits between main and <branch>`
-  AND `Head ref must be a branch`, for a plan whose work is on `main`, which is
-  correctly COMPLETED, and which `praxis pending` correctly does not list. Only
-  the log line is wrong, and it reads as a failure an operator should act on.
-  The fix is to treat an absent branch as the same fact this function already
-  handles, which needs the branch-existence answer the sweeper's remote read
-  already knows how to get.
-
-  Both values must be actual `str`. That is not defensive clutter: "equal" is
+  `base` anchors both facts and must be an actual non-empty `str`. That is not
+  defensive clutter: "equal" is
   only meaningful for two answers, and any other object being equal to itself
   makes the check skip integration for EVERY plan while looking correct. It was
   measured doing precisely that against an `AsyncMock`, which returns the same
