@@ -1395,6 +1395,19 @@ belongs among the everyday traps.
   direction. A `None` from either lookup means "could not ask", never "no
   commits".
 
+  **KNOWN GAP, still open, found live in walkthrough #12 (2026-08-24).** A
+  DELETED branch has no SHA at all, so it falls through too, and in
+  single-branch mode that is the ORDINARY ending rather than an edge case: the
+  task PRs already target the base branch, so merging them IS the integration
+  and the merge deletes the shared branch. `on_plan_completed` then logs
+  `Integration PR open failed` with gh's `No commits between main and <branch>`
+  AND `Head ref must be a branch`, for a plan whose work is on `main`, which is
+  correctly COMPLETED, and which `praxis pending` correctly does not list. Only
+  the log line is wrong, and it reads as a failure an operator should act on.
+  The fix is to treat an absent branch as the same fact this function already
+  handles, which needs the branch-existence answer the sweeper's remote read
+  already knows how to get.
+
   Both values must be actual `str`. That is not defensive clutter: "equal" is
   only meaningful for two answers, and any other object being equal to itself
   makes the check skip integration for EVERY plan while looking correct. It was

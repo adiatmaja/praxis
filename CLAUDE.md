@@ -207,6 +207,10 @@ Tables: `users`, `projects`, `plans`, `tasks`, `agent_runs`, `opus_state`,
 - `plans.integration_pr_url` / `integration_merged_at` (migration 9) are where a
   completed plan's last step lives; without them the integration PR is invisible to
   every read-only surface
+- `tasks.review_base_sha` (migration 10) is where a task's own work STARTS on a branch
+  several tasks share. NULLABLE, and the NULL is load-bearing: it means "review the whole
+  pull request", which is two-tier mode and every row that predates the column. The
+  schema version is 10 and `tests/test_migrations.py` pins it
 - **`plans.spec` was dropped (Spec 2)** — markdown docs are the source of truth, so the
   redundant free-text `spec` content column is gone. The DB is a thin execution ledger:
   `plans` keeps `opus_plan` (the runtime task graph — `TaskQueue.get_dispatchable_tasks`
@@ -276,8 +280,11 @@ prompt, calls the MCP `dispatch_task` (which uses the global default worker — 
 Gemini 3.7 Flash High via agy), then reviews the resulting PR. Planning, prompt design, and
 review stay with the brain. Mode is sequential (one delegate in flight at a time) and uses a
 single caller-named work branch; dead branches are swept by the reconcile loop. The
-sequential rule is load-bearing, not stylistic: per-task review scoping depends on it and
-nothing enforces it (see the gotcha). Toggle:
+sequential rule is load-bearing, not stylistic: per-task review scoping depends on it, and
+since 2026-08-24 `dispatch_pending_tasks` ENFORCES it for the plans Praxis dispatches
+itself (one task per wave, held while any task on that branch is `in_progress` or
+`reviewing`). It cannot enforce it for a caller driving `dispatch_task` against the same
+branch, so the rule is still the caller's to keep there. Toggle:
 `praxis mode on|off|status`.
 
 ## Gotchas
@@ -443,6 +450,14 @@ in both directions and then gets cited as authority.)
   identical to base, so `gh pr create` refuses and that is a FACT, not a failed PR.
   `_plan_branch_has_nothing_to_integrate` decides before attempting. Positive check only:
   two known, equal `str` SHAs. Anything else falls through to the attempt.
+  **KNOWN GAP, open, found live in walkthrough #12:** a DELETED branch has no SHA at all,
+  so it falls through and a completed single-branch plan logs `Integration PR open failed`
+  with gh's "No commits between main and <branch>" plus "Head ref must be a branch". In
+  that mode the task PRs already target the base branch, so merging them IS the
+  integration and the merge deletes the shared branch; the work is on `main`, the plan is
+  correctly COMPLETED, and `praxis pending` correctly does not list it. Only the log line
+  reads as a failure someone should act on. The fix is to treat an absent branch as the
+  same fact this function already handles.
 - **A plan reaches the gate TWICE**: each task onto the plan branch, then the plan's
   own integration PR onto the base branch. The PR url lives on
   `plans.integration_pr_url` and `integration_merged_at` is what takes it back out of
