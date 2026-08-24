@@ -14,6 +14,11 @@
 </p>
 
 <p align="center">
+  In plain words: let your coding assistant hand real tasks to other AI coding tools,
+  then approve every pull request yourself.
+</p>
+
+<p align="center">
   <a href="LICENSE"><img alt="License: Apache 2.0" src="https://img.shields.io/badge/License-Apache_2.0-blue.svg"></a>
   <img alt="Python 3.11+" src="https://img.shields.io/badge/python-3.11+-blue.svg">
   <a href="https://github.com/adiatmaja/praxis/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/adiatmaja/praxis/actions/workflows/ci.yml/badge.svg"></a>
@@ -27,15 +32,17 @@ development, the workflow where you brainstorm, spec, and plan before any code i
 written. Do those three wherever you like, then hand Praxis the plan. Set up inside
 the coding assistant you already use and wired in over MCP (Model Context Protocol),
 it decomposes the plan to fit the worker model that implements it and dispatches each
-task to the harnesses that do the typing. Every change is gated: the verify gate runs
-when you configure one, a second model reviews the diff, and the result is a pull
+task to the harnesses that do the typing. Every change is gated: the verify command
+you set per project (tests, lint, a build) runs first, a second model reviews the
+diff, and the result is a pull
 request that waits for your approval. One session, no copy-pasted plans, no switching
 tools by hand. (A CLI and a dashboard drive the same engine.)
 
 > [!NOTE]
-> **"Harness"** here means any agentic coding tool: Claude Code, OpenCode (open source,
-> drives any OpenAI-compatible model), Antigravity (Google's Gemini harness; its CLI is
-> `agy`), Codex CLI. Concretely: if you use Claude Code, Praxis lets it hand a coding
+> **"Harness"** here means any agentic coding tool: Claude Code,
+> [OpenCode](https://github.com/sst/opencode) (open source, drives any OpenAI-compatible
+> model), [Antigravity](https://antigravity.google/) (Google's Gemini harness; its CLI
+> is `agy`), Codex CLI. Concretely: if you use Claude Code, Praxis lets it hand a coding
 > task to Gemini or a local open-weight model working in a disposable container, then
 > review the pull request that comes back. Nothing merges until you approve it.
 
@@ -80,9 +87,9 @@ you        "merge them" -> praxis merge-plan <plan-id>, or the dashboard's Merge
   └──────────────────────────────────────────────────────────┘
 ```
 
-GitHub is the one intentional platform dependency, because inspectable, revertible PRs
-are the loop's unit of trust. No GitLab or Bitbucket support today; a local-only mode
-works without any remote.
+Pull requests are the loop's unit of trust: inspectable, revertible, approved by you.
+GitHub is the one platform Praxis speaks today (no GitLab or Bitbucket); local-only
+mode keeps the same gates on local branches, no remote involved.
 
 ## Table of Contents
 
@@ -134,17 +141,18 @@ single-branch review flow is still being hardened; treat it as a preview.
 
 **Capability-aware task decomposition.** The core mechanism. Praxis keeps a capability
 profile of the implementing model and decomposes every plan against it, so no task asks
-for more than the worker can deliver; what still exceeds its reach is escalated instead
-of quietly failing, and recorded outcomes tune the difficulty gate for next time. Never
-a blind dispatch.
+for more than the worker can deliver; what still exceeds its reach is escalated, split
+smaller or sent to a stronger model, instead of quietly failing, and recorded outcomes
+tune the difficulty gate for next time. Never a blind dispatch.
 
 **A deterministic verify gate before any model reviews.** Tests, lint, or a build command
 run first when configured; a non-zero exit fails the task cheaply, before a review model
 ever reads the diff.
 
 **A review model gates every merge.** A separate reviewer inspects each PR diff against
-intent: pass parks the PR for your approval (`praxis pending`, `praxis merge <task-id>`),
-fail re-dispatches with feedback, up to three times. Nothing merges to your default
+intent: a pass parks the PR, meaning it sits waiting and nothing moves until you act
+(`praxis pending`, `praxis merge <task-id>`); a fail re-dispatches with feedback, up to
+three times. Nothing merges to your default
 branch without you.
 
 **Isolated, disposable execution.** Each task runs in a throwaway Docker container cloned
@@ -159,8 +167,9 @@ an error:
   it, `praxis clarify <task-id> "answer"` resumes it. Nothing but a person
   advances it.
 - **Retries resume, they do not restart.** Every dispatch carries the plan text
-  verbatim plus a progress handover read from the branch itself, so attempt two
-  continues on top of attempt one's commits instead of starting from zero.
+  verbatim plus a progress handover, a summary of the commits already on the
+  branch, so attempt two continues on top of attempt one's work instead of
+  starting from zero.
 - **Work already present is a result, not a failure.** A worker that finds
   nothing to change says so; Praxis verifies the claim on the branch and records
   `no_changes`, which unblocks dependent tasks without inventing a diff.
