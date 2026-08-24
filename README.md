@@ -14,11 +14,6 @@
 </p>
 
 <p align="center">
-  Dispatch real coding work to other harnesses and models from the session you are already in,
-  and get back a reviewed pull request instead of a one-shot guess.
-</p>
-
-<p align="center">
   <a href="LICENSE"><img alt="License: Apache 2.0" src="https://img.shields.io/badge/License-Apache_2.0-blue.svg"></a>
   <img alt="Python 3.11+" src="https://img.shields.io/badge/python-3.11+-blue.svg">
   <a href="https://github.com/adiatmaja/praxis/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/adiatmaja/praxis/actions/workflows/ci.yml/badge.svg"></a>
@@ -89,14 +84,9 @@ discipline around them does not.
 
 ## Features
 
-One theme across both features: you never leave your session, another harness does the
-typing, and nothing lands unreviewed.
-
 **Implement a plan.** You did the thinking in a chat, an editor, or a design doc; what is
-left is the typing. Hand Praxis the `plan.md` and it
-capability-gates the plan against the worker, decomposes anything too coarse, and drives
-dispatch, verify, and review to the merge gate (`execute_plan`, REST and MCP). Its
-smallest case is a single task: say
+left is the typing. Hand Praxis the `plan.md` (`execute_plan`, REST and MCP) and the
+governed loop below carries it to the merge gate. Its smallest case is a single task: say
 "use praxis to fix X on this repo" and a worker picks it up in an isolated container
 while your session moves on (`dispatch_task`). Harness and model are chosen per project
 or per call, so work goes to whichever model is actually good at it, for example UI
@@ -180,8 +170,7 @@ pairing:
     Codex · local)      (LM Studio · …)           build)            GPT · local)
 ```
 
-The verifier seat is deterministic, a shell command rather than a model. Tier
-recommendations, worker presets, and whole-loop arrangements:
+Tier recommendations, worker presets, and whole-loop arrangements:
 [docs/configurations.md](docs/configurations.md).
 
 > [!NOTE]
@@ -200,7 +189,7 @@ What you need before starting:
 | Docker | the orchestrator and every worker container |
 | Python 3.11+ and [uv](https://docs.astral.sh/uv/) | the CLI |
 | One planner CLI on a subscription: `claude`, `codex`, or `agy` | the planning and review seats |
-| A GitHub token, or answer `skip` for local-only mode | pull requests, the loop's unit of trust |
+| A GitHub token, or answer `skip` for local-only mode | branches and pull requests |
 
 A local worker model additionally needs [LM Studio](https://lmstudio.ai/) and hardware
 that can serve it; tiers and sizing in
@@ -229,9 +218,8 @@ uv run praxis env               # what URL and token the CLI resolved, and from 
 uv run praxis logs <task-id>    # what the worker actually did, after its container is gone
 ```
 
-Run the CLI from your install directory and it reads `AUTH_TOKEN` and `PORT` out of the
-`.env` there, so a new shell needs no exports. `ORCHESTRATOR_URL` and `ORCHESTRATOR_TOKEN`
-still win when set, which is how you point it at a remote deployment.
+The CLI reads `AUTH_TOKEN` and `PORT` from the `.env` in your install directory; set
+`ORCHESTRATOR_URL` and `ORCHESTRATOR_TOKEN` to point it at a remote deployment instead.
 
 **Or let your agent set it up.** Praxis is built to be driven from an agentic harness, and
 that includes installation. Add `--non-interactive` and the wizard never prompts:
@@ -240,12 +228,10 @@ that includes installation. Add `--non-interactive` and the wizard never prompts
 uv run praxis init --non-interactive --preset gemini-agy
 ```
 
-It reuses the `AUTH_TOKEN` already in `.env`, or generates one and prints it
-(`--auth-token`, `--port`, and `--github-token` pin any of them). `uv run praxis presets`
-lists the names `--preset` accepts and works before the orchestrator is running; omitting
-`--preset` takes the default. A preset needing a credential `init` cannot collect (an API
-key, an interactive login) is refused rather than half-installed, until
-`--accept-preset-requirements` says that setup is done.
+`uv run praxis presets` lists the names `--preset` accepts; flags pin anything the wizard
+would have asked for (`--auth-token`, `--port`, `--github-token`). A preset needing a
+credential `init` cannot collect is refused rather than half-installed;
+`--accept-preset-requirements` overrides once that setup is done.
 
 > [!WARNING]
 > Two traps to tell your agent about, because neither is discoverable from a failure:
@@ -263,12 +249,12 @@ With the orchestrator running:
 - **CLI:** `uv run praxis projects`, `submit`, `pending`, `merge <task-id>` or
   `reject-merge <task-id>`, `clarify <task-id> "answer"`, `mode on`
 
-Point at least one planner CLI (`claude`, `codex`, or `agy`) at a subscription you
-already have, for example the Claude Pro plan behind your Claude Code login. The
-implementer seat comes from your worker preset: the shipped default drives Gemini via
-`agy` (one-time `agy login`), or pick `local-lmstudio` to serve an open-weight model over
-an OpenAI-compatible endpoint ([LM Studio](https://lmstudio.ai/)). Full setup and
-deployment modes: [docs/deployment.md](docs/deployment.md).
+The planner and reviewer seats use whichever subscription CLI you pointed at during
+init, for example the Claude Pro plan behind your Claude Code login. The implementer
+seat comes from your worker preset: the shipped default drives Gemini via `agy`
+(one-time `agy login`), or pick `local-lmstudio` to serve an open-weight model over an
+OpenAI-compatible endpoint. Full setup and deployment modes:
+[docs/deployment.md](docs/deployment.md).
 
 ## Documentation
 
