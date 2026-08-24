@@ -2323,3 +2323,103 @@ doctor is not applied to the product.** The doctor is where diagnosis lives, so
 it is where these corrections naturally land, and every one of them describes a
 fact some other surface also reports. When a doctor row is fixed, grep for what
 else answers the same question.
+
+
+# Run #12, 2026-08-24
+
+**Score: 8/10** (down from 9). The install was the cleanest yet and the loop
+closed end to end on a real repository with a real worker. The score is down
+because the walk found a defect in **this session's own headline feature**: the
+review-scope fix was incomplete when it was committed, and only the live run
+showed it.
+
+## Conditions
+
+Genuinely cold Docker: no images, no volumes, no containers, the daemon not even
+running. First run in the programme where `praxis init` had to take its ~10
+minute build path rather than a cached one, which is what its own opening line
+promises a newcomer. Fresh clone of `main`, nothing configured in advance,
+interactive wizard driven from piped stdin.
+
+## Setup
+
+- `uv venv && uv sync --extra dev`: **6.6 seconds**, and `git status` stayed
+  clean afterwards (the "adding a dependency without `uv lock` dirties a fresh
+  clone" trap did not bite).
+- The wizard's five prompts are token, port, GitHub token, preset, and a
+  confirmation to write `.env`. **Feeding four answers aborts on the fifth**,
+  which is correct behaviour but worth knowing before driving it from a script.
+- `praxis presets` worked with the server down, as documented.
+- Cold build completed and the doctor ran automatically at the end, with two
+  FAILs, both of which the doctor explained and both remedies worked verbatim:
+  the VPN killswitch hook (`echo CLAUDE_VPN_KILLSWITCH_OFF=1 >> .env.container`,
+  then `up -d`), and a worker endpoint that was not there.
+- **LM Studio is no longer installed on this machine at all**: only the `lms`
+  CLI shim survives and `lms server start` says "no valid installation could be
+  found". The `local-lmstudio` preset was pointed at the remote-routed endpoint
+  instead (`LM_STUDIO_URL=https://pcllm.sigmasolusi.com`, serving `qwen3.8-27b`),
+  after which every doctor row was OK.
+
+## The loop, on `adiatmaja/playground`
+
+1. A single `dispatch_task`: implemented, reviewed, PASSED, parked at the merge
+   gate as PR #70. `tasks.review_base_sha` was recorded live (`9914f1de`),
+   which is the first production evidence of this session's migration.
+2. A two-leaf `execute_plan` with auto-delegate ON, each leaf explicitly scoped
+   to its own file. **This is where it broke, and it is the point of the run.**
+3. The same plan again after the fix: task one alone, then task two only after
+   task one had passed, with a **different** base sha (`590c67db`, the head
+   after task one's commit). Both PASSED on the SAME pull request (#72), each
+   review naming only its own file.
+4. Both merged through `praxis merge`, plan COMPLETED, and both files verified
+   present on `main` through the GitHub API.
+
+## Why it is an 8
+
+**The review-scope fix shipped incomplete, and the live run is what caught it.**
+
+The scoping bounds a task to the commits it added after the branch head recorded
+at its dispatch. On a shared branch that is correct only while ONE worker is on
+the branch at a time. The plan I executed recorded that constraint in three
+places on the ground that "the mode is sequential because the brain dispatches
+one task at a time". That is true of the MCP dispatch path and **false of
+`execute_plan`, where the loop dispatches a whole wave with no brain in it**.
+
+Measured: both leaves went out in one wave, both recorded the SAME base sha
+because neither branch existed yet, and the second was failed by its reviewer
+for creating the first's file, three attempts running. The exact defect the
+scoping exists to remove, arriving through the door its own precondition was
+assumed to close. `dispatch_pending_tasks` now serializes single-branch dispatch
+and holds while any task on the branch is `in_progress` or `reviewing`; two-tier
+mode keeps its full wave parallelism.
+
+The lesson generalises past this bug: **when you write down a precondition, name
+every caller that has to keep it.** I wrote "nothing enforces this, the brain
+obeys it" and did not ask which callers are not brains. The loop is a caller.
+
+## New instance of the false-report class (1, unfixed)
+
+**A completed single-branch plan logs "Integration PR open failed".** In
+single-branch mode the task PRs already target the base branch, so merging them
+IS the integration; the shared branch is then deleted by the merge, and
+`gh pr create` fails with "No commits between main and <branch>" plus "Head ref
+must be a branch". The work is on `main`, the plan is correctly COMPLETED, and
+`praxis pending` correctly does not list it. Only the log line is wrong, and it
+reads as a failure an operator should act on. `_plan_branch_has_nothing_to_
+integrate` exists to decide exactly this before attempting, but it compares two
+known SHAs and a DELETED branch has none, so it falls through to the attempt.
+The fix is to treat an absent branch as the same fact it already handles.
+
+## Confirmed fixed, live
+
+`tasks.review_base_sha` recorded at dispatch and re-resolved per task; the
+range-bounded review reading only the task's own commits on a shared PR; the
+serialization above; the cold-build path; both doctor remedies; the merge gate
+both ways from run #10 still holding.
+
+## What to carry
+
+**A precondition you cannot enforce is a bug waiting for a caller you did not
+think of.** Run #11's lesson was that a fix on the doctor is not a fix on the
+product. This one is its sibling: a rule written in three documents is not a
+rule, and the surface that violated it was the orchestrator itself.
