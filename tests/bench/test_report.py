@@ -10,7 +10,12 @@ from typing import Any
 import pytest
 
 from bench.config import CONDITIONS, PATCH_SIZE_STRATA, REPO_SIZE_STRATA
-from bench.report import TEMPLATE_PATH, build_report, per_stratum_table
+from bench.report import (
+    TEMPLATE_PATH,
+    build_report,
+    paired_comparison,
+    per_stratum_table,
+)
 
 
 def _row(**overrides: Any) -> dict[str, Any]:
@@ -247,6 +252,53 @@ def test_the_report_renders_the_ab_and_bc_mcnemar_p_values() -> None:
     assert "p =" in report
 
 
+@pytest.mark.unit
+def test_paired_comparison_pairs_by_instance_worker_and_seed_not_instance_alone() -> (
+    None
+):
+    """A second seed's row for the same (instance, condition) must contribute
+    its OWN pair, not silently overwrite the first seed's row.
+
+    ``bench/config.py`` defines two seeds and ``bench/runner.py`` accepts
+    comma-separated ``--seeds`` into one ``attempts.jsonl``, so this is a real
+    shape, not a contrived one. Keying only on instance id collapses these
+    four rows down to whichever seed's row is inserted last per condition,
+    which can erase a genuine discordant pair: measured before the fix,
+    exactly this input returned (0, 0, p=1.0), "no difference", on data that
+    contains one.
+    """
+    rows = [
+        _row(instance_id="i1", condition="A", worker="w1", seed=1, resolved=True),
+        _row(instance_id="i1", condition="A", worker="w1", seed=2, resolved=False),
+        _row(instance_id="i1", condition="B", worker="w1", seed=1, resolved=False),
+        _row(instance_id="i1", condition="B", worker="w1", seed=2, resolved=False),
+    ]
+    b, c, p = paired_comparison(rows, "A", "B")
+    # Before the fix, keying on instance id alone collapsed all four rows to
+    # ONE (instance, condition) pair per condition, the second seed silently
+    # overwriting the first, and returned (0, 0, p=1.0): "no difference" on
+    # data that plainly contains one (seed 1 is a discordant A-only pair).
+    assert (b, c) == (1, 0)
+
+
+@pytest.mark.unit
+def test_paired_comparison_still_pairs_by_instance_alone_when_rows_lack_worker_and_seed() -> (
+    None
+):
+    """Older attempt files, and most fixtures in this test module, carry no
+    ``worker``/``seed`` key at all. Those rows must keep pairing exactly as
+    they did before the unit widened to ``(instance, worker, seed)``.
+    """
+    rows = [
+        {"instance_id": "i1", "condition": "A", "resolved": True},
+        {"instance_id": "i1", "condition": "B", "resolved": False},
+        {"instance_id": "i2", "condition": "A", "resolved": False},
+        {"instance_id": "i2", "condition": "B", "resolved": True},
+    ]
+    b, c, p = paired_comparison(rows, "A", "B")
+    assert (b, c) == (1, 1)
+
+
 # --- Additional tests for the corrections above the plan's minimum ---
 
 
@@ -345,6 +397,7 @@ def test_a_stray_brace_in_the_template_does_not_break_rendering() -> None:
         stratum_table="",
         mcnemar_table="",
         cost_table="",
+        cost_note="",
         token_note="",
         plausible_table="",
         workers="w",
@@ -422,6 +475,58 @@ def test_cost_table_wall_clock_per_resolved_is_infinite_when_nothing_resolved() 
     assert "| A | 1 | 0 | 500.0 | infinite (nothing resolved) |" in report
     assert "| A | 1 | 0 | 500.0 | 0.0 |" not in report
     assert "| A | 1 | 0 | 500.0 | 500.0 |" not in report
+
+
+@pytest.mark.unit
+def test_cost_note_claims_free_tokens_only_when_every_worker_is_local() -> None:
+    """The pre-fix template stated unconditionally that "the worker is a
+    local open-weight model ... so tokens cost no money", but
+    ``bench/config.WORKERS`` also defines ``hosted-flash`` (``agy``, Gemini
+    3.7 Flash), which is not local and is metered. A run using only the
+    local worker is the one case where the free-tokens claim is true.
+    """
+    rows = [_row(worker="local-openweight")]
+    report = build_report(rows, run_id="full-01", model_cutoff="2026-03")
+    assert "tokens cost no money" in report
+    assert "hosted-flash" not in report
+
+
+@pytest.mark.unit
+def test_cost_note_does_not_claim_free_tokens_when_a_hosted_worker_ran() -> None:
+    """The load-bearing negative: the moment the hosted worker appears in a
+    run, "tokens cost no money" must not appear anywhere in the report, even
+    though ``_render_cost_table`` still reports both workers' wall clock
+    together in one cell per condition.
+    """
+    rows = [_row(worker="hosted-flash")]
+    report = build_report(rows, run_id="full-01", model_cutoff="2026-03")
+    assert "tokens cost no money" not in report
+    assert "hosted-flash" in report
+    assert "metered" in report
+
+
+@pytest.mark.unit
+def test_cost_note_names_both_workers_when_a_run_mixes_local_and_hosted() -> None:
+    rows = [
+        _row(worker="local-openweight"),
+        _row(worker="hosted-flash", instance_id="a__b-2"),
+    ]
+    report = build_report(rows, run_id="full-01", model_cutoff="2026-03")
+    assert "tokens cost no money" not in report
+    assert "local-openweight" in report
+    assert "hosted-flash" in report
+    assert "ARE metered" in report
+
+
+@pytest.mark.unit
+def test_the_template_no_longer_hardcodes_the_unconditional_free_tokens_claim() -> None:
+    """Structural: the false claim must be gone from the template ON DISK,
+    not merely overridden at render time, or a report built by a caller that
+    forgets ``cost_note`` would still publish it.
+    """
+    text = TEMPLATE_PATH.read_text(encoding="utf-8")
+    assert "so tokens cost no money and GPU hours do" not in text
+    assert "$cost_note" in text
 
 
 _ABSOLUTE_RATES_NOT_COMPARABLE = (

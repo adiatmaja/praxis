@@ -23,6 +23,11 @@ from bench.grade import (
     GradeResult,
     MissingBaseCommitError,
     extract_patch,
+    grade_instance,
+    grade_records,
+    instance_report_path,
+    is_aggregate_report,
+    is_instance_keyed_report,
     load_bases,
     parse_official_report,
     select_report,
@@ -275,3 +280,196 @@ def test_a_missing_instance_grades_as_unresolved_not_as_an_error():
     """A crashed attempt must count against the condition, not vanish."""
     result = parse_official_report({}, "x__y-1")
     assert result == GradeResult(resolved=False, plausible=False, applied=False)
+
+
+# --------------------------------------------------------------------------
+# Aggregate report recognition and grading (DEFECT 1: every resolved/
+# plausible number bench produced was False, because the AGGREGATE run
+# report (the file grade.py's main() actually globs and reads) has no
+# instance-id keys, so report.get(instance_id) missed on every instance.
+# --------------------------------------------------------------------------
+
+_AGGREGATE_SHAPE = {
+    "total_instances": 2,
+    "submitted_instances": 2,
+    "completed_instances": 2,
+    "resolved_instances": 1,
+    "unresolved_instances": 1,
+    "infra_failure_instances": 0,
+    "ambiguous_failure_instances": 0,
+    "empty_patch_instances": 0,
+    "error_instances": 0,
+    "completed_ids": ["x__y-1", "x__y-2"],
+    "incomplete_ids": [],
+    "empty_patch_ids": [],
+    "submitted_ids": ["x__y-1", "x__y-2"],
+    "resolved_ids": ["x__y-1"],
+    "unresolved_ids": ["x__y-2"],
+    "infra_failure_ids": [],
+    "ambiguous_failure_ids": [],
+    "failure_reasons": {},
+    "error_ids": [],
+    "schema_version": 2,
+}
+
+
+@pytest.mark.unit
+def test_is_aggregate_report_recognizes_the_real_shape():
+    assert is_aggregate_report(_AGGREGATE_SHAPE) is True
+
+
+@pytest.mark.unit
+def test_is_aggregate_report_rejects_an_instance_keyed_report():
+    report = {"x__y-1": {"resolved": True, "patch_successfully_applied": True}}
+    assert is_aggregate_report(report) is False
+
+
+@pytest.mark.unit
+def test_is_aggregate_report_rejects_an_empty_object():
+    """An aggregate with both marker lists absent must not be treated as an
+    empty-but-valid aggregate: that is exactly how the bug graded every
+    instance as a silent miss.
+    """
+    assert is_aggregate_report({}) is False
+
+
+@pytest.mark.unit
+def test_is_instance_keyed_report_recognizes_the_real_shape():
+    report = {"x__y-1": {"resolved": True, "patch_successfully_applied": True}}
+    assert is_instance_keyed_report(report) is True
+
+
+@pytest.mark.unit
+def test_is_instance_keyed_report_rejects_the_aggregate_shape():
+    assert is_instance_keyed_report(_AGGREGATE_SHAPE) is False
+
+
+@pytest.mark.unit
+def test_is_instance_keyed_report_rejects_an_empty_object():
+    assert is_instance_keyed_report({}) is False
+
+
+@pytest.mark.unit
+def test_instance_report_path_replaces_slashes_in_the_model_name(tmp_path):
+    path = instance_report_path(tmp_path, "run-1", "org/model", "x__y-1")
+    assert path == tmp_path / "run-1" / "org__model" / "x__y-1" / "report.json"
+
+
+@pytest.mark.unit
+def test_grade_instance_reads_resolved_by_list_membership_from_the_aggregate(tmp_path):
+    """The load-bearing mutation target: grading the AGGREGATE shape by
+    ``report.get(instance_id)`` (the pre-fix behavior) always misses, because
+    the aggregate has no instance-id keys, and grades every instance False.
+    """
+    result = grade_instance(_AGGREGATE_SHAPE, "x__y-1", tmp_path, "run-1", "praxis")
+    assert result.resolved is True
+    result2 = grade_instance(_AGGREGATE_SHAPE, "x__y-2", tmp_path, "run-1", "praxis")
+    assert result2.resolved is False
+
+
+@pytest.mark.unit
+def test_grade_instance_infers_applied_from_empty_patch_and_error_ids(tmp_path):
+    aggregate = {
+        **_AGGREGATE_SHAPE,
+        "resolved_ids": [],
+        "unresolved_ids": ["x__y-1", "x__y-2"],
+        "empty_patch_ids": ["x__y-1"],
+        "error_ids": ["x__y-2"],
+        "submitted_ids": ["x__y-1", "x__y-2"],
+    }
+    assert grade_instance(
+        aggregate, "x__y-1", tmp_path, "run-1", "praxis"
+    ).plausible is (False)
+    assert grade_instance(
+        aggregate, "x__y-2", tmp_path, "run-1", "praxis"
+    ).plausible is (False)
+
+
+@pytest.mark.unit
+def test_grade_instance_a_resolved_instance_is_necessarily_applied(tmp_path):
+    result = grade_instance(_AGGREGATE_SHAPE, "x__y-1", tmp_path, "run-1", "praxis")
+    assert result.plausible is True
+    assert result.applied is True
+
+
+@pytest.mark.unit
+def test_grade_instance_prefers_the_per_instance_report_over_the_aggregate(tmp_path):
+    """The per-instance report is the more specific source and must win, even
+    when it disagrees with the aggregate.
+    """
+    aggregate = {**_AGGREGATE_SHAPE, "resolved_ids": [], "unresolved_ids": ["x__y-1"]}
+    detail_dir = tmp_path / "run-1" / "praxis" / "x__y-1"
+    detail_dir.mkdir(parents=True)
+    (detail_dir / "report.json").write_text(
+        json.dumps({"x__y-1": {"resolved": True, "patch_successfully_applied": True}}),
+        encoding="utf-8",
+    )
+    result = grade_instance(aggregate, "x__y-1", tmp_path, "run-1", "praxis")
+    assert result.resolved is True
+    assert result.plausible is True
+
+
+@pytest.mark.unit
+def test_grade_instance_logs_an_error_for_an_instance_missing_from_submitted_ids(
+    tmp_path, caplog
+):
+    """An instance Praxis submitted but the harness never accounted for is a
+    grading FAULT, not an honest unresolved attempt, and must be logged
+    loudly rather than silently folded into "unresolved".
+    """
+    aggregate = {**_AGGREGATE_SHAPE, "submitted_ids": ["x__y-1"]}
+    with caplog.at_level("ERROR"):
+        result = grade_instance(aggregate, "x__y-9", tmp_path, "run-1", "praxis")
+    assert result == GradeResult(resolved=False, plausible=False, applied=False)
+    assert any("x__y-9" in record.message for record in caplog.records)
+
+
+@pytest.mark.unit
+def test_grade_records_grades_from_the_aggregate_by_list_membership(tmp_path):
+    """End-to-end through ``grade_records``, the function ``main()`` calls:
+    this is the shape the official harness actually writes to
+    ``<report_dir>/<model_name_or_path>.<run_id>.json``, and grading it with
+    the instance-keyed mapper (``report.get(instance_id)``) is precisely the
+    bug (every ``resolved``/``plausible`` in the published run was False).
+    """
+    records = [
+        _record(instance_id="x__y-1"),
+        _record(instance_id="x__y-2"),
+    ]
+    graded = grade_records(records, _AGGREGATE_SHAPE, tmp_path, "run-1", "praxis")
+    assert graded is not None
+    by_id = {row["instance_id"]: row for row in graded}
+    assert by_id["x__y-1"]["resolved"] is True
+    assert by_id["x__y-2"]["resolved"] is False
+
+
+@pytest.mark.unit
+def test_grade_records_still_grades_an_instance_keyed_report(tmp_path):
+    """``parse_official_report`` and its callers must keep working: it is the
+    correct mapper for the instance-keyed per-instance shape.
+    """
+    report = {
+        "x__y-1": {"resolved": True, "patch_successfully_applied": True},
+        "x__y-2": {"resolved": False, "patch_successfully_applied": False},
+    }
+    records = [_record(instance_id="x__y-1"), _record(instance_id="x__y-2")]
+    graded = grade_records(records, report, tmp_path, "run-1", "praxis")
+    assert graded is not None
+    by_id = {row["instance_id"]: row for row in graded}
+    assert by_id["x__y-1"]["resolved"] is True
+    assert by_id["x__y-2"]["resolved"] is False
+
+
+@pytest.mark.unit
+def test_grade_records_refuses_an_unrecognized_report_shape(tmp_path, caplog):
+    """An unrecognized shape must fail LOUDLY and grade nothing, never fall
+    through to grading every attempt as an unresolved failure: that silent
+    zero, indistinguishable from an honest 0 percent, is the entire defect.
+    """
+    records = [_record(instance_id="x__y-1")]
+    with caplog.at_level("ERROR"):
+        graded = grade_records(
+            records, {"unrelated": "json"}, tmp_path, "run-1", "praxis"
+        )
+    assert graded is None
+    assert any("unrecognized" in record.message for record in caplog.records)

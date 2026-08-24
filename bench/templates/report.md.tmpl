@@ -35,19 +35,22 @@ as (0.00, 1.00): no evidence, not a measured zero.
 $mcnemar_table
 
 Exact binomial McNemar on the discordant pairs. The design is within-subject,
-so the unpaired chi-square would be the wrong test.
+so the unpaired chi-square would be the wrong test. Each attempt, one
+instance under one worker with one seed, contributes its own pair: a second
+seed or a second worker on the same instance is never collapsed into the
+first, so both are counted rather than one silently overwriting the other.
 
 ## Cost
 
 $cost_table
 
 Cost is reported as WALL CLOCK, the real cost axis in this configuration: the
-worker is a local open-weight model running on the operator's own GPU, so
-tokens cost no money and GPU hours do, and the brain is a rate-limited
-subscription CLI, not metered per token. Total wall clock and wall clock per
-RESOLVED task are reported per condition. A condition that resolves nothing
-shows an infinite wall clock per resolved task, because zero or any finite
-number would read as free.
+brain is a rate-limited subscription CLI, not metered per token. Total wall
+clock and wall clock per RESOLVED task are reported per condition. A
+condition that resolves nothing shows an infinite wall clock per resolved
+task, because zero or any finite number would read as free.
+
+$cost_note
 
 $token_note
 

@@ -23,7 +23,7 @@ from pathlib import Path
 from string import Template
 from typing import Any
 
-from bench.config import CONDITIONS, PATCH_SIZE_STRATA, REPO_SIZE_STRATA
+from bench.config import CONDITIONS, PATCH_SIZE_STRATA, REPO_SIZE_STRATA, WORKERS
 from bench.stats import mcnemar_exact, resolve_rate, wilson_interval
 
 
@@ -122,10 +122,31 @@ def _stratum_grid(rows: list[dict[str, Any]]) -> dict[StratumKey, dict[str, Any]
     return grid
 
 
+# Default unit fields for rows that predate ``worker``/``seed`` being carried
+# on every row (older attempt files, and most existing test fixtures). A
+# missing key falls back to these so such a row still pairs exactly as it did
+# before ``paired_comparison`` keyed on the full experimental unit: every
+# such row collapses to the same default unit, so instance id alone still
+# decides the pairing for them, unchanged.
+_DEFAULT_WORKER_UNIT = "_unspecified_worker"
+_DEFAULT_SEED_UNIT = 0
+
+
 def paired_comparison(
     rows: list[dict[str, Any]], arm_one: str, arm_two: str
 ) -> tuple[int, int, float]:
     """Return ``(b, c, p)`` for a within-subject comparison of two conditions.
+
+    Pairing is keyed on the full experimental unit, ``(instance_id, worker,
+    seed)``, not on instance id alone. ``bench/config.py`` defines two
+    workers and two seeds, and ``bench/runner.py`` accepts comma-separated
+    ``--worker``/``--seeds`` into one ``attempts.jsonl``; keying on instance
+    id alone let a second seed's row for the same ``(instance, condition)``
+    silently OVERWRITE the first in ``by_instance``, erasing a genuine
+    discordant pair before this function ever saw it. A row missing
+    ``worker``/``seed`` falls back to a fixed default (see
+    ``_DEFAULT_WORKER_UNIT``/``_DEFAULT_SEED_UNIT``), so it still pairs by
+    instance id alone exactly as before.
 
     Args:
         rows: Attempt rows, as read from the JSONL metrics file.
@@ -134,13 +155,19 @@ def paired_comparison(
 
     Returns:
         ``b`` (resolved by ``arm_one`` only), ``c`` (resolved by ``arm_two``
-        only), and the exact McNemar p-value for the pair.
+        only), and the exact McNemar p-value for the pair. Each
+        ``(instance, worker, seed)`` unit contributes at most one pair.
     """
-    by_instance: dict[str, dict[str, bool]] = defaultdict(dict)
+    by_unit: dict[tuple[str, str, int], dict[str, bool]] = defaultdict(dict)
     for row in rows:
-        by_instance[row["instance_id"]][row["condition"]] = bool(row["resolved"])
+        unit = (
+            row["instance_id"],
+            row.get("worker", _DEFAULT_WORKER_UNIT),
+            row.get("seed", _DEFAULT_SEED_UNIT),
+        )
+        by_unit[unit][row["condition"]] = bool(row["resolved"])
     b = c = 0
-    for outcomes in by_instance.values():
+    for outcomes in by_unit.values():
         if arm_one not in outcomes or arm_two not in outcomes:
             continue
         if outcomes[arm_one] and not outcomes[arm_two]:
@@ -184,14 +211,20 @@ def _by_condition(rows: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]
 def _render_cost_table(rows: list[dict[str, Any]]) -> str:
     """Cost per condition, on a WALL CLOCK basis (confirmed 2026-08-14).
 
-    Wall clock, not tokens, is the real cost axis in this configuration.
-    ``AttemptRecord.wall_clock_s`` is a genuine per-attempt measurement; the
-    worker is a local open-weight model on the operator's own GPU, so tokens
-    cost no money and GPU hours do, and the brain is a rate-limited
-    subscription CLI, not metered per token. ``brain_tokens`` and
-    ``worker_tokens`` stay hardcoded to 0 in ``bench/runner.py`` (never
-    wired up) and are reported as a fixed disclaimer in the template, never
-    as a computed cell here: see ``report.md.tmpl``'s Cost section.
+    Wall clock, not tokens, is the real cost axis in this configuration:
+    ``AttemptRecord.wall_clock_s`` is a genuine per-attempt measurement, and
+    the brain is a rate-limited subscription CLI, not metered per token.
+    ``brain_tokens`` and ``worker_tokens`` stay hardcoded to 0 in
+    ``bench/runner.py`` (never wired up) and are reported as a fixed
+    disclaimer in the template, never as a computed cell here: see
+    ``report.md.tmpl``'s Cost section.
+
+    This table groups by CONDITION only, never by worker, so a run mixing
+    both ``bench/config.WORKERS`` (the local open-weight worker and the
+    hosted ``agy`` worker) puts both workers' wall clock in one cell. Whether
+    "tokens cost no money" is therefore NOT something this table can claim on
+    its own: see ``_render_cost_note``, which states it only when every
+    worker that actually ran is local.
 
     A condition that resolves nothing must not print a finite per-resolved
     wall clock: zero, or any finite number, would read as "this arm is
@@ -216,6 +249,70 @@ def _render_cost_table(rows: list[dict[str, Any]]) -> str:
             f"{per_resolved} |"
         )
     return "\n".join(lines)
+
+
+# Harnesses that talk to a local open-weight model on the operator's own
+# GPU. ``bench/config.WORKERS`` gives each worker a ``harness`` field but no
+# explicit "is this local" flag; ``opencode`` is the harness that runs the
+# reference local open-weight model (see ``_render_token_note``: "OpenCode
+# talks to LM Studio directly from inside the agent container"), while
+# ``agy`` drives the hosted Gemini worker. A worker key not found in
+# ``WORKERS`` at all is treated as NOT local: an unrecognized worker is not
+# evidence tokens were free.
+_LOCAL_HARNESSES = frozenset({"opencode"})
+
+
+def _worker_is_local(worker_key: str) -> bool:
+    """True when ``worker_key`` names a worker driven by a local harness."""
+    for worker in WORKERS:
+        if worker.key == worker_key:
+            return worker.harness in _LOCAL_HARNESSES
+    return False
+
+
+def _render_cost_note(rows: list[dict[str, Any]]) -> str:
+    """State the free-tokens claim only when every worker that ran is local.
+
+    ``_render_cost_table`` groups by condition only, so a run mixing the
+    local open-weight worker with the hosted ``agy`` worker
+    (``bench/config.WORKERS`` defines both) puts both workers' wall clock in
+    one cell. The template used to claim unconditionally that "the worker is
+    a local open-weight model running on the operator's own GPU, so tokens
+    cost no money"; that is false the moment ``hosted-flash`` (Gemini 3.7
+    Flash, a metered hosted call) appears in a run. Derived from the rows,
+    like ``_render_conditions_note`` and ``_render_token_note`` above it, so
+    it cannot assert what did not actually run.
+
+    Args:
+        rows: Attempt rows, as read from the JSONL metrics file.
+
+    Returns:
+        Markdown prose stating the free-tokens claim, a qualified version of
+        it, or its opposite, depending on which workers ran.
+    """
+    present = sorted({r["worker"] for r in rows})
+    if not present:
+        return "No attempts are in this run, so no claim about worker cost can be made."
+    local = [w for w in present if _worker_is_local(w)]
+    hosted = [w for w in present if not _worker_is_local(w)]
+    if not hosted:
+        return (
+            "Every worker in this run is a local open-weight model on the "
+            "operator's own GPU, so tokens cost no money and GPU hours do; "
+            "wall clock is the real cost axis here."
+        )
+    if not local:
+        return (
+            f"Every worker in this run ({', '.join(hosted)}) is a hosted, "
+            "metered model, so the wall-clock cost above does NOT mean "
+            "tokens were free."
+        )
+    return (
+        f"This run mixes a local open-weight worker ({', '.join(local)}) with "
+        f"a hosted, metered worker ({', '.join(hosted)}). The cost table "
+        "above reports wall clock for both, but that is not a free-tokens "
+        "claim: the hosted worker's tokens ARE metered."
+    )
 
 
 def _render_plausible_table(rows: list[dict[str, Any]]) -> str:
@@ -316,6 +413,7 @@ def build_report(rows: list[dict[str, Any]], run_id: str, model_cutoff: str) -> 
         stratum_table=_render_stratum_table(rows),
         mcnemar_table=_render_mcnemar_table(rows),
         cost_table=_render_cost_table(rows),
+        cost_note=_render_cost_note(rows),
         token_note=_render_token_note(rows),
         plausible_table=_render_plausible_table(rows),
         workers=workers,

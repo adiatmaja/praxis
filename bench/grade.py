@@ -160,6 +160,15 @@ def parse_official_report(
 ) -> GradeResult:
     """Map the harness's per-instance fields onto our two outcome flags.
 
+    This is the mapper for an INSTANCE-KEYED report only: ``report`` must map
+    an instance id straight to that instance's fields, the shape of the
+    official harness's PER-INSTANCE report file
+    (``logs/run_evaluation/<run_id>/<model>/<instance_id>/report.json``). It
+    is never a valid mapper for the harness's AGGREGATE run report, whose
+    top-level keys are things like ``resolved_ids`` and ``submitted_ids``,
+    never an instance id; see ``is_aggregate_report`` and ``grade_instance``,
+    which recognizes that shape and grades from list membership instead.
+
     A missing instance grades as unresolved and not plausible: an attempt that
     crashed before producing a patch must count against its condition, not
     disappear from the denominator.
@@ -173,6 +182,194 @@ def parse_official_report(
         plausible=applied,
         applied=applied,
     )
+
+
+# The two marker keys of the official harness's AGGREGATE run report
+# (swebench/harness/reporting.py, fetched 2026-08-25): present at top level,
+# both sorted lists of instance-id strings, and never a valid instance id
+# themselves.  An instance-keyed per-instance report never carries these
+# names as keys, so their presence, as lists, is a positive recognizer for
+# the aggregate shape rather than a guess.
+_AGGREGATE_MARKER_KEYS: tuple[str, ...] = ("resolved_ids", "submitted_ids")
+
+# Directory root the official harness writes per-instance report.json files
+# under, relative to the harness's own cwd:
+# ``<log_root>/<run_id>/<model_name with "/" -> "__">/<instance_id>/report.json``.
+DEFAULT_LOG_ROOT = Path("logs/run_evaluation")
+
+
+def is_aggregate_report(report: Mapping[str, Any]) -> bool:
+    """True when ``report`` is the harness's run-level summary, not per-instance detail.
+
+    Recognized POSITIVELY: both marker keys must be present and be lists.
+    A report that is neither this shape nor the instance-keyed shape must be
+    treated as unrecognized (see ``grade_records``), never silently graded as
+    an empty aggregate: an aggregate with both lists missing would grade
+    every instance unresolved, which is precisely the bug this module fixes.
+    """
+    return all(isinstance(report.get(key), list) for key in _AGGREGATE_MARKER_KEYS)
+
+
+def is_instance_keyed_report(report: Mapping[str, Any]) -> bool:
+    """True when ``report`` maps instance ids straight to their own fields.
+
+    Every value must itself be a mapping carrying the ``resolved`` key; that
+    is what distinguishes a genuine per-instance report from an aggregate
+    (whose values are lists of ids) or an unrelated JSON object. An empty
+    mapping is NOT recognized as this shape: it carries no evidence either
+    way, and treating it as instance-keyed would let a truly empty file slip
+    past the shape check in ``grade_records`` uncaught.
+    """
+    return bool(report) and all(
+        isinstance(value, Mapping) and "resolved" in value for value in report.values()
+    )
+
+
+def instance_report_path(
+    log_root: Path, run_id: str, model_name: str, instance_id: str
+) -> Path:
+    """The official harness's per-instance report path for one instance.
+
+    ``model_name`` has ``/`` replaced with ``__``, matching the harness's own
+    directory-safe substitution (fetched from ``reporting.py`` 2026-08-25).
+    """
+    safe_model = model_name.replace("/", "__")
+    return log_root / run_id / safe_model / instance_id / "report.json"
+
+
+def grade_instance(
+    aggregate: Mapping[str, Any],
+    instance_id: str,
+    log_root: Path,
+    run_id: str,
+    model_name: str,
+) -> GradeResult:
+    """Grade one instance against an AGGREGATE report, preferring detail when it exists.
+
+    The aggregate settles ``resolved`` by list membership directly. It does
+    NOT carry ``patch_successfully_applied`` at all, so ``plausible``/
+    ``applied`` are read from the more specific per-instance report file when
+    one is on disk, and inferred from the aggregate's id lists otherwise:
+    ``empty_patch_ids``/``error_ids`` settle it False, a resolved instance
+    necessarily applied so ``resolved_ids`` settles it True, and anything left
+    over is genuinely unknown and recorded False with a warning naming the
+    instance, so the understatement is visible rather than silently assumed.
+
+    Args:
+        aggregate: The harness's aggregate run report (see
+            ``is_aggregate_report``).
+        instance_id: The instance being graded.
+        log_root: Root directory the harness writes per-instance reports
+            under; an argument (rather than hardcoded) so a test can point it
+            at ``tmp_path``.
+        run_id: The harness run id, second path segment of the per-instance
+            report.
+        model_name: The ``model_name_or_path`` value predictions were written
+            under; same string ``write_predictions`` was called with.
+
+    Returns:
+        The graded result. An instance absent from ``submitted_ids`` is a
+        grading FAULT (Praxis submitted it and the harness never accounted
+        for it), logged as an error and graded conservatively unresolved.
+    """
+    path = instance_report_path(log_root, run_id, model_name, instance_id)
+    if path.is_file():
+        try:
+            detail = json.loads(path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as exc:
+            logger.warning("could not parse per-instance report %s: %s", path, exc)
+        else:
+            return parse_official_report(detail, instance_id)
+
+    submitted_ids = aggregate.get("submitted_ids", [])
+    if instance_id not in submitted_ids:
+        logger.error(
+            "%s is missing from submitted_ids and has no per-instance report "
+            "at %s; the official harness never accounted for this instance, "
+            "which is a grading fault, not an honest unresolved attempt",
+            instance_id,
+            path,
+        )
+        return GradeResult(resolved=False, plausible=False, applied=False)
+
+    resolved = instance_id in aggregate.get("resolved_ids", [])
+    if resolved:
+        applied = True
+    elif instance_id in aggregate.get("empty_patch_ids", []) or instance_id in (
+        aggregate.get("error_ids", [])
+    ):
+        applied = False
+    else:
+        logger.warning(
+            "%s: aggregate report does not settle whether the patch applied "
+            "(absent from resolved_ids, empty_patch_ids, and error_ids); "
+            "recording applied=False conservatively",
+            instance_id,
+        )
+        applied = False
+    return GradeResult(resolved=resolved, plausible=applied, applied=applied)
+
+
+def grade_records(
+    records: Sequence[AttemptRecord],
+    report: Mapping[str, Any],
+    log_root: Path,
+    run_id: str,
+    model_name: str,
+) -> list[dict[str, Any]] | None:
+    """Grade every record against one official-harness report.
+
+    Args:
+        records: The run's attempt records.
+        report: The harness's report, either shape (see ``is_aggregate_report``
+            / ``is_instance_keyed_report``).
+        log_root: Root directory of per-instance reports (``grade_instance``).
+        run_id: The harness run id.
+        model_name: The ``model_name_or_path`` predictions were written under.
+
+    Returns:
+        One graded dict per record (``asdict(record)`` with ``resolved`` and
+        ``plausible`` overwritten), or ``None`` when ``report`` matches
+        NEITHER recognized shape. Grading every attempt as unresolved against
+        an unrecognized report is the silent-zero failure this module exists
+        to prevent, so the caller must refuse to write a graded file at all
+        rather than publish one full of False.
+    """
+    if is_aggregate_report(report):
+
+        def grade_one(instance_id: str) -> GradeResult:
+            return grade_instance(report, instance_id, log_root, run_id, model_name)
+
+    elif is_instance_keyed_report(report):
+
+        def grade_one(instance_id: str) -> GradeResult:
+            return parse_official_report(dict(report), instance_id)
+
+    else:
+        logger.error(
+            "unrecognized official-harness report shape: expected either the "
+            "aggregate run report (resolved_ids/submitted_ids as lists) or an "
+            "instance-keyed per-instance report (each value a mapping with a "
+            "'resolved' key); refusing to grade %d attempts against it rather "
+            "than silently scoring every one unresolved",
+            len(records),
+        )
+        return None
+
+    graded = []
+    for record in records:
+        result = grade_one(record.instance_id)
+        graded.append(
+            {
+                # asdict() writes the 17 primary fields; plausible_but_wrong,
+                # total_retries and total_tokens are properties and derive from
+                # these, so they are recomputed rather than stored.
+                **asdict(record),
+                "resolved": result.resolved,
+                "plausible": result.plausible,
+            }
+        )
+    return graded
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -190,6 +387,11 @@ def main(argv: list[str] | None = None) -> int:
         "--harness",
         default="swebench.harness.run_evaluation",
         help="python -m target for the official evaluation harness",
+    )
+    parser.add_argument(
+        "--log-root",
+        default=str(DEFAULT_LOG_ROOT),
+        help="root the official harness writes per-instance reports under",
     )
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(message)s")
@@ -226,19 +428,14 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     report = json.loads(report_path.read_text(encoding="utf-8"))
 
-    graded = []
-    for record in records:
-        result = parse_official_report(report, record.instance_id)
-        graded.append(
-            {
-                # asdict() writes the 17 primary fields; plausible_but_wrong,
-                # total_retries and total_tokens are properties and derive from
-                # these, so they are recomputed rather than stored.
-                **asdict(record),
-                "resolved": result.resolved,
-                "plausible": result.plausible,
-            }
+    graded = grade_records(records, report, Path(args.log_root), run_dir.name, "praxis")
+    if graded is None:
+        logger.error(
+            "official report at %s matched no recognized shape; %s NOT written",
+            report_path,
+            run_dir / "graded.jsonl",
         )
+        return 1
     with (run_dir / "graded.jsonl").open("w", encoding="utf-8", newline="\n") as handle:
         handle.write(
             "\n".join(json.dumps(row, sort_keys=True) for row in graded) + "\n"
