@@ -246,18 +246,8 @@ def commit_and_push(
             fails for any reason other than there being nothing to commit.
     """
     env = {**os.environ, "GH_TOKEN": token}
-    add_args = ["git", "-C", workspace, "add"]
-    add_args += paths if paths else ["-A"]
-    subprocess.run(add_args, check=True, capture_output=True, text=True)  # noqa: S603
-    if _nothing_staged(workspace):
-        logger.info("Nothing to commit in %s; skipping commit and push", workspace)
+    if not stage_and_commit(workspace, message, paths):
         return False
-    subprocess.run(  # noqa: S603
-        ["git", "-C", workspace, "commit", "-m", message],
-        check=True,
-        capture_output=True,
-        text=True,
-    )
     subprocess.run(  # noqa: S603
         ["git", *_token_git_args(), "-C", workspace, "push"],
         check=True,
@@ -266,6 +256,51 @@ def commit_and_push(
         env=env,
     )
     logger.info("Committed and pushed in %s", workspace)
+    return True
+
+
+def stage_and_commit(
+    workspace: str, message: str, paths: list[str] | None = None
+) -> bool:
+    """Stage and commit, WITHOUT pushing. Returns False on a clean index.
+
+    Split out of :func:`commit_and_push` for callers that must choose their own
+    push, and there is a real difference between them: the bare ``git push``
+    above works only on a branch that HAS an upstream. A branch checked out by
+    :func:`checkout_branch` (``-B`` from ``FETCH_HEAD``) or created by
+    ``GitOps.create_branch`` (``checkout -b``) has none, and the push exits 128.
+
+    Measured live in walkthrough #13: the micro-edit lane checked out a shared
+    work branch, committed cleanly, and died on the push with exit 128, having
+    already written the commit. Seventeen unit tests passed, every one of them
+    with ``commit_and_push`` mocked. Such callers pair this with
+    ``GitOps.push_branch``, which pushes ``-u origin <branch>`` explicitly.
+
+    Args:
+        workspace: A clone with a checked-out branch.
+        message: The commit subject.
+        paths: Paths to stage, or None to stage everything.
+
+    Returns:
+        True when a commit was made; False when the index was already clean,
+        which is a FACT and not a failure.
+
+    Raises:
+        subprocess.CalledProcessError: If staging or committing fails for any
+            reason other than there being nothing to commit.
+    """
+    add_args = ["git", "-C", workspace, "add"]
+    add_args += paths if paths else ["-A"]
+    subprocess.run(add_args, check=True, capture_output=True, text=True)  # noqa: S603
+    if _nothing_staged(workspace):
+        logger.info("Nothing to commit in %s; skipping commit", workspace)
+        return False
+    subprocess.run(  # noqa: S603
+        ["git", "-C", workspace, "commit", "-m", message],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
     return True
 
 

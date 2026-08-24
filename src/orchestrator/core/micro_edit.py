@@ -40,8 +40,8 @@ from typing import Any
 
 from orchestrator.core.git_ops import (
     checkout_branch,
-    commit_and_push,
     local_head_sha,
+    stage_and_commit,
 )
 
 
@@ -192,7 +192,15 @@ async def apply_micro_edit(
         with target.open("w", encoding="utf-8", newline="") as handle:
             handle.write(content)
 
-        committed = commit_and_push(workspace, token, commit_message, paths=[path])
+        # Commit and PUSH SEPARATELY. A bare ``git push`` needs an upstream,
+        # and neither branch this function can be on has one: ``checkout_branch``
+        # creates the local ref with ``-B`` from ``FETCH_HEAD`` and
+        # ``create_branch`` uses ``checkout -b``. Measured live in walkthrough
+        # #13, where the lane committed cleanly and then died on exit 128 with
+        # the commit already written. ``push_branch`` pushes ``-u origin
+        # <branch>`` explicitly, which is correct for a branch that exists on
+        # the remote and for one that does not.
+        committed = stage_and_commit(workspace, commit_message, paths=[path])
         if not committed:
             # A FACT, not a failure: the file already held this content, so
             # there is nothing to commit, nothing to review, and no PR to open.
@@ -204,6 +212,8 @@ async def apply_micro_edit(
             return MicroEditResult(
                 committed=False, base_sha=None, pr_url=None, path=path
             )
+
+        await git.push_branch(workspace, branch)
 
         pr_url = existing_pr
         if pr_url is None:

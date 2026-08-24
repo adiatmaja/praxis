@@ -41,6 +41,7 @@ def _git_double(*, branch_head: str | None = None) -> MagicMock:
     git.clone_repo = AsyncMock()
     git.create_branch = AsyncMock()
     git.create_pr = AsyncMock(return_value="https://github.test/o/r/pull/7")
+    git.push_branch = AsyncMock()
     return git
 
 
@@ -67,16 +68,14 @@ def _patch_git_helpers(
         )
         return head
 
-    def _commit(
-        workspace: str, token: str, message: str, paths: list[str] | None = None
-    ) -> bool:
+    def _commit(workspace: str, message: str, paths: list[str] | None = None) -> bool:
         seen["commit_message"] = message
         seen["paths"] = paths
         return committed
 
     monkeypatch.setattr(micro_edit_module, "checkout_branch", _checkout)
     monkeypatch.setattr(micro_edit_module, "local_head_sha", _head)
-    monkeypatch.setattr(micro_edit_module, "commit_and_push", _commit)
+    monkeypatch.setattr(micro_edit_module, "stage_and_commit", _commit)
     return seen
 
 
@@ -206,9 +205,7 @@ async def test_the_file_is_written_with_the_exact_bytes_given(
     """
     written: dict[str, bytes] = {}
 
-    def _commit(
-        workspace: str, token: str, message: str, paths: list[str] | None = None
-    ) -> bool:
+    def _commit(workspace: str, message: str, paths: list[str] | None = None) -> bool:
         written["bytes"] = (Path(workspace) / "docs" / "notes.md").read_bytes()
         return True
 
@@ -217,11 +214,87 @@ async def test_the_file_is_written_with_the_exact_bytes_given(
 
     monkeypatch.setattr(micro_edit_module, "checkout_branch", _checkout)
     monkeypatch.setattr(micro_edit_module, "local_head_sha", lambda _w: "sha-before")
-    monkeypatch.setattr(micro_edit_module, "commit_and_push", _commit)
+    monkeypatch.setattr(micro_edit_module, "stage_and_commit", _commit)
 
     await _apply(_git_double(branch_head="x"), content="alpha\nbeta\n")
 
     assert written["bytes"] == b"alpha\nbeta\n"
+
+
+@pytest.mark.unit
+async def test_the_commit_is_pushed_with_an_explicit_upstream(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The bug the mocks hid, and the reason this asserts on the PUSH.
+
+    Measured live in walkthrough #13: the lane checked out the shared branch,
+    committed cleanly, and died on `git push` with exit 128, having already
+    written the commit. A bare push needs an upstream, and neither branch this
+    lane can be on has one: ``checkout_branch`` creates the local ref with
+    ``-B`` from ``FETCH_HEAD`` and ``create_branch`` uses ``checkout -b``.
+    Seventeen unit tests were green, every one of them with the push mocked
+    inside ``commit_and_push``.
+
+    So the push is now its own step and its own assertion: ``push_branch``
+    pushes ``-u origin <branch>``, which is correct both for a branch that
+    exists on the remote and for one that does not.
+    """
+    _patch_git_helpers(monkeypatch)
+    git = _git_double(branch_head="sha-existing")
+
+    await _apply(git)
+
+    git.push_branch.assert_awaited_once_with(
+        git.clone_repo.await_args.args[1], "work/shared"
+    )
+
+
+@pytest.mark.unit
+async def test_nothing_is_pushed_when_nothing_was_committed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The other side: a clean index must not push, and must not open a PR."""
+    _patch_git_helpers(monkeypatch, committed=False)
+    git = _git_double(branch_head="sha-existing")
+
+    await _apply(git)
+
+    git.push_branch.assert_not_awaited()
+
+
+@pytest.mark.unit
+def test_stage_and_commit_commits_without_pushing(tmp_path: Path) -> None:
+    """Against REAL git, because a double is what hid the push bug.
+
+    ``stage_and_commit`` must write a commit and must NOT attempt a push: the
+    caller chooses the push, and on a branch with no upstream a bare one exits
+    128. Also pins the clean-index answer, which is a FACT the lane turns into
+    ``no_changes`` rather than a failure.
+    """
+    from orchestrator.core.git_ops import stage_and_commit
+
+    def run(*args: str) -> None:
+        subprocess.run(  # noqa: S603
+            ["git", "-C", str(tmp_path), *args], check=True, capture_output=True
+        )
+
+    run("init", "-b", "work/shared")
+    run("config", "user.email", "t@example.test")
+    run("config", "user.name", "Test")
+    (tmp_path / "a.txt").write_text("first", encoding="utf-8")
+
+    assert stage_and_commit(str(tmp_path), "feat: first", paths=["a.txt"]) is True
+    subject = subprocess.run(  # noqa: S603
+        ["git", "-C", str(tmp_path), "log", "-1", "--format=%s"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    assert subject == "feat: first"
+
+    # Nothing changed since: a clean index is False, not an exception, and the
+    # branch has no remote at all, so a bare push inside this call would raise.
+    assert stage_and_commit(str(tmp_path), "feat: again", paths=["a.txt"]) is False
 
 
 @pytest.mark.unit
