@@ -10,7 +10,7 @@
 </div>
 
 <p align="center">
-  <strong>Engine for agentic AI to govern other coding harnesses.</strong>
+  <strong>Govern any coding harness from inside the one you already use.</strong>
 </p>
 
 <p align="center">
@@ -27,13 +27,15 @@
   <a href="https://github.com/adiatmaja/praxis/stargazers"><img alt="Stars" src="https://img.shields.io/github/stars/adiatmaja/praxis?style=social"></a>
 </p>
 
-Praxis is a tool set up inside the coding assistant you already use, wired in over MCP,
-that lets it dispatch real coding work to the harnesses that do the typing: OpenCode
-driving any OpenAI-compatible model, Antigravity driving Gemini. Plans are
-decomposed to fit the model that implements them, and every change is checked by the
-verify gate when you configure one, reviewed by a second model, and delivered as a pull
-request that waits for your approval. One session, no copy-pasted plans, no switching
-tools by hand. (A CLI and a dashboard drive the same engine.)
+Praxis is a provider-agnostic orchestrator for the execution phase of spec-driven
+development: brainstorm, spec, and plan wherever you like, then hand it the plan. Set
+up inside the coding assistant you already use and wired in over MCP, it decomposes
+the plan to fit the worker model that implements it, dispatches each task to the
+harnesses that do the typing (OpenCode driving any OpenAI-compatible model,
+Antigravity driving Gemini), and gates every change: checked by the verify gate when
+you configure one, reviewed by a second model, and delivered as a pull request that
+waits for your approval. Never a blind dispatch. One session, no copy-pasted plans,
+no switching tools by hand. (A CLI and a dashboard drive the same engine.)
 
 ```
   ┌──────────────────────────────────────────────────────────┐

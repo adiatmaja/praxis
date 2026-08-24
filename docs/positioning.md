@@ -56,6 +56,35 @@ measurable claim, and with no published benchmark the bare adjective invites
 the "show me numbers" objection. "Predictable" may return as headline wording
 once the decomposition-benefit bench numbers exist to back it.
 
+### Canonical copy (2026-08-24)
+
+The public surfaces divide the work: the headline is the imperative
+proposition (why care), the About is the definition (what it is), and the
+README opening paragraph is the full statement. Copy them verbatim rather
+than re-deriving; they were argued word by word.
+
+- **README headline:** "Govern any coding harness from inside the one you
+  already use." "From inside" carries the one claim no competitor makes;
+  "any" is deliberate over "every", which reads as a totality claim to
+  defend. The verb stays "govern": it is the only candidate that names the
+  gate rather than the sending ("orchestrate" is category-generic and
+  duplicates the About's noun; "pilot" collides with "pilot program";
+  "command" is the blind one-shot the product opposes).
+- **GitHub About, and `pyproject.toml` description:** "Provider-agnostic
+  orchestrator for the execution phase of spec-driven development: plans
+  decomposed to fit the worker model that implements them, every change
+  gated and delivered as a PR you approve." A definition, deliberately NOT
+  the headline restated: on the repo page the About sits beside the banner,
+  so an echo wastes one of the two surfaces. "For the execution phase of
+  spec-driven development" is a twice-qualified category, not the bare
+  "orchestrator" framing the guidance below cautions against, and it names
+  the slot: brainstorm, spec, and plan happen wherever the user likes;
+  Praxis takes the plan from there.
+- **README opening paragraph:** leads with the same definition, then the
+  mechanism chain (decompose to the worker model's capability, dispatch to a
+  pluggable harness in Docker, verify, review, PR parked for approval),
+  closing on "Never a blind dispatch."
+
 ## The problem, concretely
 
 The narrative front door, told from the buyer's seat. A developer on a
