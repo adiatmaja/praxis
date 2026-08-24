@@ -47,7 +47,8 @@ async def fetch_recent_outcomes(
     # injection vector despite the f-string.
     attributable_placeholders = ",".join("?" * len(_ATTRIBUTABLE_FAIL_CLASSES))
     base_sql = (
-        "SELECT * FROM task_outcomes WHERE model_name = ? AND source = 'run'"  # nosec B608 - placeholders only, all values parameterized
+        # Placeholders only; all values are parameterized (see params_base).
+        "SELECT * FROM task_outcomes WHERE model_name = ? AND source = 'run'"  # nosec B608
         " AND (outcome = 'pass' OR (outcome = 'fail'"
         f" AND failure_class IN ({attributable_placeholders})))"
         " ORDER BY created_at DESC LIMIT ?"
@@ -110,7 +111,7 @@ def summarize_outcomes(runs: list[dict]) -> str:
     if not runs:
         return "(no prior run history for this model)"
     by_type: dict[str, dict[str, int]] = defaultdict(
-        lambda: {"pass": 0, "fail": 0, "max_files": 0, "max_loc": 0}  # nosec B105 — dict keys, not passwords
+        lambda: {"pass": 0, "fail": 0, "max_files": 0, "max_loc": 0}  # nosec B105
     )
     for r in runs:
         t = by_type[r.get("task_type") or "unknown"]

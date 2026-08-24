@@ -96,7 +96,12 @@ async def run_verify(
             "it returns None."
         )
         raise ValueError(msg)
-    proc = await asyncio.create_subprocess_shell(  # nosec B602
+    # This DOES run `verify_cmd` through a shell, deliberately: the gate exists
+    # to run an operator-configured command line. Bandit's B602 does not fire
+    # here (it does not model asyncio's shell helpers), so a `# nosec B602`
+    # suppressed nothing and read as though a scanner were watching this line.
+    # Nothing is: the operator-supplied string is the trust boundary.
+    proc = await asyncio.create_subprocess_shell(
         verify_cmd,
         cwd=checkout_dir,
         stdout=asyncio.subprocess.PIPE,

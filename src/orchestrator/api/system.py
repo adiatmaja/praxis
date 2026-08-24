@@ -168,7 +168,7 @@ class RoundTripResult:
 # must miss the cache instead of inheriting the previous model's verdict.
 _roundtrip_probe_cache: dict[PlannerTarget, tuple[float, RoundTripResult]] = {}
 _ROUNDTRIP_PROMPT = "reply with exactly: PONG"
-_ROUNDTRIP_SENTINEL = "PONG"  # nosec B105 - a sentinel string, not a credential
+_ROUNDTRIP_SENTINEL = "PONG"  # a sentinel string, not a credential
 #: 20s, down from the 25s this shipped with.  ``/api/doctor`` gathers its facts
 #: sequentially and the CLI abandons the whole request at 60s, so an over-long
 #: probe renders a FALSE red on ``orchestrator_health`` instead.  Not lower than

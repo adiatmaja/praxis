@@ -247,8 +247,8 @@ async def fetch_pending_approvals(db: Any) -> dict[str, Any]:
     task_statuses = (*GATED_STATUSES, TaskStatus.NEEDS_CLARIFICATION.value)
     placeholders = ", ".join("?" for _ in task_statuses)
     rows = await db.fetch_all(
-        # nosec B608 - `placeholders` is a run of `?` sized from a frozen
-        # tuple; the values are bound, never interpolated.
+        # `placeholders` is a run of `?` sized from a frozen tuple; the values
+        # are bound, never interpolated.
         f"SELECT * FROM tasks WHERE status IN ({placeholders})",  # nosec B608
         task_statuses,
     )
