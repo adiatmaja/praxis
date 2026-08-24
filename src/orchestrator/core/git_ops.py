@@ -537,6 +537,101 @@ class GitOps:
             token=token,
         )
 
+    async def pr_head_sha(self, pr_number: int, repo: str) -> str:
+        """Return the commit at the head of a pull request.
+
+        The head SHA rather than the head branch name: a branch can move
+        between this call and the compare that follows it, and it can be
+        deleted outright once the pull request is merged. The SHA cannot.
+
+        Args:
+            pr_number: The pull request number.
+            repo: The ``owner/name`` slug. Required, like every other ``gh pr``
+                call here: without ``--repo`` gh resolves against the
+                orchestrator's own working directory.
+
+        Returns:
+            The head commit sha.
+
+        Raises:
+            RuntimeError: If the ``gh`` call fails.
+        """
+        token = await self._token_for_repo(repo)
+        return await self._run_checked(
+            [
+                "gh",
+                "pr",
+                "view",
+                str(pr_number),
+                "--repo",
+                repo,
+                "--json",
+                "headRefOid",
+                "--jq",
+                ".headRefOid",
+            ],
+            token=token,
+        )
+
+    async def compare_merge_base(self, repo: str, base: str, head: str) -> str:
+        """Return the merge base GitHub computed for ``base...head``.
+
+        This is how ancestry is decided without a clone. When ``base`` is an
+        ancestor of ``head`` the merge base IS ``base``; when it is not (a force
+        push, a recreated branch), GitHub still answers, from an older commit,
+        so the comparison silently widens instead of failing. Comparing the two
+        is what makes that visible.
+
+        Args:
+            repo: The ``owner/name`` slug.
+            base: The commit the range starts after.
+            head: The commit the range ends at.
+
+        Returns:
+            The merge base commit sha.
+
+        Raises:
+            RuntimeError: If the ``gh`` call fails.
+        """
+        token = await self._token_for_repo(repo)
+        return await self._run_checked(
+            [
+                "gh",
+                "api",
+                f"repos/{repo}/compare/{base}...{head}",
+                "--jq",
+                ".merge_base_commit.sha",
+            ],
+            token=token,
+        )
+
+    async def compare_diff(self, repo: str, base: str, head: str) -> str:
+        """Return the unified diff between two commits, read from the remote.
+
+        Args:
+            repo: The ``owner/name`` slug.
+            base: The commit the range starts after.
+            head: The commit the range ends at.
+
+        Returns:
+            The unified diff, in the same format ``gh pr diff`` produces, so a
+            reviewer cannot tell which of the two produced it.
+
+        Raises:
+            RuntimeError: If the ``gh`` call fails.
+        """
+        token = await self._token_for_repo(repo)
+        return await self._run_checked(
+            [
+                "gh",
+                "api",
+                f"repos/{repo}/compare/{base}...{head}",
+                "-H",
+                "Accept: application/vnd.github.v3.diff",
+            ],
+            token=token,
+        )
+
     @staticmethod
     def repo_slug(repo_url: str) -> str | None:
         """Extract an ``owner/name`` slug from a GitHub repo or PR URL."""

@@ -44,6 +44,16 @@ _WINDOWS_PATH_RE = re.compile(r"^[A-Za-z]:[\\/]")
 
 _GITHUB_PR_RE = re.compile(r"^https://github\.com/([^/]+/[^/]+)/pull/(\d+)/?$")
 
+# What a backend logs when a recorded base sha cannot bound the range and the
+# whole pull request is reviewed instead.  Shared so the two backends cannot
+# drift into describing the same degradation in two ways, and so the caller
+# has one phrase to grep for.  The alternative to falling back is returning an
+# empty diff, which reviews as a trivially passing change and would let a
+# broken change through the gate: the one outcome this must never have.
+_WHOLE_PR_FALLBACK = (
+    "base sha %s does not bound %s (%s); reviewing the whole pull request instead"
+)
+
 
 def _clear_readonly_and_retry(
     func: Callable[..., Any], path: str, _exc_info: Any
@@ -208,6 +218,10 @@ class GitBackend(Protocol):
         """Return the commit at ``branch`` on the remote, or None if absent."""
         ...
 
+    async def get_diff_since(self, ref: PullRequestRef, base_sha: str) -> str:
+        """Return the diff the commits after ``base_sha`` produced."""
+        ...
+
     async def checkout(self, ref: PullRequestRef, dest: str) -> str:
         """Clone and check out the change's head into ``dest``; return ``dest``."""
         ...
@@ -301,6 +315,40 @@ class GitHubBackend:
             return None
         return cast(str | None, await self._git.remote_head_sha(self._repo_url, branch))
 
+    async def get_diff_since(self, ref: PullRequestRef, base_sha: str) -> str:
+        """Return the diff of the commits added to the PR after ``base_sha``.
+
+        Three ``gh`` calls, which is noise beside the clone and the model call
+        the review already spends: the pull request's head sha, the merge base
+        GitHub computes for ``base_sha...head``, and the diff itself.
+
+        The middle call is the one that matters. GitHub's compare endpoint
+        answers even when ``base_sha`` is NOT an ancestor of the head, taking
+        the range from an older merge base instead, so nothing fails and the
+        range silently widens. Comparing the reported merge base with the sha we
+        recorded is what makes that visible.
+
+        Args:
+            ref: The pull request being reviewed.
+            base_sha: The commit this task's own work starts after.
+
+        Returns:
+            The range-bounded diff, or the whole pull-request diff when the
+            range could not be established. Never an empty string standing in
+            for a failure: an empty diff reviews as a trivially passing change.
+        """
+        repo = self._repo(ref)
+        try:
+            head = await self._git.pr_head_sha(ref.number, repo=repo)
+            merge_base = await self._git.compare_merge_base(repo, base_sha, head)
+            if str(merge_base).strip() == base_sha:
+                return cast(str, await self._git.compare_diff(repo, base_sha, head))
+            reason = f"github reports the merge base as {str(merge_base).strip()}"
+        except Exception as exc:  # noqa: BLE001 - degrade, never review nothing
+            reason = f"{type(exc).__name__}: {exc}"
+        logger.warning(_WHOLE_PR_FALLBACK, base_sha, ref.to_url(), reason)
+        return await self.get_diff(ref)
+
     async def checkout(self, ref: PullRequestRef, dest: str) -> str:
         """Clone the PR head into ``dest``.
 
@@ -391,6 +439,43 @@ class LocalGitBackend:
         if code != 0:
             return None
         return out.strip() or None
+
+    async def get_diff_since(self, ref: PullRequestRef, base_sha: str) -> str:
+        """Return the diff of the commits added to the branch after ``base_sha``.
+
+        ``merge-base --is-ancestor`` decides the range first. Without it a
+        two-dot diff against a DIVERGED commit still succeeds, silently
+        describing the branch against an unrelated line of history, and against
+        a commit the repository has never seen it fails with a message that
+        would then have to be interpreted anyway.
+
+        Args:
+            ref: The change being reviewed.
+            base_sha: The commit this task's own work starts after.
+
+        Returns:
+            The range-bounded diff, or the whole branch diff when ``base_sha``
+            does not bound the range. Never an empty string standing in for a
+            failure: an empty diff reviews as a trivially passing change.
+        """
+        code, _out, err = await self._run(
+            [
+                "git",
+                "-C",
+                self._path,
+                "merge-base",
+                "--is-ancestor",
+                base_sha,
+                ref.branch,
+            ]
+        )
+        if code == 0:
+            return await self._run_checked(
+                ["git", "-C", self._path, "diff", f"{base_sha}..{ref.branch}"]
+            )
+        reason = err.strip() or f"not an ancestor (git exit {code})"
+        logger.warning(_WHOLE_PR_FALLBACK, base_sha, ref.branch, reason)
+        return await self.get_diff(ref)
 
     async def checkout(self, ref: PullRequestRef, dest: str) -> str:
         """Clone the bare repo and check the branch out into ``dest``."""
