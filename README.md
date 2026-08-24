@@ -23,12 +23,13 @@
 </p>
 
 Praxis is a provider-agnostic orchestrator for the execution phase of spec-driven
-development: brainstorm, spec, and plan wherever you like, then hand it the plan. Set
-up inside the coding assistant you already use and wired in over MCP (Model Context
-Protocol), it decomposes
-the plan to fit the worker model that implements it, dispatches each task to the
-harnesses that do the typing (OpenCode driving any OpenAI-compatible model,
-Antigravity driving Gemini), and gates every change: checked by the verify gate when
+development, the workflow where you brainstorm, spec, and plan before any code is
+written: do those three wherever you like, then hand Praxis the plan. Set up inside
+the coding assistant you already use and wired in over MCP (Model Context Protocol),
+it decomposes the plan to fit the worker model that implements it, dispatches each
+task to the harnesses that do the typing (OpenCode, an open-source coding harness,
+driving any OpenAI-compatible model; Antigravity, Google's Gemini harness, driven via
+its `agy` CLI), and gates every change: checked by the verify gate when
 you configure one, reviewed by a second model, and delivered as a pull request that
 waits for your approval. Never a blind dispatch. One session, no copy-pasted plans,
 no switching tools by hand. (A CLI and a dashboard drive the same engine.)
@@ -69,8 +70,9 @@ no switching tools by hand. (A CLI and a dashboard drive the same engine.)
   └──────────────────────────────────────────────────────────┘
 ```
 
-GitHub is the one intentional platform dependency: inspectable, revertible PRs are the
-loop's unit of trust.
+GitHub is the one intentional platform dependency, because inspectable, revertible PRs
+are the loop's unit of trust. No GitLab or Bitbucket support today; a local-only mode
+works without any remote.
 
 ## Why Praxis exists
 
@@ -86,7 +88,7 @@ discipline around them does not.
 
 **Implement a plan.** You did the thinking in a chat, an editor, or a design doc; what is
 left is the typing. Hand Praxis the `plan.md` (`execute_plan`, REST and MCP) and the
-governed loop below carries it to the merge gate. Its smallest case is a single task: say
+governed loop below carries it to the merge gate. Its smallest case is a single task: tell your assistant
 "use praxis to fix X on this repo" and a worker picks it up in an isolated container
 while your session moves on (`dispatch_task`). Harness and model are chosen per project
 or per call, so work goes to whichever model is actually good at it, for example UI
@@ -154,9 +156,10 @@ your approval. Full cycle and swimlane diagram: [docs/workflow.md](docs/workflow
 
 ### Every seat independently configurable
 
-Provider, model, and harness are chosen per role and per project, and swapping a seat
-never changes the architecture around it. Interchangeable examples, not a blessed
-pairing:
+A **seat** is a role in the loop with a provider assigned to it. The same loop as
+above, seen as its four roles: provider, model, and harness are chosen per seat and
+per project, and swapping a seat never changes the architecture around it.
+Interchangeable examples, not a blessed pairing:
 
 ```
   ┌───────────────┐    ┌───────────────┐    ┌───────────────┐    ┌───────────────┐
@@ -255,6 +258,13 @@ seat comes from your worker preset: the shipped default drives Gemini via `agy`
 (one-time `agy login`), or pick `local-lmstudio` to serve an open-weight model over an
 OpenAI-compatible endpoint. Full setup and deployment modes:
 [docs/deployment.md](docs/deployment.md).
+
+## Status
+
+Praxis is 0.1.0, pre-1.0, and under active development; expect breaking changes until
+1.0. Implement-a-plan is the mature path: it is regularly exercised end to end, cold
+install to merged PR on a real repository. Auto-delegate mode is beta, as flagged
+above.
 
 ## Documentation
 
