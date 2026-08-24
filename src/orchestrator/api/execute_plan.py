@@ -127,7 +127,23 @@ async def _create_or_reuse_project(
             name or repo_url.rstrip("/").split("/")[-1] or "execute-plan-project",
             repo_url,
             "main",
-            False,
+            # The autonomous-improvement proposal gate, ON, which is the schema
+            # default (``approval_gate INTEGER NOT NULL DEFAULT 1``) and what
+            # ``ProjectCreate`` gives every project made through
+            # ``POST /api/projects``. This path used to hardcode False, and
+            # False is not "no gate configured": ``process_plan_once`` reads it
+            # as ``activate=not approval_gate``, so the improvement plan Praxis
+            # writes for itself when a plan completes STARTED RUNNING with
+            # nobody asked. Measured live in walkthrough #13 on the sibling
+            # path in ``api/dispatch.py``: one MCP dispatch of a one-line task,
+            # and an improvement plan was spawning its own worker container
+            # against the same repository minutes later.
+            #
+            # A repository must not be opted into autonomous work by having had
+            # one task handed to it. Parking the proposal at ``pending`` is the
+            # safe direction and the one every read-only surface already
+            # describes.
+            True,
             model,
             new_project_harness,
         ),
