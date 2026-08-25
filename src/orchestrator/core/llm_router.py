@@ -362,12 +362,23 @@ class LLMRouter:
             # (``tests/test_rate_limit_parity.py`` exists because sharing only
             # the SIGNATURE STRINGS was not enough to guarantee that).
             #
-            # Deliberately asked only about a call that ALREADY FAILED. The
-            # predicate's first clause is not gated on the exit code, so
-            # running it over a successful response would read a plan for a
-            # spec about rate limiting as a throttle and park the brain for
-            # five hours over the planner's own words. A failed call's stdout
-            # is not a model answer, so here there is nothing to misread.
+            # The predicate gates ITSELF on the exit code: ``is_rate_limited``
+            # returns False for ``code == 0`` before any signature is matched,
+            # so no consumer has to establish that the call failed first. It is
+            # asked here, inside the failure branch, for the ordinary reason
+            # that this IS the failure branch -- everything below builds an
+            # error message and raises.
+            #
+            # An earlier version of this note argued the opposite, and it is
+            # worth keeping the reason it was wrong: the first clause used to
+            # be ungated, so over a SUCCESSFUL response it read a plan for a
+            # spec about rate limiting as a throttle and parked the brain for
+            # five hours over the planner's own words, and Praxis plans specs
+            # about its own subsystems routinely. That hazard now lives in one
+            # place. A comment arguing for a precondition the callee already
+            # enforces is how the next consumer learns to hand-gate too, and a
+            # hand-gate every consumer must remember is the precondition
+            # nobody enforces.
             #
             # Both streams are passed because the evidence lands on either:
             # ``claude`` prints its usage message to stdout while the message

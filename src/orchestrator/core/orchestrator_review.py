@@ -87,11 +87,15 @@ _SKIP_NO_TOKEN = "no GitHub token for repo"  # nosec B105 - a log reason string
 _SKIP_BENCH_MODE_DISABLED = "bench mode disabled the gate"
 _SKIP_CHECKOUT_UNAVAILABLE = "PR checkout unavailable"
 
-# The two NON-skip outcomes of the per-task gate, named so the scope statement
-# below can be assembled from ONE variable covering all five outcomes. Without
-# them the statement would have to infer "it ran and passed" from the ABSENCE
-# of a skip reason, and absence is exactly what the existing ``gate_skipped``
-# already means something narrower by (a CONFIGURED gate that could not run).
+# The two NON-skip outcomes of the per-task gate, named so ``verify_state``
+# covers all five outcomes with ONE variable. Without them the scope statement
+# would have to infer "it ran and passed" from the ABSENCE of a skip reason,
+# and absence is exactly what the existing ``gate_skipped`` already means
+# something narrower by (a CONFIGURED gate that could not run).
+#
+# ``_GATE_FAILED`` is RECORDED and deliberately never RENDERED: a failed gate
+# fails the task where it runs, so it cannot reach the scope statement. See
+# ``_review_scope_statement``.
 _GATE_PASSED = "passed"
 _GATE_FAILED = "failed"
 
@@ -199,10 +203,25 @@ def _review_scope_statement(
     else:
         clauses.append(f"read the diff text only ({_SKIP_CHECKOUT_UNAVAILABLE})")
 
+    # Two arms, not three, and there is deliberately no ``_GATE_FAILED`` one.
+    # A failing gate writes ``verdict: fail`` where it runs, before any brain
+    # call, and this function is reached only under ``verdict == "pass"``, so
+    # ``_GATE_FAILED`` cannot arrive here. The arm that rendered it (and its
+    # twin in the CLI's ``_scope_glance``) was unreachable while reading as a
+    # live feature: someone reasoning about the merge gate would conclude a
+    # failed gate is surfaced there. It is not, and it should not be -- a
+    # failed gate does not park at the merge gate at all. It takes the failure
+    # path, which comments on the PR and re-dispatches, and whose feedback
+    # ``core/worker_bible`` injects verbatim into the next worker's prompt,
+    # where a sentence about what the REVIEW covered is noise to a floor model
+    # at best.
+    #
+    # If that structure ever changes, route the fail path here DELIBERATELY.
+    # Letting it inherit this ``else`` would report a gate that ran and failed
+    # as one that never ran; ``test_a_failed_verify_gate_stores_no_scope_
+    # statement`` goes red the moment the premise stops holding.
     if verify_state == _GATE_PASSED:
         clauses.append(f"verify gate passed (`{verify_cmd}`)")
-    elif verify_state == _GATE_FAILED:
-        clauses.append(f"verify gate failed (`{verify_cmd}`)")
     else:
         clauses.append(f"verify gate did not run ({verify_state})")
 

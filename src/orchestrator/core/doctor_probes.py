@@ -591,7 +591,8 @@ def probe_planner_cli(
         # AMBER, not green. Only `claude` has a round trip defined, so a
         # `codex` or `agy` planner lands here having had NOTHING verified: for
         # agy, `authenticated` came from `agy help` exiting 0 while the harness
-        # registry says it needs an interactive `agy login`, so an agy planner
+        # registry says it needs an interactive `agy` session (there is no
+        # `agy login` subcommand), so an agy planner
         # with empty credentials read as a clean pass. Amber is this module's
         # word for "not checked" (see api/doctor._degraded).
         detail=(

@@ -414,7 +414,9 @@ class AgentManager:
         )
 
         # Mount the agy OAuth credentials VOLUME. The credentials are Linux-native
-        # (populated once by an interactive `agy login`, see docs/deployment.md)
+        # (populated once by STARTING an interactive `agy` session against the
+        # empty volume, which is what triggers the OAuth flow: there is no
+        # `agy login` subcommand -- see docs/deployment.md)
         # and live in a named Docker volume, so the mount source is a volume NAME
         # resolved by the Docker daemon (not a host path). We mount it read-write
         # at /home/agent/.gemini so fresh worker processes both authenticate and

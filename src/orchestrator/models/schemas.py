@@ -451,6 +451,22 @@ class ProjectResponse(BaseModel):
     created_at: str
 
 
+def _max_planning_attempts() -> int:
+    """The engine's planning-retry cap, read from its single definition.
+
+    Imported inside the factory rather than at module scope because
+    ``core/orchestrator.py`` imports THIS module, so a top-level import would
+    be a cycle. Same dodge ``core/llm_router.py`` already uses for
+    ``opus_bridge``, and for the same reason.
+
+    Returns:
+        ``core.orchestrator.MAX_PLANNING_ATTEMPTS``.
+    """
+    from orchestrator.core.orchestrator import MAX_PLANNING_ATTEMPTS
+
+    return MAX_PLANNING_ATTEMPTS
+
+
 class PlanResponse(BaseModel):
     """Plan response payload."""
 
@@ -469,6 +485,13 @@ class PlanResponse(BaseModel):
     #: thing that tells them apart, and it is what says how close the plan is
     #: to the bound that stops the retry.
     plan_attempts: int = 0
+    #: The cap those attempts count against, so a reader can say how close the
+    #: plan is to terminal. Served rather than mirrored: a client that keeps its
+    #: own copy of this number prints "attempt 4/3" the day the engine's cap
+    #: moves, and a denominator that says the plan is already dead is worse than
+    #: no denominator at all. Every client reads it with a fallback, because a
+    #: server older than this field simply does not send it.
+    max_planning_attempts: int = Field(default_factory=_max_planning_attempts)
     spec_path: str | None = None
     plan_path: str | None = None
     #: The PR that carries this plan from its plan branch onto the project's

@@ -42,7 +42,7 @@ from orchestrator.core.opus_bridge import (
     BrainProseResponseError,
     OpusBridge,
 )
-from orchestrator.core.orchestrator import _MAX_PLANNING_ATTEMPTS, Orchestrator
+from orchestrator.core.orchestrator import MAX_PLANNING_ATTEMPTS, Orchestrator
 from orchestrator.core.task_queue import TaskQueue
 from orchestrator.database import Database
 from orchestrator.models.schemas import PlanStatus
@@ -256,7 +256,7 @@ async def test_malformed_json_retries_and_only_fails_on_the_third_attempt(
     opus = _opus(side_effect=BrainMalformedJsonError("bad span", '{"tasks": ['))
     orchestrator = _orchestrator(task_queue, opus)
 
-    for expected_attempts in range(1, _MAX_PLANNING_ATTEMPTS):
+    for expected_attempts in range(1, MAX_PLANNING_ATTEMPTS):
         await orchestrator.plan_and_activate(plan_id, project)
         plan = await task_queue.get_plan(plan_id)
         assert plan is not None
@@ -272,8 +272,8 @@ async def test_malformed_json_retries_and_only_fails_on_the_third_attempt(
     plan = await task_queue.get_plan(plan_id)
     assert plan is not None
     assert plan["status"] == PlanStatus.FAILED
-    assert plan["plan_attempts"] == _MAX_PLANNING_ATTEMPTS
-    assert str(_MAX_PLANNING_ATTEMPTS) in plan["error"]
+    assert plan["plan_attempts"] == MAX_PLANNING_ATTEMPTS
+    assert str(MAX_PLANNING_ATTEMPTS) in plan["error"]
     assert "bad span" in plan["error"]
 
 
@@ -358,7 +358,7 @@ async def test_a_rate_limit_does_not_consume_an_attempt(
     assert before is not None
     assert before["status"] == "available"
 
-    for _tick in range(_MAX_PLANNING_ATTEMPTS):
+    for _tick in range(MAX_PLANNING_ATTEMPTS):
         await orchestrator.plan_and_activate(plan_id, project)
         plan = await task_queue.get_plan(plan_id)
         assert plan is not None

@@ -546,6 +546,47 @@ async def test_the_scope_statement_is_stored_where_the_approver_reads_it(
 
 
 @pytest.mark.unit
+async def test_a_failed_verify_gate_stores_no_scope_statement(
+    orchestrator_fixture, monkeypatch
+):
+    """The structural claim that makes the "verify gate failed" arm dead code.
+
+    A failing gate writes ``verdict: fail`` at the gate itself, before any brain
+    call, and the scope statement is assembled only under ``verdict == "pass"``.
+    So ``_GATE_FAILED`` cannot reach ``_review_scope_statement``, its rendering
+    arm was unreachable, and so was the CLI's ``"verify failed"`` twin. Both
+    were deleted; this pins the premise.
+
+    Without this, restoring the fail path to the scope statement would silently
+    hand the ``else`` arm a state it lies about ("verify gate did not run
+    (failed)") and inject review prose into the next worker's prompt.
+    """
+    orch, task_id, project = orchestrator_fixture
+    gated = dict(project)
+    gated["verify_cmd"] = "pytest -q"
+    backend = _passing_backend(checkout=_checkout_writing({"a.css": ".s-alert {}\n"}))
+    orch._resolve_backend = lambda _repo_url: backend  # type: ignore[method-assign]
+    monkeypatch.setattr(
+        review_mod, "run_verify", AsyncMock(return_value=(False, "1 failed"))
+    )
+    events: list[dict[str, Any]] = []
+    orch._bus.publish = events.append  # type: ignore[method-assign]
+
+    await _review(orch, task_id, gated)
+
+    # The gate decided this, so the brain was never asked.
+    orch._opus.review_diff.assert_not_awaited()
+    updated = await orch._tq.get_task(task_id)
+    assert updated is not None
+    stored = updated["review_feedback"] or ""
+    assert "Automated verification failed before review" in stored
+    assert "Review scope:" not in stored
+    # And nothing parked at the merge gate, which is the other half of why
+    # there is nothing for a scope statement to tell an approver here.
+    assert not [e for e in events if e.get("type") == "task_awaiting_merge"]
+
+
+@pytest.mark.unit
 async def test_a_failed_review_carries_no_scope_statement(orchestrator_fixture):
     """A FAIL is not parked at the merge gate, and its feedback goes to a WORKER.
 

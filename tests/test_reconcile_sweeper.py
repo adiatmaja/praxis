@@ -789,6 +789,66 @@ async def test_still_dead_repo_gets_no_second_warning_after_a_failed_reprobe(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("failures_before", "expected_cooldown"),
+    [
+        (2, 10),  # the third failure quarantines: the initial cooldown
+        (3, 20),
+        (4, 40),
+        (5, 80),
+        (6, 120),  # 160 would exceed the ceiling, so it lands on the ceiling
+        (7, 120),
+        (5_000, 120),  # a repository that has been gone for a year
+    ],
+)
+async def test_the_quarantine_backoff_schedule_is_bounded_at_both_ends(
+    failures_before: int, expected_cooldown: int
+) -> None:
+    """The doubling schedule, pinned, including the long-dead case.
+
+    ``consecutive_failures`` grows for as long as the repository stays
+    unreachable, so ``10 * 2 ** (failures - 3)`` was an unbounded exponent
+    evaluated on every re-probe and thrown away by ``min`` a moment later: a
+    repository dead for a year built an enormous integer every ten minutes.
+
+    Clamping the exponent BEFORE the shift cannot change the answer, and this
+    is what says so: the schedule below is the same one the unclamped
+    expression produced, so a future edit to the arithmetic that DOES change
+    the answer goes red here rather than silently changing how long an
+    operator waits for a re-probe.
+    """
+    repo_url = "https://example.invalid/long-dead.git"
+
+    async def failing_list(url: str) -> list[str]:
+        msg = "git ls-remote failed (exit 128): repository not found"
+        raise RuntimeError(msg)
+
+    async def noop_delete(url: str, branch: str) -> None:
+        pass
+
+    state = rec.RepoProbeState(
+        consecutive_failures=failures_before, cooldown_remaining=0, warned=True
+    )
+    outcome = await rec.sweep_dead_branches(
+        repo_url=repo_url,
+        list_remote_branches=failing_list,
+        delete_remote_branch=noop_delete,
+        ledger={
+            "open_pr_branches": set(),
+            "terminal_failed": set(),
+            "merged_plan": set(),
+            "live_branches": set(),
+            "protected_branches": set(),
+        },
+        repo_probe_state={repo_url: state},
+    )
+
+    assert outcome == "probe_failed"
+    assert state.cooldown_remaining == expected_cooldown
+    assert state.cooldown_remaining <= rec._QUARANTINE_MAX_COOLDOWN_PASSES
+
+
+@pytest.mark.asyncio
 async def test_unreadable_repo_and_readable_empty_repo_are_distinguishable() -> None:
     """A repo that answers with zero dead branches must not be
     indistinguishable from one that could not be asked at all. Collapsing the

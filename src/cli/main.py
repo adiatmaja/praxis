@@ -675,13 +675,6 @@ def plans(project_id: str = typer.Argument(..., help="Project ID")) -> None:
             )
 
 
-#: Mirrors `core/orchestrator.py`'s `_MAX_PLANNING_ATTEMPTS` module constant.
-#: Display-only: the plans API does not expose the cap itself, and printing
-#: "attempt 2" with no denominator hides whether the plan is one retry away
-#: from FAILED or about to be. If that constant ever changes, this one has to
-#: move with it; there is no second source of truth to keep it honest.
-_MAX_PLANNING_ATTEMPTS = 3
-
 #: How much of a stored planner error to show inline in the status cell. A
 #: raw response excerpt runs to hundreds of characters, and unlike a plan id
 #: it carries no lookup contract, so truncating it is safe where truncating
@@ -718,9 +711,10 @@ def _status_cell(plan: dict[str, Any]) -> str:
     An `active`/`pending` plan gets the same treatment for a different
     reason: a planner stuck retrying JSON extraction forever looks IDENTICAL
     from here to a plan decomposing normally, both print a bare `active`, and
-    `praxis tasks` says "has no tasks yet" for both too. `error` and
-    `plan_attempts` are read with `.get`, defaulting to absent/zero, so a
-    server that predates their addition renders exactly as before.
+    `praxis tasks` says "has no tasks yet" for both too. `error`,
+    `plan_attempts` and `max_planning_attempts` are all read with `.get`,
+    defaulting to absent/zero, so a server that predates any of them renders
+    exactly as it did before that field existed.
     """
     status_text = str(plan.get("status") or "")
     if plan.get("integration_merged_at"):
@@ -732,10 +726,20 @@ def _status_cell(plan: dict[str, Any]) -> str:
     if status_text in ("active", "pending"):
         attempts = plan.get("plan_attempts") or 0
         error = plan.get("error")
+        # The denominator comes off the WIRE (`PlanResponse.max_planning_attempts`),
+        # never from a constant here. This file used to mirror the engine's cap
+        # and admit in a comment that nothing kept the copy honest: raising the
+        # engine's constant printed "attempt 4/3" at an operator -- a
+        # denominator saying the plan is already dead -- with the suite green.
+        # A server too old to send it gets no denominator rather than a guessed
+        # one, which is exactly what this cell printed before the cap existed.
+        cap = plan.get("max_planning_attempts")
         if attempts or error:
             detail = "planning"
             if attempts:
-                detail += f", attempt {attempts}/{_MAX_PLANNING_ATTEMPTS}"
+                detail += (
+                    f", attempt {attempts}/{cap}" if cap else f", attempt {attempts}"
+                )
             if error:
                 detail += f"; last error: {_truncate_error(str(error))}"
             return f"{status_text} ({detail})"
@@ -1054,12 +1058,12 @@ def _scope_glance(review_scope: str | None) -> str:
     if not review_scope:
         return ""
     checkout = "checkout" if "read a clean checkout" in review_scope else "diff only"
-    if "verify gate passed" in review_scope:
-        verify = "verify passed"
-    elif "verify gate failed" in review_scope:
-        verify = "verify failed"
-    else:
-        verify = "no gate"
+    # Two outcomes, not three. The producer never writes "verify gate failed":
+    # a failed gate fails the task where it runs, so it never reaches a review
+    # verdict of pass, never gets a scope statement, and never parks here. The
+    # third arm this replaced could not fire, and an unreachable branch reads
+    # as a live feature at the one surface a human trusts before merging.
+    verify = "verify passed" if "verify gate passed" in review_scope else "no gate"
     return f"{checkout}, {verify}"
 
 

@@ -68,6 +68,18 @@ REPO_PROBE_FAILURE_QUARANTINE_THRESHOLD: int = 3
 _QUARANTINE_INITIAL_COOLDOWN_PASSES: int = 10
 _QUARANTINE_MAX_COOLDOWN_PASSES: int = 120
 
+# Doublings past which the product is already at or above the ceiling, so the
+# shift below is clamped BEFORE it happens rather than after. Clamping only the
+# product is correct and arrives too late: ``consecutive_failures`` keeps
+# growing for as long as the repository stays unreachable, so a repository that
+# has been gone for a year builds an enormous integer on every re-probe purely
+# to throw it away in ``min``. Derived from the two constants above rather than
+# written out, so it cannot go stale when either moves: ``bit_length`` gives
+# the smallest k with ``2**k`` greater than the ratio.
+_QUARANTINE_MAX_COOLDOWN_DOUBLINGS: int = (
+    _QUARANTINE_MAX_COOLDOWN_PASSES // _QUARANTINE_INITIAL_COOLDOWN_PASSES
+).bit_length()
+
 # The observable outcome of one sweep_dead_branches call. Kept explicit (over
 # returning None) so a repo that was genuinely PROBED and found to have
 # nothing to reclaim ("swept") stays distinguishable in tests from one that
@@ -248,12 +260,11 @@ async def sweep_dead_branches(
                 exc,
             )
         if state.consecutive_failures >= REPO_PROBE_FAILURE_QUARANTINE_THRESHOLD:
-            cooldown = _QUARANTINE_INITIAL_COOLDOWN_PASSES * (
-                2
-                ** (
-                    state.consecutive_failures - REPO_PROBE_FAILURE_QUARANTINE_THRESHOLD
-                )
+            doublings = min(
+                state.consecutive_failures - REPO_PROBE_FAILURE_QUARANTINE_THRESHOLD,
+                _QUARANTINE_MAX_COOLDOWN_DOUBLINGS,
             )
+            cooldown = _QUARANTINE_INITIAL_COOLDOWN_PASSES * (2**doublings)
             state.cooldown_remaining = min(cooldown, _QUARANTINE_MAX_COOLDOWN_PASSES)
         return "probe_failed"
     except Exception:

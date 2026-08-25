@@ -342,7 +342,7 @@ async def _migration_0011_plan_attempts(connection: aiosqlite.Connection) -> Non
     plan mid-decomposition is also ACTIVE with no tasks.
 
     A count on the row is what makes the retry bounded AND visible: the loop
-    stops at ``_MAX_PLANNING_ATTEMPTS`` and every read-only surface can say how
+    stops at ``MAX_PLANNING_ATTEMPTS`` and every read-only surface can say how
     many tries a plan has burned.
 
     NOT NULL DEFAULT 0 rather than nullable: the bound is a comparison on the

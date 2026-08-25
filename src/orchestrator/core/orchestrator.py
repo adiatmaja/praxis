@@ -75,7 +75,14 @@ _ACTIVATABLE_PLAN_STATUSES: frozenset[str] = frozenset(
 # The PERMANENT class of failure does not consume this budget at all; it goes
 # terminal on the first occurrence. Neither does a rate limit, which is the one
 # failure this system already knows how to wait out.
-_MAX_PLANNING_ATTEMPTS = 3
+#
+# PUBLIC because it is served: ``PlanResponse.max_planning_attempts`` reads it
+# so `praxis plans` can print "attempt 2/3" with a denominator it was TOLD
+# rather than one it mirrors. The CLI used to hold its own copy of the number
+# and said so in a comment ("there is no second source of truth to keep it
+# honest"); raising this constant then printed "attempt 4/3" at an operator,
+# a denominator saying the plan is already dead, with the suite green.
+MAX_PLANNING_ATTEMPTS = 3
 
 # Where the planner's throwaway repository clones are made. Relative, so it
 # resolves under the process's working directory: ``/app`` in the shipped
@@ -687,12 +694,12 @@ class Orchestrator(DispatchMixin, ReviewMixin, ReconcileMixin, ImprovementMixin)
                 await self._tq.set_plan_error(plan_id, reason)
                 return None
             attempts = await self._tq.bump_plan_attempts(plan_id)
-            if attempts >= _MAX_PLANNING_ATTEMPTS:
+            if attempts >= MAX_PLANNING_ATTEMPTS:
                 await self._fail_plan(
                     plan_id,
                     _with_checkout_note(
                         f"planning failed on {attempts} of "
-                        f"{_MAX_PLANNING_ATTEMPTS} permitted attempts and will "
+                        f"{MAX_PLANNING_ATTEMPTS} permitted attempts and will "
                         "not be retried, because a plan that keeps retrying is "
                         "indistinguishable from one that is still being "
                         "decomposed. Check the planner with `praxis doctor`, "
@@ -705,7 +712,7 @@ class Orchestrator(DispatchMixin, ReviewMixin, ReconcileMixin, ImprovementMixin)
             # recorded now rather than only at the end, because a plan quietly
             # burning attempts is the same invisible state as one wedged.
             reason = _with_checkout_note(
-                f"planning attempt {attempts} of {_MAX_PLANNING_ATTEMPTS} failed "
+                f"planning attempt {attempts} of {MAX_PLANNING_ATTEMPTS} failed "
                 f"and will be retried on the next pass: {exc}",
                 degraded,
             )

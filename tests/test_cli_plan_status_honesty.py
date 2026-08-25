@@ -5,9 +5,15 @@ this surface, to a plan decomposing normally: both printed a bare `active`,
 and `praxis tasks` said "has no tasks yet" for both too. The only way to find
 out the planner was wedged was `docker logs orchestrator`.
 
-`error` and `plan_attempts` are optional fields on the plans API response
-(added by a sibling task in the same plan), so every test here also proves
-the CLI renders identically to before when a server omits them.
+`error`, `plan_attempts` and `max_planning_attempts` are optional fields on the
+plans API response, so every test here also proves the CLI renders identically
+to before when a server omits them.
+
+The denominator in "attempt 2/3" comes off the WIRE. The CLI used to mirror
+`core/orchestrator.MAX_PLANNING_ATTEMPTS` in a constant of its own, so raising
+the engine's cap printed "attempt 4/3" -- a denominator telling the operator
+the plan was already dead -- with this file green on hand-built payloads that
+never touched either constant.
 """
 
 from __future__ import annotations
@@ -19,6 +25,8 @@ import pytest
 from typer.testing import CliRunner
 
 from cli.main import _status_cell, app
+from orchestrator.core.orchestrator import MAX_PLANNING_ATTEMPTS
+from orchestrator.models.schemas import PlanResponse, PlanStatus
 from tests.cli_text import flat, on_one_line
 
 
@@ -29,6 +37,13 @@ PLAN_ID = "11111111-2222-3333-4444-555555555555"
 
 
 def _plan(**overrides: Any) -> dict[str, Any]:
+    """A plans-API row as a CURRENT server sends it.
+
+    `max_planning_attempts` carries the engine's own constant rather than a
+    literal 3: these fixtures stand in for the server, and a fixture that
+    hard-codes the cap re-creates in the test suite exactly the mirror this
+    change removed from the CLI.
+    """
     plan = {
         "id": PLAN_ID,
         "source": "user",
@@ -36,6 +51,7 @@ def _plan(**overrides: Any) -> dict[str, Any]:
         "spec_path": "docs/superpowers/specs/x.md",
         "integration_pr_url": None,
         "integration_merged_at": None,
+        "max_planning_attempts": MAX_PLANNING_ATTEMPTS,
     }
     plan.update(overrides)
     return plan
@@ -112,6 +128,49 @@ def test_status_cell_shows_the_attempt_count_with_no_error_at_all() -> None:
     cell = _status_cell(_plan(status="active", plan_attempts=1, error=None))
     assert cell == "active (planning, attempt 1/3)"
     assert "last error" not in cell
+
+
+def test_status_cell_omits_the_denominator_when_the_server_does_not_send_one() -> None:
+    """An older server sends no cap, so the cell states the count and stops.
+
+    Falling back to a literal 3 here would be the mirrored constant again
+    wearing a `.get`: a number that is this CLI's BELIEF about a server which
+    never told it anything, printed as if the server had.
+    """
+    plan = _plan(status="active", plan_attempts=2, error=None)
+    del plan["max_planning_attempts"]
+
+    cell = _status_cell(plan)
+
+    assert cell == "active (planning, attempt 2)"
+    assert "/" not in cell
+
+
+def test_the_denominator_the_cli_prints_is_the_engines_own_cap() -> None:
+    """Producer -> wire -> CLI, composed, because nothing composed them before.
+
+    `core/orchestrator.MAX_PLANNING_ATTEMPTS` bounds the retry,
+    `PlanResponse.max_planning_attempts` serves it, `_status_cell` renders it.
+    Building the payload with the REAL response model is what makes this a
+    guard: a hand-written dict proves only that the renderer can format a
+    number somebody typed into the test, which is exactly how the CLI's private
+    copy of the cap survived every test in this file.
+    """
+    payload = PlanResponse(
+        id=PLAN_ID,
+        project_id=PROJECT_ID,
+        source="user",
+        status=PlanStatus.ACTIVE,
+        plan_attempts=2,
+        created_at="2026-08-25T00:00:00+00:00",
+    ).model_dump(mode="json")
+
+    cell = _status_cell(payload)
+
+    assert cell == f"active (planning, attempt 2/{MAX_PLANNING_ATTEMPTS})"
+    # And the shipped value, pinned. Moving the cap is a decision about how
+    # long an operator waits on a wedged planner; it must not be quiet.
+    assert cell == "active (planning, attempt 2/3)"
 
 
 def test_status_cell_ignores_the_suffix_for_a_terminal_status() -> None:

@@ -163,7 +163,9 @@ class Settings(BaseSettings):
     # needed when callers consume the REST API directly.
     public_url: str | None = None
     # Name of the Docker VOLUME that holds the agy (Antigravity/Gemini) OAuth
-    # credentials.  The user populates it once with an interactive `agy login`
+    # credentials.  The user populates it once by STARTING an interactive `agy`
+    # session against the empty volume, which is what triggers the OAuth flow:
+    # there is no `agy login` subcommand
     # (see docs/deployment.md); the orchestrator then mounts it read-write into
     # every agy agent container at /home/agent/.gemini so fresh worker processes
     # can authenticate and refresh tokens.  A named volume (not a host path) is

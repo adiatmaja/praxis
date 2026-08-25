@@ -108,11 +108,20 @@ def _review_scope_from_feedback(review_feedback: str | None) -> str | None:
 
     A PASS'd review writes its scope statement into ``review_feedback``
     (``_review_scope_statement`` in ``orchestrator_review.py``), optionally
-    prefixed by a diff-guard or supply-chain warning. The marker
-    ``"Review scope: "`` is emitted by exactly one producer and always starts
-    its own paragraph, so slicing from the marker recovers exactly the same
-    fact the ``task_awaiting_merge`` event's own ``review_scope`` field
-    carries, rather than opening a second channel for it to drift from.
+    prefixed by a diff-guard or supply-chain warning. Slicing from the marker
+    ``"Review scope: "`` recovers exactly the same fact the
+    ``task_awaiting_merge`` event's own ``review_scope`` field carries, rather
+    than opening a second channel for it to drift from.
+
+    From the LAST marker, not the first, and that is the whole difference
+    between a rule and a hope. The producer APPENDS its sentence to the MODEL's
+    own feedback, so the last occurrence is the review's own by construction.
+    Taking the first made "exactly one producer emits this marker" a
+    precondition nothing enforces: a reviewer whose prose happens to contain
+    "Review scope: " -- which a reviewer reading a diff that touches this very
+    feature writes as a matter of course -- would have its own words rendered
+    at the merge gate as the review's account of what it looked at, up to and
+    including claiming a checkout the review never had.
 
     A row with no feedback, or pre-dating this feature, has no marker and
     returns ``None`` rather than fabricating a statement it never made.
@@ -126,7 +135,7 @@ def _review_scope_from_feedback(review_feedback: str | None) -> str | None:
     if not review_feedback:
         return None
     marker = "Review scope: "
-    idx = review_feedback.find(marker)
+    idx = review_feedback.rfind(marker)
     if idx == -1:
         return None
     return review_feedback[idx:].strip()

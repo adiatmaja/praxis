@@ -86,7 +86,14 @@ def _mounts(compose: dict) -> list[tuple[str, str, str]]:
     parsed: list[tuple[str, str, str]] = []
     for entry in compose["services"]["orchestrator"].get("volumes", []):
         pieces = _split_top_level(entry)
-        if len(pieces) == 3:
+        if len(pieces) == 1:
+            # An anonymous volume (`- /var/lib/x`): a container path with no
+            # source and no mode. Neither compose file here has one today, but
+            # `pieces[1]` on one is an IndexError, and a helper that CRASHES on
+            # a legal compose entry reports "somebody added a volume" as
+            # "these tests are broken".
+            parsed.append(("", pieces[0], ""))
+        elif len(pieces) == 3:
             parsed.append((pieces[0], pieces[1], pieces[2]))
         else:
             parsed.append((pieces[0], pieces[1], ""))
