@@ -1040,6 +1040,29 @@ def mode(action: str = typer.Argument(..., help="on | off | status")) -> None:
     console.print(f"auto-delegate: {enabled_str} (worker: {harness} / {model})")
 
 
+def _scope_glance(review_scope: str | None) -> str:
+    """A short glance at what a review covered, or "" when there is none.
+
+    Parsed straight off the review's own stored sentence (never re-derived
+    from other state), so the glance can never drift from the full statement
+    printed beside it. The two axes that actually matter to a human approving
+    a merge: did the review read a real checkout or only diff text, and did
+    the verify gate run and pass. "checkout, verify passed" must read as
+    plainly different from "diff only, no gate" -- that distinction is the
+    whole point of carrying this to the merge gate at all.
+    """
+    if not review_scope:
+        return ""
+    checkout = "checkout" if "read a clean checkout" in review_scope else "diff only"
+    if "verify gate passed" in review_scope:
+        verify = "verify passed"
+    elif "verify gate failed" in review_scope:
+        verify = "verify failed"
+    else:
+        verify = "no gate"
+    return f"{checkout}, {verify}"
+
+
 @app.command()
 def pending() -> None:
     """List tasks and completed plans parked at the human merge gate."""
@@ -1070,11 +1093,17 @@ def pending() -> None:
         table.add_column("Age")
         table.add_column("Task", max_width=40)
         table.add_column("Branch", overflow="fold")
+        # Short glance only: what the review actually covered (checkout vs
+        # diff text, verify passed/failed/not run), so a human deciding
+        # whether to click approve does not have to open `praxis task` first
+        # to learn whether the green in front of them means anything.
+        table.add_column("Scope")
         for task in tasks:
             table.add_row(
                 f"{int(task['age_hours'])}h",
                 task["title"] or task["task_id"],
                 task["branch"] or "",
+                _scope_glance(task.get("review_scope")),
             )
         console.print(table)
 
@@ -1138,6 +1167,13 @@ def pending() -> None:
         _copyable(f"praxis reject-merge {task['task_id']}   # send it back")
         if task["pr_url"]:
             _copyable(f"  PR: {task['pr_url']}")
+        # The review's own full account, not just the table's short glance.
+        # It is prose, not a command, so it is printed rather than made
+        # copyable, and it is skipped entirely for a row with none (a
+        # pre-feature task, or a PASS that recorded no scope statement) rather
+        # than printing a fabricated "None".
+        if task.get("review_scope"):
+            console.print(f"  {task['review_scope']}")
     for plan in plans_awaiting:
         # The plan line names the same verb the per-task line does, because
         # `merge-plan` is one command that covers both stages: it drains

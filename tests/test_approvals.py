@@ -52,6 +52,75 @@ def test_summarize_lists_each_parked_task_with_its_pr():
 
 
 @pytest.mark.unit
+def test_summarize_selects_the_review_scope_statement():
+    """The merge gate's own table must carry what the green covers.
+
+    `core/orchestrator_review.py` stores the review's scope statement in
+    `tasks.review_feedback`; `fetch_pending_approvals` selects `SELECT *` so
+    the column already reaches `summarize_pending`'s input, but the per-task
+    dict `summarize_pending` builds never selected it back out. This is the
+    QUERY layer, not the renderer: delete the new key from the dict builder
+    and only this test (and its siblings below) goes red, never
+    `test_cli_pending.py`.
+    """
+    row = _task(
+        1,
+        review_feedback=(
+            "Review scope: read a clean checkout of the PR head and the diff; "
+            "verify gate passed (`pytest -q`); "
+            "blast radius not applicable, this diff defines nothing."
+        ),
+    )
+    summary = summarize_pending([row])
+    assert summary["tasks"][0]["review_scope"] == row["review_feedback"]
+
+
+@pytest.mark.unit
+def test_summarize_extracts_the_scope_statement_from_prefixed_feedback():
+    """A diff-guard warning can precede the scope statement in the same column.
+
+    Only the review's own account of what it looked at should travel into the
+    merge-gate summary; the warning prefix is noise for this purpose (it is
+    already rendered in full by `praxis task`/MCP `poll_task`).
+    """
+    row = _task(
+        1,
+        review_feedback=(
+            "[diff-guard] Warning: large net deletions in x.py.\n\n"
+            "Review scope: read the diff text only (no checkout available); "
+            "verify gate did not run (no verify_cmd configured); "
+            "blast radius not measured."
+        ),
+    )
+    summary = summarize_pending([row])
+    scope = summary["tasks"][0]["review_scope"]
+    assert scope is not None
+    assert scope.startswith("Review scope:")
+    assert "diff-guard" not in scope
+
+
+@pytest.mark.unit
+def test_a_task_with_no_review_feedback_carries_no_scope_statement():
+    """A row with nothing to say must not gain a fabricated statement."""
+    row = _task(1, review_feedback=None)
+    summary = summarize_pending([row])
+    assert summary["tasks"][0]["review_scope"] is None
+
+
+@pytest.mark.unit
+def test_a_pre_feature_row_with_feedback_but_no_marker_carries_no_statement():
+    """A task parked before this feature shipped has feedback with no marker.
+
+    Returning that raw text as `review_scope` would fabricate a scope
+    statement the review never made; the marker's absence must read as
+    `None`, not as "here is the whole feedback column".
+    """
+    row = _task(1, review_feedback="Looks good, minor nit about naming.")
+    summary = summarize_pending([row])
+    assert summary["tasks"][0]["review_scope"] is None
+
+
+@pytest.mark.unit
 def test_an_empty_queue_summarizes_to_zero_not_to_an_error():
     summary = summarize_pending([])
     assert summary["count"] == 0

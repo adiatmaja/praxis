@@ -274,6 +274,11 @@ async def poll_task_impl(client: Any, task_id: str) -> dict[str, Any]:
         "review": task.get("review_feedback"),
         "branch": task.get("branch_name"),
         "verdict": "pass" if awaiting else None,
+        # The docstring has promised this since the first version of this
+        # tool; the field itself never shipped. `_task_summary` folds it into
+        # the prose summary but only when > 1, which left a caller reading the
+        # STRUCTURED result with no way to tell attempt 1 from attempt 3.
+        "attempt": task.get("attempt"),
         "dashboard_url": _dashboard_url(client),
         "approvals": approvals,
     }
@@ -548,6 +553,11 @@ async def poll_plan_impl(client: Any, plan_id: str) -> dict[str, Any]:
       never breaks this poll; ``approvals`` is simply "" in that case, which is
       also what it is when nothing is parked.
 
+    ``plan_attempts`` is how many times planning has been tried and failed
+    (migration 11). A plan mid-retry and a healthy decomposition both present
+    as ``active``/``pending`` with no tasks yet; this count is the only field
+    that tells them apart.
+
     ``integration_pr_url`` and ``integration_merged_at`` are the last step of a
     plan: a COMPLETED plan's work sits on the plan branch, and the integration
     PR is the only thing between it and the base branch. They were dropped from
@@ -589,6 +599,13 @@ async def poll_plan_impl(client: Any, plan_id: str) -> dict[str, Any]:
         # work is still sitting on the plan branch behind an unapproved PR".
         "integration_pr_url": plan_data.get("integration_pr_url"),
         "integration_merged_at": plan_data.get("integration_merged_at"),
+        # How many times planning has been tried and failed (migration 11). A
+        # plan mid-retry and a healthy decomposition both present as
+        # active/pending with no tasks; this count is the only thing that
+        # tells them apart, and `PlanResponse.plan_attempts` already returns
+        # it over REST. Dropping it here left the primary surface (MCP is the
+        # primary surface by directive) unable to say which one this is.
+        "plan_attempts": plan_data.get("plan_attempts"),
         "dashboard_url": _dashboard_url(client),
         "approvals": approvals,
     }
@@ -974,7 +991,12 @@ async def poll_plan(plan_id: str) -> dict[str, Any]:
 
     Returns {summary, plan_id, status, error, task_count, tasks, merge_gate,
     terminal_incomplete, integration_pr_url, integration_merged_at,
-    dashboard_url, approvals}.
+    plan_attempts, dashboard_url, approvals}.
+
+    ``plan_attempts`` is how many times planning itself has been tried and
+    failed. A plan stuck retrying decomposition and a plan decomposing
+    normally for the first time both read as ``active``/``pending`` with no
+    tasks; this count is the only thing that tells them apart.
 
     ``merge_gate`` and ``terminal_incomplete`` are ALWAYS present and are
     always non-empty dicts, so truth-testing them is always true. Read
