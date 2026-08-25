@@ -27,6 +27,29 @@ class _FakeGit:
         self.deleted.append(branch)
 
 
+class _FailingGit:
+    """A remote that never answers -- e.g. a repo path that no longer exists.
+
+    Used to exercise the reconcile_runs -> sweep_dead_branches WIRING (the SQL
+    query, project_ids_by_repo, the lazily-created ``_repo_probe_failures``),
+    not just the bare function: a bug in that wiring (e.g. forgetting to pass
+    ``repo_probe_state`` through) would leave every unit test on the pure
+    function green while the real defect -- a traceback every reconcile pass
+    -- kept happening in production.
+    """
+
+    def __init__(self) -> None:
+        self.attempts = 0
+
+    async def list_remote_branches(self, repo_url: str) -> list[str]:
+        self.attempts += 1
+        msg = "git ls-remote failed (exit 128): repository not found"
+        raise RuntimeError(msg)
+
+    async def delete_remote_branch(self, repo_url: str, branch: str) -> None:
+        pass
+
+
 class _ReconcileHarness(rec.ReconcileMixin):
     """The real ReconcileMixin over a real DB, with only the remote faked.
 
@@ -468,6 +491,374 @@ async def test_each_ledger_signal_separately_spares_an_unintegrated_plan_branch(
     assert branch not in captured["merged_plan"]
     # Guard 2: its integration PR is an open PR, which vetoes outright.
     assert branch in captured["open_pr_branches"]
+
+
+@pytest.mark.asyncio
+async def test_repo_probe_quarantines_after_n_consecutive_failures_one_warning(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """N consecutive `git ls-remote` failures against the SAME repo produce
+    exactly ONE warning (naming the repo and the project), not a fresh log
+    line -- let alone a traceback -- on every attempt."""
+    repo_url = "https://example.invalid/dead.git"
+    attempts = 0
+
+    async def fake_list_remote_branches(url: str) -> list[str]:
+        nonlocal attempts
+        attempts += 1
+        msg = "git ls-remote failed (exit 128): repository not found"
+        raise RuntimeError(msg)
+
+    async def fake_delete_remote_branch(url: str, branch: str) -> None:
+        pass
+
+    ledger = {
+        "open_pr_branches": set(),
+        "terminal_failed": set(),
+        "merged_plan": set(),
+        "live_branches": set(),
+        "protected_branches": set(),
+    }
+    repo_probe_state: dict[str, rec.RepoProbeState] = {}
+    threshold = rec.REPO_PROBE_FAILURE_QUARANTINE_THRESHOLD
+
+    with caplog.at_level(logging.WARNING, logger=rec.__name__):
+        for _ in range(threshold + 4):
+            await rec.sweep_dead_branches(
+                repo_url=repo_url,
+                list_remote_branches=fake_list_remote_branches,
+                delete_remote_branch=fake_delete_remote_branch,
+                ledger=ledger,
+                repo_probe_state=repo_probe_state,
+                project_ids=["proj-dead"],
+            )
+
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(warnings) == 1
+    assert "proj-dead" in warnings[0].message
+    assert repo_url in warnings[0].message
+    # Only `threshold` real attempts were made; the rest were skipped outright.
+    assert attempts == threshold
+
+
+@pytest.mark.asyncio
+async def test_quarantined_repo_is_not_probed_on_the_next_tick() -> None:
+    """Once quarantined, the next pass must not call list_remote_branches at
+    all -- the noise this whole fix exists to remove comes from that call."""
+    repo_url = "https://example.invalid/dead.git"
+    attempts = 0
+
+    async def fake_list_remote_branches(url: str) -> list[str]:
+        nonlocal attempts
+        attempts += 1
+        msg = "git ls-remote failed (exit 128): repository not found"
+        raise RuntimeError(msg)
+
+    async def fake_delete_remote_branch(url: str, branch: str) -> None:
+        pass
+
+    ledger = {
+        "open_pr_branches": set(),
+        "terminal_failed": set(),
+        "merged_plan": set(),
+        "live_branches": set(),
+        "protected_branches": set(),
+    }
+    repo_probe_state: dict[str, rec.RepoProbeState] = {}
+    threshold = rec.REPO_PROBE_FAILURE_QUARANTINE_THRESHOLD
+
+    for _ in range(threshold):
+        await rec.sweep_dead_branches(
+            repo_url=repo_url,
+            list_remote_branches=fake_list_remote_branches,
+            delete_remote_branch=fake_delete_remote_branch,
+            ledger=ledger,
+            repo_probe_state=repo_probe_state,
+        )
+    assert attempts == threshold  # quarantine has just kicked in
+
+    outcome = await rec.sweep_dead_branches(
+        repo_url=repo_url,
+        list_remote_branches=fake_list_remote_branches,
+        delete_remote_branch=fake_delete_remote_branch,
+        ledger=ledger,
+        repo_probe_state=repo_probe_state,
+    )
+
+    assert outcome == "quarantined"
+    assert attempts == threshold  # NOT probed again
+
+
+@pytest.mark.asyncio
+async def test_recovered_repo_is_swept_again() -> None:
+    """After the cooldown lapses, the repo is re-probed; if it now answers,
+    the sweep actually runs and reclaims a dead branch again -- proving real
+    recovery, not merely that the word "quarantined" stopped appearing."""
+    repo_url = "https://example.invalid/recovering.git"
+    should_fail = True
+    deleted: list[str] = []
+
+    async def fake_list_remote_branches(url: str) -> list[str]:
+        if should_fail:
+            msg = "git ls-remote failed (exit 128): temporary"
+            raise RuntimeError(msg)
+        return ["main", "agent/dead"]
+
+    async def fake_delete_remote_branch(url: str, branch: str) -> None:
+        deleted.append(branch)
+
+    ledger = {
+        "open_pr_branches": set(),
+        "terminal_failed": {"agent/dead"},
+        "merged_plan": set(),
+        "live_branches": set(),
+        "protected_branches": set(),
+    }
+    repo_probe_state: dict[str, rec.RepoProbeState] = {}
+    threshold = rec.REPO_PROBE_FAILURE_QUARANTINE_THRESHOLD
+
+    for _ in range(threshold):
+        await rec.sweep_dead_branches(
+            repo_url=repo_url,
+            list_remote_branches=fake_list_remote_branches,
+            delete_remote_branch=fake_delete_remote_branch,
+            ledger=ledger,
+            repo_probe_state=repo_probe_state,
+        )
+    state = repo_probe_state[repo_url]
+    cooldown = state.cooldown_remaining
+    assert cooldown > 0
+
+    # Burn through the cooldown: still quarantined every pass until it lapses.
+    for _ in range(cooldown):
+        outcome = await rec.sweep_dead_branches(
+            repo_url=repo_url,
+            list_remote_branches=fake_list_remote_branches,
+            delete_remote_branch=fake_delete_remote_branch,
+            ledger=ledger,
+            repo_probe_state=repo_probe_state,
+        )
+        assert outcome == "quarantined"
+
+    # The repo has recovered. The cooldown is exhausted, so this pass
+    # re-probes, and since it now succeeds the sweep actually runs.
+    should_fail = False
+    outcome = await rec.sweep_dead_branches(
+        repo_url=repo_url,
+        list_remote_branches=fake_list_remote_branches,
+        delete_remote_branch=fake_delete_remote_branch,
+        ledger=ledger,
+        repo_probe_state=repo_probe_state,
+    )
+
+    assert outcome == "swept"
+    assert deleted == ["agent/dead"]
+    assert repo_probe_state[repo_url].consecutive_failures == 0
+
+
+@pytest.mark.asyncio
+async def test_still_dead_repo_gets_no_second_warning_after_a_failed_reprobe(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A quarantined repo that is STILL unreachable once its cooldown lapses
+    must re-probe (proving recovery is checked for, not just assumed dead
+    forever) but must NOT log a second warning: the whole point of the latch
+    is one warning per quarantine EPISODE, and an episode that fails its
+    first re-probe is still the same episode.
+
+    Distinct from test_recovered_repo_is_swept_again: that one lets the probe
+    SUCCEED once the cooldown lapses, which resets the warned latch as part
+    of recovery and would pass even if the latch were checked on every
+    attempt. This one keeps failing past the cooldown specifically to catch
+    a "warned" guard that was quietly ignored on the re-probe path.
+    """
+    repo_url = "https://example.invalid/still-dead.git"
+    attempts = 0
+
+    async def fake_list_remote_branches(url: str) -> list[str]:
+        nonlocal attempts
+        attempts += 1
+        msg = "git ls-remote failed (exit 128): repository not found"
+        raise RuntimeError(msg)
+
+    async def fake_delete_remote_branch(url: str, branch: str) -> None:
+        pass
+
+    ledger = {
+        "open_pr_branches": set(),
+        "terminal_failed": set(),
+        "merged_plan": set(),
+        "live_branches": set(),
+        "protected_branches": set(),
+    }
+    repo_probe_state: dict[str, rec.RepoProbeState] = {}
+    threshold = rec.REPO_PROBE_FAILURE_QUARANTINE_THRESHOLD
+
+    with caplog.at_level(logging.WARNING, logger=rec.__name__):
+        for _ in range(threshold):
+            await rec.sweep_dead_branches(
+                repo_url=repo_url,
+                list_remote_branches=fake_list_remote_branches,
+                delete_remote_branch=fake_delete_remote_branch,
+                ledger=ledger,
+                repo_probe_state=repo_probe_state,
+            )
+        cooldown = repo_probe_state[repo_url].cooldown_remaining
+        assert cooldown > 0
+        for _ in range(cooldown):
+            await rec.sweep_dead_branches(
+                repo_url=repo_url,
+                list_remote_branches=fake_list_remote_branches,
+                delete_remote_branch=fake_delete_remote_branch,
+                ledger=ledger,
+                repo_probe_state=repo_probe_state,
+            )
+        # Cooldown just lapsed: this call re-probes for real (attempts must
+        # grow past `threshold`), it fails again, and it must stay quiet.
+        outcome = await rec.sweep_dead_branches(
+            repo_url=repo_url,
+            list_remote_branches=fake_list_remote_branches,
+            delete_remote_branch=fake_delete_remote_branch,
+            ledger=ledger,
+            repo_probe_state=repo_probe_state,
+        )
+
+    assert outcome == "probe_failed"
+    assert attempts == threshold + 1  # the re-probe genuinely happened
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(warnings) == 1  # still just the one, from the original episode
+
+
+@pytest.mark.asyncio
+async def test_unreadable_repo_and_readable_empty_repo_are_distinguishable() -> None:
+    """A repo that answers with zero dead branches must not be
+    indistinguishable from one that could not be asked at all. Collapsing the
+    two is exactly the "sweep silently stopped working" bug class this repo
+    has been bitten by before."""
+    ledger = {
+        "open_pr_branches": set(),
+        "terminal_failed": set(),
+        "merged_plan": set(),
+        "live_branches": set(),
+        "protected_branches": set(),
+    }
+
+    async def fake_delete_remote_branch(url: str, branch: str) -> None:
+        pass
+
+    async def readable(url: str) -> list[str]:
+        return ["main"]
+
+    readable_outcome = await rec.sweep_dead_branches(
+        repo_url="https://example.invalid/quiet.git",
+        list_remote_branches=readable,
+        delete_remote_branch=fake_delete_remote_branch,
+        ledger=ledger,
+        repo_probe_state={},
+    )
+
+    async def unreadable(url: str) -> list[str]:
+        msg = "git ls-remote failed (exit 128): repository not found"
+        raise RuntimeError(msg)
+
+    unreadable_state: dict[str, rec.RepoProbeState] = {}
+    threshold = rec.REPO_PROBE_FAILURE_QUARANTINE_THRESHOLD
+    unreadable_outcome = None
+    for _ in range(threshold):
+        unreadable_outcome = await rec.sweep_dead_branches(
+            repo_url="https://example.invalid/dead.git",
+            list_remote_branches=unreadable,
+            delete_remote_branch=fake_delete_remote_branch,
+            ledger=ledger,
+            repo_probe_state=unreadable_state,
+        )
+    quarantined_outcome = await rec.sweep_dead_branches(
+        repo_url="https://example.invalid/dead.git",
+        list_remote_branches=unreadable,
+        delete_remote_branch=fake_delete_remote_branch,
+        ledger=ledger,
+        repo_probe_state=unreadable_state,
+    )
+
+    assert readable_outcome == "swept"
+    assert unreadable_outcome == "probe_failed"
+    assert quarantined_outcome == "quarantined"
+    assert len({readable_outcome, unreadable_outcome, quarantined_outcome}) == 3
+
+
+@pytest.mark.asyncio
+async def test_expected_probe_failure_logs_no_traceback(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """An unreachable repo is a CONDITION, not a crash: no record on this
+    path may carry a stack trace (``logger.exception``/``exc_info``), all the
+    way up to and including the one quarantine warning itself."""
+    repo_url = "https://example.invalid/dead.git"
+
+    async def fake_list_remote_branches(url: str) -> list[str]:
+        msg = "git ls-remote failed (exit 128): repository not found"
+        raise RuntimeError(msg)
+
+    async def fake_delete_remote_branch(url: str, branch: str) -> None:
+        pass
+
+    ledger = {
+        "open_pr_branches": set(),
+        "terminal_failed": set(),
+        "merged_plan": set(),
+        "live_branches": set(),
+        "protected_branches": set(),
+    }
+    repo_probe_state: dict[str, rec.RepoProbeState] = {}
+    threshold = rec.REPO_PROBE_FAILURE_QUARANTINE_THRESHOLD
+
+    with caplog.at_level(logging.DEBUG, logger=rec.__name__):
+        for _ in range(threshold):
+            await rec.sweep_dead_branches(
+                repo_url=repo_url,
+                list_remote_branches=fake_list_remote_branches,
+                delete_remote_branch=fake_delete_remote_branch,
+                ledger=ledger,
+                repo_probe_state=repo_probe_state,
+            )
+
+    relevant = [r for r in caplog.records if r.name == rec.__name__]
+    assert relevant, "expected at least the quarantine warning to be logged"
+    for record in relevant:
+        assert record.exc_info is None
+        assert record.levelno < logging.ERROR
+
+
+@pytest.mark.asyncio
+async def test_reconcile_runs_quarantines_a_dead_project_repo_and_names_it(
+    db: Database, caplog: pytest.LogCaptureFixture
+) -> None:
+    """End-to-end through ``reconcile_runs`` (the real production entry
+    point), not the bare ``sweep_dead_branches`` function: a project whose
+    ``repo_url`` no longer exists is probed only up to the threshold, then
+    quarantined, and the one warning names the PROJECT (its id), matching the
+    field report where an operator could not tell which project was
+    responsible for the noise. This is the seam that a wiring bug (e.g.
+    forgetting to pass ``repo_probe_state``/``project_ids`` through from
+    ``reconcile_runs``) would miss while every direct-function test above
+    stayed green.
+    """
+    await _seed_project(db, default_branch="main")
+
+    git = _FailingGit()
+    harness = _ReconcileHarness(TaskQueue(db), git)
+    threshold = rec.REPO_PROBE_FAILURE_QUARANTINE_THRESHOLD
+
+    with caplog.at_level(logging.WARNING, logger=rec.__name__):
+        for _ in range(threshold + 2):
+            await harness.reconcile_runs()
+
+    # Probing stopped at the threshold, not on every one of the extra passes.
+    assert git.attempts == threshold
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(warnings) == 1
+    assert "p1" in warnings[0].message
+    assert REPO_URL in warnings[0].message
 
 
 @pytest.mark.asyncio
