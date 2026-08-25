@@ -1341,7 +1341,14 @@
       // the tree, it just did not need a commit to get there. An unlisted
       // status sorts to 99 and lands below `pending`, which would bury a
       // finished leaf under unstarted ones.
-      const statusOrder = { merged: 0, no_changes: 1, passed: 2, reviewing: 3, in_progress: 4, failed: 5, superseded: 6, pending: 7 };
+      //
+      // needs_clarification sits beside passed, the other thing parked on a
+      // person. It was the status this map OMITTED, so the one leaf nothing
+      // but a human answering can advance sorted to 99 and sank to the bottom
+      // of the lane, under work that had not started. Every TaskStatus value
+      // has a rank here and tests/test_status_vocab.py parses this literal to
+      // prove it, in both directions.
+      const statusOrder = { merged: 0, no_changes: 1, passed: 2, needs_clarification: 3, reviewing: 4, in_progress: 5, failed: 6, superseded: 7, pending: 8 };
       tasks.sort((a, b) => (statusOrder[a.status] ?? 99) - (statusOrder[b.status] ?? 99));
       const isSpecExpanded = expandedSpecs.has(plan.id);
       const specPreview = esc(planLabel(plan)).slice(0, 80);

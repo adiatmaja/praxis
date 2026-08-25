@@ -974,6 +974,15 @@ async def test_an_ordinary_decompose_failure_neither_parks_nor_defers(
     The deferral is for the ONE failure that heals itself.  Widen it to any
     provider error and a genuinely broken planner becomes a silent five-hour
     wait -- the same inversion the parking predicate itself is gated against.
+
+    This used to be observed as ``pytest.raises(RuntimeError)``, because at the
+    time escaping the method WAS the only alternative to deferring.  That made
+    "it raises" and "it is visible" the same fact, and they never were: the
+    exception went to ``run_once``'s per-plan quarantine, which logs and moves
+    on, leaving the plan PENDING with ``error: null`` to be re-decomposed on
+    every tick.  The seat now charges the failure an attempt and writes the
+    reason to the row, so the claim is stated against what an operator can
+    actually read.
     """
     proc = _cli_proc(mocker, stdout=b"", stderr=b"Blocked by policy", returncode=1)
 
@@ -986,11 +995,20 @@ async def test_an_ordinary_decompose_failure_neither_parks_nor_defers(
         task_queue, OpusBridge(db, router=router), router
     )
 
-    with pytest.raises(RuntimeError) as caught:
-        await orchestrator.decompose_pending_execute_plan(plan_id, project)
+    await orchestrator.decompose_pending_execute_plan(plan_id, project)
 
-    assert not isinstance(caught.value, ProviderRateLimitError)
-    assert await _status(db) == "available"
+    assert await _status(db) == "available", (
+        "an ordinary failure must not park the brain: parking it turns a "
+        "broken planner into a silent five-hour wait"
+    )
+    plan = await task_queue.get_plan(plan_id)
+    assert plan is not None
+    assert plan["status"] == PlanStatus.PENDING
+    # Charged, not deferred. A deferral leaves the count at 0, and a count that
+    # never moves is a plan that re-attempts every tick forever.
+    assert plan["plan_attempts"] == 1
+    assert "Blocked by policy" in str(plan["error"])
+    assert "rate limit" not in str(plan["error"]).lower()
 
     await _assert_parking_still_works(db, mocker)
 

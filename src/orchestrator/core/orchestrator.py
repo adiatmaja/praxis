@@ -276,6 +276,96 @@ def _unavailable_reason(exc: BaseException) -> str:
     )
 
 
+def _needs_login(exc: BaseException) -> bool:
+    """True when the provider refused for want of a SESSION, not a quota.
+
+    ``is_unavailability`` answers True for this too, and for the retry BUDGET
+    that is defensible: nobody wrote a bad prompt, and the same prompt works
+    once somebody logs in. For everything else it is wrong. The wait arm tells
+    the operator that a subscription limit resets on its own within five hours
+    and that resubmitting would be a mistake, and nothing bounds a plan sitting
+    on it. For a provider that is simply not authenticated, every clause of
+    that is false: it never clears by itself, and no number of passes is a
+    substitute for a person running a login.
+
+    Args:
+        exc: The exception a brain call raised.
+
+    Returns:
+        True only for an authentication failure.
+    """
+    return isinstance(exc, ProviderAuthError)
+
+
+def _login_required_reason(exc: BaseException) -> str:
+    """Explain an unauthenticated provider, and NAME the command that fixes it.
+
+    Args:
+        exc: The auth error the provider raised.
+
+    Returns:
+        The detail to record against the plan.
+    """
+    provider = str(getattr(exc, "provider", "") or "the configured provider")
+    hint = str(getattr(exc, "login_hint", "") or "").strip()
+    action = f"run `{hint}`" if hint else "authenticate it"
+    return (
+        f"{provider} is not authenticated, so the brain call cannot run. This "
+        "is NOT a rate limit and waiting changes nothing: a person has to "
+        f"{action}, then confirm it with `praxis doctor`."
+    )
+
+
+# Why a plan whose input row is empty is terminal rather than skipped. The
+# row's ENTIRE input is ``pending_input``; with none of it there is nothing to
+# decompose on this pass or any other, and the seat used to ``return`` quietly,
+# so the plan stayed PENDING forever with no log line, no error and no event.
+_NO_PENDING_INPUT_REASON = (
+    "this execute-plan row carries no stored input, so there is no plan text "
+    "to decompose and no later pass can find any. The row cannot be repaired "
+    "in place: submit the plan again with `execute_plan`. (A row in this state "
+    "predates its own writer or was edited by hand; nothing in the product "
+    "creates one.)"
+)
+
+
+def _corrupt_pending_input_reason(exc: BaseException) -> str:
+    """Explain stored input that is not JSON. PERMANENT, on the first pass.
+
+    Args:
+        exc: Whatever ``json.loads`` raised.
+
+    Returns:
+        The reason to record against the plan.
+    """
+    return (
+        "this execute-plan row's stored input is not readable JSON, so the "
+        "decomposer can never be handed the plan text. Text that does not "
+        "parse now does not parse on a later pass either, so this is terminal "
+        "after one attempt rather than retried. Submit the plan again with "
+        f"`execute_plan`. The parser said: {exc}"
+    )
+
+
+# Why an empty task graph is terminal on both seats. It is not a malformed
+# answer, it is a WELL-FORMED answer carrying no work, and the loop has no way
+# to settle which of its two readings applies. Recorded as FAILED rather than
+# COMPLETED deliberately: a plan reported complete with no task and no commit
+# is the same sentence a landed plan prints, and those two must never read
+# alike on any surface.
+_EMPTY_GRAPH_REASON = (
+    "the brain returned a task graph with no tasks in it, so there is nothing "
+    "to dispatch, nothing to review and nothing to merge. That has two "
+    "readings and the loop cannot settle either one: the work may already be "
+    "present in the repository, in which case nothing needs to run, or the "
+    "decomposition dropped every task, in which case the plan text needs "
+    "sharpening. It is recorded as failed rather than completed because a plan "
+    "reported COMPLETE without a single task is indistinguishable from one "
+    "that landed. Check the plan text against the repository, then submit it "
+    "again."
+)
+
+
 def _prose_failure_reason(exc: BrainProseResponseError) -> str:
     """Explain a planner that answered in prose, to ``praxis doctor`` standard.
 
@@ -532,6 +622,87 @@ class Orchestrator(DispatchMixin, ReviewMixin, ReconcileMixin, ImprovementMixin)
         await self._tq.update_plan_status(plan_id, PlanStatus.FAILED)
         self._bus.publish({"type": "plan_failed", "plan_id": plan_id, "reason": reason})
 
+    async def _charge_planning_attempt(
+        self,
+        plan_id: str,
+        exc: BaseException,
+        *,
+        stage: str,
+        degraded: str | None = None,
+    ) -> None:
+        """Count one failed planning attempt, and go terminal at the bound.
+
+        Shared by BOTH planning seats on purpose. ``plan_and_activate`` had
+        this arm and ``decompose_pending_execute_plan`` had nothing at all, so
+        the flagship ``execute_plan`` path let every exception class escape to
+        ``run_once``'s per-plan quarantine and re-attempted the plan on every
+        tick, forever, while the row read ``pending`` with ``error: null`` and
+        ``plan_attempts: 0``. Two copies of a bound is how they drift; one is
+        also what makes ``poll_plan``'s "attempt N of M" mean the same thing
+        whichever seat produced it.
+
+        Args:
+            plan_id: The plan whose planning just failed.
+            exc: The failure, reported to the operator either way.
+            stage: What was being attempted, named in the operator's message.
+            degraded: How the planner's checkout failed, when it did.
+        """
+        # A dead session is reported as a login, not as a raw traceback: the
+        # exception's own text names the provider but the remedy is the only
+        # part an operator can act on.
+        detail = _login_required_reason(exc) if _needs_login(exc) else str(exc)
+        attempts = await self._tq.bump_plan_attempts(plan_id)
+        if attempts >= MAX_PLANNING_ATTEMPTS:
+            await self._fail_plan(
+                plan_id,
+                _with_checkout_note(
+                    f"{stage} failed on {attempts} of {MAX_PLANNING_ATTEMPTS} "
+                    "permitted attempts and will not be retried, because a plan "
+                    "that keeps retrying is indistinguishable from one that is "
+                    "still being decomposed. Check the brain with `praxis "
+                    "doctor`, fix what it names, then submit the work again. "
+                    f"Last error: {detail}",
+                    degraded,
+                ),
+            )
+            return
+        # Left PENDING deliberately: the next tick retries. The reason is
+        # recorded now rather than only at the end, because a plan quietly
+        # burning attempts is the same invisible state as one wedged.
+        reason = _with_checkout_note(
+            f"{stage} attempt {attempts} of {MAX_PLANNING_ATTEMPTS} failed and "
+            f"will be retried on the next pass: {detail}",
+            degraded,
+        )
+        logger.warning("Plan %s: %s", plan_id, reason)
+        await self._tq.set_plan_error(plan_id, reason)
+
+    async def _refuse_empty_graph(
+        self, plan_id: str, opus_plan: dict[str, Any]
+    ) -> bool:
+        """Fail a plan whose task graph is empty rather than activate it.
+
+        Zero leaves passed every guard on both seats. ``_validate_plan_shape``
+        requires ``tasks`` to be a LIST, not a non-empty one; ``all_tasks_done``
+        is ``bool(tasks) and all(...)`` and answers False for no tasks; and both
+        terminal predicates in ``process_plan_once`` require a FAILED task. So
+        the plan activated, satisfied nothing, and sat ACTIVE and runnable
+        forever, with one INFO line and a ``task_count: 0`` event as its only
+        trace. Reachable from a planner answering ``"tasks": []`` and from a
+        decomposition that dropped every authored leaf.
+
+        Args:
+            plan_id: The plan about to be activated.
+            opus_plan: The task graph the brain produced.
+
+        Returns:
+            True when the plan was failed and the caller must stop.
+        """
+        if opus_plan.get("tasks"):
+            return False
+        await self._fail_plan(plan_id, _EMPTY_GRAPH_REASON)
+        return True
+
     async def _clone_for_planning(self, project: dict[str, Any], dest: str) -> None:
         """Check the project repository out into ``dest`` for the planner to read.
 
@@ -656,7 +827,9 @@ class Orchestrator(DispatchMixin, ReviewMixin, ReconcileMixin, ImprovementMixin)
             )
             return None
         except Exception as exc:  # noqa: BLE001 - bounded retry, reported either way
-            if is_unavailability(exc) or not await self._opus.is_available():
+            if not _needs_login(exc) and (
+                is_unavailability(exc) or not await self._opus.is_available()
+            ):
                 # A throttle or an outage must NOT consume an attempt. Both
                 # halves are load-bearing and neither subsumes the other.
                 #
@@ -677,13 +850,20 @@ class Orchestrator(DispatchMixin, ReviewMixin, ReconcileMixin, ImprovementMixin)
                 #
                 # It is still load-bearing, for the cases parking does not
                 # cover. Most of what reaches here is an unavailability that
-                # deliberately never parks at all (`ProviderAuthError`, a
-                # gateway 403/429/5xx), and neither does a throttle raised by
-                # a seat that calls `router.run` directly rather than through
-                # `OpusBridge`, nor one lost when a fallback chain's LAST
-                # entry fails differently. Reading the EXCEPTION covers all of
-                # those; reading the state covers nothing but a throttle that
-                # already parked.
+                # deliberately never parks at all (a gateway 403/429/5xx), and
+                # neither does a throttle raised by a seat that calls
+                # `router.run` directly rather than through `OpusBridge`, nor
+                # one lost when a fallback chain's LAST entry fails
+                # differently. Reading the EXCEPTION covers all of those;
+                # reading the state covers nothing but a throttle that already
+                # parked.
+                #
+                # `_needs_login` is checked FIRST and takes the whole arm away
+                # from an unauthenticated provider, which `is_unavailability`
+                # also calls transient. A throttle clears itself and this arm's
+                # advice ("wait, do NOT resubmit, it resets within five hours")
+                # is right for it; a dead session clears for nobody, so it is
+                # charged an attempt and ends with the login named.
                 reason = _with_checkout_note(_unavailable_reason(exc), degraded)
                 logger.warning(
                     "Planning for plan %s is waiting on the provider (%s). "
@@ -693,31 +873,9 @@ class Orchestrator(DispatchMixin, ReviewMixin, ReconcileMixin, ImprovementMixin)
                 )
                 await self._tq.set_plan_error(plan_id, reason)
                 return None
-            attempts = await self._tq.bump_plan_attempts(plan_id)
-            if attempts >= MAX_PLANNING_ATTEMPTS:
-                await self._fail_plan(
-                    plan_id,
-                    _with_checkout_note(
-                        f"planning failed on {attempts} of "
-                        f"{MAX_PLANNING_ATTEMPTS} permitted attempts and will "
-                        "not be retried, because a plan that keeps retrying is "
-                        "indistinguishable from one that is still being "
-                        "decomposed. Check the planner with `praxis doctor`, "
-                        f"then resubmit the specification. Last error: {exc}",
-                        degraded,
-                    ),
-                )
-                return None
-            # Left PENDING deliberately: the next tick retries. The reason is
-            # recorded now rather than only at the end, because a plan quietly
-            # burning attempts is the same invisible state as one wedged.
-            reason = _with_checkout_note(
-                f"planning attempt {attempts} of {MAX_PLANNING_ATTEMPTS} failed "
-                f"and will be retried on the next pass: {exc}",
-                degraded,
+            await self._charge_planning_attempt(
+                plan_id, exc, stage="planning", degraded=degraded
             )
-            logger.warning("Plan %s: %s", plan_id, reason)
-            await self._tq.set_plan_error(plan_id, reason)
             return None
         # `_opus` is typed loosely so tests can pass a double, so the graph
         # arrives as Any. `_validate_plan_shape` has already proven it is a
@@ -772,6 +930,11 @@ class Orchestrator(DispatchMixin, ReviewMixin, ReconcileMixin, ImprovementMixin)
             branch = f"plan/{today}-{opus_plan['plan_slug']}"
             if not await self._still_activatable(plan_id, "plan_spec"):
                 return
+            # AFTER the activatable check, so a plan somebody rejected while
+            # the planner ran is left exactly as the rejecter wrote it rather
+            # than overwritten with a failure it never earned.
+            if await self._refuse_empty_graph(plan_id, opus_plan):
+                return
             await self._tq.activate_plan(plan_id, opus_plan, branch)
         finally:
             _remove_planner_workspace(workspace)
@@ -794,11 +957,20 @@ class Orchestrator(DispatchMixin, ReviewMixin, ReconcileMixin, ImprovementMixin)
     ) -> None:
         """Run the brain decomposition for a pending execute-plan, then activate.
 
-        Three outcomes, and the third is the one that used to be missing: the
-        plan activates, or it FAILS terminally on a rejected decomposition, or
-        it WAITS on a throttled brain -- still PENDING, no attempt consumed,
-        with a reason on the row saying so. Anything else escapes to
-        ``run_once``'s per-plan quarantine, which is a silent retry loop.
+        Every outcome is written to the row, because this seat is the flagship
+        ``execute_plan`` path and a plan that says nothing is a plan an MCP
+        client polls forever. The plan activates, or it FAILS terminally (a
+        rejected decomposition, unreadable stored input, an empty graph, or a
+        spent attempt budget), or it WAITS on a throttled brain: still PENDING,
+        no attempt consumed, with a reason on the row saying so.
+
+        Nothing may escape to ``run_once``'s per-plan quarantine. That
+        quarantine logs and moves on, leaving the row PENDING, and
+        ``get_runnable_plans`` hands the plan straight back on the next tick:
+        at the shipped five-second interval, roughly 720 brain invocations an
+        hour against a plan reading ``pending`` with ``error: null`` and
+        ``plan_attempts: 0``, which is exactly what a healthy plan mid
+        decomposition also reads.
 
         Args:
             plan_id: The pending execute-plan.
@@ -810,7 +982,16 @@ class Orchestrator(DispatchMixin, ReviewMixin, ReconcileMixin, ImprovementMixin)
         from orchestrator.core.plan_review import PlanReviewError
 
         plan = await self._tq.get_plan(plan_id)
-        if plan is None or not plan.get("pending_input"):
+        if plan is None:
+            logger.warning("Plan %s not found for execute-plan decomposition", plan_id)
+            return
+        if not plan.get("pending_input"):
+            # Terminal, and on the first pass. Both halves of this used to be
+            # one silent `return`: a vanished plan is genuinely nothing to do,
+            # but a plan row with no stored input is a plan that can never be
+            # decomposed by any later pass, and it stayed PENDING and runnable
+            # with zero diagnostics anywhere.
+            await self._fail_plan(plan_id, _NO_PENDING_INPUT_REASON)
             return
 
         if self._opus is not None and not await self._opus.is_available():
@@ -824,7 +1005,15 @@ class Orchestrator(DispatchMixin, ReviewMixin, ReconcileMixin, ImprovementMixin)
             self._bus.publish({"type": "opus_queued", "action": "execute_plan"})
             return
 
-        payload = _json.loads(plan["pending_input"])
+        try:
+            payload = _json.loads(plan["pending_input"])
+        except (TypeError, ValueError) as exc:
+            # PERMANENT. This decode sat OUTSIDE the guarded block below, so a
+            # row whose stored input is not JSON raised straight past every arm
+            # this method has, on every tick.
+            await self._fail_plan(plan_id, _corrupt_pending_input_reason(exc))
+            return
+
         try:
             opus_plan = await decompose_plan(
                 plan=payload["plan"],
@@ -882,6 +1071,33 @@ class Orchestrator(DispatchMixin, ReviewMixin, ReconcileMixin, ImprovementMixin)
             )
             logger.error("execute-plan decomposition failed for %s: %s", plan_id, exc)
             return
+        except Exception as exc:  # noqa: BLE001 - bounded retry, reported either way
+            # Everything that is neither a throttle nor a rejected
+            # decomposition. This arm did not exist, so a gateway 502, a
+            # `KeyError` on a payload key, a `ProviderOutputError` and a dead
+            # session alike escaped to the per-plan quarantine and were retried
+            # on every tick forever, including the deterministic ones that
+            # could never succeed.
+            #
+            # Same split as `plan_and_activate` on purpose, so the two planning
+            # seats classify a failure the same way and `poll_plan` means one
+            # thing: a login is charged an attempt and ends with the login
+            # named, an outage or a throttle waits without charging one, and
+            # everything else is bounded.
+            if not _needs_login(exc) and is_unavailability(exc):
+                reason = _unavailable_reason(exc)
+                logger.warning(
+                    "execute-plan decomposition for %s is waiting on the "
+                    "provider (%s). No attempt was consumed.",
+                    plan_id,
+                    exc,
+                )
+                await self._tq.set_plan_error(plan_id, reason)
+                return
+            await self._charge_planning_attempt(
+                plan_id, exc, stage="execute-plan decomposition"
+            )
+            return
 
         if not await self._still_activatable(plan_id, "decompose_plan"):
             return
@@ -896,6 +1112,14 @@ class Orchestrator(DispatchMixin, ReviewMixin, ReconcileMixin, ImprovementMixin)
                     "leaf_count": warning["leaf_count"],
                 }
             )
+
+        # After the dropped-leaf event above, deliberately: when a
+        # decomposition drops every authored task, that event is the only
+        # evidence of what was lost, and the refusal below is the verdict on
+        # it. Publishing the verdict without the evidence would leave an
+        # operator with a failure and no way to see it coming.
+        if await self._refuse_empty_graph(plan_id, opus_plan):
+            return
 
         await self._tq.activate_plan(plan_id, opus_plan, payload["branch"])
         self._bus.publish(

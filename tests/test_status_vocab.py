@@ -51,11 +51,27 @@ def test_task_status_has_all_expected_members() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_status_vocab_module_exists() -> None:
-    """The status_vocab module is importable from orchestrator.core."""
+def test_status_vocab_exposes_the_whole_shared_vocabulary() -> None:
+    """Every name other modules import from here still exists.
+
+    ``assert status_vocab is not None`` was a tautology: a module object is
+    never None, so the assertion could not fail whatever the module contained.
+    The claim worth making is that the surface consumers bind to is intact,
+    because a constant that disappears from here fails at IMPORT time in the
+    MCP server and the API, not at the call that needed it.
+    """
     from orchestrator.core import status_vocab
 
-    assert status_vocab is not None
+    for name in (
+        "CANONICAL_TASK_STATUSES",
+        "CANONICAL_PLAN_STATUSES",
+        "MCP_STATUS_ALIASES",
+        "GATED_STATUSES",
+        "TERMINAL_STATUSES",
+        "SATISFIED_STATUSES",
+        "mcp_status",
+    ):
+        assert hasattr(status_vocab, name), f"status_vocab lost {name}"
 
 
 def test_canonical_task_statuses_is_complete() -> None:
@@ -223,8 +239,66 @@ def test_dashboard_status_literals_in_sync() -> None:
         )
 
 
-def test_dashboard_status_order_includes_superseded() -> None:
-    """The dashboard statusOrder map includes 'superseded'."""
+def _dashboard_status_order() -> dict[str, int]:
+    """Parse the dashboard's ``statusOrder`` map out of ``web/app.js``.
+
+    The literal itself, not the file it lives in. The guard this replaces
+    asserted ``"superseded" in content`` against the WHOLE of ``app.js``, where
+    that word appears four times, so deleting it from the sort map left the
+    test green: an assertion true whether or not the code exists. It was
+    already hiding a live defect when it was replaced.
+
+    Returns:
+        The map, as ``{status: rank}``.
+    """
+    import re
+
     app_js = Path(__file__).resolve().parent.parent / "web" / "app.js"
     content = app_js.read_text(encoding="utf-8")
-    assert "superseded" in content
+    match = re.search(r"const\s+statusOrder\s*=\s*\{([^}]*)\}", content)
+    assert match is not None, (
+        "no `const statusOrder = {...}` in web/app.js: the dashboard's task "
+        "sort was renamed or removed, and this guard went inert with it"
+    )
+    return {
+        key: int(rank) for key, rank in re.findall(r"(\w+)\s*:\s*(\d+)", match.group(1))
+    }
+
+
+def test_dashboard_status_order_covers_every_task_status() -> None:
+    """Every TaskStatus has a rank, or the lane buries the one it omits.
+
+    ``statusOrder[a.status] ?? 99`` means an unlisted status sorts BELOW
+    ``pending``, at the bottom of the swim lane. ``needs_clarification`` was the
+    omitted one: the single status that nothing but a person answering can
+    clear was the hardest one on the board to see.
+
+    Set EQUALITY in both directions on purpose. A missing key is the defect
+    that was live; an extra key is a status the dashboard sorts and the enum no
+    longer has, which is a rank nothing will ever match.
+    """
+    order = _dashboard_status_order()
+
+    assert set(order) == {s.value for s in TaskStatus}, (
+        "web/app.js statusOrder and TaskStatus disagree; missing "
+        f"{sorted({s.value for s in TaskStatus} - set(order))}, extra "
+        f"{sorted(set(order) - {s.value for s in TaskStatus})}"
+    )
+
+
+def test_dashboard_status_order_ranks_a_parked_question_above_unstarted_work() -> None:
+    """The rank has to be USEFUL, not merely present.
+
+    Set equality above is satisfied by giving ``needs_clarification`` the
+    largest rank in the map, which puts it back exactly where the ``?? 99``
+    fallback had it. It is the one status the loop cannot advance on its own,
+    so it belongs with the other work waiting on a person rather than under
+    everything that has not started.
+    """
+    order = _dashboard_status_order()
+
+    assert order["needs_clarification"] < order["pending"]
+    assert order["needs_clarification"] < order["in_progress"]
+    # Beside `passed`, the other gate a human has to open, rather than above
+    # it: both are parked, and neither should outrank finished work.
+    assert order["needs_clarification"] > order["merged"]

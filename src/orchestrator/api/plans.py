@@ -33,6 +33,62 @@ logger = logging.getLogger(__name__)
 router = APIRouter(tags=["plans"], dependencies=[Depends(verify_token)])
 
 
+# The states from which ``approve`` may still activate a plan. ACTIVE is in the
+# set so a double click is a no-op rather than a 409; everything absent from it
+# is a decision somebody already reached. COMPLETED has landed, and re-
+# activating it makes the next tick re-complete it, re-run ``on_plan_completed``
+# and ``check_improvements``, and mint a fresh improvement proposal nobody asked
+# for. FAILED and REJECTED are terminal verdicts, and overwriting either
+# discards the reason with it.
+_APPROVABLE_PLAN_STATUSES: frozenset[str] = frozenset(
+    {PlanStatus.PENDING.value, PlanStatus.ACTIVE.value}
+)
+
+# The states from which ``reject`` may still close a plan. ACTIVE is
+# load-bearing rather than permissive: cancelling a plan mid-flight is a
+# SUPPORTED operation, and ``Orchestrator._still_activatable`` exists precisely
+# so a reject landing while the planner runs is not written back over. REJECTED
+# is included so a retried request is idempotent instead of a confusing 409.
+_REJECTABLE_PLAN_STATUSES: frozenset[str] = frozenset(
+    {
+        PlanStatus.PENDING.value,
+        PlanStatus.ACTIVE.value,
+        PlanStatus.REJECTED.value,
+    }
+)
+
+
+def _refuse_wrong_state(
+    plan: dict[str, Any], allowed: frozenset[str], why: str
+) -> None:
+    """Refuse a gate verb against a plan that is not in a state it acts on.
+
+    409 rather than a silent write, and the CURRENT state is in the message: a
+    caller that got a 200 from a verb which did nothing it asked for has no way
+    to find that out, and the dashboard (which gates both buttons on ``pending``
+    and ``autonomous``) was until now the only thing enforcing the contract at
+    all.
+
+    Args:
+        plan: The plan row.
+        allowed: The states this verb acts on.
+        why: What the verb would have done, and why that is wrong here.
+
+    Raises:
+        HTTPException: 409, naming the state the plan is actually in.
+    """
+    status_now = str(plan["status"])
+    if status_now in allowed:
+        return
+    raise HTTPException(
+        status_code=status.HTTP_409_CONFLICT,
+        detail=(
+            f"this plan is {status_now}, and that verb only acts on a plan "
+            f"that is {' or '.join(sorted(allowed))}. {why}"
+        ),
+    )
+
+
 @router.post(
     "/projects/{project_id}/plans",
     status_code=status.HTTP_201_CREATED,
@@ -134,13 +190,45 @@ async def get_plan(request: Request, plan_id: str) -> dict[str, Any]:
 
 @router.post("/plans/{plan_id}/approve", response_model=PlanResponse)
 async def approve_plan(request: Request, plan_id: str) -> dict[str, Any]:
-    """Approve a pending/autonomous plan."""
+    """Approve a pending autonomous plan, activating it for the loop.
+
+    This is the improvement-proposal gate, not a status setter. It used to
+    write ACTIVE over whatever state the plan was in, which the dashboard hid
+    by only offering the button on a pending autonomous proposal; the API, MCP
+    and `curl` had no such gate.
+    """
 
     queue = request.app.state.task_queue
     plan = await queue.get_plan(plan_id)
     if plan is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Plan not found"
+        )
+    _refuse_wrong_state(
+        plan,
+        _APPROVABLE_PLAN_STATUSES,
+        "Approving it would activate work that has already been decided on: "
+        "the next orchestration pass would re-run the plan's completion "
+        "handling and mint a fresh improvement proposal, or overwrite a "
+        "terminal verdict and the reason recorded with it.",
+    )
+    # A plan with neither a task graph nor a specification has NOTHING for the
+    # activation path to read, and approving it is destructive rather than
+    # merely useless: ``process_plan_once`` routes an ACTIVE plan with a NULL
+    # graph to ``plan_and_activate``, which fails it for having no spec_path.
+    # That is exactly the shape of a pending execute-plan, whose only copy of
+    # its work is ``pending_input``, and one call ended it.
+    if plan["opus_plan"] is None and not plan.get("spec_path"):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "this plan has no task graph and no specification to plan one "
+                "from, so there is nothing to approve. An execute-plan is "
+                "decomposed by the orchestration loop on its own and never "
+                "needs approval; forcing it active would send it to the spec "
+                "planner with nothing to read and fail it permanently. Poll "
+                "the plan to watch it decompose, or reject it to cancel it."
+            ),
         )
     await queue.update_plan_status(plan_id, PlanStatus.ACTIVE)
     updated = await queue.get_plan(plan_id)
@@ -151,7 +239,12 @@ async def approve_plan(request: Request, plan_id: str) -> dict[str, Any]:
 
 @router.post("/plans/{plan_id}/reject", response_model=PlanResponse)
 async def reject_plan(request: Request, plan_id: str) -> dict[str, Any]:
-    """Reject a plan."""
+    """Close a plan that has not reached a terminal verdict of its own.
+
+    Covers both the proposal gate and the mid-flight cancel; refuses a plan
+    that already landed or already failed, because REJECTED written over
+    either of those replaces what happened with what somebody typed.
+    """
 
     queue = request.app.state.task_queue
     plan = await queue.get_plan(plan_id)
@@ -159,6 +252,13 @@ async def reject_plan(request: Request, plan_id: str) -> dict[str, Any]:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Plan not found"
         )
+    _refuse_wrong_state(
+        plan,
+        _REJECTABLE_PLAN_STATUSES,
+        "Rejecting it would write REJECTED over a verdict the plan already "
+        "reached, and the reason recorded alongside it is the only account of "
+        "what happened.",
+    )
     await queue.update_plan_status(plan_id, PlanStatus.REJECTED)
     updated = await queue.get_plan(plan_id)
     if updated is None:
