@@ -42,9 +42,11 @@ HARD CONSTRAINTS (non-negotiable):
 - Each leaf adds or changes approximately ~{max_loc_delta} lines of code.
 - Each leaf has no more than {max_checklist_items} checklist items.
 - Dependency depth no deeper than {max_dep_depth}.
-- Every leaf MUST include a "verification" string >40 characters describing
-  how to confirm the leaf's work is correct.
-
+- Every leaf MUST include a "verification" naming a RUNNABLE command, plus the
+  outcome that proves it passed. `pytest tests/test_client.py::test_retry`
+  qualifies. A verification that only describes looking at something
+  ("check it visually", "inspect the output", "review the diff") is REJECTED.
+{escalate_block}
 {leaf_type_block}
 
 Plan to decompose:
@@ -82,39 +84,82 @@ one loses the whole task without it:
   never the rest of the plan, so no "as described above" or references to
   other leaves' content.
 
-For every leaf you MUST also include "plan_text": the VERBATIM excerpt of the
-plan that defines this leaf's contract -- exact function/type signatures, API
-shapes, and named requirements. Do not paraphrase; copy the relevant lines so a
-reviewer can check the implementation against the original contract, not a summary.
+For every leaf you MUST also include "plan_text": this leaf's contract. It is a
+LABELLED SKELETON, not a free-form excerpt, and it carries the verbatim source
+lines INSIDE that skeleton. Write the required section labels at the start of a
+line, then under "Steps" paste the lines of the plan that define this leaf --
+exact function/type signatures, API shapes, and named requirements -- copied,
+not paraphrased, so a reviewer checks the implementation against the original
+contract rather than against a summary.
+
+Both halves are graded, and only that one shape satisfies both:
+- plan_text that is ONLY the verbatim excerpt is REJECTED: it has no labels.
+- plan_text that only PARAPHRASES the plan is warned: it is not the contract.
+- Labels, with the source lines under "Steps", passes both. Do that.
 
 For every leaf you MUST also include:
 - "files": list of file paths this leaf will touch.
 - "task_type": one of "feature", "bugfix", "refactor", "test", "chore".
 - "estimated_loc": integer estimate of lines added or changed.
-- "verification": string >40 characters describing how to verify correctness.
+- "verification": a runnable command plus the outcome that proves it passed.
 - "leaf_type": one of the leaf types listed above.
 
 Set "depends_on" to the ids of any leaves whose output this leaf builds on (e.g.
 a leaf that edits a file another leaf creates). Only truly independent leaves get
 an empty list. Do NOT add a dependency edge merely to impose an order on independent work: over-serializing the graph inflates dependency depth and can cause the whole plan to be rejected. A leaf depends on another ONLY when it genuinely consumes that leaf's output (edits a file the other creates, imports a symbol the other defines).
 
+Two leaves that touch the SAME FILE are never independent, and this is the one
+case where you must impose an order. Either merge them into a single leaf (see
+sizing rule 2), or give the later one a dependency edge on the earlier. Two
+leaves listing the same path in "files" with no edge between them is warned.
+
 If a leaf cannot be completed by this model (too complex for its parameter count,
 or irreducibly large), set "needs_stronger_model": true.
 
-Respond with ONLY valid JSON:
+Respond with ONLY valid JSON. The "plan_text" below is a worked example of the
+required shape, not a placeholder: labels at the start of a line, and the
+plan's own lines copied under "Steps".
 {{
   "tasks": [
-    {{"id": "t1", "title": "...", "description": "...", "plan_text": "...",
-      "depends_on": [], "checklist": [{{"text": "..."}}],
+    {{"id": "t1", "title": "Add retry_on_429 to the HTTP client",
+      "description": "Add a 429-aware retry wrapper to src/client.py.",
+      "plan_text": "Goal: `src/client.py` exposes `retry_on_429`.\\nFiles: src/client.py, tests/test_client.py\\nSteps:\\nAdd `retry_on_429(fn, *, attempts: int = 3) -> Callable` to `src/client.py`.\\nRetry on HTTP 429 with exponential backoff starting at 2 seconds.\\nRaise the last error once attempts are exhausted, never swallow it.\\nCover the exhausted-attempts path in `tests/test_client.py`.\\nAcceptance: `pytest tests/test_client.py::test_retry_on_429` passes.",
+      "depends_on": [], "checklist": [{{"text": "Add retry_on_429 to src/client.py"}}],
       "needs_stronger_model": false,
-      "files": ["src/foo.py", "tests/test_foo.py"],
+      "files": ["src/client.py", "tests/test_client.py"],
       "task_type": "feature",
       "leaf_type": "function_add",
       "estimated_loc": 85,
-      "verification": "Run the test suite and confirm all tests pass"}}
+      "verification": "Run `pytest tests/test_client.py::test_retry_on_429` and confirm it passes"}}
   ]
 }}
 """
+
+# Rendered only when the profile actually names escalate types. The HARD rule
+# `_check_escalate_mismatch` rejects a leaf of one of these types that did not
+# set needs_stronger_model, so a prompt that never states the list asks for
+# something it then rejects, and the re-ask carries no way to satisfy it.
+_ESCALATE_BLOCK = """- These task types are BEYOND this worker and MUST set
+  "needs_stronger_model": true: {types}. A leaf whose "task_type" is one of
+  them with "needs_stronger_model": false is rejected automatically.
+"""
+
+
+def _render_escalate_block(profile: CapabilityProfile) -> str:
+    """Render the escalate-task-type rule, or nothing when the list is empty.
+
+    Args:
+        profile: The worker's capability profile.
+
+    Returns:
+        The rendered rule lines, or ``""`` when no type escalates.  An empty
+        string keeps a stock install's prompt exactly as it was, so the block
+        can never invent a constraint the validator will not enforce.
+    """
+    types = [str(t) for t in getattr(profile, "escalate_task_types", []) or []]
+    if not types:
+        return ""
+    return _ESCALATE_BLOCK.format(types=", ".join(f'"{t}"' for t in types))
 
 
 def build_review_prompt(
@@ -147,6 +192,7 @@ def build_review_prompt(
         max_loc_delta=profile.max_loc_delta,
         max_checklist_items=profile.max_checklist_items,
         max_dep_depth=profile.max_dep_depth,
+        escalate_block=_render_escalate_block(profile),
         leaf_type_block=render_template_block(),
         plan_text=plan_text,
     )

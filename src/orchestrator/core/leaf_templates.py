@@ -1,9 +1,15 @@
 """Per-leaf-type ``plan_text`` section requirements.
 
-Single source of truth read by two consumers that must never drift: the
+Single source of truth read by three consumers that must never drift: the
 decompose prompt in ``core/plan_review.py`` (which asks the brain for these
-sections) and the F3 validator in ``core/leaf_validator.py`` (which grades the
-brain's answer).  See ``docs/decomposition-standard.md`` section 3.
+sections), the triage prompt in ``core/leaf_triage.py`` (which asks for them
+again when a failed leaf is split into children), and the F3 validator in
+``core/leaf_validator.py`` (which grades every one of those answers).  See
+``docs/decomposition-standard.md`` section 3.
+
+Any surface that RESTATES the section list instead of rendering it here will
+drift silently: the brain is asked for one shape and graded on another, and
+the re-ask carries the requirement it was never told about.
 """
 
 from __future__ import annotations

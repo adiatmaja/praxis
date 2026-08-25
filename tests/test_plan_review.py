@@ -4,12 +4,14 @@ import json
 
 import pytest
 
+from orchestrator.core.leaf_templates import missing_sections
+from orchestrator.core.leaf_validator import validate_leaves
 from orchestrator.core.plan_review import (
     PlanReviewError,
     build_review_prompt,
     parse_review_response,
 )
-from orchestrator.models.schemas import CapabilityProfile, LeafType
+from orchestrator.models.schemas import CapabilityProfile, LeafTask, LeafType
 
 
 PROFILE = CapabilityProfile(
@@ -175,7 +177,11 @@ def test_prompt_includes_hard_constraints_with_rendered_limits():
     assert "~250 lines" in prompt
     assert "no more than 8 checklist items" in prompt
     assert "Dependency depth no deeper than 2" in prompt
-    assert ">40 characters" in prompt
+    # The prompt used to demand a verification ">40 characters", a number
+    # nothing enforces: _DEFAULT_VERIFICATION_MIN_LEN is 5, so `pytest` alone
+    # validates clean while a perfectly good `pytest tests/test_x.py::test_y`
+    # was told it was illegal. It now states the rule the validator applies.
+    assert "RUNNABLE command" in prompt
 
 
 @pytest.mark.unit
@@ -266,3 +272,161 @@ def test_prompt_still_carries_the_hard_constraint_numbers():
     assert str(profile.max_files_touched) in prompt
     assert str(profile.max_loc_delta) in prompt
     assert str(profile.max_dep_depth) in prompt
+
+
+# ---------------------------------------------------------------------------
+# The prompt's worked example, graded by the real validator
+#
+# Nothing below hand-writes a leaf. The leaf comes out of the rendered prompt
+# through the prompt's OWN parser, and the source plan is rebuilt from that
+# leaf's own Steps body. A fixture that already carried the labels would prove
+# only that the labels satisfy the label rule, which is how the contradiction
+# these tests pin shipped in the first place.
+# ---------------------------------------------------------------------------
+
+
+def _example_leaf(prompt: str) -> LeafTask:
+    """Parse the prompt's JSON example the way a brain response is parsed.
+
+    ``parse_review_response`` slices from the first ``{`` to the last ``}``, so
+    every caller must render the prompt with a BRACE-FREE plan body or the
+    slice starts inside the user's plan instead of the example.
+    """
+    return LeafTask.model_validate(parse_review_response(prompt)["tasks"][0])
+
+
+def _plan_containing(leaf: LeafTask) -> str:
+    """Rebuild the source plan the example claims to have been copied from.
+
+    The Steps body goes back under ``### Task N: <title>``, the heading shape
+    ``core/execute_plan_decompose._PLAN_TASK_HEADER_RE`` defines and every plan
+    in ``docs/superpowers/plans/`` uses.
+    """
+    body = leaf.plan_text.split("Steps:\n", 1)[1].split("\nAcceptance:")[0]
+    return (
+        "# Plan: harden the HTTP client\n\n"
+        f"### Task 1: {leaf.title}\n\n"
+        f"{body}\n\n"
+        "### Task 2: Wire the helper into fetch_page\n\n"
+        "Call `retry_on_429` from `fetch_page` in `src/client.py`.\n"
+    )
+
+
+@pytest.mark.unit
+def test_the_prompts_own_worked_example_validates_clean():
+    """A brain that copies the example must pass, HARD and SOFT.
+
+    The prompt used to order a VERBATIM excerpt of the plan while injecting,
+    forty lines earlier, a template rule that HARD-requires line-leading
+    Goal/Files/Steps/Acceptance labels the plan never carried. Obeying the last
+    instruction failed every leaf, and the JSON example showed
+    ``"plan_text": "..."``, which demonstrates neither shape.
+    """
+    profile = _leaf_type_profile()
+    prompt = build_review_prompt(
+        "A plan with no braces in it.", profile, "(none)", 12000
+    )
+    leaf = _example_leaf(prompt)
+
+    # The example is a real leaf, not a row of ellipses.
+    assert leaf.leaf_type is LeafType.FUNCTION_ADD
+    assert missing_sections(leaf.plan_text, leaf.leaf_type) == []
+
+    source = _plan_containing(leaf)
+    result = validate_leaves({}, profile, source, [leaf])
+    assert [(v.rule, v.message) for v in result.hard] == []
+    assert [(v.rule, v.message) for v in result.soft] == []
+
+
+@pytest.mark.unit
+def test_labels_are_what_separate_a_valid_leaf_from_the_bare_excerpt():
+    """The prompt's stated resolution is the real one, not decoration.
+
+    Two leaves cut from ONE example, differing only in whether the labels are
+    present. The bare excerpt is what the old "copy the relevant lines"
+    instruction produced; it must fail the template rule, and the labelled
+    skeleton carrying the identical lines must pass it. Same source plan, same
+    leaf_type, same verification: the labels are the only variable.
+    """
+    profile = _leaf_type_profile()
+    prompt = build_review_prompt(
+        "A plan with no braces in it.", profile, "(none)", 12000
+    )
+    example = _example_leaf(prompt)
+    source = _plan_containing(example)
+    body = example.plan_text.split("Steps:\n", 1)[1].split("\nAcceptance:")[0]
+
+    bare = example.model_copy(update={"plan_text": body})
+    bare_result = validate_leaves({}, profile, source, [bare])
+    assert [v.rule for v in bare_result.hard] == ["leaf_template"]
+    assert "Goal" in bare_result.hard[0].message
+
+    # Positive control: the identical lines, under the labels, pass.
+    labelled_result = validate_leaves({}, profile, source, [example])
+    assert [v.rule for v in labelled_result.hard] == []
+
+
+@pytest.mark.unit
+def test_prompt_tells_the_brain_what_the_file_overlap_rule_wants():
+    """The dependency instruction and the file_overlap rule used to disagree.
+
+    ``_check_file_overlap`` warns whenever two leaves share a file with no dep
+    edge, while the prompt said not to add an edge "merely to impose an order
+    on independent work". Obeying the prompt tripped the rule and the re-ask
+    could not converge, because the only fix was the thing it forbade.
+    """
+    prompt = build_review_prompt("plan body", _leaf_type_profile(), "(none)", 3276)
+    assert "SAME FILE are never independent" in prompt
+    assert "merge them into a single leaf" in prompt
+
+
+@pytest.mark.unit
+def test_prompt_names_the_escalate_task_types_the_validator_rejects_on():
+    """``escalate_task_types`` is a HARD rule the brain was never told about.
+
+    ``_check_escalate_mismatch`` HARD-rejects a leaf whose task_type is in the
+    list unless it set needs_stronger_model, and the prompt never rendered the
+    list, so the constraint was unsatisfiable by construction: it would fail
+    both attempts and reject the whole plan. Latent only because the shipped
+    ``config/praxis.yaml`` ships an empty list.
+    """
+    profile = CapabilityProfile(
+        model_name="qwen3",
+        parameter_count_b=30,
+        context_window=8192,
+        escalate_task_types=["refactor", "architecture"],
+    )
+    prompt = build_review_prompt("plan body", profile, "(none)", 3276)
+    assert '"refactor", "architecture"' in prompt
+    assert '"needs_stronger_model": true' in prompt
+
+    # A leaf that obeys the rendered rule clears the HARD check it names.
+    obedient = LeafTask(
+        id="t1",
+        title="Rename the loader",
+        plan_text="Goal: g\nFiles: src/a.py\nSteps:\n1. do it\nAcceptance: `pytest`",
+        task_type="refactor",
+        needs_stronger_model=True,
+        verification="Run `pytest tests/test_a.py` and confirm it passes",
+    )
+    result = validate_leaves({}, profile, "x", [obedient])
+    assert [v.rule for v in result.hard] == []
+
+
+@pytest.mark.unit
+def test_the_escalate_block_is_absent_when_no_type_escalates():
+    """A stock install must not be handed a rule with an empty list in it.
+
+    ``config/praxis.yaml`` ships ``escalate_task_types: []``; rendering the
+    block anyway would state a constraint naming nothing and invite the brain
+    to escalate at random.
+    """
+    prompt = build_review_prompt("plan body", _leaf_type_profile(), "(none)", 3276)
+    assert "BEYOND this worker" not in prompt
+    # Positive control: the same call site DOES render it when the list is set.
+    escalating = _leaf_type_profile().model_copy(
+        update={"escalate_task_types": ["chore"]}
+    )
+    assert "BEYOND this worker" in build_review_prompt(
+        "plan body", escalating, "(none)", 3276
+    )

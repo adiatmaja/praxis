@@ -27,6 +27,7 @@ from typing import Any, Literal
 
 from pydantic import ValidationError
 
+from orchestrator.core.leaf_templates import render_template_block
 from orchestrator.core.llm_router import ProviderRateLimitError
 from orchestrator.models.schemas import CapabilityProfile, TriageDecision
 
@@ -99,13 +100,15 @@ HARD RULES (violating any of these invalidates your answer):
 - A split must produce between 2 and 4 children.
 - Split children may not split again: size each child so it succeeds first try.
 - At most {remaining_leaf_budget} more leaves may be added to this plan.
-- Every child MUST satisfy the leaf standard: a "plan_text" containing
-  line-leading Goal, Files, Steps, and Acceptance sections; a "files" list; a
-  "verification" string over 40 characters naming a runnable command; a
-  "leaf_type"; and "estimated_loc".
+- Every child MUST satisfy the leaf standard below, exactly as the original
+  decomposition did: the plan_text sections its declared "leaf_type" requires,
+  a "files" list, an "estimated_loc", and a "verification" naming a runnable
+  command plus the outcome that proves it passed.
 - Children inherit the parent's dependencies automatically. Only set a child's
   "depends_on" to the ids of its SIBLINGS.
 {escalation_rule}
+
+{leaf_standard_block}
 
 Respond with ONLY valid JSON:
 {{
@@ -167,6 +170,12 @@ def build_triage_prompt(evidence: TriageEvidence) -> str:
     ``str.format`` substitutes in a single pass, so braces inside a diff, a
     verify tail, or a ``plan_text`` stay literal and are never re-read as
     replacement fields.  Nothing here may format an already-substituted string.
+
+    The leaf standard is RENDERED from ``core/leaf_templates``, never restated
+    here.  A hardcoded copy asked split children for the base four sections
+    only, so a ``refactor_rename`` child was never asked for its ``Renames``
+    section and a ``bugfix_repro`` child was never asked for ``Reproduction``,
+    while the standard those children are graded against required both.
     """
     profile = evidence.profile
     return _PROMPT.format(
@@ -187,6 +196,7 @@ def build_triage_prompt(evidence: TriageEvidence) -> str:
         ),
         plan_text=evidence.plan_text,
         attempts_block="\n".join(_render_attempt(a) for a in evidence.attempts),
+        leaf_standard_block=render_template_block(),
         remaining_leaf_budget=evidence.remaining_leaf_budget,
         escalation_rule=(
             _ESCALATION_ALLOWED

@@ -7,6 +7,7 @@ import pytest
 from orchestrator.core.leaf_validator import (
     ValidationResult,
     Violation,
+    _section_for_task,
     format_violations_feedback,
     is_runnable_verification,
     validate_leaves,
@@ -930,6 +931,188 @@ def test_leaf_template_rule_enforces_the_type_specific_section():
     violations = [v for v in result.hard if v.rule == "leaf_template"]
     assert len(violations) == 1
     assert "Reproduction" in violations[0].message
+
+
+# ---------------------------------------------------------------------------
+# _section_for_task: which plan section a leaf is graded against
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_section_for_task_matches_praxis_own_task_heading():
+    """``### Task N: <title>`` is the heading shape Praxis plans actually use.
+
+    ``execute_plan_decompose._PLAN_TASK_HEADER_RE`` defines it as THE authored
+    header, and every plan in ``docs/superpowers/plans/`` follows it. Anchoring
+    the title straight after the hashes never matched one, so the module that
+    knows the format and the module that parses it disagreed.
+    """
+    source = (
+        "# Plan\n\n"
+        "### Task 1: Add the config loader\n\n"
+        "def load_config(path: str) -> dict: ...\n\n"
+        "### Task 2: Wire it in\n\n"
+        "Call load_config from settings.\n"
+    )
+    leaf = LeafTask(id="t1", title="Add the config loader", plan_text="x")
+    assert _section_for_task(source, leaf) == "def load_config(path: str) -> dict: ..."
+
+    # Positive control: the plain ``## <title>`` shape still works.
+    plain = "# Plan\n\n## Add the config loader\n\ndef load_config(path: str) -> dict: ...\n"
+    assert _section_for_task(plain, leaf) == "def load_config(path: str) -> dict: ..."
+
+
+@pytest.mark.unit
+def test_section_for_task_matches_a_title_ending_in_a_non_word_character():
+    """A trailing ``\\b`` could never match a title ending in ')', '"', '.' or '?'.
+
+    ``\\b`` after a non-word character demands a word character next, and the
+    end of a heading line never supplies one, so those titles silently fell
+    through to the no-match path.
+    """
+    source = "# Plan\n\n## Add retry_on_429()\n\nbody line one\n"
+    leaf = LeafTask(id="t1", title="Add retry_on_429()", plan_text="x")
+    assert _section_for_task(source, leaf) == "body line one"
+
+
+@pytest.mark.unit
+def test_section_for_task_says_unknown_instead_of_returning_the_whole_plan():
+    """No heading names this leaf, so there is no section to grade it against.
+
+    Returning the WHOLE document instead made the ratio measure what fraction
+    of the plan this one leaf is, not whether the leaf quoted its own section,
+    so on any multi-task plan every leaf read as a mismatch however faithfully
+    it copied. ``_check_plan_text_verbatim`` skips an empty section, which is
+    the same "say unknown rather than guess" answer ``core/context_window``
+    and ``core/verify_gate.normalize_verify_cmd`` give.
+    """
+    source = (
+        "# Plan\n\n"
+        "### Task 1: Something else entirely\n\n"
+        "unrelated body\n\n"
+        "### Task 2: Also unrelated\n\n"
+        "more unrelated body\n"
+    )
+    leaf = LeafTask(id="t1", title="Add the config loader", plan_text="x")
+    assert _section_for_task(source, leaf) == ""
+
+    # And the rule stays silent rather than inventing a verdict from the whole
+    # document. Positive control below proves the rule can still fire.
+    profile = _profile()
+    result = validate_leaves({}, profile, source, [leaf])
+    assert [v.rule for v in result.soft if v.rule == "plan_text_verbatim"] == []
+
+    named = LeafTask(
+        id="t2", title="Something else entirely", plan_text="nothing like the body"
+    )
+    fired = validate_leaves({}, profile, source, [named])
+    assert [v.rule for v in fired.soft if v.rule == "plan_text_verbatim"] == [
+        "plan_text_verbatim"
+    ]
+
+
+@pytest.mark.unit
+def test_verbatim_rule_accepts_a_short_section_copied_under_labels():
+    """The labelled skeleton is the shape the decompose prompt now mandates.
+
+    The symmetric ratio measures how much of plan_text IS the section, so the
+    Goal/Files/Steps/Acceptance labels count against it. On a short section
+    they outweigh the copied lines: a FAITHFUL copy of a one-line section
+    scores about 0.36 against a 0.70 threshold. Line coverage asks what the
+    prompt asks -- are the plan's own lines in there -- and a paraphrase of the
+    same section must still be caught.
+    """
+    source = (
+        "# Plan\n\n### Task 1: Raise the client timeout\n\n"
+        "Bump the timeout to 30 seconds.\n"
+    )
+    profile = _profile()
+
+    faithful = LeafTask(
+        id="t1",
+        title="Raise the client timeout",
+        plan_text=(
+            "Goal: the client timeout is 30 seconds.\n"
+            "Files: src/config.py\n"
+            "Steps:\n"
+            "Bump the timeout to 30 seconds.\n"
+            "Acceptance: `pytest tests/test_config.py` passes."
+        ),
+    )
+    result = validate_leaves({}, profile, source, [faithful])
+    assert [v.rule for v in result.soft if v.rule == "plan_text_verbatim"] == []
+
+    # Positive control: same labels, same section, but the line is summarized
+    # rather than copied. That is exactly what the rule exists to catch.
+    paraphrased = faithful.model_copy(
+        update={
+            "plan_text": (
+                "Goal: the client is more patient.\n"
+                "Files: src/config.py\n"
+                "Steps:\n"
+                "Make it wait longer.\n"
+                "Acceptance: `pytest tests/test_config.py` passes."
+            )
+        }
+    )
+    warned = validate_leaves({}, profile, source, [paraphrased])
+    assert [v.rule for v in warned.soft if v.rule == "plan_text_verbatim"] == [
+        "plan_text_verbatim"
+    ]
+
+
+# ---------------------------------------------------------------------------
+# SOFT: vague_phrase, and the type that makes one of its words precise
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_refactor_is_not_vague_in_a_refactor_rename_leaf():
+    """``refactor_rename`` is a first-class leaf type, so the word is accurate.
+
+    The rule fired on a textbook rename leaf and the feedback read "contains
+    vague phrase matching '\\brefactor\\b'" on a leaf that genuinely IS a
+    refactor. Nothing the brain can write fixes that, so the informed re-ask
+    never converges; it only ends when the round budget runs out.
+
+    The exemption is one pattern for one type, not an amnesty: the same leaf
+    with any other vague word must still be warned, and the same text under
+    any other leaf_type must still be warned.
+    """
+    profile = _profile()
+    rename_text = (
+        "Goal: load_config is named read_config everywhere.\n"
+        "Files: src/config.py\n"
+        "Steps:\n1. Refactor load_config to read_config.\n"
+        "Renames: load_config -> read_config\n"
+        "Acceptance: `pytest tests/test_config.py` passes."
+    )
+    fields = {
+        "id": "t1",
+        "title": "Refactor: rename load_config to read_config",
+        "plan_text": rename_text,
+        "verification": "Run `pytest tests/test_config.py` and confirm it passes",
+    }
+
+    exempt = LeafTask(**fields, leaf_type="refactor_rename")
+    result = validate_leaves({}, profile, rename_text, [exempt])
+    assert [v.rule for v in result.soft if v.rule == "vague_phrase"] == []
+
+    # Control 1: the exemption is scoped to the ONE word, not to the rule.
+    also_polish = LeafTask(
+        **{**fields, "plan_text": rename_text + "\nThen polish the module."},
+        leaf_type="refactor_rename",
+    )
+    still_warned = validate_leaves({}, profile, rename_text, [also_polish])
+    assert [v.rule for v in still_warned.soft if v.rule == "vague_phrase"] == [
+        "vague_phrase"
+    ]
+
+    # Control 2: the exemption is scoped to the ONE type. Identical text under
+    # `generic` claims no rename table, so "refactor" really is unspecific.
+    generic = LeafTask(**fields, leaf_type="generic")
+    warned = validate_leaves({}, profile, rename_text, [generic])
+    assert [v.rule for v in warned.soft if v.rule == "vague_phrase"] == ["vague_phrase"]
 
 
 @pytest.mark.unit

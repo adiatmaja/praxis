@@ -71,6 +71,33 @@ def test_prompt_states_the_hard_rules():
 
 
 @pytest.mark.unit
+def test_prompt_renders_the_leaf_standard_instead_of_restating_it():
+    """Split children are asked for the SAME standard the first pass was.
+
+    The rule used to be a hardcoded sentence naming the base four sections
+    only, and ``leaf_triage`` did not import ``leaf_templates`` at all. So a
+    ``refactor_rename`` child was never asked for its ``Renames`` section and a
+    ``bugfix_repro`` child was never asked for ``Reproduction``, while the
+    standard those children are graded against requires both. Rendering the
+    block is what keeps the single source of truth single.
+    """
+    from orchestrator.core.leaf_templates import render_template_block
+
+    prompt = build_triage_prompt(_evidence())
+    assert render_template_block() in prompt
+
+    # The two facts the hardcoded sentence dropped, named against their own
+    # types so a swap between them cannot pass.
+    lines = {
+        line.split('"')[1]: line
+        for line in prompt.splitlines()
+        if line.startswith('- "')
+    }
+    assert "Reproduction" in lines["bugfix_repro"]
+    assert "Renames" in lines["refactor_rename"]
+
+
+@pytest.mark.unit
 def test_prompt_carries_the_verbatim_plan_text():
     ev = _evidence()
     assert ev.plan_text in build_triage_prompt(ev)

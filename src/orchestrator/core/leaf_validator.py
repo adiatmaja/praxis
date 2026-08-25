@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 from difflib import SequenceMatcher
 
 from orchestrator.core.leaf_templates import missing_sections
-from orchestrator.models.schemas import CapabilityProfile, LeafTask
+from orchestrator.models.schemas import CapabilityProfile, LeafTask, LeafType
 
 
 logger = logging.getLogger(__name__)
@@ -42,6 +42,18 @@ _VAGUE_PHRASES = [
     r"\benhance\b",
     r"\bgeneral improvements\b",
 ]
+
+# Vague phrases a declared leaf type makes precise, and must therefore not be
+# warned about. "refactor" in a REFACTOR_RENAME leaf is the accurate name for
+# the work, not a failure to say what the work is: that type carries a HARD
+# `Renames` section requirement, so a leaf that reached this rule has already
+# stated its exact old-to-new symbol table. Without the exemption the warning
+# is unfixable by construction -- the feedback reads "contains vague phrase
+# matching '\brefactor\b'" on a leaf that genuinely IS a refactor -- so the
+# informed re-ask cannot converge and only ends when the round budget runs out.
+_TYPE_EXEMPT_PHRASES: dict[LeafType, frozenset[str]] = {
+    LeafType.REFACTOR_RENAME: frozenset({r"\brefactor\b"}),
+}
 
 # Verification commands that are clearly not runnable.
 _NON_RUNNABLE_PATTERNS = [
@@ -183,15 +195,63 @@ def _ratio(a: str, b: str) -> float:
     return SequenceMatcher(None, a, b).ratio()
 
 
+def _verbatim_coverage(section: str, plan_text: str) -> float:
+    """Fraction of *section*'s non-blank lines reproduced inside *plan_text*.
+
+    Args:
+        section: The source plan section this leaf was cut from.
+        plan_text: The leaf's contract text.
+
+    Returns:
+        0.0 to 1.0.  An empty section returns 1.0: nothing was asked for, so
+        nothing can be missing.
+    """
+    lines = [line.strip() for line in section.splitlines() if line.strip()]
+    if not lines:
+        return 1.0
+    return sum(1 for line in lines if line in plan_text) / len(lines)
+
+
 def _section_for_task(source: str, leaf: LeafTask) -> str:
-    """Extract the section of the source plan that corresponds to *leaf*."""
+    """Extract the section of the source plan that corresponds to *leaf*.
+
+    Args:
+        source: The externally-authored plan text.
+        leaf: The leaf whose section is wanted.
+
+    Returns:
+        The source lines under the heading that names this leaf, or ``""`` when
+        no heading names it.  ``""`` is the honest answer and the caller skips
+        it: returning the WHOLE document instead makes the verbatim ratio
+        measure what fraction of the plan this one leaf is, not whether the
+        leaf quoted its own section, so on any multi-task plan every leaf reads
+        as a mismatch no matter how faithfully it copied.  Praxis says
+        "unknown" rather than guessing (see ``core/context_window`` and
+        ``core/verify_gate.normalize_verify_cmd``).
+    """
+    title = leaf.title.strip()
+    if not title:
+        return ""
+
+    # The title may sit ANYWHERE in the heading line, not just straight after
+    # the hashes: Praxis's own authored plans head their tasks "### Task 3:
+    # <title>" (core/execute_plan_decompose._PLAN_TASK_HEADER_RE is the same
+    # shape), and anchoring the title to the hashes never matched one of them.
+    # The lookarounds replace a trailing \b, which could never match a title
+    # ending in ')', '"', '.' or '?': \b after a non-word character demands a
+    # word character next, and the end of a heading line never supplies one.
     heading_re = re.compile(
-        r"^#{1,6}\s+" + re.escape(leaf.title) + r"\b",
+        r"^#{1,6}\s+.*?(?<!\w)" + re.escape(title) + r"(?!\w)",
         re.MULTILINE | re.IGNORECASE,
     )
     match = heading_re.search(source)
     if not match:
-        return source
+        logger.debug(
+            "No plan heading names leaf %s (%r); skipping the verbatim check",
+            leaf.id,
+            title,
+        )
+        return ""
 
     start = match.end()
     next_heading = re.search(r"^#{1,6}\s+", source[start:], re.MULTILINE)
@@ -406,7 +466,19 @@ def _check_plan_text_verbatim(
         section = _section_for_task(source, leaf)
         if not section:
             continue
-        if _ratio(leaf.plan_text, section) < threshold:
+        # Two ways to be faithful, because plan_text is a labelled SKELETON
+        # that carries the source lines, not a bare excerpt (see the decompose
+        # prompt). The symmetric ratio measures how much of plan_text IS the
+        # section, so the Goal/Files/Steps/Acceptance labels count against it,
+        # and on a short section they outweigh the lines that were copied: a
+        # faithful copy of a one-line section scores about 0.36. Line coverage
+        # asks the question the prompt actually asks -- are the plan's own
+        # lines in there -- and does not care how much scaffolding surrounds
+        # them. A paraphrase still fails both.
+        if (
+            _ratio(leaf.plan_text, section) < threshold
+            and _verbatim_coverage(section, leaf.plan_text) < threshold
+        ):
             result.add(
                 Violation(
                     rule="plan_text_verbatim",
@@ -473,7 +545,10 @@ def _check_vague_phrase(
 ) -> None:
     for leaf in leaves:
         text = f"{leaf.title} {leaf.description} {leaf.plan_text}".lower()
+        exempt = _TYPE_EXEMPT_PHRASES.get(leaf.leaf_type, frozenset())
         for pat in _VAGUE_PHRASES:
+            if pat in exempt:
+                continue
             if re.search(pat, text, re.IGNORECASE):
                 result.add(
                     Violation(

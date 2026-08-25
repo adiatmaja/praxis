@@ -21,9 +21,21 @@ A leaf is valid when all six rules hold.
 | 5 | Its context pack guarantees the edit location and a runnable acceptance check before any narrative context | ORACLE-SWE, arXiv 2604.07789 |
 | 6 | Its `plan_text` is prescriptive and complete: the worker makes zero scoping judgments | Praxis verbatim-contract design, reinforced by arXiv 2603.14248 |
 
-Rules 1, 3, 4, and 6 are enforced mechanically by `core/leaf_validator.py` (F3).
-Rule 5 is enforced by the context-pack ordering in section 4. Rule 2 is enforced
-by the leaf-type templates in section 3.
+Enforcement is uneven, and the gaps are the part worth knowing:
+
+- Rules 3 and 6 are enforced mechanically by `core/leaf_validator.py` (F3), by
+  the `verification` and `leaf_template` rules respectively.
+- Rule 4 has only a PROXY in F3. `max_files` compares `len(leaf.files)` against
+  the profile limit, which is the arbitrary file count this rule itself calls
+  insufficient. Dependency locality is not measured anywhere.
+- Rule 1 has NO F3 rule. Nothing in `validate_leaves` measures tokens or
+  length. It reaches the loop as a difficulty FEATURE instead: `context_ratio`
+  in `core/difficulty.py` scores `plan_text` tokens against
+  `core/token_budget.worker_budget`, which lowers `p_success` and can reject
+  the leaf at the gate in section 7. That is a probabilistic bound, not the
+  hard one this rule reads as.
+- Rule 5 is enforced by the context-pack ordering in section 4.
+- Rule 2 is enforced by the leaf-type templates in section 3.
 
 ## 2. Numeric anchors
 
@@ -39,7 +51,11 @@ limits in `config/praxis.yaml`, not a law.
 
 The current default profile (`capability.default` in `config/praxis.yaml`) is
 `max_files_touched: 5`, `max_loc_delta: 300`, `max_checklist_items: 12`,
-`max_dep_depth: 3`. These are hand-set. The Capability Calibration Loop will
+`max_dep_depth: 3`. These are hand-set. They are the values that ship; note
+that `CapabilityProfile` in `models/schemas.py` carries its own field default
+of `max_dep_depth: 4`, which applies only when the YAML does not name the key,
+so a deployment that drops `capability.default` silently validates one level
+deeper. The Capability Calibration Loop will
 replace them with learned per-(model, project) values derived from
 `task_outcomes`; until it does, treat them as a starting prior.
 
@@ -55,6 +71,16 @@ Every type requires these four sections in `plan_text`:
 - `Files`: the exact paths this leaf touches
 - `Steps`: the ordered, non-branching instruction sequence
 - `Acceptance`: the runnable check and its expected outcome
+
+Rule 6 asks for the verbatim contract and this section asks for labelled
+sections, and a `plan_text` that is only a verbatim excerpt satisfies neither:
+it carries no labels, so F3's `leaf_template` rule HARD-rejects it. The one
+shape that satisfies both is a labelled skeleton whose `Steps` section carries
+the plan's own lines, copied. The decompose prompt states that resolution and
+shows a worked example; `core/leaf_validator._check_plan_text_verbatim` grades
+it either by similarity to the source section or by how many of that section's
+lines are reproduced anywhere in `plan_text`, so the labels around them never
+count as a paraphrase.
 
 Types and their additional required sections:
 
@@ -106,7 +132,12 @@ Four policies follow from the standard. They are implemented in
 
 1. **Decompose adaptively.** The first decomposition is a hypothesis. Observed
    failure is the signal to split further (ADaPT, arXiv 2311.05772, plus 28 to 33
-   percent over static plan-and-execute).
+   percent over static plan-and-execute). Known gap: the hypothesis is graded
+   and the correction is not. `validate_leaves` has exactly one call site, in
+   `core/execute_plan_decompose`, so split children reach dispatch without
+   passing F3 at all. The triage prompt asks for the same standard (it renders
+   the same `core/leaf_templates` block the decompose prompt does), but asking
+   is not enforcing.
 2. **Retry only the failed unit.** Never re-run a completed sibling because a
    later leaf failed. Static decomposition without this raises retry cost by 73
    percent versus a monolithic attempt (arXiv 2605.15425).
@@ -125,8 +156,8 @@ in code and covered by tests.
 |-------|-------|-------------|
 | Triage brain calls per leaf | 1 for the leaf's whole lifetime | `tasks.triage_decision` presence check |
 | Split generations | 1 (a split child may never split again) | `tasks.parent_task_id` presence check |
-| Children per split | 2 to 4 | `core/leaf_triage.py` validation |
-| Retry budget for split children | 2 attempts, not a fresh 3 | `core/leaf_split.py` |
+| Children per split | 2 to 4 | `TriageDecision` in `models/schemas.py`, reached from `core/leaf_triage.parse_triage_response` |
+| Retry budget for split children | 2 attempts, not a fresh 3 | `core/task_queue.insert_split_children`, which seeds each child row at `attempt = 2` |
 | Leaves per plan | `max_leaves_per_plan`, default 24 | `core/leaf_triage.py` |
 | Escalation attempts | the length of `implement_escalation` | `core/escalation.py` |
 

@@ -315,7 +315,11 @@ belongs among the everyday traps.
 - **F3 leaf validator is deterministic and fail-closed** — `core/leaf_validator.py`
   runs after `_normalize_slugs` in `decompose_plan`. It checks: DAG + depth limits,
   no dangling `depends_on` slugs, file/LOC limits, verbatim `plan_text` (≥70% fuzzy
-  match to source plan), non-trivial `verification` (>40 chars with runnable signal),
+  match to the source plan SECTION, or full line coverage of it: a faithful copy of a
+  short section scores far below 0.70 on the symmetric ratio because the required
+  section labels count against it), non-trivial `verification` (the enforced bar is
+  `_DEFAULT_VERIFICATION_MIN_LEN` plus a runnable signal, NOT the ">40 characters" the
+  prompt used to demand, which pushed the brain to pad real commands with prose),
   cross-cutting file overlap, and escalate-type mismatch. On hard rejection the brain
   is re-invoked with specific violations (≤2 informed rounds), then the plan is
   rejected entirely — never dispatching an invalid graph. Warnings (vague phrases,
@@ -837,7 +841,13 @@ belongs among the everyday traps.
   a child anywhere but the end, or removing the superseded parent, silently
   re-associates every task after it with the wrong row. `core/leaf_split.py` is
   written around this invariant and `tests/test_leaf_split.py` mutation-checks
-  it. A split parent goes to `SUPERSEDED`, which both `all_tasks_done` and the
+  it. Since 2026-08-26 the JOIN is positional the whole way through: it used to
+  build the positional pairs and then re-key them into a SLUG-indexed dict, which
+  made the map non-injective the moment two entries shared a slug, orphaning the
+  earlier row forever, returning the later one TWICE in one wave, and dispatching
+  a dependent leaf onto work that was never built. `plan_derive` now uniques its
+  slugs (the decomposer and `leaf_split` already did), and a dependency naming a
+  repeated slug waits for EVERY row carrying it. A split parent goes to `SUPERSEDED`, which both `all_tasks_done` and the
   dependency predicate in `get_dispatchable_tasks` count as satisfied; without
   that a split plan can never complete and its children never dispatch. Children
   start at `attempt = 2`, so they inherit the remaining retry budget rather than
