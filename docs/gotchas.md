@@ -63,7 +63,13 @@ belongs among the everyday traps.
   with `auto_remove=False`. Retrying/re-dispatching a task collides with the exited
   container from its prior run (Docker 409 Conflict → agent never starts → empty Live
   Log). `_remove_existing_container` deletes any same-named container first.
-  `list_agent_containers` queries the `praxis-agent-` prefix used by all harness containers.
+  `list_agent_containers` and the concurrency cap both query that prefix AND the
+  `org.praxis.stack` label, valued from `PRAXIS_CONTAINER_NAME`. The name alone is not
+  enough: a Docker name filter is a daemon-wide substring match and the agent name is the
+  same string in every checkout, so a second checkout's agents used to count against this
+  one's cap and appear on this one's `/api/status`. Agents spawned by a build older than
+  the label drop out of both, which is a one-time transition; counting unlabelled ones
+  instead would restore the cross-stack bug.
 - **Agent callback URL is port-derived, not hardcoded** — `Settings.callback_url()`
   builds `http://host.docker.internal:{PORT}/api/internal/agent-done` (override with
   `AGENT_CALLBACK_URL`) and is passed to `Orchestrator(callback_url=...)`. Note the port
@@ -1864,7 +1870,21 @@ prefix `/run/desktop/mnt/host/<drive>/...` is valid simultaneously as a bind-mou
 the daemon and as a path the orchestrator container can see directly, which is why one
 variable is the normal case. `LOCAL_REPOS_HOST_PATH` is the escape hatch for the rarer case
 where the two namespaces genuinely need different strings; compose defaults it to
-`LOCAL_REPOS_PATH`'s value, so it needs setting only when it must differ. Applying either
+`LOCAL_REPOS_PATH`'s value, so it needs setting only when it must differ.
+
+Until 2026-08-26 the escape hatch was inert on the path that matters. Compose read both
+variables to build the ORCHESTRATOR's own mount, and nothing on the spawn path translated
+the prefix, so `local_repo_volume` handed the daemon the container-namespace string as the
+AGENT container's bind source. Docker does not refuse a missing bind source; it CREATES it
+as an empty directory, so the worker cloned nothing and raised nothing, and the doctor row
+stayed green because both variables were set and consistent with each other.
+`agent_manager.host_bind_source` now does the translation, sharing `path_is_under` with the
+doctor probe so one predicate answers for both, and refuses with `SpawnConfigurationError`
+naming BOTH namespaces when the repo sits outside the only prefix that can be translated.
+Compose substitution variables do not reach the container's environment at all, so
+`compose_variable` reads them the way compose itself resolves them: environment, then the
+mounted `/app/.env`, then the default. A fix built on `os.environ` alone would have been
+inert exactly where it deploys. Applying either
 variable is `docker compose up -d`, never `restart`: a bind mount is baked in at container
 CREATE, and `restart` reuses the existing container definition unchanged. Full worked values
 and the doctor row that reports a path resolving in only one namespace: `docs/deployment.md`

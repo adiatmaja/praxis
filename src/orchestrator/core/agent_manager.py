@@ -7,13 +7,24 @@ default; agy/Antigravity is the experimental Gemini-backed alternative).
 from __future__ import annotations
 
 import logging
+import os
 import re
 import shutil
+import tempfile
+from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import docker.errors
 import httpx
+from dotenv import dotenv_values
 
+# ``path_is_under`` compares on path COMPONENTS, so ``/repos-scratch`` is not
+# inside ``/repos``. It lives with the doctor row that reports the same
+# two-namespace split this module has to translate; importing it keeps ONE
+# implementation of the predicate rather than letting a spawn-side copy drift
+# away from the diagnosis an operator was just shown.
+from orchestrator.core.doctor_probes import path_is_under
 from orchestrator.core.git_backend import is_local_repo_url, local_repo_path
 from orchestrator.core.github_credentials import (
     GitHubCredentialProvider,
@@ -35,6 +46,55 @@ _MIN_FREE_DISK_BYTES: int = 2 * 1024 * 1024 * 1024  # 2 GiB
 # Where a local bare repo is bind-mounted inside the agent container. Fixed so
 # the entrypoint can clone from a stable path regardless of the host layout.
 LOCAL_REPO_MOUNT = "/srv/praxis-repo.git"
+
+# Name prefix every agent container carries, whichever harness it runs. Read by
+# the concurrency cap and the listing below, so it is named once here.
+_AGENT_NAME_PREFIX = "praxis-agent-"
+
+#: Label every agent container carries, naming the Praxis stack that spawned
+#: it. Container NAMES carry no stack identity -- ``praxis-agent-<task>`` is
+#: the same string in every checkout -- and a Docker name filter is a
+#: daemon-wide substring match, so without this a SECOND checkout's agents
+#: counted against this one's concurrency cap and appeared on this one's
+#: ``/api/status``. Two checkouts sharing one daemon is a documented hazard
+#: here (see PRAXIS_CONTAINER_NAME in .env.example), and that variable is the
+#: identity this repo already uses to tell them apart, so it is what the label
+#: carries rather than a second naming scheme invented for this.
+STACK_LABEL = "org.praxis.stack"
+
+#: ``docker-compose.yml``'s ``container_name`` default, and therefore what
+#: ``PRAXIS_CONTAINER_NAME`` falls back to. Two checkouts that both leave it
+#: unset already fight over the container name itself, so counting their
+#: agents together is the honest answer for them.
+_DEFAULT_STACK_ID = "orchestrator"
+
+#: Where compose's SUBSTITUTION variables reach this process from.
+#: ``LOCAL_REPOS_PATH``, ``LOCAL_REPOS_HOST_PATH`` and ``PRAXIS_CONTAINER_NAME``
+#: are read by compose ON THE HOST to build a volume mapping and a container
+#: name, and compose forwards NONE of them into the container's environment, so
+#: ``os.environ`` alone reports every containerized install as having none of
+#: them set. ``docker-compose.yml`` mounts ``./.env`` at ``/app/.env``, which
+#: is this relative path both in a container (CWD is ``/app``) and under a bare
+#: ``uv run uvicorn`` from the repo root. Twin reader:
+#: ``api/doctor._dotenv_on_disk``.
+_COMPOSE_ENV_FILE = Path(".env")
+
+
+class SpawnConfigurationError(RuntimeError):
+    """A spawn cannot proceed, and no amount of retrying will change that.
+
+    Distinct from the plain ``RuntimeError`` the disk and concurrency
+    preflights raise: those describe a condition that clears on its own (space
+    freed, a slot opened) and the dispatch loop is right to retry them on the
+    next tick. This one describes the DEPLOYMENT's configuration, which no
+    tick can change, so ``orchestrator_dispatch`` fails the task where a human
+    will see it instead of logging "will retry next loop tick" every
+    ``loop_interval`` forever.
+
+    Subclasses ``RuntimeError`` so no existing caller loses its handling; the
+    dispatch loop orders this clause FIRST for exactly that reason.
+    """
+
 
 # The entrypoint hard-requires GH_TOKEN (`: "${GH_TOKEN:?...}"`). Local mode has
 # no credential, so a placeholder satisfies the guard; the entrypoint skips
@@ -148,7 +208,111 @@ def _opencode_session_volume_name(base_volume: str, task_id: str) -> str:
     return f"{base_volume}-{safe_id}"
 
 
-def local_repo_volume(repo_url: str) -> dict[str, dict[str, str]]:
+def compose_variable(key: str, default: str = "") -> str:
+    """Resolve a compose substitution variable the way compose itself would.
+
+    Environment first, then the mounted ``.env``, then the default: the same
+    precedence ``${VAR:-default}`` gives, so this can never resolve to a value
+    compose would not have used. See :data:`_COMPOSE_ENV_FILE` for why the file
+    is not optional here.
+
+    Args:
+        key: The variable name, e.g. ``LOCAL_REPOS_PATH``.
+        default: What compose falls back to when neither source sets it.
+
+    Returns:
+        The resolved value, stripped, or ``default`` when nothing set it.
+    """
+    from_env = (os.environ.get(key) or "").strip()
+    if from_env:
+        return from_env
+    try:
+        on_disk = dotenv_values(_COMPOSE_ENV_FILE, encoding="utf-8")
+    # An unreadable or non-UTF-8 operator file means "not configured", never a
+    # crash: this runs while the AgentManager is being built during startup, so
+    # raising here would restart-loop the container over a dotenv file
+    # pydantic-settings is about to report on its own terms anyway.
+    except (OSError, UnicodeDecodeError):  # pragma: no cover - operator file
+        return default
+    return (on_disk.get(key) or "").strip() or default
+
+
+def host_bind_source(container_path: str, repos_path: str, host_path: str) -> str:
+    """Translate a local repo path out of THIS namespace into the daemon's.
+
+    A local project's ``repo_url`` is a path the orchestrator can see:
+    ``preflight._preflight_local`` calls ``Path.exists()`` on it from inside
+    the orchestrator container, and ``LocalGitBackend`` runs git against it
+    there. The IDENTICAL string is then handed to the Docker daemon as an agent
+    container's bind-mount SOURCE, and the daemon resolves bind sources in the
+    HOST namespace, never this container's. ``docker-compose.yml`` mounts host
+    ``LOCAL_REPOS_HOST_PATH`` at container ``LOCAL_REPOS_PATH``, so an operator
+    who takes the documented escape hatch and sets those two to genuinely
+    different strings had the untranslated path handed to the daemon, where it
+    names nothing. Docker does not refuse a missing bind source: it CREATES it
+    as an empty directory, so the worker clones nothing, exits, and no error is
+    raised anywhere.
+
+    Args:
+        container_path: The repo path as this process sees it.
+        repos_path: ``LOCAL_REPOS_PATH`` as configured, "" when unset.
+        host_path: ``LOCAL_REPOS_HOST_PATH`` as configured, "" when unset.
+
+    Returns:
+        The path to hand the daemon as a bind source.
+
+    Raises:
+        SpawnConfigurationError: When the two namespaces genuinely differ and
+            the repo sits outside the only prefix that can be translated
+            between them. A refusal naming both namespaces is the whole point:
+            the alternative is a mount that succeeds and produces an empty
+            directory.
+    """
+    repos = repos_path.strip().rstrip("/\\")
+    host = host_path.strip().rstrip("/\\")
+    # One string serves both namespaces: nothing to translate, and this is the
+    # documented normal case. compose defaults LOCAL_REPOS_HOST_PATH to
+    # LOCAL_REPOS_PATH, so setting one variable (or neither) lands here, as
+    # does a bare uvicorn, where this process and the daemon share a filesystem.
+    if not repos or not host or os.path.normcase(repos) == os.path.normcase(host):
+        return container_path
+
+    trimmed = container_path.strip().rstrip("/\\")
+    if not path_is_under(trimmed, repos):
+        message = (
+            f"local repository path {container_path} is not under "
+            f"LOCAL_REPOS_PATH ({repos_path}), and this deployment sets "
+            f"LOCAL_REPOS_HOST_PATH ({host_path}) to a different string, so "
+            "there is no honest way to name this repo in the HOST namespace. "
+            "That namespace is the one that decides: the path is checked HERE "
+            "with Path.exists() inside the orchestrator container, and the "
+            "identical string is handed to the Docker daemon as the agent "
+            "container's bind-mount SOURCE, which the daemon resolves on the "
+            "HOST. Docker CREATES a missing bind source as an empty directory "
+            "rather than refusing, so an untranslated path spawns a worker "
+            "that clones nothing and reports no error. Move the repo under "
+            "LOCAL_REPOS_PATH and update the project's repo_url, or set both "
+            "variables to ONE path valid in both namespaces (on Docker "
+            "Desktop for Windows that is the VM share prefix, e.g. "
+            "/run/desktop/mnt/host/c/Users/you/repos). Then `docker compose "
+            "up -d`, never `restart`: a mount is baked in at container CREATE "
+            "(see LOCAL_REPOS_PATH and LOCAL_REPOS_HOST_PATH in .env.example)."
+        )
+        raise SpawnConfigurationError(message)
+
+    # ``normcase`` folds case and separators but never changes LENGTH, so the
+    # prefix that ``path_is_under`` matched is exactly this many characters.
+    suffix = trimmed[len(repos) :]
+    if "\\" in host and "/" not in host:
+        # A plain Windows bind source must not come back with a POSIX suffix
+        # glued onto it; the suffix was taken from the container-side path.
+        suffix = suffix.replace("/", "\\")
+    return f"{host}{suffix}"
+
+
+def local_repo_volume(
+    repo_url: str, repos_path: str = "", host_path: str = ""
+) -> dict[str, dict[str, str]]:
     """Return the Docker volume mapping for a local bare repo, or {} for remote.
 
     The mount is read-write: a worker must both clone from and push back to
@@ -157,14 +321,135 @@ def local_repo_volume(repo_url: str) -> dict[str, dict[str, str]]:
 
     Args:
         repo_url: The project's configured repository URL or path.
+        repos_path: ``LOCAL_REPOS_PATH`` as configured, "" when unset. What
+            THIS process sees.
+        host_path: ``LOCAL_REPOS_HOST_PATH`` as configured, "" when unset.
+            What the DAEMON sees. Both default to "" so a caller that knows of
+            no namespace split gets the identity behaviour it always had.
 
     Returns:
-        A single-entry Docker volumes dict keyed by host path, or {} when
-        ``repo_url`` is not a local repo.
+        A single-entry Docker volumes dict keyed by the bind source in the
+        DAEMON's namespace, or {} when ``repo_url`` is not a local repo.
+
+    Raises:
+        SpawnConfigurationError: See :func:`host_bind_source`.
     """
     if not is_local_repo_url(repo_url):
         return {}
-    return {local_repo_path(repo_url): {"bind": LOCAL_REPO_MOUNT, "mode": "rw"}}
+    source = host_bind_source(local_repo_path(repo_url), repos_path, host_path)
+    return {source: {"bind": LOCAL_REPO_MOUNT, "mode": "rw"}}
+
+
+def _in_container() -> bool:
+    """Best-effort detection of running inside a Docker container.
+
+    Twin of ``api/doctor._in_container``, duplicated rather than imported
+    because ``core`` must not depend on ``api``. Both answer the same question
+    the same way; if one of them ever needs a better test, the other needs it
+    too.
+    """
+    return Path("/.dockerenv").exists()
+
+
+@dataclass(frozen=True)
+class DiskHeadroom:
+    """What the disk preflight measured, and what it could not see."""
+
+    #: The path whose filesystem was measured. Named in every message this
+    #: produces: a refusal quoting a figure from a filesystem it does not
+    #: identify cannot be checked by the operator acting on it.
+    path: str
+    free_bytes: int
+    #: False when this process is containerized. See
+    #: :data:`_HOST_DISK_UNOBSERVABLE`.
+    host_backing_store_visible: bool
+
+
+#: What this guard can and cannot see from inside a container, shared by the
+#: refusal and the start-up notice so the two cannot drift into describing the
+#: same blindness in two ways.
+#:
+#: Measured live 2026-08-26 on one machine: 942.0 GiB free inside the
+#: orchestrator container, 3.6 GiB free on the host drive backing it. The 2 GiB
+#: floor is therefore unreachable in the containerized deployment, which is the
+#: RECOMMENDED one, so this guard is inert exactly where it is deployed. It is
+#: not fixable by measuring something else: the host's backing store is a
+#: sparse disk image the VM cannot see the outside of. This repo's standing
+#: rule for a value that cannot be established is to say so rather than
+#: substitute a guess (``core/context_window``, ``core/verify_gate``), which
+#: here means the guard reports the filesystem it DID measure and states the
+#: one it cannot.
+_HOST_DISK_UNOBSERVABLE = (
+    "measured inside this container, on the container's own writable layer, "
+    "which is the same Docker storage an agent container's layer lands on. "
+    "The HOST disk behind that storage is not observable from in here: on a "
+    "VM-backed daemon (Docker Desktop) it is a sparse disk image on the host, "
+    "so free space here can read far larger than the host actually has, and "
+    "this guard cannot see the host run out"
+)
+
+#: Set once the blindness notice above has been logged. Module state, matching
+#: ``config._LOGGED_DOTENV_OVERRIDES``: the notice describes the DEPLOYMENT,
+#: not the task, so repeating it per spawn is noise an operator learns to skip.
+_LOGGED_HOST_DISK_BLIND: bool = False
+
+
+def measure_disk_headroom() -> DiskHeadroom:
+    """Measure free space on the filesystem this process writes to.
+
+    ``tempfile.gettempdir()`` is a cross-platform stand-in for "where this
+    process writes", which inside a container is its own writable layer on the
+    Docker storage an agent container's layer also lands on. That is the
+    closest observable proxy for the space three parallel clones consume; what
+    it is NOT is the host's disk, which earlier wording claimed.
+
+    Returns:
+        The measurement, carrying the path it was taken on so every message
+        built from it names the filesystem it came from.
+    """
+    path = tempfile.gettempdir()
+    return DiskHeadroom(
+        path=path,
+        free_bytes=shutil.disk_usage(path).free,
+        host_backing_store_visible=not _in_container(),
+    )
+
+
+def _note_host_disk_blindness(headroom: DiskHeadroom, required_bytes: int) -> None:
+    """Say once per process that this guard cannot see the host's disk.
+
+    On the PASSING path deliberately. The refusal below never fires in a
+    containerized deployment, because the threshold is compared against a
+    filesystem that reads hundreds of GiB free, so a statement carried only by
+    the refusal is a statement nobody ever reads.
+    """
+    global _LOGGED_HOST_DISK_BLIND
+    if headroom.host_backing_store_visible or _LOGGED_HOST_DISK_BLIND:
+        return
+    _LOGGED_HOST_DISK_BLIND = True
+    logger.info(
+        "Agent-spawn disk headroom is %s. %s currently reads %.1f GiB free, "
+        "against a %.1f GiB floor.",
+        _HOST_DISK_UNOBSERVABLE,
+        headroom.path,
+        headroom.free_bytes / (1024**3),
+        required_bytes / (1024**3),
+    )
+
+
+def _disk_refusal(headroom: DiskHeadroom, required_bytes: int) -> str:
+    """Build the low-disk refusal, naming the filesystem actually measured."""
+    caveat = (
+        ""
+        if headroom.host_backing_store_visible
+        else f" That figure was {_HOST_DISK_UNOBSERVABLE}."
+    )
+    return (
+        f"Insufficient disk space on the filesystem backing {headroom.path}: "
+        f"{headroom.free_bytes / (1024**3):.1f} GiB free, "
+        f"{required_bytes / (1024**3):.1f} GiB required.{caveat} Free disk "
+        "space before spawning more agent containers."
+    )
 
 
 def build_spawn_env(
@@ -272,6 +557,9 @@ class AgentManager:
         gemini_creds_volume: str = "",
         opencode_sessions_volume: str = "",
         worker_reasoning_effort: str = "none",
+        stack_id: str | None = None,
+        local_repos_path: str | None = None,
+        local_repos_host_path: str | None = None,
     ) -> None:
         self._lm_studio_url = lm_studio_url
         self._effective_settings = effective_settings
@@ -287,6 +575,26 @@ class AgentManager:
         self._worker_reasoning_effort = worker_reasoning_effort
         self._max_agent_concurrency = max_agent_concurrency
         self._min_free_disk_bytes = min_free_disk_bytes
+        # Compose substitution variables, resolved ONCE here rather than per
+        # spawn, matching gemini_creds_volume above: both of the repos paths
+        # only ever take effect through a bind mount, which is baked in at
+        # container CREATE, so re-reading them per spawn could only report a
+        # value the running container does not actually have. An explicit
+        # argument wins so a caller (and a test) can state both namespaces
+        # without a file on disk; None means "ask the deployment".
+        self._stack_id = stack_id or compose_variable(
+            "PRAXIS_CONTAINER_NAME", _DEFAULT_STACK_ID
+        )
+        self._local_repos_path = (
+            compose_variable("LOCAL_REPOS_PATH")
+            if local_repos_path is None
+            else local_repos_path
+        )
+        self._local_repos_host_path = (
+            compose_variable("LOCAL_REPOS_HOST_PATH")
+            if local_repos_host_path is None
+            else local_repos_host_path
+        )
         if credentials is not None:
             if isinstance(credentials, str):
                 self._provider: GitHubCredentialProvider = PatCredentialProvider(
@@ -323,29 +631,36 @@ class AgentManager:
         harness_id = harness or default_harness_id()
         spec = REGISTRY[harness_id]
 
-        # --- Host-disk headroom preflight ---
-        # Three parallel agent clones can exhaust the Docker graph-driver volume
-        # and wedge the daemon. Fail fast with a clear message when disk is low.
-        # Use tempfile.gettempdir() as a cross-platform proxy for the data volume.
-        import tempfile
-
-        disk = shutil.disk_usage(tempfile.gettempdir())
-        if disk.free < self._min_free_disk_bytes:
-            free_gb = disk.free / (1024**3)
-            needed_gb = self._min_free_disk_bytes / (1024**3)
-            msg = (
-                f"Insufficient host disk space: {free_gb:.1f} GiB free, "
-                f"{needed_gb:.1f} GiB required. Free disk space before "
-                "spawning more agent containers."
-            )
+        # --- Disk-headroom preflight ---
+        # Three parallel agent clones can exhaust the Docker graph-driver
+        # volume and wedge the daemon. Fail fast when the filesystem this
+        # process writes to is low, and say WHICH filesystem that was: the
+        # figure is not the host's, and claiming it was made the guard's own
+        # blind spot invisible (see _HOST_DISK_UNOBSERVABLE).
+        headroom = measure_disk_headroom()
+        _note_host_disk_blindness(headroom, self._min_free_disk_bytes)
+        if headroom.free_bytes < self._min_free_disk_bytes:
+            msg = _disk_refusal(headroom, self._min_free_disk_bytes)
             logger.error(msg)
             raise RuntimeError(msg)
 
         # --- Concurrent-agent cap ---
-        # Count currently running praxis-agent-* containers to prevent
-        # simultaneous clones from saturating disk and RAM.
+        # Count THIS STACK's running agent containers to prevent simultaneous
+        # clones from saturating disk and RAM. Scoped by STACK_LABEL, not by
+        # name alone: a name filter is a daemon-wide substring match and agent
+        # names are identical across checkouts, so a second checkout's agents
+        # produced "3 of 3 running" here from an orchestrator that owned none
+        # of them. Agents spawned by a build older than the label are not
+        # counted; they are a one-time transition, and the alternative (count
+        # unlabelled ones too) is the cross-stack bug all over again.
         running_count = sum(
-            1 for c in self._client.containers.list(filters={"name": "praxis-agent-"})
+            1
+            for c in self._client.containers.list(
+                filters={
+                    "name": _AGENT_NAME_PREFIX,
+                    "label": f"{STACK_LABEL}={self._stack_id}",
+                }
+            )
         )
         if running_count >= self._max_agent_concurrency:
             msg = (
@@ -451,9 +766,19 @@ class AgentManager:
                 "bind": "/home/agent/.local/share/opencode",
                 "mode": "rw",
             }
-        volumes.update(local_repo_volume(repo_url))
+        # The bind SOURCE goes to the daemon, which resolves it in the HOST
+        # namespace; everything upstream of here resolved it in this
+        # container's. See host_bind_source for what the untranslated string
+        # did instead of failing.
+        volumes.update(
+            local_repo_volume(
+                repo_url,
+                repos_path=self._local_repos_path,
+                host_path=self._local_repos_host_path,
+            )
+        )
 
-        container_name = f"praxis-agent-{task_id[:8]}"
+        container_name = f"{_AGENT_NAME_PREFIX}{task_id[:8]}"
         self._remove_existing_container(container_name)
         run_kwargs: dict[str, object] = {
             "image": spec.image,
@@ -462,6 +787,10 @@ class AgentManager:
             "detach": True,
             "auto_remove": False,
             "extra_hosts": {"host.docker.internal": "host-gateway"},
+            # The only thing that says whose agent this is. The concurrency cap
+            # and the listing both filter on it; a container spawned without it
+            # is invisible to its own orchestrator.
+            "labels": {STACK_LABEL: self._stack_id},
         }
         if volumes:
             run_kwargs["volumes"] = volumes
@@ -528,9 +857,21 @@ class AgentManager:
         logger.info("Removed container %s", container_id[:12])
 
     def list_agent_containers(self) -> list[dict[str, Any]]:
+        """Return this stack's agent containers, running and exited.
+
+        Scoped by :data:`STACK_LABEL` for the same reason the concurrency cap
+        is: this feeds ``/api/status``'s ``active_agents``/``total_agents``,
+        and a daemon-wide name match reported a second checkout's agents as
+        this install's. Containers from a build older than the label drop out
+        of the listing, which is cosmetic and one-time; reporting another
+        stack's agents as yours is neither.
+        """
         containers = self._client.containers.list(
             all=True,
-            filters={"name": "praxis-agent-"},
+            filters={
+                "name": _AGENT_NAME_PREFIX,
+                "label": f"{STACK_LABEL}={self._stack_id}",
+            },
         )
         return [
             {

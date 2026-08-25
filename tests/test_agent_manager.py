@@ -10,6 +10,7 @@ import httpx
 import pytest
 
 from orchestrator.core.agent_manager import (
+    STACK_LABEL,
     AgentManager,
     _opencode_session_volume_name,
     detect_context_limit,
@@ -505,7 +506,12 @@ def test_list_agent_containers(mock_docker: MagicMock) -> None:
 @pytest.mark.unit
 @patch("orchestrator.core.agent_manager.docker")
 def test_list_agent_containers_queries_praxis_prefix(mock_docker: MagicMock) -> None:
-    """list_agent_containers queries praxis-agent- containers."""
+    """Scoped to this stack's praxis-agent- containers, not the daemon's.
+
+    The name prefix is the same string in every checkout, and a container name
+    filter is a daemon-wide substring match, so the prefix alone reported a
+    second checkout's agents as this one's on ``/api/status``.
+    """
     mock_client = MagicMock()
     mock_docker.from_env.return_value = mock_client
     mock_client.containers.list.return_value = []
@@ -513,12 +519,16 @@ def test_list_agent_containers_queries_praxis_prefix(mock_docker: MagicMock) -> 
     manager = AgentManager(
         lm_studio_url="http://host.docker.internal:1234",
         github_token="ghp_test",
+        stack_id="this-checkout",
     )
     manager.list_agent_containers()
 
     calls = mock_client.containers.list.call_args_list
     filters_used = [c.kwargs["filters"] for c in calls]
-    assert {"name": "praxis-agent-"} in filters_used
+    assert {
+        "name": "praxis-agent-",
+        "label": f"{STACK_LABEL}=this-checkout",
+    } in filters_used
 
 
 @pytest.mark.unit

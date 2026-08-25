@@ -12,6 +12,7 @@ from collections.abc import Mapping
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, cast
 
+from orchestrator.core.agent_manager import SpawnConfigurationError
 from orchestrator.core.bench_mode import verify_gate_disabled
 from orchestrator.core.context_window import (
     YAML_KEY as CONTEXT_WINDOWS_YAML_KEY,
@@ -21,6 +22,7 @@ from orchestrator.core.context_window import (
     ResolvedWindow,
     resolve_context_window,
 )
+from orchestrator.core.github_credentials import CredentialError
 from orchestrator.core.harnesses import default_harness_id
 from orchestrator.core.leaf_validator import is_runnable_verification
 from orchestrator.core.log_context import task_logger
@@ -425,6 +427,36 @@ class DispatchMixin:
                     # two different answers, and the disagreement was invisible.
                     context_limit=resolved_window.tokens,
                 )
+            except (SpawnConfigurationError, CredentialError) as exc:
+                # PERMANENT, and it must be caught BEFORE the RuntimeError
+                # clause below, which both of these subclass. A GitHub App that
+                # is not installed on the repo, a wrong private key and a
+                # repo_url no owner/repo can be extracted from all arrive here
+                # as CredentialError; a repos path that cannot be named in the
+                # daemon's namespace arrives as SpawnConfigurationError.
+                # Nothing about any of them changes on the next tick, and
+                # nothing on the deferral path below counts an attempt, so
+                # deferring left the task in PENDING logging the same warning
+                # every loop_interval forever while telling the operator the
+                # condition was transient. FAILED is where a human sees it,
+                # and it is what ContextBudgetExceeded above already does with
+                # its own permanent condition.
+                reason = (
+                    "agent spawn cannot proceed, and retrying will not change "
+                    f"that: {exc}"
+                )
+                logger.error(
+                    "Spawn for task %s refused permanently: %s", task["id"], exc
+                )
+                await self._tq.fail_task(task["id"], reason)
+                self._bus.publish(
+                    {
+                        "type": "task_failed",
+                        "task_id": task["id"],
+                        "feedback": reason,
+                    }
+                )
+                continue
             except RuntimeError as exc:
                 # Disk-headroom or concurrency-cap preflight failed. Leave the
                 # task in PENDING so the next loop tick retries the spawn (the

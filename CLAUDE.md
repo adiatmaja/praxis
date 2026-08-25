@@ -359,6 +359,9 @@ story. New gotchas go in `docs/gotchas.md` first. (No count is quoted on purpose
   checks it with `Path.exists()` INSIDE the orchestrator container, but the daemon resolves
   the same string as a bind-mount source on the HOST. `LOCAL_REPOS_PATH` (+ the
   `LOCAL_REPOS_HOST_PATH` escape hatch) bridges it; apply with `up -d`, never `restart`.
+  `agent_manager.host_bind_source` TRANSLATES the prefix for the agent's own mount and
+  refuses naming both namespaces when it cannot; compose substitution vars never reach the
+  container env, so `compose_variable` reads env then the mounted `/app/.env`.
 - **A doctor probe must not mutate what it diagnoses**: the agy credentials probe mounts
   the real volume read-only and layers a tmpfs over the writable path, so the kernel
   guarantees it cannot silently seed the "no credentials" state it is checking for.

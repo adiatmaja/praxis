@@ -374,7 +374,10 @@ async def test_spawn_agent_raises_on_low_disk(monkeypatch: pytest.MonkeyPatch) -
     )
     monkeypatch.setattr(shutil, "disk_usage", lambda _: fake_low_disk())
 
-    with pytest.raises(RuntimeError, match="Insufficient host disk"):
+    # The refusal names the filesystem it measured; "host disk space" was a
+    # claim about a filesystem this process cannot see from inside a container
+    # (tests/test_agent_spawn_preflight.py pins the correspondence).
+    with pytest.raises(RuntimeError, match="Insufficient disk space on the filesystem"):
         await manager.spawn_agent(
             task_id="t1",
             repo_url="https://github.com/u/r",
@@ -459,6 +462,79 @@ async def test_dispatch_defers_when_spawn_raises(db: Database) -> None:
     while not events.empty():
         published.append(events.get_nowait())
     assert any(e["type"] == "agent_spawn_deferred" for e in published)
+
+
+async def _dispatch_once(db: Database, error: Exception) -> tuple[Any, list[Any]]:
+    """Dispatch one task whose spawn raises ``error``; return the task and events."""
+    task_queue, plan_id, task_id = await _setup(db)
+
+    mock_agents = MagicMock()
+    mock_agents.spawn_agent = AsyncMock(side_effect=error)
+
+    bus = EventBus()
+    events = bus.subscribe()
+
+    orch = Orchestrator(
+        task_queue=task_queue,
+        agent_manager=mock_agents,
+        opus_bridge=AsyncMock(),
+        git_ops=AsyncMock(),
+        event_bus=bus,
+    )
+    project = dict(await db.fetch_one("SELECT * FROM projects WHERE id = 'p1'"))  # type: ignore[arg-type]
+    await orch.dispatch_pending_tasks(plan_id, project)
+
+    published = []
+    while not events.empty():
+        published.append(events.get_nowait())
+    return await task_queue.get_task(task_id), published
+
+
+@pytest.mark.integration
+async def test_dispatch_fails_the_task_on_an_unresolvable_credential(
+    db: Database,
+) -> None:
+    """``CredentialError`` SUBCLASSES ``RuntimeError`` and is not transient.
+
+    A GitHub App that is not installed on the repo, a wrong private key, and a
+    repo_url no owner/repo can be extracted from all raise it, and none of them
+    changes on the next loop tick.  Deferred, the task sat in PENDING and the
+    same warning printed every ``loop_interval`` forever, telling the operator
+    the condition would clear on its own.
+    """
+    from orchestrator.core.github_credentials import CredentialError
+
+    task, published = await _dispatch_once(
+        db,
+        CredentialError(
+            "cannot resolve GitHub App installation for u/a (status 404); "
+            "is the App installed on that repo?"
+        ),
+    )
+
+    assert task is not None
+    assert task["status"] == TaskStatus.FAILED
+    assert "is the App installed" in (task["review_feedback"] or "")
+    assert any(e["type"] == "task_failed" for e in published)
+    assert not any(e["type"] == "agent_spawn_deferred" for e in published)
+
+
+@pytest.mark.integration
+async def test_dispatch_fails_the_task_on_a_spawn_configuration_error(
+    db: Database,
+) -> None:
+    """A misconfigured deployment is not a condition a retry can clear."""
+    from orchestrator.core.agent_manager import SpawnConfigurationError
+
+    task, published = await _dispatch_once(
+        db, SpawnConfigurationError("LOCAL_REPOS_HOST_PATH names another namespace")
+    )
+
+    assert task is not None
+    assert task["status"] == TaskStatus.FAILED
+    assert "LOCAL_REPOS_HOST_PATH" in (task["review_feedback"] or "")
+    assert any(e["type"] == "task_failed" for e in published)
+    assert not any(e["type"] == "agent_spawn_deferred" for e in published)
 
 
 # ---------------------------------------------------------------------------
