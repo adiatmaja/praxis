@@ -150,9 +150,11 @@ docker compose --profile hosted up --build                                      
 # Run - bare uvicorn (quick one-off only; process dies with the terminal and orphans in-flight tasks)
 uv run uvicorn orchestrator.main:app --host 127.0.0.1 --port 8080
 
-# Tests. Run the NARROWEST selection that covers the change; the full suite is
-# ~4.5 minutes and 2880 tests, and running it after every edit is the single
-# most expensive habit in this repo.
+# Tests. Run the NARROWEST selection that covers the change; the full suite runs
+# in minutes, and running it after every edit is the single most expensive habit
+# in this repo. Run it from GIT BASH: under PowerShell `bash` resolves to the WSL
+# relay, whose /bin/bash does not exist, and every entrypoint shell test fails
+# with execvpe - which reads as a broken suite rather than a wrong shell.
 uv run pytest tests/test_<the_file_you_touched>.py -q
 uv run pytest -q -k "<subject>"
 
@@ -223,8 +225,16 @@ Tables: `users`, `projects`, `plans`, `tasks`, `agent_runs`, `opus_state`,
   plan's last step; without them the integration PR is invisible to read-only surfaces.
 - `tasks.review_base_sha` (migration 10) is where a task's own work STARTS on a shared
   branch. NULLABLE and the NULL is load-bearing: it means "review the whole pull
-  request" (two-tier mode and every pre-migration row). Schema version is 10;
-  `tests/test_migrations.py` pins it.
+  request" (two-tier mode and every pre-migration row).
+- `plans.plan_attempts` (migration 11) bounds the planning retry; `plans.error` carries
+  the reason. Both are on `PlanResponse` and on MCP `poll_plan`, with the cap served
+  alongside the count so no client mirrors it.
+- `projects.context_window` (migration 12) is the per-project override that outranks a
+  declared window and the LM Studio probe alike.
+- **Schema version is 12; `tests/test_migrations.py` pins it.** Idempotency is proved by
+  invoking a step DIRECTLY TWICE, never by rewinding `user_version`: a rewind that no
+  longer reaches far enough silently stops re-running the step, and a `count(...) == 1`
+  assertion passes whether the step re-ran or never ran at all.
 - **`plans.spec` was dropped (Spec 2)** - markdown docs are the source of truth; the DB
   is a thin execution ledger. `plans` keeps `opus_plan` (the runtime task graph -
   `get_dispatchable_tasks` reads it for `depends_on` ordering, NOT redundant),
