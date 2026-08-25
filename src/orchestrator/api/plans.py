@@ -295,6 +295,25 @@ async def approve_merges(request: Request, plan_id: str) -> dict[str, Any]:
     for task in tasks:
         if task["status"] != TaskStatus.PASSED:
             continue
+        # Re-read, because a task can leave the gate DURING this loop. In
+        # single-branch mode every task in the plan shares ONE pull request,
+        # and merging it lands all of them, so `approve_task_merge` sweeps the
+        # siblings that same merge landed. The snapshot above still calls them
+        # PASSED; approving one now raises "not awaiting merge", and one
+        # collected error suppresses `_integrate_plan` for the whole plan, so
+        # the verb reports failures for a plan it just merged completely.
+        current = await queue.get_task(task["id"])
+        if current is None:
+            continue
+        if current["status"] == TaskStatus.MERGED:
+            # Only a task this request found PASSED reaches here, so MERGED
+            # now means this request merged it. Counting it keeps `approved`
+            # the number of tasks that left the gate rather than the number of
+            # merge calls made, which on a shared PR is 1 for any N.
+            approved += 1
+            continue
+        if current["status"] != TaskStatus.PASSED:
+            continue
         try:
             await orchestrator.approve_task_merge(task["id"], project)
             approved += 1

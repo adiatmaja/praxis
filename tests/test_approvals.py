@@ -58,7 +58,15 @@ def _task(hours_old: float, **overrides) -> dict:
 
 @pytest.mark.unit
 def test_summarize_counts_only_parked_tasks():
-    rows = [_task(1), _task(2), _task(3, status="merged"), _task(4, status="pending")]
+    # Distinct ids and distinct PRs: `count` is a number of PULL REQUESTS, so
+    # two rows sharing the default fixture URL would legitimately count once
+    # and this test would be measuring the dedup rather than the status filter.
+    rows = [
+        _task(1, id="t1", pr_url="https://github.com/o/r/pull/7"),
+        _task(2, id="t2", pr_url="https://github.com/o/r/pull/8"),
+        _task(3, id="t3", pr_url="https://github.com/o/r/pull/9", status="merged"),
+        _task(4, id="t4", pr_url="https://github.com/o/r/pull/10", status="pending"),
+    ]
     summary = summarize_pending(rows)
     assert summary["count"] == 2
 
@@ -221,7 +229,15 @@ def test_a_failed_plan_is_never_offered_for_integration():
 
 @pytest.mark.unit
 def test_summarize_counts_plans_alongside_tasks():
-    summary = summarize_pending([_task(1)], [_plan(2), _plan(3, id="plan-2")])
+    # Three DISTINCT integration PRs, for the reason above: two plans sharing
+    # the fixture's default URL are one pull request, not two.
+    summary = summarize_pending(
+        [_task(1)],
+        [
+            _plan(2),
+            _plan(3, id="plan-2", integration_pr_url="https://github.com/o/r/pull/49"),
+        ],
+    )
     assert summary["count"] == 3
     assert summary["task_count"] == 1
     assert summary["plan_count"] == 2
@@ -241,6 +257,110 @@ def test_the_oldest_age_spans_plans_too():
     """A plan waiting longer than any task must set oldest_hours."""
     summary = summarize_pending([_task(2)], [_plan(30)])
     assert 29.5 < summary["oldest_hours"] < 30.5
+
+
+@pytest.mark.unit
+def test_tasks_sharing_one_pull_request_count_as_one_pull_request():
+    """`count` is rendered as a number of PRs by every surface that shows it.
+
+    Single-branch mode is auto-delegate's only mode: every task pushes to one
+    shared work branch, so N tasks share ONE pull request. Counting the rows
+    made "9 PRs awaiting your approval" out of four, and the number a human
+    reads to decide whether the queue is worth opening was more than twice the
+    truth. `task_count` still answers "how many tasks", unchanged.
+    """
+    shared = "https://github.com/o/r/pull/75"
+    rows = [
+        _task(1, id="a", pr_url=shared),
+        _task(2, id="b", pr_url=shared),
+        _task(3, id="c", pr_url=shared),
+    ]
+    summary = summarize_pending(rows)
+    assert summary["count"] == 1
+    assert summary["task_count"] == 3
+
+
+@pytest.mark.unit
+def test_a_local_pseudo_url_is_a_pull_request_like_any_other():
+    """`praxis-local://pr?...` is what local-backend mode stores in `pr_url`.
+
+    It is a real value on this surface, not a placeholder, and it identifies
+    one reviewable change exactly as a GitHub URL does. Special-casing it out
+    of the dedup would leave the whole local backend counting rows.
+    """
+    local = "praxis-local://pr?branch=work&base=main"
+    summary = summarize_pending(
+        [_task(1, id="a", pr_url=local), _task(2, id="b", pr_url=local)]
+    )
+    assert summary["count"] == 1
+
+
+@pytest.mark.unit
+def test_a_task_and_a_plan_on_the_same_pull_request_count_once():
+    """One URL is one pull request whichever row carries it.
+
+    In single-branch mode merging the task PRs IS the integration, so a plan's
+    `integration_pr_url` can be the very string its tasks carry. Approving it
+    is one decision, and counting it twice re-states the defect across the two
+    lists instead of within one.
+    """
+    shared = "praxis-local://pr?branch=plan%2Fwidget&base=main"
+    summary = summarize_pending(
+        [_task(1, id="a", pr_url=shared)], [_plan(2, integration_pr_url=shared)]
+    )
+    assert summary["count"] == 1
+    assert summary["task_count"] == 1
+    assert summary["plan_count"] == 1
+
+
+@pytest.mark.unit
+def test_a_parked_task_with_no_pr_url_still_counts_as_one_item():
+    """`count` reaching zero over a non-empty queue is the worse defect.
+
+    `praxis pending` returns early on a falsy `count` and prints "Nothing
+    awaiting approval", and the dashboard removes its badge. A parked row
+    carrying no `pr_url` is not a pull request, but it is still something a
+    human has to decide, so it falls back to its own identity rather than
+    being dropped from the total.
+    """
+    summary = summarize_pending([_task(1, id="a", pr_url=None)])
+    assert summary["count"] == 1
+
+
+@pytest.mark.unit
+def test_two_parked_tasks_with_no_pr_url_do_not_collapse_into_one():
+    """The fallback has to be PER ROW, or absent URLs merge into one item.
+
+    A single shared fallback key would count two unrelated parked tasks as one
+    thing to decide, which is the same under-report this whole fix exists to
+    remove, arriving through the back door.
+    """
+    summary = summarize_pending(
+        [_task(1, id="a", pr_url=None), _task(2, id="b", pr_url="")]
+    )
+    assert summary["count"] == 2
+
+
+@pytest.mark.unit
+def test_the_digest_line_says_one_pr_for_three_tasks_on_one_pr():
+    """The renderer end of the same fact, through the real producer.
+
+    This is the sentence a human actually reads on MCP `pending_approvals`,
+    `poll_task`, and the loop digest. Asserting on `count` alone would leave
+    the claim "N PRs" unproven at the point it is made.
+    """
+    shared = "https://github.com/o/r/pull/75"
+    line = digest_line(
+        summarize_pending(
+            [
+                _task(1, id="a", pr_url=shared),
+                _task(2, id="b", pr_url=shared),
+                _task(3, id="c", pr_url=shared),
+            ]
+        )
+    )
+    assert "1 PR awaiting your approval" in line
+    assert "PRs" not in line
 
 
 @pytest.mark.unit

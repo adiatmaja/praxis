@@ -59,6 +59,7 @@ from orchestrator.core.plan_graph import (
     resolve_task_slug,
     slug_to_graph_task,
 )
+from orchestrator.core.status_vocab import GATED_STATUSES
 from orchestrator.core.verify_gate import normalize_verify_cmd, run_verify
 from orchestrator.models.schemas import TaskStatus, TriageDecision
 
@@ -1384,6 +1385,119 @@ class ReviewMixin:
                 "pr_url": task["pr_url"],
             }
         )
+        # LAST, and never before the task the operator actually named is
+        # recorded: one merge can land several tasks, but the one that was
+        # asked for must not depend on any of the others.
+        await self._sweep_merged_siblings(task)
+
+    async def _sweep_merged_siblings(self, merged_task: dict[str, Any]) -> None:
+        """Take every OTHER task the same merge landed out of the merge gate.
+
+        In auto-delegate (single-branch) mode every task pushes to ONE shared
+        work branch, so N tasks share ONE pull request. Merging it puts all of
+        their work on the base branch at once, but only the task the operator
+        named was marked merged. The rest stayed PASSED, kept appearing in
+        ``praxis pending``, and kept offering ``praxis merge <id>`` on a pull
+        request GitHub had already merged. It converges if the operator repeats
+        the verb once per task, because ``merge_pr`` re-reads PR state and
+        accepts an already-merged PR, but every state in between asserts that a
+        merged pull request still needs approval.
+
+        Scope is three conditions and each one is load-bearing:
+
+        - the same ``pr_url``: a different pull request was not merged by this
+          call, and marking its tasks merged would claim a merge nobody made.
+        - ``GATED_STATUSES``: a sibling still REVIEWING has not passed review,
+          so recording MERGED would invent a verdict and satisfy every
+          dependent leaf waiting on it.
+        - the same PROJECT: a local ref is
+          ``praxis-local://pr?branch=...&base=...`` and encodes no repository,
+          so two local projects that share a branch name share the exact
+          ``pr_url`` string. Keyed on the URL alone, merging one project's work
+          would mark another project's task merged. The project is read from
+          the merged task's OWN plan rather than from a caller-supplied dict,
+          so no caller can widen the scope by passing the wrong project.
+
+        Each sibling gets the same follow-through the primary got, because the
+        checkbox sync and the ``task_completed`` event are what the plan
+        document and every SSE consumer read; a status flipped without them
+        leaves the row quiet rather than merged.
+
+        This never raises. The merge has ALREADY happened on the remote by the
+        time it runs, so an error here would report a failure for work that
+        landed, and the operator's next move on a failure is to merge again.
+        Each sibling is handled independently for the same reason: one row that
+        cannot be recorded must not strand the rest.
+
+        Args:
+            merged_task: The task row whose pull request was just merged.
+        """
+        pr_url = merged_task.get("pr_url")
+        if not pr_url:
+            return
+        # Materialized before the placeholders are counted: GATED_STATUSES is a
+        # frozenset, so iterating it twice is not guaranteed to give the same
+        # order and would bind the values to the wrong slots.
+        gated = tuple(GATED_STATUSES)
+        placeholders = ", ".join("?" for _ in gated)
+        try:
+            siblings = await self._tq._db.fetch_all(
+                # `placeholders` is a run of `?` sized from a frozen set; every
+                # value below is bound, never interpolated.
+                f"""SELECT sibling.* FROM tasks AS sibling
+                    JOIN plans AS sibling_plan ON sibling_plan.id = sibling.plan_id
+                    WHERE sibling.pr_url = ?
+                      AND sibling.id != ?
+                      AND sibling.status IN ({placeholders})
+                      AND sibling_plan.project_id = (
+                          SELECT owner.project_id FROM plans AS owner
+                          WHERE owner.id = ?
+                      )""",  # nosec B608
+                (
+                    pr_url,
+                    merged_task["id"],
+                    *gated,
+                    merged_task["plan_id"],
+                ),
+            )
+        except Exception as exc:  # noqa: BLE001 - the merge already happened
+            logger.error(
+                "Merged %s but could not look up the tasks sharing it; they are "
+                "still parked at the merge gate: %s",
+                pr_url,
+                exc,
+            )
+            return
+
+        for sibling in siblings:
+            sibling_id = str(sibling["id"])
+            try:
+                await self._tq.mark_merged(sibling_id)
+                await self._sync_plan_checkbox(sibling)
+                self._bus.publish(
+                    {
+                        "type": "task_completed",
+                        "task_id": sibling_id,
+                        "pr_url": pr_url,
+                    }
+                )
+            except Exception as exc:  # noqa: BLE001 - one row, not the sweep
+                logger.error(
+                    "Task %s was landed by the merge of %s but could not be "
+                    "recorded as merged; it is still parked at the merge "
+                    "gate: %s",
+                    sibling_id,
+                    pr_url,
+                    exc,
+                )
+            else:
+                logger.info(
+                    "Task %s left the merge gate with %s, which landed its work "
+                    "along with task %s",
+                    sibling_id,
+                    pr_url,
+                    merged_task["id"],
+                )
 
     async def resolve_no_change_run(
         self,

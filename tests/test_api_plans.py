@@ -222,8 +222,14 @@ async def _seed_plan_with_passed_tasks(
     db: Database,
     auth_headers: dict[str, str],
     n: int = 2,
+    pr_url: str | None = None,
 ) -> tuple[str, list[str]]:
-    """Seed one plan with N tasks in PASSED state, each with a pr_url."""
+    """Seed one plan with N tasks in PASSED state, each with a pr_url.
+
+    ``pr_url`` puts every task on the SAME pull request, which is what
+    single-branch mode produces: one shared work branch, one PR, N tasks.
+    Omitted, each task gets its own, the two-tier shape.
+    """
     await seed_user(db)
     project = await client.post(
         "/api/projects",
@@ -254,7 +260,7 @@ async def _seed_plan_with_passed_tasks(
     for task in tasks:
         await queue.update_task_status(task["id"], TaskStatus.PASSED)
         await queue.set_task_pr_url(
-            task["id"], f"https://github.com/u/a/pull/{task['id']}"
+            task["id"], pr_url or f"https://github.com/u/a/pull/{task['id']}"
         )
         passed_ids.append(task["id"])
     return plan_id, passed_ids
@@ -284,6 +290,54 @@ async def test_approve_merges_batch(
     assert resp.status_code == 200
     assert sorted(approved) == sorted(passed_ids)
     assert resp.json()["approved"] == 2
+
+
+@pytest.mark.integration
+async def test_approve_merges_survives_one_pr_landing_several_of_its_tasks(
+    client: AsyncClient,
+    db: Database,
+    auth_headers: dict[str, str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`merge-plan` reads its task list ONCE, before anything merges.
+
+    In single-branch mode every task in the plan pushes to one work branch and
+    shares one pull request, so the first ``approve_task_merge`` in this loop
+    merges it and sweeps the siblings that same merge landed. The snapshot
+    above still calls those siblings PASSED, and approving one now raises "not
+    awaiting merge": a single collected error suppresses the integration step
+    for the whole plan, so the verb would report failures for a plan it had
+    just merged completely.
+
+    Delete the re-read in the loop and this goes red on ``errors``.
+    """
+    shared = "https://github.com/u/a/pull/75"
+    plan_id, task_ids = await _seed_plan_with_passed_tasks(
+        client, db, auth_headers, n=3, pr_url=shared
+    )
+    backend = AsyncMock()
+    orchestrator = client.app.state.orchestrator  # type: ignore[attr-defined]
+    monkeypatch.setattr(orchestrator, "_resolve_backend", lambda _repo_url: backend)
+
+    resp = await client.post(
+        f"/api/plans/{plan_id}/approve-merges", headers=auth_headers
+    )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["errors"] == []
+    # One pull request, merged once. The old shape merged it N times because
+    # `merge_pr` accepts an already-merged PR, which is what made the defect
+    # look like it converged.
+    assert backend.merge.await_count == 1
+    queue = client.app.state.task_queue  # type: ignore[attr-defined]
+    for task_id in task_ids:
+        row = await queue.get_task(task_id)
+        assert row is not None
+        assert row["status"] == TaskStatus.MERGED
+    # Every task the request landed is reported as approved, or the operator
+    # reads "approved: 1" over three tasks that just merged.
+    assert body["approved"] == 3
 
 
 @pytest.mark.integration

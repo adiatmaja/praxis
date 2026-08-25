@@ -132,7 +132,7 @@ uv run praxis logs <task-id>    # the agent container log, captured on the run r
 
 # See what is parked at the merge gate, and open it
 uv run praxis pending                # parked tasks AND plans awaiting integration
-uv run praxis merge <task-id>        # one task
+uv run praxis merge <task-id>        # one task, plus every gated task on the SAME PR
 uv run praxis reject-merge <task-id> [--feedback "..."]   # the other half of the gate
 uv run praxis merge-plan <plan-id>   # parked tasks, then the integration PR
 
@@ -298,6 +298,18 @@ cross-plan scope is what makes it work here at all: each MCP `dispatch_task` bec
 own one-task plan, so a plan-scoped hold never had a second task to hold against and could
 not fire on this path (fixed 2026-08-25). What is STILL unenforceable: a commit pushed to
 that branch from outside Praxis. Toggle: `praxis mode on|off|status`.
+
+**N tasks share ONE pull request here, and the merge gate accounts for that** (fixed
+2026-08-26, found live in walkthrough #14). Merging any one of them lands all of their
+work, so `approve_task_merge` sweeps every OTHER gated task in the SAME project on the
+same `pr_url` out of the gate with it. All three scope conditions are load-bearing; the
+project one especially, because a local ref is `praxis-local://pr?branch=...&base=...`
+and encodes NO repository, so two local projects sharing a branch name share the exact
+URL string. `pending_approvals`'s `count` counts DISTINCT PRs for the same reason: nine
+parked tasks over four PRs read as "9 PRs awaiting your approval". STILL open: a PR
+merged or closed by a human in the GitHub UI leaves its tasks, and a plan's
+`integration_merged_at`, stale forever; nothing reconciles parked rows against remote PR
+state.
 
 **Micro-edit lane (2026-08-25):** pass `micro_edit={path, content, commit_message}` to
 `dispatch_task` and NO container is spawned - `core/micro_edit.py` clones server-side,

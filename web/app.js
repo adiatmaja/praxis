@@ -62,7 +62,10 @@
     // approvals_digest SSE event fires; the header badge must be correct
     // before the first event arrives.
     //
-    // `count` is the API's merge-gate total and deliberately EXCLUDES
+    // `count` is the API's merge-gate total: a number of DISTINCT PULL
+    // REQUESTS, not of rows. In single-branch mode N tasks share one work
+    // branch and so one PR, so it is routinely SMALLER than
+    // `tasks.length + plans.length`, deliberately. It also EXCLUDES
     // proposals, because it feeds a digest line that calls its items "PRs"
     // and a proposal has neither a branch nor a PR. `proposals` therefore
     // has to be read separately everywhere, or a live decision is invisible;
@@ -2047,9 +2050,10 @@
     }
 
     // Everything a human still has to decide, across BOTH gates: work parked
-    // at the merge gate (`count`) and autonomous proposals parked before any
-    // work starts. The API keeps them apart on purpose; the badge and the
-    // panel must show the same total as each other, and this is it.
+    // at the merge gate (`count`, which is pull requests rather than rows)
+    // and autonomous proposals parked before any work starts. The API keeps
+    // them apart on purpose; the badge and the panel must show the same total
+    // as each other, and this is it.
     function totalPendingApprovals() {
       const src = normalizeApprovals(pendingApprovals);
       return src.count + src.proposals.length + src.clarifications.length;
@@ -2076,8 +2080,10 @@
       const src = normalizeApprovals(pendingApprovals);
       const mergeGate = src.count;
       const proposalCount = src.proposals.length;
-      // Same helper the panel's header uses, so the number on the badge and
-      // the number of rows the panel lists cannot drift apart.
+      // Same helper the panel's header uses, so the badge and the panel can
+      // never state two different totals. Both count DECISIONS, not rows: on
+      // a shared pull request the panel lists one row per task while the
+      // total counts the one merge that lands them all.
       const total = totalPendingApprovals();
       // Both gates, or the header reads idle while an autonomous proposal
       // waits. Testing `count` alone hid every proposal-only state, which is

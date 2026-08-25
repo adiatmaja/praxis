@@ -141,6 +141,42 @@ def _review_scope_from_feedback(review_feedback: str | None) -> str | None:
     return review_feedback[idx:].strip()
 
 
+def _pull_request_key(entry: dict[str, Any], kind: str) -> str:
+    """The identity of the pull request one parked entry sits on.
+
+    ``count`` is rendered as a number of PULL REQUESTS by every surface that
+    shows it, so it has to be keyed on the pull request rather than on the row.
+    Single-branch mode is auto-delegate's only mode and puts N tasks on ONE
+    shared work branch, so N tasks carry one ``pr_url``: counting rows made
+    nine parked tasks read as "9 PRs awaiting your approval" over four actual
+    pull requests. ``task_count`` still answers "how many tasks", unchanged.
+
+    A ``praxis-local://pr?branch=...&base=...`` pseudo-URL is a real value here
+    and identifies one reviewable change exactly as a GitHub URL does, so it
+    dedups like any other.
+
+    A row carrying no ``pr_url`` falls back to its OWN identity rather than
+    being dropped. It is not a pull request, but it is still something a human
+    has to decide, and ``count`` reaching zero over a non-empty queue is the
+    worse defect: ``praxis pending`` returns early on a falsy ``count`` and
+    prints "Nothing awaiting approval", and the dashboard removes its badge.
+    The fallback is per row, because one shared fallback would collapse two
+    unrelated parked rows into a single item.
+
+    Args:
+        entry: A task or plan entry from the lists built below.
+        kind: ``"task"`` or ``"plan"``, so the two id spaces cannot collide.
+
+    Returns:
+        A stable key that is equal for two entries iff they are the same
+        pull request.
+    """
+    pr_url = str(entry.get("pr_url") or "").strip()
+    if pr_url:
+        return f"pr:{pr_url}"
+    return f"{kind}:{entry.get('task_id') or entry.get('plan_id')}"
+
+
 def summarize_pending(
     rows: list[dict[str, Any]],
     plan_rows: list[dict[str, Any]] | None = None,
@@ -151,6 +187,11 @@ def summarize_pending(
     badge, and a completed plan whose integration PR is open is exactly as
     unapproved as a parked task: counting only tasks is what let the loop
     report "nothing awaiting approval" while the work sat off ``main``.
+
+    It counts DISTINCT PULL REQUESTS, not rows, because that is what all three
+    of its renderers call it (``digest_line`` says "N PRs awaiting your
+    approval", the dashboard badge says "N PRs at the merge gate", and MCP
+    documents it as a number of pull requests). See ``_pull_request_key``.
 
     Autonomous proposals are reported alongside, under their own key and their
     own count. They are parked on a different gate (``praxis approve`` /
@@ -257,8 +298,12 @@ def summarize_pending(
     )
 
     ages = [entry["age_hours"] for entry in (*tasks, *plans)]
+    pull_requests = {
+        *(_pull_request_key(entry, "task") for entry in tasks),
+        *(_pull_request_key(entry, "plan") for entry in plans),
+    }
     return {
-        "count": len(tasks) + len(plans),
+        "count": len(pull_requests),
         "task_count": len(tasks),
         "plan_count": len(plans),
         "proposal_count": len(proposals),
@@ -327,8 +372,11 @@ def outstanding_count(summary: dict[str, Any]) -> int:
         summary: A ``summarize_pending`` payload.
 
     Returns:
-        Parked tasks, plus plans awaiting integration, plus open proposals,
-        plus tasks blocked on an unanswered question.
+        Distinct pull requests at the merge gate (``count``, which spans
+        parked tasks and plans awaiting integration), plus open proposals,
+        plus tasks blocked on an unanswered question. Never zero while
+        anything is parked: ``count`` falls back to a per-row key for a row
+        carrying no ``pr_url``.
     """
     return (
         int(summary.get("count") or 0)

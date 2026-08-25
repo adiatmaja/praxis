@@ -1038,11 +1038,18 @@ async def pending_approvals() -> dict[str, Any]:
     - ``proposals``: autonomous improvement plans nobody has approved to RUN.
     - ``clarifications``: tasks blocked on a question, with the question text.
 
-    ``count`` covers only ``tasks`` + ``plans``, because it is rendered as a
-    number of pull requests and the other two have none. It is NOT the answer
-    to "is anything waiting on a human": for that read ``summary``, or add all
-    four counts. Reporting only ``tasks`` tells the user their queue is clear
-    while three other kinds of work sit in the same payload.
+    ``count`` is the number of DISTINCT PULL REQUESTS across ``tasks`` and
+    ``plans``, which is what it is rendered as on every surface that shows it.
+    In single-branch mode N tasks push to ONE shared work branch and so share
+    ONE pull request: ``count`` is then SMALLER than
+    ``task_count + plan_count``, and deliberately so. Nine parked tasks on
+    four pull requests are four decisions, not nine.
+
+    Proposals and clarifications have no PR at all and are excluded, so
+    ``count`` is NOT the answer to "is anything waiting on a human": for that
+    read ``summary``, or add ``count``, ``proposal_count`` and
+    ``clarification_count``. Reporting only ``tasks`` tells the user their
+    queue is clear while three other kinds of work sit in the same payload.
     """
     return await _with_client(pending_approvals_impl)
 

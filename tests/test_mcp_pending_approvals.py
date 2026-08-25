@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from mcp_server import server
 from mcp_server.server import pending_approvals_impl, poll_plan_impl, poll_task_impl
 
 
@@ -64,6 +65,23 @@ async def test_pending_approvals_does_not_call_a_proposal_queue_empty():
     result = await pending_approvals_impl(client)
     assert "1 improvement proposal awaiting approval" in result["summary"]
     assert "No work parked" not in result["summary"]
+
+
+@pytest.mark.unit
+def test_the_count_is_documented_as_pull_requests_not_rows() -> None:
+    """The docstring is the contract an assistant acts on without reading code.
+
+    It used to say ``count`` "covers only ``tasks`` + ``plans``", which is a
+    number of ROWS: in single-branch mode nine parked tasks on four pull
+    requests were announced as nine PRs awaiting approval. The number is
+    distinct pull requests now, and a caller has to be told it can be SMALLER
+    than ``task_count + plan_count`` or the two fields read as a contradiction
+    and the smaller one reads as the broken one.
+    """
+    doc = server.pending_approvals.__doc__ or ""
+    assert "DISTINCT PULL REQUESTS" in doc
+    assert "SMALLER" in doc
+    assert "covers only ``tasks`` + ``plans``" not in doc
 
 
 @pytest.mark.unit

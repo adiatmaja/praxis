@@ -746,7 +746,7 @@ Approve or reject a parked merge via:
 
 | Endpoint | Effect |
 |----------|--------|
-| `POST /api/tasks/{id}/approve-merge` | Squash-merge one review-passed task's PR. CLI: `praxis merge <task-id>`. |
+| `POST /api/tasks/{id}/approve-merge` | Squash-merge one review-passed task's PR. CLI: `praxis merge <task-id>`. Every OTHER gated task in the same project on that same `pr_url` is landed by the same merge and leaves the gate with it (single-branch mode puts N tasks on one PR). |
 | `POST /api/tasks/{id}/reject-merge` | Comment on the PR, fail the task, and re-dispatch if retry attempts remain (optional `{"feedback": "..."}` body). CLI: `praxis reject-merge <task-id> [--feedback "..."]`. Note `praxis reject` is a different verb: it closes an autonomous improvement PLAN and 404s on a task id. |
 | `POST /api/plans/{id}/approve-merges` | Batch-approve every `PASSED` task in a plan; returns `{approved, errors}`. CLI: `praxis merge-plan <plan-id>`. |
 
