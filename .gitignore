@@ -56,3 +56,12 @@ TODO.md
 # Bench working directory: fetched pools and prepared bare repos (hundreds of
 # MB). bench/samples/ is NOT covered by this and stays committed.
 bench/.work/
+
+# Compose's own local-override file. Its whole purpose is a machine-specific
+# edit compose picks up automatically for every `docker compose` run in this
+# directory, so it must never be committed: a bind-mount source naming one
+# operator's home directory would break the next person's `up -d` silently.
+# It is also invisible in a `docker compose config` run that is not pinned
+# with `-f docker-compose.yml`, which is how the local-repos tests were caught
+# validating a merged config that was not the shipped one.
+docker-compose.override.yml
