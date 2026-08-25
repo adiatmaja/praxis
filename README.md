@@ -260,8 +260,9 @@ uv run praxis init
 
 `praxis init` prompts for an auth token, a dashboard port, GitHub credentials (or 'skip'
 for local-only mode), and a worker preset, then builds the agent images, starts the
-orchestrator in Docker, and verifies the install with the doctor. Keep the `uv run`
-prefix, or activate the venv once (`.venv\Scripts\activate` on Windows,
+orchestrator in Docker, and verifies the install with the doctor. `praxis` is not put on
+your `PATH`: every command below is `uv run praxis ...`, run from this directory. Keep the
+`uv run` prefix, or activate the venv once (`.venv\Scripts\activate` on Windows,
 `source .venv/bin/activate` elsewhere) and drop it.
 
 ```bash

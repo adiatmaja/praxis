@@ -403,7 +403,20 @@ def add_project(
     if harness is not None:
         body["harness"] = harness
     with _client() as client:
-        data = _check_dict(client.post("/api/projects", json=body))
+        response = client.post("/api/projects", json=body)
+    # Checked on the FAILURE path only, so a correctly-typed repo path or URL
+    # never sees this note: Git Bash's MSYS layer rewrites a leading '/'
+    # argument before `praxis` ever runs, and `praxis add-project ...
+    # /run/desktop/mnt/host/c/...` arrives here as a path rooted at the Git
+    # install directory, which then 422s with a confusing "path does not
+    # exist" that names nothing about the shell that caused it.
+    if response.status_code >= 400 and _looks_msys_mangled(repo):
+        console.print(
+            "[yellow]Your shell rewrote this path.[/yellow] Git Bash "
+            "converts a leading '/' into an MSYS path. Re-run with "
+            "MSYS_NO_PATHCONV=1 prefixed to the command."
+        )
+    data = _check_dict(response)
     console.print(f"[green]Created project:[/green] {data['id']}")
 
 
@@ -457,6 +470,32 @@ def configure(
     with _client() as client:
         data = _check_dict(client.patch(f"/api/projects/{project_id}", json=body))
     console.print(f"[green]Updated project:[/green] {data['name']}")
+
+
+#: Case-insensitive: Git Bash's MSYS layer intercepts an argv token that
+#: starts with a leading '/' and rewrites it to an absolute path rooted at
+#: the Git installation directory, in either slash style, before `praxis`
+#: ever sees it. That is the giveaway a mangled value carries: the ORIGINAL
+#: argument is gone by the time this process starts, so there is nothing to
+#: recover, only to recognize. `MSYSTEM` being set is not enough on its own:
+#: it is true for every Git Bash session, including ones passing a perfectly
+#: normal path or a `https://` URL that must not trip this message.
+_MSYS_PATH_PREFIXES = ("c:/program files/git/", "c:\\program files\\git\\")
+
+
+def _looks_msys_mangled(value: str) -> bool:
+    """True when `value` looks like a leading '/' Git Bash rewrote.
+
+    Pure and testable without a subprocess: the tell is the rewritten VALUE
+    itself (it starts inside the Git install directory), not the shell that
+    produced it. Args:
+        value: The raw `repo_url`/path argument as the CLI received it.
+
+    Returns:
+        True when `value` starts with the MSYS-rewritten prefix, in either
+        slash style, case-insensitively.
+    """
+    return value.strip().lower().startswith(_MSYS_PATH_PREFIXES)
 
 
 @app.command()
@@ -519,9 +558,37 @@ def submit(
         spec_text = spec
 
     with _client() as client:
-        data = _check_dict(
-            client.post(f"/api/projects/{project_id}/plans", json={"spec": spec_text})
-        )
+        try:
+            response = client.post(
+                f"/api/projects/{project_id}/plans", json={"spec": spec_text}
+            )
+        except httpx.ConnectTimeout as exc:
+            # The opposite failure from ReadTimeout below: the connection
+            # itself never opened, so this request never reached the server
+            # and nothing was created. Conflating the two would tell an
+            # operator to go check for a plan that provably does not exist.
+            console.print(
+                "[red]Could not connect to the server[/red] "
+                f"({_api_url()}); the request never reached it, so no plan "
+                "was created."
+            )
+            raise typer.Exit(1) from exc
+        except httpx.ReadTimeout as exc:
+            # This endpoint clones the target repo to commit the spec doc
+            # BEFORE it answers, which is the one request in this CLI that
+            # regularly outruns `_DEFAULT_TIMEOUT` on a large repo. The
+            # request DID reach the server, so the plan may well already
+            # exist; only the response never arrived, which makes this an
+            # unknown to resolve, not a failure to report.
+            console.print(
+                "[yellow]Timed out waiting for the server, but the plan "
+                "may have been created:[/yellow] the spec is committed to "
+                "the repository before the response returns."
+            )
+            console.print("Check with:")
+            _copyable(f"  praxis plans {project_id}")
+            raise typer.Exit(1) from exc
+        data = _check_dict(response)
     console.print(f"[green]Plan created:[/green] {data['id']} ({data['status']})")
 
 
@@ -583,6 +650,32 @@ def plans(project_id: str = typer.Argument(..., help="Project ID")) -> None:
             )
 
 
+#: Mirrors `core/orchestrator.py`'s `_MAX_PLANNING_ATTEMPTS` module constant.
+#: Display-only: the plans API does not expose the cap itself, and printing
+#: "attempt 2" with no denominator hides whether the plan is one retry away
+#: from FAILED or about to be. If that constant ever changes, this one has to
+#: move with it; there is no second source of truth to keep it honest.
+_MAX_PLANNING_ATTEMPTS = 3
+
+#: How much of a stored planner error to show inline in the status cell. A
+#: raw response excerpt runs to hundreds of characters, and unlike a plan id
+#: it carries no lookup contract, so truncating it is safe where truncating
+#: an id never would be.
+_ERROR_PREVIEW_LEN = 60
+
+
+def _truncate_error(error: str) -> str:
+    """Collapse and shorten a stored planner error for one status-cell line.
+
+    Whitespace is collapsed first: `plans.error` can carry a multi-line raw
+    excerpt, and a literal newline in a table cell wraps unpredictably.
+    """
+    collapsed = " ".join(error.split())
+    if len(collapsed) > _ERROR_PREVIEW_LEN:
+        return collapsed[:_ERROR_PREVIEW_LEN].rstrip() + " ..."
+    return collapsed
+
+
 def _status_cell(plan: dict[str, Any]) -> str:
     """Render a plan's status with what actually happened to its work.
 
@@ -596,6 +689,13 @@ def _status_cell(plan: dict[str, Any]) -> str:
     stay wide enough to print a uuid contiguously, since every other verb
     looks a plan up by exact match, and a narrow console splits a folded id
     across border characters.
+
+    An `active`/`pending` plan gets the same treatment for a different
+    reason: a planner stuck retrying JSON extraction forever looks IDENTICAL
+    from here to a plan decomposing normally, both print a bare `active`, and
+    `praxis tasks` says "has no tasks yet" for both too. `error` and
+    `plan_attempts` are read with `.get`, defaulting to absent/zero, so a
+    server that predates their addition renders exactly as before.
     """
     status_text = str(plan.get("status") or "")
     if plan.get("integration_merged_at"):
@@ -604,6 +704,16 @@ def _status_cell(plan: dict[str, Any]) -> str:
         return f"{status_text} (PR open)"
     if status_text == "completed":
         return f"{status_text} (no PR)"
+    if status_text in ("active", "pending"):
+        attempts = plan.get("plan_attempts") or 0
+        error = plan.get("error")
+        if attempts or error:
+            detail = "planning"
+            if attempts:
+                detail += f", attempt {attempts}/{_MAX_PLANNING_ATTEMPTS}"
+            if error:
+                detail += f"; last error: {_truncate_error(str(error))}"
+            return f"{status_text} ({detail})"
     return status_text
 
 
