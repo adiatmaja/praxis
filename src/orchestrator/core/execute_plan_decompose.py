@@ -33,14 +33,15 @@ from orchestrator.core.difficulty import (
     extract_features,
 )
 from orchestrator.core.leaf_validator import (
+    ValidationResult,
+    format_violations_feedback,
+    validate_leaves,
+)
+from orchestrator.core.leaf_validator import (
     # Imported rather than recomputed so the scorer's dep_depth feature and the
     # validator's dep_depth rule can never disagree. Same precedent as
     # core/difficulty.py importing _RUNNABLE_SIGNAL from this module.
     _max_dep_depth as max_dep_depth,
-)
-from orchestrator.core.leaf_validator import (
-    format_violations_feedback,
-    validate_leaves,
 )
 from orchestrator.core.plan_derive import slugify
 from orchestrator.core.plan_review import (
@@ -224,6 +225,25 @@ class _LeafScore:
     p_success: float
     features: dict[str, float]
     failing_features: list[str]
+
+
+@dataclass(frozen=True)
+class _AcceptedDecomposition:
+    """A graph that CLEARED both gates, bundled with the evidence behind it.
+
+    One object rather than four variables, because the four have to move
+    together. ``decompose_plan`` re-reads the leaves, the validation result and
+    the scores after the retry loop, and every one of them is written inside
+    the loop body: a ``continue`` past a later attempt leaves them describing
+    an EARLIER attempt's graph. Binding them at the single moment a graph is
+    accepted is what makes "the graph I am returning cleared validation" a fact
+    the code can check, rather than an inference from a non-None graph.
+    """
+
+    plan: dict[str, Any]
+    leaves: list[LeafTask]
+    validation: ValidationResult
+    scored: dict[str, _LeafScore]
 
 
 def _pass_rate(runs: list[dict[str, Any]]) -> float | None:
@@ -425,8 +445,15 @@ async def decompose_plan(
         )
 
     last_exc: PlanReviewError | None = None
-    opus_plan: dict[str, Any] | None = None
-    scored: dict[str, _LeafScore] = {}
+    # Set ONLY where a graph clears both gates. The old guard was "opus_plan is
+    # not None", which a rejected graph satisfies just as well as an accepted
+    # one: when attempt 1 parsed but failed HARD validation and attempt 2
+    # returned unparseable text, the parse `continue` ended the loop with
+    # attempt 1's invalid graph still bound, the None check below could not
+    # fire, and the raises that would have rejected it sit INSIDE the loop body
+    # that `continue` skipped. The plan dispatched, and the capability ledger
+    # recorded its leaves as rejected on the way out.
+    accepted: _AcceptedDecomposition | None = None
 
     for attempt in range(1, _DECOMPOSE_ATTEMPTS + 1):
         raw = await router.run("plan_review", prompt, project_id=project_id)
@@ -464,6 +491,9 @@ async def decompose_plan(
         ]
 
         if validation_result.clean and not too_hard:
+            accepted = _AcceptedDecomposition(
+                opus_plan, leaves, validation_result, scored
+            )
             break
 
         if attempt < _DECOMPOSE_ATTEMPTS:
@@ -536,9 +566,10 @@ async def decompose_plan(
             {"rule": v.rule, "task_id": v.task_id, "message": v.message}
             for v in validation_result.soft
         ]
+        accepted = _AcceptedDecomposition(opus_plan, leaves, validation_result, scored)
         break
 
-    if opus_plan is None:
+    if accepted is None:
         raise (
             last_exc
             if last_exc is not None
@@ -546,6 +577,12 @@ async def decompose_plan(
                 "decomposition failed with no parseable output"
             )
         )
+    # Everything below reads the ACCEPTED attempt, never whatever the loop
+    # happened to leave bound.
+    opus_plan = accepted.plan
+    leaves = accepted.leaves
+    validation_result = accepted.validation
+    scored = accepted.scored
 
     # Emit per-leaf capability events from the final validation result.
     if emitter is not None and plan_id is not None:

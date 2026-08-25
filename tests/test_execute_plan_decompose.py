@@ -1014,3 +1014,132 @@ async def test_decompose_plan_abuse_ceiling_still_caps_a_pathological_payload():
     run = re.search(r"z{100,}", task["context_text"])
     assert run is not None
     assert len(run.group(0)) == INTAKE_ABUSE_CEILING_CHARS
+
+
+# ---------------------------------------------------------------------------
+# The graph that is RETURNED must be the graph that CLEARED both gates.
+#
+# The retry loop's own bookkeeping decided this, and it tracked the wrong
+# thing: "a graph was parsed" rather than "a graph was accepted". The gap is a
+# mixed run, good-then-garbage, which no test covered because the exhaustion
+# test uses a router that never parses at all.
+# ---------------------------------------------------------------------------
+
+
+class _Sequenced:
+    """Replies with each canned string in turn, one per call."""
+
+    def __init__(self, *replies: str) -> None:
+        self._replies = list(replies)
+        self.calls = 0
+
+    async def run(self, call_site: str, prompt: str, project_id: Any = None) -> str:
+        reply = self._replies[self.calls]
+        self.calls += 1
+        return reply
+
+
+class _RecordingEmitter:
+    def __init__(self) -> None:
+        self.emitted: list[str] = []
+
+    async def emit(self, event: Any) -> None:
+        self.emitted.append(type(event).__name__)
+
+
+# Parses cleanly, then fails HARD validation: leaf_type 'generic' requires
+# Goal/Files/Steps/Acceptance sections and this plan_text has none of them.
+_PARSES_BUT_INVALID = (
+    '{"tasks": [{"id": "t1", "title": "A", "description": "d", "depends_on": [],'
+    '"files": ["src/a.py"], "task_type": "feature", "estimated_loc": 50,'
+    '"verification": "Run pytest and confirm all tests pass",'
+    '"plan_text": "no sections here at all"'
+    "}]}"
+)
+
+
+async def test_decompose_refuses_a_graph_that_never_cleared_validation():
+    """Attempt 1 rejected, attempt 2 unparseable: the rejected graph must not ship.
+
+    ``parse_review_response`` raising leaves the previous attempt's graph still
+    bound, so a guard reading "is the graph None" could not fire, and the two
+    raises that would have rejected it sit inside the loop body the parse
+    failure's ``continue`` skipped. The plan dispatched with a leaf whose
+    ``plan_text`` carries none of the sections its own leaf_type requires.
+    """
+    router = _Sequenced(_PARSES_BUT_INVALID, "I cannot help with that.")
+
+    with pytest.raises(PlanReviewError):
+        await decompose_plan(
+            plan="### Task 1: x\nbody",
+            model="m",
+            context=None,
+            router=router,
+            effective_settings=_FakeEffective(),
+            project_id=None,
+        )
+
+    assert router.calls == 2
+
+
+async def test_decompose_emits_no_leaf_events_for_a_graph_it_never_accepted():
+    """The capability ledger must not record a leaf it did not judge.
+
+    Worse than the silent dispatch: the same run emitted ``LeafRejectedEvent``
+    for the very leaf it went on to return, so the calibration trail said
+    "rejected" about work that was about to be built.
+    """
+    emitter = _RecordingEmitter()
+    router = _Sequenced(_PARSES_BUT_INVALID, "I cannot help with that.")
+
+    with pytest.raises(PlanReviewError):
+        await decompose_plan(
+            plan="### Task 1: x\nbody",
+            model="m",
+            context=None,
+            router=router,
+            effective_settings=_FakeEffective(),
+            project_id=None,
+            plan_id="plan-1",
+            emitter=emitter,
+        )
+
+    assert emitter.emitted == ["DecomposeInputEvent"], (
+        f"per-leaf events escaped for an unaccepted graph: {emitter.emitted}"
+    )
+
+
+async def test_decompose_still_returns_a_graph_that_parsed_on_the_last_attempt():
+    """Positive control for the two refusals above.
+
+    Both assert that decomposition FAILS. A bookkeeping change that simply
+    never accepted anything would satisfy both and break every real plan, so
+    this pins the mixed run that must still succeed: garbage first, then a
+    valid graph on the final attempt.
+    """
+    good = (
+        '{"tasks": [{"id": "t1", "title": "A", "description": "d", "depends_on": [],'
+        '"files": ["src/a.py"], "task_type": "feature", "estimated_loc": 50,'
+        '"verification": "Run pytest and confirm all tests pass",'
+        '"plan_text": "## Goal\\nAdd A.\\n## Files\\nsrc/a.py\\n## Steps\\n'
+        '1. Implement it.\\n## Acceptance\\nRun `pytest` and confirm it passes"'
+        "}]}"
+    )
+    emitter = _RecordingEmitter()
+    router = _Sequenced("the model rambled", good)
+
+    opus_plan = await decompose_plan(
+        plan="build a thing",
+        model="qwen3.6-27b",
+        context=None,
+        router=router,
+        effective_settings=_FakeEffective(),
+        project_id=None,
+        plan_id="plan-1",
+        emitter=emitter,
+    )
+
+    assert router.calls == 2
+    assert opus_plan["tasks"][0]["slug"]
+    assert "## Goal" in opus_plan["tasks"][0]["plan_text"]
+    assert "LeafValidatedEvent" in emitter.emitted

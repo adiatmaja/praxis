@@ -70,6 +70,42 @@ def slugify(title: str) -> str:
     return cleaned or "task"
 
 
+def _unique_slug(base: str, taken: set[str]) -> str:
+    """Return ``base``, or ``base-2``/``base-3``/... until it is unclaimed.
+
+    A slug is an IDENTITY, not a label. ``TaskQueue.activate_plan`` writes one
+    task row per graph entry and names its branch ``agent/{slug}``,
+    ``get_dispatchable_tasks`` resolves every ``depends_on`` edge by slug, and
+    the two other graph producers already refuse to repeat one:
+    ``execute_plan_decompose.normalize_slugs`` uniquifies, and
+    ``leaf_split.child_slugs`` raises on a collision citing the collapse it
+    causes. This path did not, and the triggers are mundane: two headings with
+    the same title, two identical checklist items, or any two titles that
+    slugify alike, which ``slugify`` makes easy because every title with no
+    alphanumerics at all reduces to ``task``.
+
+    The FIRST claimant keeps the bare slug, so an edge that already resolves to
+    it keeps resolving to it and only the later duplicate is renamed. The
+    counter is deterministic, so re-deriving the same document yields the same
+    branch names.
+
+    Args:
+        base: The slug ``slugify`` produced.
+        taken: Slugs already claimed in this document. MUTATED: the returned
+            slug is added, so the next call cannot hand out the same one.
+
+    Returns:
+        A slug that was not present in ``taken``.
+    """
+    slug = base
+    counter = 1
+    while slug in taken:
+        counter += 1
+        slug = f"{base}-{counter}"
+    taken.add(slug)
+    return slug
+
+
 def _mask_fenced_code(text: str) -> str:
     """Blank out fenced code blocks, preserving every character offset.
 
@@ -393,6 +429,7 @@ def parse_plan_tasks(text: str) -> list[dict[str, str | list[str]]]:
     """
     headings = list(_TASK_HEADING.finditer(text))
     tasks: list[dict[str, str | list[str]]] = []
+    taken: set[str] = set()
     if headings:
         masked = _mask_fenced_code(text)
         bodies: list[str] = []
@@ -405,7 +442,12 @@ def parse_plan_tasks(text: str) -> list[dict[str, str | list[str]]]:
             tasks.append(
                 {
                     "title": title,
-                    "slug": slugify(title),
+                    # Uniqued BEFORE slug_by_number is built, so a second
+                    # heading with the first one's title resolves "Depends on:
+                    # Task 1" to task 1 instead of to itself. While the two
+                    # shared a slug, that genuine edge was discarded as a self
+                    # dependency and the plan silently lost its ordering.
+                    "slug": _unique_slug(slugify(title), taken),
                     "description": text[start:end].strip() or title,
                     "depends_on": [],
                 }
@@ -428,7 +470,10 @@ def parse_plan_tasks(text: str) -> list[dict[str, str | list[str]]]:
         tasks.append(
             {
                 "title": title,
-                "slug": slugify(title),
+                # Two identical checklist items are the cheapest way to author
+                # a duplicate slug, and a checklist is exactly where repetition
+                # goes unnoticed.
+                "slug": _unique_slug(slugify(title), taken),
                 "description": title,
                 "depends_on": [],
             }
@@ -477,11 +522,21 @@ def _finalize(tasks: list[dict], text: str) -> dict:
     an unresolvable reference (``get_dispatchable_tasks`` raises, and
     ``run_once`` has no per-plan try/except, so one bad plan aborts the pass
     for every plan, every interval) applies to the fallback verbatim.
+
+    Slugs are uniqued here for the same reason, and this is the LAST gate
+    before ``activate_plan``: the fallback emits whatever slugs the model chose
+    and may repeat one, or omit them and leave two identical titles to slugify
+    alike. A repeated slug does not raise anywhere; it silently collapses the
+    positional graph-to-row map. A model-supplied slug that is empty is also
+    replaced rather than kept, because ``agent/`` is not a branch name.
     """
     from orchestrator.core.markdown_utils import extract_title
 
+    taken: set[str] = set()
     for task in tasks:
-        task.setdefault("slug", slugify(str(task["title"])))
+        declared = task.get("slug")
+        base = str(declared) if declared else slugify(str(task["title"]))
+        task["slug"] = _unique_slug(base, taken)
         task.setdefault("depends_on", [])
         task.setdefault("description", str(task["title"]))
     # Runs only once every slug is known: an entry is judged against the final

@@ -413,14 +413,34 @@ def _is_acyclic(edges: dict[str, list[str]]) -> bool:
     return all(visit(n) for n in edges if colour.get(n) is None)
 
 
-# --- D4: the self-reference guard must hold at the slug level ----------------
+# --- D4: two tasks must never share a slug, whatever they are titled ---------
 
 
-def test_parse_plan_tasks_drops_a_slug_level_self_dependency(caplog) -> None:
-    """Two tasks sharing a title share a slug, so a number-only guard misses.
+def test_parse_plan_tasks_gives_two_tasks_with_one_title_distinct_slugs() -> None:
+    """A slug is an identity: ``activate_plan`` names a branch ``agent/{slug}``.
 
-    The resolved slug equals the depending task's OWN slug, which can never
-    become dispatchable no matter which row satisfies it.
+    Two rows sharing one collapse the positional graph-to-row map in
+    ``get_dispatchable_tasks``, which orphans the earlier row and returns the
+    later one twice. The first claimant keeps the bare slug so an edge that
+    already resolved to it still does.
+    """
+    text = (
+        "## Task 1: Same title\n\nBody.\n\n"
+        "## Task 2: Same title\n\n**Depends on:** Task 1\n\nBody.\n"
+    )
+    tasks = parse_plan_tasks(text)
+    assert [t["slug"] for t in tasks] == ["same-title", "same-title-2"]
+
+
+def test_parse_plan_tasks_keeps_the_edge_a_shared_slug_used_to_swallow(
+    caplog,
+) -> None:
+    """The document's own ordering must survive a repeated title.
+
+    While both tasks slugified alike, task 2's genuine ``Depends on: Task 1``
+    resolved to task 2's OWN slug and ``_sanitize_dependency_graph`` discarded
+    it as a self edge, so the two ran in parallel against a plan that had
+    ordered them.
     """
     text = (
         "## Task 1: Same title\n\nBody.\n\n"
@@ -428,9 +448,36 @@ def test_parse_plan_tasks_drops_a_slug_level_self_dependency(caplog) -> None:
     )
     with caplog.at_level(logging.WARNING, logger=PARSER_LOGGER):
         tasks = parse_plan_tasks(text)
-    assert [t["slug"] for t in tasks] == ["same-title", "same-title"]
-    assert tasks[1]["depends_on"] == []
-    assert "self dependency" in caplog.text
+    assert tasks[1]["depends_on"] == ["same-title"]
+    assert "self dependency" not in caplog.text
+
+
+def test_parse_plan_tasks_separates_titles_that_slugify_to_the_same_thing() -> None:
+    """``slugify`` reduces every title with no alphanumerics at all to "task".
+
+    So two headings need not look alike to collide, and a plan that titles its
+    steps with symbols produces the collision without repeating a word.
+    """
+    text = "## Task 1: ***\n\nBody.\n\n## Task 2: ///\n\nBody.\n"
+    slugs = [t["slug"] for t in parse_plan_tasks(text)]
+    assert slugs == ["task", "task-2"]
+
+
+def test_parse_plan_tasks_separates_duplicate_checklist_items() -> None:
+    """A checklist is exactly where a repeated line goes unnoticed."""
+    text = "# Plan\n\n- [ ] Run the migration\n- [ ] Run the migration\n"
+    slugs = [t["slug"] for t in parse_plan_tasks(text)]
+    assert slugs == ["run-the-migration", "run-the-migration-2"]
+
+
+def test_parse_plan_tasks_leaves_distinct_titles_alone() -> None:
+    """Positive control: uniquing must not rename anything that was fine.
+
+    A suffix applied unconditionally would satisfy every assertion above while
+    changing the branch name of every task in every plan.
+    """
+    text = "## Task 1: Alpha\n\nBody.\n\n## Task 2: Beta\n\nBody.\n"
+    assert [t["slug"] for t in parse_plan_tasks(text)] == ["alpha", "beta"]
 
 
 # --- F1: a task body is bounded by heading level, not only by task headings ---
@@ -546,6 +593,72 @@ async def test_derive_drops_a_dangling_dependency_from_the_fallback(
         plan = await derive_opus_plan("# Plan\n\nprose", lm_studio_url="http://lm:1234")
     assert plan["tasks"][1]["depends_on"] == ["one"]
     assert "no such task" in caplog.text
+
+
+async def _derive_from_fallback(mocker, fake: dict) -> dict:
+    """Run ``derive_opus_plan`` with the LM Studio call answering ``fake``."""
+    payload = {"choices": [{"message": {"content": json.dumps(fake)}}]}
+    mock_resp = mocker.Mock()
+    mock_resp.json.return_value = payload
+    mock_resp.raise_for_status.return_value = None
+    mocker.patch("httpx.AsyncClient.post", new=mocker.AsyncMock(return_value=mock_resp))
+    return await derive_opus_plan("# Plan\n\nprose", lm_studio_url="http://lm:1234")
+
+
+async def test_derive_uniques_a_slug_the_fallback_repeated(mocker) -> None:
+    """The model picks these slugs itself and nothing made it pick two.
+
+    A repeat raises nowhere: it silently collapses the positional map in
+    ``get_dispatchable_tasks``. The existing edge onto "one" keeps resolving to
+    the FIRST claimant, so renaming the later duplicate orphans nothing.
+    """
+    fake = {
+        "tasks": [
+            {"title": "One", "slug": "one", "description": "d", "depends_on": []},
+            {"title": "Another", "slug": "one", "description": "d", "depends_on": []},
+            {
+                "title": "Three",
+                "slug": "three",
+                "description": "d",
+                "depends_on": ["one"],
+            },
+        ]
+    }
+    plan = await _derive_from_fallback(mocker, fake)
+    assert [t["slug"] for t in plan["tasks"]] == ["one", "one-2", "three"]
+    assert plan["tasks"][2]["depends_on"] == ["one"]
+
+
+async def test_derive_replaces_an_empty_slug_the_fallback_emitted(mocker) -> None:
+    """``agent/`` is not a branch name, and "" repeats as readily as any slug."""
+    fake = {
+        "tasks": [
+            {"title": "Real Work", "slug": "", "description": "d", "depends_on": []}
+        ]
+    }
+    plan = await _derive_from_fallback(mocker, fake)
+    assert plan["tasks"][0]["slug"] == "real-work"
+
+
+async def test_derive_still_drops_a_slug_level_self_dependency(mocker) -> None:
+    """A model can name its OWN slug, and that edge can never be satisfied.
+
+    Uniquing runs BEFORE the sanitizing pass, so this guard has to survive it:
+    the fallback is the one path where a slug-level self edge is still
+    reachable now that the parser cannot mint duplicate slugs.
+    """
+    fake = {
+        "tasks": [
+            {
+                "title": "Loop",
+                "slug": "loop",
+                "description": "d",
+                "depends_on": ["loop"],
+            }
+        ]
+    }
+    plan = await _derive_from_fallback(mocker, fake)
+    assert plan["tasks"][0]["depends_on"] == []
 
 
 async def test_derive_breaks_a_cycle_from_the_fallback(mocker) -> None:

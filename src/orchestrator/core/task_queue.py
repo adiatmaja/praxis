@@ -43,6 +43,182 @@ def _as_score(value: Any) -> float | None:
         return None
 
 
+#: Spellings a raw brain graph uses for a boolean it wrote as text.
+_TRUE_TOKENS = frozenset({"true", "yes", "1"})
+_FALSE_TOKENS = frozenset({"false", "no", "0", ""})
+
+
+def _as_flag(value: Any) -> bool:
+    """Return a graph flag as a bool, or False for anything unusable.
+
+    Same write-boundary reasoning as :func:`_as_score`: ``tasks`` columns are
+    declared INTEGER but SQLite type affinity is advisory, so the string
+    ``"false"`` would be stored verbatim and read back TRUTHY by every consumer
+    that does not re-parse it. The graph is raw brain JSON on several
+    activation paths, so the coercion belongs here rather than at each read.
+
+    Args:
+        value: The raw flag from a plan-graph task dict.
+
+    Returns:
+        The flag as a bool. Anything that names no boolean is False, which is
+        the column default and the conservative answer for a flag that only
+        ever adds caution.
+    """
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return False
+    if isinstance(value, int | float):
+        return bool(value)
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in _TRUE_TOKENS:
+            return True
+        if normalized in _FALSE_TOKENS:
+            return False
+    logger.warning("Discarding unusable needs_stronger_model %r", value)
+    return False
+
+
+def _graph_entries(opus_plan: Any, plan_id: str) -> list[Any]:
+    """Return a plan graph's task entries in LIST ORDER, or [] if it has none.
+
+    List order is the load-bearing part: ``activate_plan`` writes one row per
+    entry in this order, ``insert_split_children`` only ever APPENDS to both,
+    no path deletes a row, and ``get_tasks_for_plan`` orders by rowid, so entry
+    *i* belongs to row *i*. Nothing is filtered here, for the same reason
+    ``plan_graph.parse_graph_tasks`` filters nothing: dropping an entry would
+    shift every index after it and break the alignment.
+
+    A graph that is not an object, or that carries no ``tasks`` list, used to
+    raise ``KeyError`` out of ``get_dispatchable_tasks``.
+    ``Orchestrator.run_once`` has no per-plan try/except, so that aborted
+    dispatch for EVERY runnable plan, every interval, until the row was
+    hand-edited. One plan with an unusable graph is the smaller fact, so it is
+    named in the log and skipped.
+
+    Args:
+        opus_plan: The parsed ``plans.opus_plan`` payload.
+        plan_id: The owning plan, so the warning names something actionable.
+
+    Returns:
+        The raw graph entries, unfiltered and in order.
+    """
+    if not isinstance(opus_plan, dict):
+        logger.warning(
+            "Plan %s: task graph is %s, not an object; nothing to dispatch",
+            plan_id,
+            type(opus_plan).__name__,
+        )
+        return []
+    entries = opus_plan.get("tasks")
+    if not isinstance(entries, list):
+        logger.warning(
+            "Plan %s: task graph carries no 'tasks' list (%s); nothing to dispatch",
+            plan_id,
+            type(entries).__name__,
+        )
+        return []
+    return entries
+
+
+def _entry_slug(entry: Any, index: int, plan_id: str) -> str | None:
+    """Return a graph entry's slug, or None when it does not carry a usable one.
+
+    Returning None rather than raising keeps a single malformed entry from
+    aborting the dispatch pass for every plan, and skipping it costs no
+    alignment because the caller iterates POSITIONALLY: the entries after it
+    keep their own indices.
+
+    Args:
+        entry: One raw graph entry.
+        index: Its position in the graph, which is also its row's position.
+        plan_id: The owning plan.
+
+    Returns:
+        The slug, or None.
+    """
+    if isinstance(entry, dict):
+        slug = entry.get("slug")
+        if isinstance(slug, str) and slug:
+            return slug
+    logger.warning(
+        "Plan %s: graph entry %d carries no usable slug, so its task row can be "
+        "neither dispatched nor depended on",
+        plan_id,
+        index,
+    )
+    return None
+
+
+def _entry_dependencies(entry: Any, slug: str | None, plan_id: str) -> list[str]:
+    """Return a graph entry's declared ``depends_on`` slugs, or [] if unusable.
+
+    A ``depends_on`` that is not a list is DISCARDED with a warning rather than
+    iterated. ``Orchestrator._validate_plan_shape`` checks that a planner's
+    task carries the required KEYS, never their types, so a model answering
+    ``"depends_on": "add-tests"`` activates cleanly; iterating that string then
+    yields one CHARACTER per dependency, and the first character naming no slug
+    raises out of a function ``run_once`` does not guard, stopping dispatch for
+    every plan. The same discard is what
+    ``plan_derive._sanitize_dependency_graph`` already does one layer up, for
+    the paths that reach it.
+
+    Args:
+        entry: One raw graph entry.
+        slug: The entry's own slug, so the warning names it; may be None.
+        plan_id: The owning plan.
+
+    Returns:
+        The declared dependency slugs, as strings.
+    """
+    if not isinstance(entry, dict):
+        return []
+    raw = entry.get("depends_on")
+    if raw is None:
+        return []
+    if not isinstance(raw, list):
+        logger.warning(
+            "Plan %s: task %r declares a depends_on that is not a list (%r); "
+            "discarding the edge rather than reading it one character at a time",
+            plan_id,
+            slug,
+            raw,
+        )
+        return []
+    return [str(dep) for dep in raw]
+
+
+def _dependency_satisfied(dep: str, slug_rows: dict[str, list[dict[str, Any]]]) -> bool:
+    """True when every task row carrying ``dep`` has reached a satisfying status.
+
+    A SUPERSEDED or NO_CHANGES dependency is satisfied, not outstanding:
+    neither will ever reach MERGED (one was replaced by split children, the
+    other found its work already present), so requiring MERGED alone deadlocks
+    every dependent of it. The set is named once in ``status_vocab`` so this
+    and ``all_tasks_done`` cannot drift apart.
+
+    A dep carried by MORE than one row needs all of them. Nothing records which
+    row a repeated slug meant, and satisfying the edge from whichever row
+    happened to be last dispatches a leaf onto work that was never built.
+
+    A dep with NO row is outstanding, never satisfied: its row has not been
+    written yet.
+
+    Args:
+        dep: The dependency slug an entry declared.
+        slug_rows: Slug -> every task row carrying it.
+
+    Returns:
+        Whether the dependency no longer blocks dispatch.
+    """
+    carrying = slug_rows.get(dep)
+    if not carrying:
+        return False
+    return all(row["status"] in SATISFIED_STATUSES for row in carrying)
+
+
 class TaskQueue:
     """Manage plan, task, and agent-run lifecycle with SQLite persistence."""
 
@@ -112,8 +288,8 @@ class TaskQueue:
             await self._db.execute(
                 """INSERT INTO tasks
                    (id, plan_id, title, description, branch_name,
-                    difficulty_score, leaf_type)
-                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                    difficulty_score, leaf_type, needs_stronger_model)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     task_id,
                     plan_id,
@@ -127,6 +303,13 @@ class TaskQueue:
                     # before this column existed) still inserts cleanly.
                     _as_score(task_data.get("difficulty_score")),
                     task_data.get("leaf_type"),
+                    # Same class of bug, one field later. The brain sets this
+                    # flag, F3 validates it against escalate_task_types, and
+                    # TaskResponse publishes it to the CLI, the dashboard and
+                    # MCP; while it was missing from this tuple every one of
+                    # them reported False for every task on every install, and
+                    # the column's own test only asserts that it EXISTS.
+                    _as_flag(task_data.get("needs_stronger_model")),
                 ),
             )
         logger.info("Activated plan %s with %d tasks", plan_id, len(opus_plan["tasks"]))
@@ -600,46 +783,106 @@ class TaskQueue:
         )
 
     async def get_dispatchable_tasks(self, plan_id: str) -> list[dict[str, Any]]:
-        """Return pending tasks whose declared dependencies are merged."""
+        """Return pending tasks whose declared dependencies are satisfied.
+
+        The graph and the rows are paired POSITIONALLY, entry *i* to row *i*,
+        and the whole return value is built from that pairing. It used to be
+        flattened into a slug-keyed dict the instant it was built, which made
+        the map non-injective as soon as two entries shared a slug: the earlier
+        row became unreachable (PENDING forever, so ``all_tasks_done`` never
+        turned true and ``plan_stalled`` never fired either, leaving the plan
+        ACTIVE and indistinguishable from healthy) while the later row was
+        returned once per duplicate, aiming two workers at one branch and
+        widening both ends of per-task ``review_base_sha`` scoping. Neither the
+        derive path nor the planner-JSON path guarantees unique slugs, so this
+        must not assume them. Iterating positions rather than slugs is what
+        makes each row appear exactly once, whatever the graph is called.
+
+        Three facts are kept distinct instead of collapsing into one exception:
+
+        * a ``depends_on`` slug that NO graph entry declares was invented by a
+          producer and still raises, which is the contract ``plan_derive`` and
+          ``leaf_split`` both go out of their way to defend;
+        * a slug that IS a graph entry but has no row YET is not written yet,
+          not dangling. That state is reachable after a crash inside
+          ``activate_plan``, which writes the graph before the rows, and
+          raising on it wedged dispatch for every plan on every tick. Its
+          dependents simply wait, and the log names the slugs;
+        * an entry with no usable slug is skipped without shifting the entries
+          after it, because the loop is over positions.
+
+        Args:
+            plan_id: The plan to inspect.
+
+        Returns:
+            The task rows that may be dispatched now, in graph order.
+
+        Raises:
+            ValueError: On a ``depends_on`` slug that no graph entry declares.
+        """
         plan = await self.get_plan(plan_id)
         if plan is None or plan["opus_plan"] is None:
             return []
 
-        opus_plan = json.loads(plan["opus_plan"])
-        tasks = await self.get_tasks_for_plan(plan_id)
-        slug_to_task = {
-            task_data["slug"]: tasks[index]
-            for index, task_data in enumerate(opus_plan["tasks"])
-            if index < len(tasks)
-        }
+        graph = _graph_entries(json.loads(plan["opus_plan"]), plan_id)
+        rows = await self.get_tasks_for_plan(plan_id)
+        slugs = [
+            _entry_slug(entry, index, plan_id) for index, entry in enumerate(graph)
+        ]
+        declared = {slug for slug in slugs if slug is not None}
+        # Read once, by position, so the dangling check below and the dispatch
+        # decision further down can never be looking at different edges.
+        edges = [
+            _entry_dependencies(entry, slugs[index], plan_id)
+            for index, entry in enumerate(graph)
+        ]
 
-        for task_data in opus_plan["tasks"]:
-            deps = task_data.get("depends_on", [])
-            for dep in deps:
-                if dep not in slug_to_task:
-                    msg = (
-                        f"dangling dependency: task "
-                        f"{task_data['slug']!r} depends on unknown slug {dep!r}"
-                    )
-                    raise ValueError(msg)
+        # Slug -> EVERY row carrying it. A list, never one row: overwriting is
+        # exactly how the earlier row used to be orphaned.
+        slug_rows: dict[str, list[dict[str, Any]]] = {}
+        for index, slug in enumerate(slugs):
+            if slug is not None and index < len(rows):
+                slug_rows.setdefault(slug, []).append(rows[index])
+        for slug, carrying in slug_rows.items():
+            if len(carrying) > 1:
+                logger.warning(
+                    "Plan %s: %d task rows share the graph slug %r, so every "
+                    "dependency naming it now waits for all of them",
+                    plan_id,
+                    len(carrying),
+                    slug,
+                )
+
+        unwritten: set[str] = set()
+        for index, dependencies in enumerate(edges):
+            for dep in dependencies:
+                if dep in slug_rows:
+                    continue
+                if dep in declared:
+                    unwritten.add(dep)
+                    continue
+                msg = (
+                    f"dangling dependency: task "
+                    f"{slugs[index]!r} depends on unknown slug {dep!r}"
+                )
+                raise ValueError(msg)
+        if unwritten:
+            logger.warning(
+                "Plan %s: %s named as a dependency but has no task row yet; "
+                "holding the dependents until the rows are written",
+                plan_id,
+                ", ".join(sorted(unwritten)),
+            )
 
         dispatchable: list[dict[str, Any]] = []
-        for task_data in opus_plan["tasks"]:
-            task = slug_to_task.get(task_data["slug"])
-            if task is None or task["status"] != TaskStatus.PENDING:
+        for index, dependencies in enumerate(edges):
+            if slugs[index] is None or index >= len(rows):
                 continue
-            dependencies = task_data.get("depends_on", [])
-            # A SUPERSEDED or NO_CHANGES dependency is satisfied, not
-            # outstanding: neither will ever reach MERGED (one was replaced by
-            # split children, the other found its work already present), so
-            # requiring MERGED alone deadlocks every dependent of it. The set
-            # is named once in status_vocab so this and all_tasks_done cannot
-            # drift apart.
-            if all(
-                slug_to_task.get(dep, {}).get("status") in SATISFIED_STATUSES
-                for dep in dependencies
-            ):
-                dispatchable.append(task)
+            row = rows[index]
+            if row["status"] != TaskStatus.PENDING:
+                continue
+            if all(_dependency_satisfied(dep, slug_rows) for dep in dependencies):
+                dispatchable.append(row)
         return dispatchable
 
     async def all_tasks_done(self, plan_id: str) -> bool:
