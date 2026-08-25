@@ -606,6 +606,16 @@ async def poll_plan_impl(client: Any, plan_id: str) -> dict[str, Any]:
         # it over REST. Dropping it here left the primary surface (MCP is the
         # primary surface by directive) unable to say which one this is.
         "plan_attempts": plan_data.get("plan_attempts"),
+        # The cap the count is counting TOWARDS. Without it the count is an
+        # unanswerable question: "planning has failed twice" does not say
+        # whether the next tick is a retry or the end of the plan, and that is
+        # the only thing a caller polling for a terminal status needs to know.
+        # Served rather than mirrored, for the reason `PlanResponse` carries
+        # it: this MCP server routinely talks to a container built from an
+        # older tree, so a locally-held constant would be this process's
+        # belief about the server's cap. Absent from an older server, in
+        # which case a caller shows the count alone rather than inventing one.
+        "max_planning_attempts": plan_data.get("max_planning_attempts"),
         "dashboard_url": _dashboard_url(client),
         "approvals": approvals,
     }

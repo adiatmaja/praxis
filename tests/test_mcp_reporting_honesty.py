@@ -147,6 +147,7 @@ async def test_poll_plan_reports_the_attempt_count() -> None:
                 "opus_plan": None,
                 "error": None,
                 "plan_attempts": 2,
+                "max_planning_attempts": 3,
             },
             ("GET", "/api/plans/p1/tasks"): [],
             ("GET", "/api/approvals/pending"): {"count": 0},
@@ -154,6 +155,38 @@ async def test_poll_plan_reports_the_attempt_count() -> None:
     )
     result = await server.poll_plan_impl(client, plan_id="p1")
     assert result["plan_attempts"] == 2
+    # The count alone is an unanswerable question. "Failed twice" does not say
+    # whether the next tick retries or ends the plan, and a caller polling for
+    # a terminal status needs exactly that. Served, never mirrored: the CLI
+    # once held its own copy of this cap and would have printed "attempt 4/3"
+    # against an engine that had moved.
+    assert result["max_planning_attempts"] == 3
+
+
+@pytest.mark.unit
+async def test_poll_plan_omits_the_cap_an_older_server_does_not_send() -> None:
+    """An older orchestrator has no `max_planning_attempts` to give.
+
+    The honest answer is then None, so a caller shows the bare count. A
+    hardcoded fallback here would be the mirror this field exists to retire,
+    wearing a default: it would read as the server's cap while being this
+    process's guess about a container built from a different tree.
+    """
+    client = FakeClient(
+        {
+            ("GET", "/api/plans/p1"): {
+                "status": "active",
+                "opus_plan": None,
+                "error": None,
+                "plan_attempts": 2,
+            },
+            ("GET", "/api/plans/p1/tasks"): [],
+            ("GET", "/api/approvals/pending"): {"count": 0},
+        }
+    )
+    result = await server.poll_plan_impl(client, plan_id="p1")
+    assert result["plan_attempts"] == 2
+    assert result["max_planning_attempts"] is None
 
 
 @pytest.mark.unit
