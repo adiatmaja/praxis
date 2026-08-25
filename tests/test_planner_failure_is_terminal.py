@@ -26,7 +26,9 @@ These tests pin three separable facts:
 
 from __future__ import annotations
 
+import asyncio
 import subprocess
+import time
 from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
@@ -34,9 +36,11 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from httpx import AsyncClient
 
+from orchestrator.core.llm_router import LLMRouter
 from orchestrator.core.opus_bridge import (
     BrainMalformedJsonError,
     BrainProseResponseError,
+    OpusBridge,
 )
 from orchestrator.core.orchestrator import _MAX_PLANNING_ATTEMPTS, Orchestrator
 from orchestrator.core.task_queue import TaskQueue
@@ -78,9 +82,29 @@ def _git(*args: str, cwd: Path) -> str:
     ).stdout.strip()
 
 
+#: What the spec doc in ``bare_repo`` says, so a test can tell the text that
+#: came out of the planner's own checkout from the spec reader's stand-in.
+_SPEC_IN_REPO = "Build auth, read straight out of the planner checkout.\n"
+
+
+@pytest.fixture(autouse=True)
+def planner_workspace_in_tmp(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Keep planner clones out of the repo's real ``data/`` directory.
+
+    Autouse: every test in this file drives ``plan_and_activate``, which makes
+    a workspace unconditionally. Without this they accumulate under the
+    developer's own checkout, and nothing in the product sweeps that directory.
+    """
+    base = tmp_path / "planner-workspaces"
+    monkeypatch.setattr(
+        "orchestrator.core.orchestrator._planner_workspace_base", lambda: base
+    )
+    return base
+
+
 @pytest.fixture
 def bare_repo(tmp_path: Path) -> Path:
-    """A real bare repo on ``main`` carrying one recognisable file."""
+    """A real bare repo on ``main`` carrying a source file and a spec doc."""
     work, bare = tmp_path / "w", tmp_path / "r.git"
     work.mkdir()
     _git("init", "-b", "main", cwd=work)
@@ -88,6 +112,9 @@ def bare_repo(tmp_path: Path) -> Path:
     _git("config", "user.name", "t", cwd=work)
     _git("config", "commit.gpgsign", "false", cwd=work)
     (work / "app.py").write_text("def f():\n    return 1\n", encoding="utf-8")
+    spec = work / "docs" / "superpowers" / "specs"
+    spec.mkdir(parents=True)
+    (spec / "auth.md").write_text(_SPEC_IN_REPO, encoding="utf-8")
     _git("add", ".", cwd=work)
     _git("commit", "-m", "base", cwd=work)
     _git("clone", "--bare", str(work), str(bare), cwd=tmp_path)
@@ -139,7 +166,7 @@ def _spec_reader() -> AsyncMock:
     return reader
 
 
-def _orchestrator(task_queue: TaskQueue, opus: AsyncMock) -> Orchestrator:
+def _orchestrator(task_queue: TaskQueue, opus: Any) -> Orchestrator:
     return Orchestrator(
         task_queue=task_queue,
         agent_manager=MagicMock(),
@@ -181,9 +208,13 @@ async def test_a_prose_response_fails_the_plan_on_the_first_tick(
     assert plan["plan_attempts"] == 0
     assert opus.plan_spec.await_count == 1
     error = plan["error"]
-    # What happened, the likely cause, the remedy, and the evidence.
+    # What happened, the likely cause, the remedy, the NEXT ACTION, and the
+    # evidence. The next action is not decoration: this case is terminal on the
+    # first tick, so nothing happens at all until a person does something, and
+    # the message is the only place that is said.
     assert "prose" in error
     assert "repository" in error
+    assert "resubmit the specification" in error
     assert "Please grant access to that directory" in error
 
 
@@ -278,23 +309,247 @@ async def test_a_rate_limit_does_not_consume_an_attempt(
 ) -> None:
     """The one failure this system already knows how to wait out.
 
-    A subscription limit lasts five hours; the loop ticks every five seconds.
-    Counting it would burn the whole budget in fifteen seconds and fail a plan
-    that had nothing wrong with it.  Delete the exemption and this goes red.
+    Driven through the REAL ``OpusBridge`` on the REAL ``LLMRouter``, which is
+    the path a stock install takes: ``main.py`` always wires the router, so
+    ``plan_spec`` never reaches the legacy ``_run_claude``. That matters
+    because ``opus_state`` is parked in exactly one place,
+    ``_check_and_handle_rate_limit``, reachable only from ``_run_claude`` --
+    the router never writes it. An earlier version of this test hand-fed
+    ``is_available.side_effect = [True, False]`` and therefore proved nothing:
+    the production path leaves ``opus_state`` on 'available' throughout, and a
+    live probe showed a healthy plan reaching FAILED on tick 3, fifteen seconds
+    into a five-hour wait at the shipped ``loop_interval`` of 5.
+
+    Three ticks, because three is the whole budget: if any of them is charged,
+    the plan is dead.
     """
     task_queue, plan_id, project = await _project_and_plan(db)
-    opus = _opus(side_effect=RuntimeError("Opus rate limited"))
-    # Available when the pass starts, rate limited by the time it fails:
-    # `_check_and_handle_rate_limit` writes `opus_state` BEFORE raising, so
-    # this is exactly what the loop sees in production.
-    opus.is_available.side_effect = [True, False]
 
+    async def _resolve_chain(call_site: str, project_id: str | None) -> list[dict]:
+        return [{"provider": "claude", "model": "claude-sonnet-4-6", "effort": None}]
+
+    router = LLMRouter(_resolve_chain)
+
+    async def _throttled(cfg: dict, prompt: str, cwd: str | None) -> str:
+        message = (
+            "claude failed (exit 1): Claude usage limit reached. "
+            "Your limit will reset at 3pm."
+        )
+        raise RuntimeError(message)
+
+    router._execute_one = _throttled  # type: ignore[method-assign]
+    bridge = OpusBridge(db, router=router)
+    orchestrator = _orchestrator(task_queue, bridge)
+
+    for _tick in range(_MAX_PLANNING_ATTEMPTS):
+        await orchestrator.plan_and_activate(plan_id, project)
+        plan = await task_queue.get_plan(plan_id)
+        assert plan is not None
+        assert plan["status"] == PlanStatus.PENDING
+        assert plan["plan_attempts"] == 0
+
+    # The reason must tell the operator to WAIT. The exhausted-attempts message
+    # says "resubmit", and resubmitting during a throttle fails the same way.
+    error = plan["error"]
+    assert "WAITING" in error
+    assert "Do NOT resubmit" in error
+
+    # Documents the deferred half of the fix: the router still never parks
+    # `opus_state`, so the queue-and-resume path at the top of
+    # `plan_and_activate` is still dead on this route. Change this line only
+    # when that is actually fixed in `opus_bridge.py`.
+    state = await db.fetch_one("SELECT status FROM opus_state WHERE id = 1")
+    assert state is not None
+    assert state["status"] == "available"
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize(
+    ("graph", "expected"),
+    [
+        ({"plan_summary": "s", "tasks": []}, "plan_slug"),
+        ({"plan_summary": "s", "plan_slug": "s"}, "tasks"),
+        ({"plan_slug": "s", "tasks": {"a": 1}}, "not a list"),
+        (
+            {"plan_slug": "s", "tasks": [{"title": "T", "description": "D"}]},
+            "slug",
+        ),
+        ([1, 2, 3], "not an object"),
+    ],
+)
+async def test_valid_json_of_the_wrong_shape_does_not_escape_the_guard(
+    db: Database,
+    no_remote_clone: list[tuple[str, str]],
+    graph: Any,
+    expected: str,
+) -> None:
+    """Well-formed JSON missing a key the loop reads is the SAME defect.
+
+    Reproduced live before the validator existed: a graph with
+    ``plan_summary`` and ``tasks`` but no ``plan_slug`` raised ``KeyError`` one
+    line past the guarded block, escaped to ``run_once``, and left the plan
+    pending with ``plan_attempts=0`` and ``error=None`` on every tick forever
+    -- identical symptom, identical surface, identical invisible state as the
+    defect this file exists to close. Nothing upstream validates the shape:
+    the plan prompt is a plain template with no ``json_schema``.
+
+    Delete ``_validate_plan_shape`` and every case here goes red, because the
+    exception escapes ``plan_and_activate`` instead of being recorded.
+    """
+    task_queue, plan_id, project = await _project_and_plan(db)
+    opus = _opus(return_value=graph)
+
+    # No pytest.raises: the whole point is that nothing escapes.
     await _orchestrator(task_queue, opus).plan_and_activate(plan_id, project)
 
     plan = await task_queue.get_plan(plan_id)
     assert plan is not None
     assert plan["status"] == PlanStatus.PENDING
-    assert plan["plan_attempts"] == 0
+    # Counted and reported, i.e. visibly retrying rather than invisibly stuck.
+    assert plan["plan_attempts"] == 1
+    assert expected in plan["error"]
+
+
+@pytest.mark.integration
+async def test_the_degraded_checkout_reason_reaches_the_plan_row(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The operator must not have to read `docker logs` to learn the cause.
+
+    The prose message tells them to check that the repository is reachable.
+    Before this, the evidence that it was NOT reachable existed only as a
+    WARNING in the container log, which is exactly what cost the field
+    reporter an afternoon. Delete `_with_checkout_note` and this goes red.
+    """
+
+    def _boom(repo_url: str, dest: str, token: str, depth: int = 50) -> None:  # noqa: ARG001
+        message = "fatal: could not read from remote repository"
+        raise RuntimeError(message)
+
+    monkeypatch.setattr("orchestrator.core.orchestrator.clone_with_token", _boom)
+    task_queue, plan_id, project = await _project_and_plan(db)
+    opus = _opus(side_effect=BrainProseResponseError("no JSON", _PROSE))
+
+    await _orchestrator(task_queue, opus).plan_and_activate(plan_id, project)
+
+    plan = await task_queue.get_plan(plan_id)
+    assert plan is not None
+    assert plan["status"] == PlanStatus.FAILED
+    assert "WITHOUT a readable checkout" in plan["error"]
+    assert "could not read from remote repository" in plan["error"]
+
+
+@pytest.mark.integration
+async def test_the_spec_is_read_from_the_checkout_the_planner_already_has(
+    db: Database, bare_repo: Path
+) -> None:
+    """One clone per attempt, not two.
+
+    ``_load_spec_text`` resolved to ``BrainstormManager.read_doc``, which
+    clones the whole repository at depth 50 to read ONE file and deletes it,
+    milliseconds before the planner workspace cloned the same repository at the
+    same depth again. A throttled plan did six full clones before dying.
+
+    The spec reader here RAISES if it is called at all, so a regression that
+    reintroduces the second clone cannot pass.
+    """
+    task_queue, plan_id, project = await _project_and_plan(db, repo_url=str(bare_repo))
+    seen: dict[str, Any] = {}
+
+    async def _plan_spec(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        seen["spec"] = args[0]
+        return _VALID_PLAN
+
+    opus = _opus(side_effect=_plan_spec)
+    orchestrator = _orchestrator(task_queue, opus)
+    orchestrator._spec_reader.read_doc.side_effect = AssertionError(
+        "the spec reader cloned the repository a second time"
+    )
+
+    await orchestrator.plan_and_activate(plan_id, project)
+
+    assert seen["spec"] == _SPEC_IN_REPO
+    plan = await task_queue.get_plan(plan_id)
+    assert plan is not None
+    assert plan["status"] == PlanStatus.ACTIVE
+
+
+@pytest.mark.integration
+async def test_the_remote_clone_does_not_block_the_event_loop(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`clone_with_token` is synchronous, and this process has ONE event loop.
+
+    Called bare from a coroutine it blocks the orchestration pass, FastAPI, SSE
+    and every agent callback for as long as the fetch takes, with no deadline
+    of its own. Drop the ``asyncio.to_thread`` and the ticker below cannot run
+    while the clone sleeps, so the count comes back 0 and this goes red.
+    """
+
+    window: dict[str, float] = {}
+
+    def _slow_clone(repo_url: str, dest: str, token: str, depth: int = 50) -> None:  # noqa: ARG001
+        window["start"] = time.monotonic()
+        time.sleep(0.3)
+        window["end"] = time.monotonic()
+
+    monkeypatch.setattr("orchestrator.core.orchestrator.clone_with_token", _slow_clone)
+    task_queue, plan_id, project = await _project_and_plan(db)
+    opus = _opus(return_value=_VALID_PLAN)
+    ticks: list[float] = []
+
+    async def _ticker() -> None:
+        # Longer than the clone, so the window is fully covered either way.
+        for _ in range(60):
+            await asyncio.sleep(0.01)
+            ticks.append(time.monotonic())
+
+    await asyncio.gather(
+        _orchestrator(task_queue, opus).plan_and_activate(plan_id, project),
+        _ticker(),
+    )
+
+    # Counting ticks OVERALL proves nothing: the ticker runs before and after
+    # the clone whether or not the clone blocks, so a total of 60 is reached
+    # either way. Only ticks landing INSIDE the clone's own window distinguish
+    # the two, and a blocking call admits exactly zero of them. An earlier
+    # version of this test asserted `ticks > 0` and stayed green under the
+    # blocking mutation.
+    during = [t for t in ticks if window["start"] < t < window["end"]]
+    assert len(during) >= 3, (
+        f"the event loop was blocked for the clone: {len(during)} ticks landed "
+        f"in the {window['end'] - window['start']:.2f}s window"
+    )
+
+
+@pytest.mark.integration
+async def test_a_hung_clone_is_bounded_and_degrades(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A clone with no deadline parks THIS plan forever, which is the defect.
+
+    Moving the work off the loop stops it blocking everything else; it does not
+    on its own stop the plan waiting forever. Delete the ``wait_for`` and this
+    hangs until the pytest timeout rather than degrading.
+    """
+
+    def _hanging_clone(repo_url: str, dest: str, token: str, depth: int = 50) -> None:  # noqa: ARG001
+        time.sleep(1.0)
+
+    monkeypatch.setattr(
+        "orchestrator.core.orchestrator.clone_with_token", _hanging_clone
+    )
+    monkeypatch.setattr("orchestrator.core.orchestrator._CLONE_TIMEOUT_SECONDS", 0.05)
+    task_queue, plan_id, project = await _project_and_plan(db)
+    opus = _opus(return_value=_VALID_PLAN)
+
+    await _orchestrator(task_queue, opus).plan_and_activate(plan_id, project)
+
+    # Degraded, not wedged, and the reason names the timeout.
+    assert opus.plan_spec.await_args.kwargs["cwd"] is None
+    plan = await task_queue.get_plan(plan_id)
+    assert plan is not None
+    assert plan["status"] == PlanStatus.ACTIVE
 
 
 @pytest.mark.unit

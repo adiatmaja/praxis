@@ -165,7 +165,24 @@ def test_raises_on_invalid_json() -> None:
 
 
 @pytest.mark.unit
-def test_a_response_with_no_json_is_classified_permanent() -> None:
+@pytest.mark.parametrize(
+    "raw",
+    [
+        # The observed field failure.
+        "I need permission to read that folder first.",
+        # Prose sharing NO vocabulary with it. This case is what makes the
+        # "structural, never a keyword scan" rule enforced rather than merely
+        # asserted: the classifier is the only place such a scan would ever be
+        # written, so the neutral case has to reach THIS function. An earlier
+        # version put it in a test that constructed the exception directly and
+        # never entered the classifier at all, and a reviewer reinstalled the
+        # forbidden rule at runtime with all 44 tests still green.
+        "Sure, happy to help. Which module should the login live in?",
+        "That folder is empty, so there is nothing here to plan from.",
+        "Understood. Starting now.",
+    ],
+)
+def test_a_response_with_no_json_is_classified_permanent(raw: str) -> None:
     """The prompt says "Respond with ONLY valid JSON", so no JSON is a refusal.
 
     A refusal, a question, or a permission request never becomes JSON on
@@ -175,10 +192,10 @@ def test_a_response_with_no_json_is_classified_permanent() -> None:
     bridge = OpusBridge.__new__(OpusBridge)
 
     with pytest.raises(BrainProseResponseError) as caught:
-        bridge._extract_json("I need permission to read that folder first.")
+        bridge._extract_json(raw)
 
     assert not isinstance(caught.value, BrainMalformedJsonError)
-    assert caught.value.raw == "I need permission to read that folder first."
+    assert caught.value.raw == raw
 
 
 @pytest.mark.unit
