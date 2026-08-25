@@ -170,6 +170,44 @@ spawning containers.
 The OFFICIAL SWE-bench evaluation harness, run against the patch extracted from
 the final branch (`git diff base...result`). Praxis never grades itself.
 
+### Grading must run on Linux, and `bench.grade` refuses otherwise
+
+Established by running the harness end to end on 2026-08-26 (swebench 5.0.2)
+over one instance whose prediction was the upstream GOLD patch, so it could not
+fail on its merits. Two things bite, both upstream, both silent:
+
+- The harness writes `eval.sh` and the test patch with a text-mode
+  `open(..., "w")`. On Windows that is CRLF, and inside the Linux eval container
+  the trailing `\r` joins the token: `git checkout <sha> $'test_requests.py\r'`
+  matches no pathspec, `git apply` reports "patch does not apply", and pytest is
+  handed a filename no shell resolves. **Every** instance grades unresolved for a
+  reason that is not the patch.
+- A second write, `f.write(test_output)`, carries no encoding, so the ANSI
+  codepage raises `UnicodeEncodeError` on box-drawing characters in pytest
+  output and the instance lands in `error_ids` instead.
+
+`bench.grade.main` therefore refuses on `win32` and prints the container form.
+`--allow-windows-harness` overrides it, for the day upstream writes LF. The
+container form shares the host's daemon, so the eval images are pulled once:
+
+```bash
+docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
+  -v "$PWD:/work" -v "<praxis-repo>:/praxis:ro" -w /work python:3.11 \
+  bash -c "pip install -q swebench && git config --global --add safe.directory '*' && \
+    PYTHONPATH=/praxis python -m bench.grade --run <run> --sample <sample> --repos <repos>"
+```
+
+### The dataset name is not interchangeable
+
+`--dataset` defaults to `SWE-bench/SWE-bench_Lite`, not the older
+`princeton-nlp/SWE-bench_Lite`. The current harness's `make_test_spec` reads
+`instance["image"]`, naming a prebuilt eval image; the legacy rows have no such
+column and the run dies with `KeyError: 'image'` before anything is evaluated.
+The two agree on `base_commit`, so samples drawn against the old name still
+grade against the new one. `bench/enrich.py` deliberately still reads the legacy
+name: it pulls issue text through the public dataset viewer and never touches
+the harness, so the `image` column is irrelevant to it.
+
 ## Running it
 
 ### The orchestrator must share a filesystem with the prepared repos

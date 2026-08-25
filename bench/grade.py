@@ -192,6 +192,50 @@ def parse_official_report(
 # the aggregate shape rather than a guess.
 _AGGREGATE_MARKER_KEYS: tuple[str, ...] = ("resolved_ids", "submitted_ids")
 
+# The dataset the CURRENT official harness can actually evaluate. Measured
+# 2026-08-26 against swebench 5.0.2: ``make_test_spec`` reads
+# ``instance["image"]`` (swebench/harness/utils.py), and the legacy
+# ``princeton-nlp/SWE-bench_Lite`` rows do not carry that column, so the whole
+# run dies with ``KeyError: 'image'`` before a single instance is evaluated.
+# The ``SWE-bench/`` org's copy carries it, naming a PREBUILT eval image per
+# instance, and is what the harness itself defaults to. The two agree on
+# ``base_commit``, so a sample drawn against the old name still grades against
+# this one.
+DEFAULT_DATASET = "SWE-bench/SWE-bench_Lite"
+
+# Why this module refuses to invoke the official harness on native Windows.
+# Measured 2026-08-26, swebench 5.0.2, one instance whose patch was the upstream
+# GOLD patch and therefore could not fail on its merits:
+#
+#   * the harness writes ``eval.sh`` and the test patch with a text-mode
+#     ``open(..., "w")``, so on Windows every line ends CRLF. Inside the Linux
+#     eval container the trailing ``\r`` becomes part of each token: ``git
+#     checkout <sha> $'test_requests.py\r'`` finds no such pathspec, ``git
+#     apply`` reports "patch does not apply", and ``pytest`` is invoked with a
+#     filename no shell can resolve.
+#   * a second write, ``f.write(test_output)``, has no encoding, so the ANSI
+#     codepage raises ``UnicodeEncodeError`` on any box-drawing character in
+#     pytest output and the instance lands in ``error_ids`` instead.
+#
+# Either way EVERY instance grades unresolved for a reason that has nothing to
+# do with the patch, which is the same silent zero this module exists to
+# prevent. The condition is in upstream, not here, so the honest answer is to
+# refuse and name the workaround rather than publish the number.
+WINDOWS_HARNESS_REFUSAL = (
+    "refusing to invoke the official SWE-bench harness on native Windows: it "
+    "writes its container scripts in text mode, so they arrive CRLF and every "
+    "patch fails to apply for a reason that is not the patch. Every instance "
+    "would grade unresolved and the run would look honest. Run this on Linux, "
+    "or from a Linux container sharing the daemon, for example:\n"
+    "  docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \\\n"
+    '    -v "$PWD:/work" -v "<praxis-repo>:/praxis:ro" -w /work python:3.11 \\\n'
+    '    bash -c "pip install -q swebench && git config --global --add '
+    "safe.directory '*' && \\\n"
+    "      PYTHONPATH=/praxis python -m bench.grade --run <run> --sample "
+    '<sample> --repos <repos>"\n'
+    "Pass --allow-windows-harness to override, once upstream writes LF."
+)
+
 # Directory root the official harness writes per-instance report.json files
 # under, relative to the harness's own cwd:
 # ``<log_root>/<run_id>/<model_name with "/" -> "__">/<instance_id>/report.json``.
@@ -382,7 +426,7 @@ def main(argv: list[str] | None = None) -> int:
         help="the sample this run was drawn from; supplies each base_commit",
     )
     parser.add_argument("--repos", default="bench/.work/repos")
-    parser.add_argument("--dataset", default="princeton-nlp/SWE-bench_Lite")
+    parser.add_argument("--dataset", default=DEFAULT_DATASET)
     parser.add_argument(
         "--harness",
         default="swebench.harness.run_evaluation",
@@ -393,8 +437,20 @@ def main(argv: list[str] | None = None) -> int:
         default=str(DEFAULT_LOG_ROOT),
         help="root the official harness writes per-instance reports under",
     )
+    parser.add_argument(
+        "--allow-windows-harness",
+        action="store_true",
+        help=(
+            "run the official harness on native Windows anyway; only pass this "
+            "once you have verified upstream writes its container scripts LF"
+        ),
+    )
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(message)s")
+
+    if sys.platform == "win32" and not args.allow_windows_harness:
+        logger.error("%s", WINDOWS_HARNESS_REFUSAL)
+        return 1
 
     run_dir = Path(args.run)
     records = read_records(run_dir / "attempts.jsonl")
