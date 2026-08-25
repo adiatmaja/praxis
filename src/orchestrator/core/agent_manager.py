@@ -408,8 +408,9 @@ class AgentManager:
                 logger.warning(
                     "agy harness selected but GEMINI_CREDS_VOLUME is not set; "
                     "the container will start without Gemini OAuth credentials "
-                    "and authentication will fail. Run the one-time `agy login` "
-                    "setup described in docs/deployment.md."
+                    "and authentication will fail. Run the one-time interactive "
+                    "`agy` login described in docs/deployment.md "
+                    "(there is no `agy login` subcommand)."
                 )
         if harness_id == "opencode" and self._opencode_sessions_volume:
             # OpenCode keeps session state under XDG_DATA_HOME. Without this

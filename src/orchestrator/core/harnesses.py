@@ -105,7 +105,8 @@ REGISTRY: dict[str, HarnessSpec] = {
         when_to_pick=(
             "When the project is already on Google Cloud / Gemini and you want "
             "first-party model quality without proxying through LM Studio. "
-            "Requires a one-time `agy login` into a Docker credentials volume "
+            "Requires a one-time interactive `agy` login into a Docker "
+            "credentials volume "
             "(GEMINI_CREDS_VOLUME); see docs/deployment.md."
         ),
         pros=(
@@ -116,7 +117,7 @@ REGISTRY: dict[str, HarnessSpec] = {
         ),
         cons=(
             "Gemini-only: cannot use local open-weight models via LM Studio",
-            "No API-key auth: needs an interactive `agy login` to seed the volume",
+            "No API-key auth: needs an interactive `agy` session to seed the volume",
             "Does not auto-commit — entrypoint stages and commits changes",
             "Newer / less battle-tested in headless CI than OpenCode",
         ),
@@ -128,7 +129,9 @@ REGISTRY: dict[str, HarnessSpec] = {
         reports_tokens=True,
         notes=(
             "One-time setup: chown the praxis-gemini-creds volume to the agent "
-            "user, then run an interactive `agy login` into it. The orchestrator "
+            "user, then start an interactive `agy` session against it, which is "
+            "what triggers the OAuth flow: there is no `agy login` "
+            "subcommand. The orchestrator "
             "mounts that volume read-write at ~/.gemini in each container. See "
             "docs/deployment.md for the exact cross-platform commands.",
         ),

@@ -55,12 +55,17 @@ docker run --rm --user root \
   --entrypoint bash agy-agent:latest \
   -c 'chown -R agent:agent /home/agent/.gemini'
 
-# 2. Log in once (interactive). agy prints an OAuth URL; open it in a browser,
+# 2. Log in once (interactive). There is NO `agy login` subcommand: measured
+#    2026-08-25 against agy-agent:latest, whose `agy --help` lists agent,
+#    changelog, help, install, mcp, models, plugin and update, and no login.
+#    Authentication is triggered by STARTING an interactive session against an
+#    empty credentials volume. agy prints an OAuth URL; open it in a browser,
 #    approve, and the Linux-native credentials are written into the volume.
+#    Leave the session (`/exit`) once it is authenticated.
 docker run --rm -it \
   -v praxis-gemini-creds:/home/agent/.gemini \
   --entrypoint bash agy-agent:latest \
-  -c 'agy login'
+  -c 'agy'
 
 # 3. (Optional) verify a fresh process can authenticate with the persisted creds:
 docker run --rm \
@@ -73,7 +78,16 @@ docker run --rm \
 The orchestrator mounts this volume **read-write** at `/home/agent/.gemini` in every agy
 container (read-write so it can persist the ~1-hourly refreshed access token). The volume
 name is configurable with `GEMINI_CREDS_VOLUME` (default `praxis-gemini-creds`). Tokens are
-long-lived once seeded; re-run step 2 only if login is revoked. No host `~/.gemini` path is
+long-lived once seeded; re-run step 2 only if login is revoked.
+
+**To switch to a DIFFERENT Google account, delete the volume FIRST**
+(`docker volume rm praxis-gemini-creds`), then run steps 1 and 2 again. Running
+step 2 against a volume that still holds credentials can reuse the session
+already in it, which leaves the old account's quota in play while looking like a
+successful re-login. Step 3 is the check that matters: it authenticates in a
+fresh process exactly the way a spawned worker does.
+
+No host `~/.gemini` path is
 ever mounted — that approach does not work across operating systems.
 
 #### OpenCode session volume: no setup required

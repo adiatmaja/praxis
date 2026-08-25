@@ -244,7 +244,7 @@ A local worker model additionally needs [LM Studio](https://lmstudio.ai/) and ha
 that can serve it; tiers and sizing in
 [docs/open-weight-models-complete.md](docs/open-weight-models-complete.md). The
 smallest tryout needs none of that, and exactly two logins: the planner CLI you
-already pay for (e.g. `claude`), plus a one-time `agy login` with a Google account
+already pay for (e.g. `claude`), plus a one-time interactive `agy` login with a Google account
 for the default worker preset. Then a single dispatched task closes the whole loop.
 
 ```bash
@@ -304,7 +304,7 @@ With the orchestrator running:
 The planner and reviewer seats use whichever subscription CLI you pointed at during
 init, for example the Claude Pro plan behind your Claude Code login. The implementer
 seat comes from your worker preset: the shipped default drives Gemini via `agy`
-(one-time `agy login`), or pick `local-lmstudio` to serve an open-weight model over an
+(one-time interactive `agy` login), or pick `local-lmstudio` to serve an open-weight model over an
 OpenAI-compatible endpoint. Full setup and deployment modes:
 [docs/deployment.md](docs/deployment.md).
 
