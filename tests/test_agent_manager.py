@@ -770,6 +770,41 @@ async def test_agy_skips_context_limit_detection(
 
 
 @pytest.mark.unit
+@patch("orchestrator.core.agent_manager.detect_context_limit", new_callable=AsyncMock)
+@patch("orchestrator.core.agent_manager.docker")
+async def test_no_worker_endpoint_means_no_context_probe(
+    mock_docker: MagicMock,
+    mock_detect: AsyncMock,
+) -> None:
+    """The other half of the corrected probe rule, on the spawn path.
+
+    ``harness_id != "agy"`` probed an OpenCode project even with no endpoint
+    configured at all, so the miss it produced was inevitable rather than
+    informative. The predicate is now shared with ``core/context_window`` and
+    needs BOTH a harness that could be served this way and an endpoint to ask.
+    """
+    mock_client = MagicMock()
+    mock_docker.from_env.return_value = mock_client
+    mock_client.containers.run.return_value = _mock_container()
+
+    manager = AgentManager(lm_studio_url="", github_token="ghp_x")
+    await manager.spawn_agent(
+        task_id="no-endpoint",
+        repo_url="https://github.com/u/r.git",
+        branch="agent/t",
+        base_branch="main",
+        task_prompt="do it",
+        model_name="qwen3.8-27b",
+        callback_url="http://cb/",
+        harness="opencode",
+    )
+
+    mock_detect.assert_not_called()
+    env = mock_client.containers.run.call_args.kwargs["environment"]
+    assert "MODEL_CONTEXT_LIMIT" not in env
+
+
+@pytest.mark.unit
 @patch("orchestrator.core.agent_manager.docker")
 async def test_agy_uses_correct_image(mock_docker: MagicMock) -> None:
     """agy harness selects the agy-agent:latest image."""

@@ -164,3 +164,68 @@ async def test_escalation_policy_defaults_block(
     effective_settings: EffectiveSettings,
 ) -> None:
     assert await effective_settings.escalation_policy(project_id=None) == "block"
+
+
+# ---------------------------------------------------------------------------
+# Declared context windows
+#
+# The quieter half of the cloud-harness budgeting defect. This profile's
+# ``context_window`` is the denominator for ``difficulty.extract_features``'s
+# ``context_ratio``, the decomposer's per-leaf budget, ``leaf_triage``'s prompt
+# and ``plan_review``'s prompt. All four read one shipped number (8192, sized
+# for a local open-weight worker), so a cloud-harness project was decomposed as
+# though its model had an 8 K window.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+async def test_capability_profile_takes_a_declared_window_over_the_yaml_default(
+    effective_settings: EffectiveSettings,
+) -> None:
+    """The one line that reaches all four downstream readers at once."""
+    default = await effective_settings.capability_profile(project_id=None)
+    declared = await effective_settings.capability_profile(
+        project_id=None, model="Gemini 3.7 Flash (High)"
+    )
+    assert default.context_window == 8192
+    assert declared.context_window == 1_000_000
+
+
+@pytest.mark.unit
+async def test_capability_profile_leaves_an_undeclared_model_untouched(
+    effective_settings: EffectiveSettings,
+) -> None:
+    """A local model nobody declared keeps the settings file's number exactly.
+
+    Delete this and a regression that declared a window for every model would
+    go unnoticed; the point of the layer is that it is narrow.
+    """
+    prof = await effective_settings.capability_profile(
+        project_id=None, model="qwen3.8-27b"
+    )
+    assert prof.context_window == 8192
+
+
+@pytest.mark.unit
+async def test_a_project_capability_override_still_beats_a_declared_window(
+    effective_settings: EffectiveSettings, seed_override
+) -> None:
+    await seed_override(
+        "capability.Gemini 3.7 Flash (High)",
+        {"parameter_count_b": 70, "context_window": 123_456},
+        project_id="p1",
+    )
+    prof = await effective_settings.capability_profile(
+        project_id="p1", model="Gemini 3.7 Flash (High)"
+    )
+    assert prof.context_window == 123_456
+
+
+@pytest.mark.unit
+async def test_declared_context_windows_exposes_the_shipped_defaults(
+    effective_settings: EffectiveSettings,
+) -> None:
+    declared = await effective_settings.declared_context_windows()
+    assert declared.for_model("Gemini 3.7 Flash (High)") == 1_000_000
+    assert declared.for_harness("agy") == 1_000_000
+    assert declared.for_model("qwen3.8-27b") is None

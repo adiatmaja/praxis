@@ -110,8 +110,9 @@ async def create_project(request: Request, body: ProjectCreate) -> dict[str, Any
         """INSERT INTO projects
            (id, user_id, name, repo_url, default_branch, approval_gate, auto_merge,
             verify_cmd, confidence_threshold, max_retries, max_improvement_cycles,
-            lm_studio_url, model_name, harness, agent_model, agent_model_effort)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            lm_studio_url, model_name, harness, agent_model, agent_model_effort,
+            context_window)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             project_id,
             user["id"],
@@ -129,6 +130,7 @@ async def create_project(request: Request, body: ProjectCreate) -> dict[str, Any
             resolved_harness,
             body.agent_model,
             body.agent_model_effort,
+            body.context_window,
         ),
     )
     project = await db.fetch_one("SELECT * FROM projects WHERE id = ?", (project_id,))

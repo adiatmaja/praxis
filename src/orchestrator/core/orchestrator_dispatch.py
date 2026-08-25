@@ -12,8 +12,14 @@ from collections.abc import Mapping
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, cast
 
-from orchestrator.core.agent_manager import detect_context_limit
 from orchestrator.core.bench_mode import verify_gate_disabled
+from orchestrator.core.context_window import (
+    YAML_KEY as CONTEXT_WINDOWS_YAML_KEY,
+)
+from orchestrator.core.context_window import (
+    DeclaredWindows,
+    resolve_context_window,
+)
 from orchestrator.core.harnesses import default_harness_id
 from orchestrator.core.leaf_validator import is_runnable_verification
 from orchestrator.core.log_context import task_logger
@@ -34,6 +40,7 @@ from orchestrator.core.progress_handover import (
     render_handover,
 )
 from orchestrator.core.session_resume import resolve_resume_session
+from orchestrator.core.settings_file import config_file_path
 from orchestrator.core.token_budget import ContextBudgetExceeded
 from orchestrator.core.verify_gate import normalize_verify_cmd
 from orchestrator.core.worker_bible import BibleSources, build_bible
@@ -61,6 +68,28 @@ DEFAULT_FLAG_BELOW = 0.55
 # This one has no review-side equivalent: only the per-wave gate verifies the
 # accumulated PLAN branch, so only it can be missing one.
 _SKIP_NO_PLAN_BRANCH = "no plan branch or repo_url recorded on the plan"
+
+
+def resolve_implementer(
+    task: Mapping[str, Any], project: Mapping[str, Any]
+) -> tuple[str, str]:
+    """Return the ``(harness_id, model_name)`` that will actually run ``task``.
+
+    An escalated leaf carries its own implementer: the implement seat is
+    spawn-baked, so escalation only takes effect at dispatch. Falling back to
+    the project defaults keeps every non-escalated dispatch byte-identical to
+    its pre-escalation behavior.
+
+    Shared by the spawn and by the context-window resolution that sizes the
+    pack handed to that spawn. Two copies of this would let an escalated leaf
+    be budgeted for the project's default model and then run on another.
+    """
+    harness_id = (
+        task.get("implement_harness") or project.get("harness") or default_harness_id()
+    )
+    model_name = task.get("implement_model") or project["model_name"]
+    return str(harness_id), str(model_name)
+
 
 MANDATORY_ACCEPTANCE = (
     "This leaf was flagged high risk before dispatch and declares no acceptance "
@@ -365,16 +394,7 @@ class DispatchMixin:
                 )
                 continue
 
-            # An escalated leaf carries its own implementer: the implement seat
-            # is spawn-baked, so escalation only takes effect here. Falling back
-            # to the project defaults keeps every non-escalated dispatch
-            # byte-identical to its pre-escalation behavior.
-            harness_id = (
-                task.get("implement_harness")
-                or project.get("harness")
-                or default_harness_id()
-            )
-            worker_model = task.get("implement_model") or project["model_name"]
+            harness_id, worker_model = resolve_implementer(task, project)
             resume_session = resolve_resume_session(task, harness_id)
 
             try:
@@ -857,15 +877,51 @@ class DispatchMixin:
             )
         handover = render_handover(items, commits, task.get("progress_note"))
 
+        # Which model is about to run this, not which model the project names:
+        # an escalated leaf carries its own implementer, and budgeting the pack
+        # against the project default would size it for a model that is not
+        # going to see it.
+        harness_id, worker_model = resolve_implementer(task, project)
+
+        lm_studio_url = ""
+        declared: DeclaredWindows | Any = None
         if self._effective_settings is not None:
             lm_studio_url = await self._effective_settings.lm_studio_url()
+            declared = await self._effective_settings.declared_context_windows()
+        resolved = await resolve_context_window(
+            harness_id=harness_id,
+            model_name=worker_model,
+            project_override=project.get("context_window"),
+            declared=declared,
+            lm_studio_url=lm_studio_url,
+        )
+        log = task_logger(logger, plan_id=task.get("plan_id"), task_id=task["id"])
+        if resolved.known:
+            log.info(
+                "Context budget for %s/%s: %d tokens (%s)",
+                harness_id,
+                worker_model,
+                resolved.tokens,
+                resolved.source,
+            )
         else:
-            lm_studio_url = ""
-        context_window = (
-            await detect_context_limit(lm_studio_url, project["model_name"])
-            if lm_studio_url
-            else None
-        ) or 8192
+            # SAID, not silently permissive. The gate is the only thing that can
+            # refuse an oversized pack, so a tick where it did not run has to be
+            # distinguishable in the log from a tick where it ran and approved -
+            # otherwise "no failure" means both "the pack fits" and "nobody
+            # checked", which is the shape that shipped 8192 for a year.
+            log.warning(
+                "No context window is known for %s/%s: neither the project's "
+                "context_window column, nor a declared window in the settings "
+                "file, nor the LM Studio probe could establish one. Skipping "
+                "the pre-dispatch context budget gate for this task. Declare "
+                "one under `%s` in %s, or set the project's context_window, to "
+                "have it enforced.",
+                harness_id,
+                worker_model,
+                CONTEXT_WINDOWS_YAML_KEY,
+                config_file_path(),
+            )
 
         edit_locations = _normalize_edit_locations(plan_task.get("files"))
 
@@ -922,7 +978,7 @@ class DispatchMixin:
             BibleSources(
                 goal=goal,
                 handover=handover,
-                context_window=context_window,
+                context_window=resolved.tokens,
                 plan_slice=plan_task.get("plan_text"),
                 # Rank 2 of the standard: where to edit, before any narrative.
                 edit_locations=edit_locations,

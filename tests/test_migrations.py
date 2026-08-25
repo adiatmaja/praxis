@@ -116,8 +116,8 @@ async def test_escalation_index_defaults_to_zero(tmp_path):
 
 
 @pytest.mark.unit
-def test_current_schema_version_is_eleven():
-    assert CURRENT_SCHEMA_VERSION == 11
+def test_current_schema_version_is_twelve():
+    assert CURRENT_SCHEMA_VERSION == 12
 
 
 @pytest.mark.unit
@@ -166,6 +166,52 @@ async def test_migration_11_is_idempotent(tmp_path):
     assert row["user_version"] == CURRENT_SCHEMA_VERSION
     names = [r["name"] for r in await db2.fetch_all("PRAGMA table_info(plans)")]
     assert names.count("plan_attempts") == 1
+    await db2.close()
+
+
+@pytest.mark.unit
+async def test_migration_adds_project_context_window_defaulting_to_null(tmp_path):
+    """A project can declare its worker's context window; NULL means undeclared.
+
+    NULL is load-bearing: it means "fall through to the settings file's
+    declaration, then to the LM Studio probe, then to unknown". A NOT NULL
+    column with any default would put a fabricated window back on every project
+    row, which is the entire defect this column exists to close.
+    """
+    db = Database(f"sqlite+aiosqlite:///{tmp_path / 'ctxwin.db'}")
+    await db.initialize()
+    await db.execute("INSERT INTO users (id, name, token_hash) VALUES ('u1', 'U', 'h')")
+    await db.execute(
+        "INSERT INTO projects (id, user_id, name, repo_url) "
+        "VALUES ('proj1', 'u1', 'P', 'https://example.com/repo')"
+    )
+    row = await db.fetch_one("SELECT context_window FROM projects WHERE id = 'proj1'")
+    assert row is not None
+    assert row["context_window"] is None
+    await db.close()
+
+
+@pytest.mark.unit
+async def test_migration_12_is_idempotent(tmp_path):
+    """Re-applying the step against a table that already has the column.
+
+    A crash between ``apply`` and the version bump replays the step, so the
+    ``PRAGMA table_info`` guard has to hold. Rewinding user_version is the only
+    way to make it actually run twice.
+    """
+    path = tmp_path / "m12-idem.db"
+    db = Database(f"sqlite+aiosqlite:///{path}")
+    await db.initialize()
+    await db.execute(f"PRAGMA user_version = {CURRENT_SCHEMA_VERSION - 1}")
+    await db.close()
+
+    db2 = Database(f"sqlite+aiosqlite:///{path}")
+    await db2.initialize()
+    row = await db2.fetch_one("PRAGMA user_version")
+    assert row is not None
+    assert row["user_version"] == CURRENT_SCHEMA_VERSION
+    names = [r["name"] for r in await db2.fetch_all("PRAGMA table_info(projects)")]
+    assert names.count("context_window") == 1
     await db2.close()
 
 

@@ -282,6 +282,11 @@ class ProjectCreate(BaseModel):
     agent_model: str | None = None
     agent_model_effort: str | None = None
     harness: str | None = None
+    #: Worker context window in tokens. None means "not declared", which falls
+    #: through to the settings file's declaration and then to the LM Studio
+    #: probe (``core/context_window``). Set it for a model nobody has declared,
+    #: so the pre-dispatch budget gate can run instead of being skipped.
+    context_window: int | None = Field(default=None, gt=0)
 
     @field_validator("harness")
     @classmethod
@@ -354,6 +359,11 @@ class ProjectUpdate(BaseModel):
     agent_model: str | None = None
     agent_model_effort: str | None = None
     harness: str | None = None
+    #: See ``ProjectCreate.context_window``. ``exclude_none`` on the update
+    #: path means omitting it leaves the stored value alone; there is no way
+    #: to clear it back to NULL through this endpoint, exactly as for every
+    #: other nullable column here.
+    context_window: int | None = Field(default=None, gt=0)
 
     @field_validator("harness")
     @classmethod
@@ -427,6 +437,10 @@ class ProjectResponse(BaseModel):
     agent_model: str | None = None
     agent_model_effort: str | None = None
     harness: str = Field(default_factory=default_harness_id)
+    #: The operator's declared worker context window, or None when undeclared.
+    #: Exposed because "the budget gate was skipped" is otherwise invisible to
+    #: every read-only surface.
+    context_window: int | None = None
     created_at: str
 
 

@@ -5,6 +5,13 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from orchestrator.config import Settings
+from orchestrator.core.context_window import (
+    YAML_KEY as CONTEXT_WINDOWS_KEY,
+)
+from orchestrator.core.context_window import (
+    DeclaredWindows,
+    parse_declared_windows,
+)
 from orchestrator.database import Database
 from orchestrator.models.schemas import CapabilityProfile
 
@@ -208,10 +215,32 @@ class EffectiveSettings:
 
         return chain_resolved
 
+    async def declared_context_windows(self) -> DeclaredWindows:
+        """Return the declared per-model / per-harness context windows.
+
+        The settings file is MOUNTED, so declaring a window for a new cloud
+        model is a YAML edit plus ``docker compose restart`` and never a
+        rebuild. Whatever the file declares is merged over the shipped
+        defaults in ``core/context_window``.
+        """
+        yaml_data = await self._get_yaml()
+        return parse_declared_windows(yaml_data.get(CONTEXT_WINDOWS_KEY))
+
     async def capability_profile(
         self, project_id: str | None, model: str | None = None
     ) -> CapabilityProfile:
-        """Resolve the capability profile: project override -> YAML default.
+        """Resolve the capability profile: project override -> declared -> YAML.
+
+        The ``context_window`` field takes one extra layer that the rest of the
+        profile does not: a window DECLARED for this model name beats the
+        ``capability.default`` block. That default is one number for every
+        model on the install (8192 as shipped, sized for a local open-weight
+        worker), and it feeds the difficulty scorer's ``context_ratio``
+        denominator, the decomposer's per-leaf budget, leaf triage, and the
+        capability plan review. A cloud-harness project inherited it and was
+        therefore split more aggressively than its model ever needed - the
+        quieter half of the same defect that failed 14 KB agy dispatches at
+        dispatch time. A per-project capability override still wins over both.
 
         Args:
             project_id: Optional project scope for per-project overrides.
@@ -234,7 +263,17 @@ class EffectiveSettings:
             if raw:
                 override_data = json.loads(raw)
 
-        data = {**defaults, **override_data}
+        data = {**defaults}
+        # Keyed by MODEL only: this seam has no harness in scope (its callers
+        # pass a model name and nothing else), so the per-harness fallback is
+        # applied at dispatch, where the harness is known. A model that is
+        # declared nowhere leaves the YAML default exactly as it was.
+        declared = parse_declared_windows(yaml_data.get(CONTEXT_WINDOWS_KEY)).for_model(
+            model_name
+        )
+        if declared is not None:
+            data["context_window"] = declared
+        data.update(override_data)
         return CapabilityProfile(model_name=model_name, **data)
 
     async def escalation_policy(self, project_id: str | None) -> str:

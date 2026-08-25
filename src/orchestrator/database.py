@@ -358,6 +358,35 @@ async def _migration_0011_plan_attempts(connection: aiosqlite.Connection) -> Non
         )
 
 
+async def _migration_0012_project_context_window(
+    connection: aiosqlite.Connection,
+) -> None:
+    """Add projects.context_window: an operator's declared worker window.
+
+    The pre-dispatch budget gate sizes a task's context pack against the
+    worker's context window. It used to establish that window by asking LM
+    Studio and, when LM Studio did not know the model, by using a hardcoded
+    8192. Every cloud-harness project (agy/Gemini today; claude and codex the
+    moment they arrive) hit that path on every dispatch, and a 14 KB
+    instructions body was refused against a model with a million-token window.
+
+    This column is the escape hatch that needs no code change and no restart:
+    an operator who knows their model's window states it here and it beats
+    every other source, including a window declared in the settings file.
+
+    NULLABLE, and the NULL is load-bearing: it means "I have not declared one",
+    which falls through to the declared/probed/unknown chain in
+    ``core/context_window``. A zero or negative value is treated the same way
+    rather than as a real window, because it cannot be one.
+    """
+    cursor = await connection.execute("PRAGMA table_info(projects)")
+    cols = {row[1] for row in await cursor.fetchall()}
+    if "context_window" not in cols:
+        await connection.execute(
+            "ALTER TABLE projects ADD COLUMN context_window INTEGER"
+        )
+
+
 MIGRATIONS: list[Migration] = [
     Migration(1, "baseline: schema as of 2026-07-02", _migration_0001_baseline),
     Migration(
@@ -409,6 +438,11 @@ MIGRATIONS: list[Migration] = [
         11,
         "add plans.plan_attempts so a failing planner cannot retry forever",
         _migration_0011_plan_attempts,
+    ),
+    Migration(
+        12,
+        "add projects.context_window so an operator can declare the worker window",
+        _migration_0012_project_context_window,
     ),
 ]
 

@@ -20,8 +20,8 @@ from typing import Any, Protocol
 
 from orchestrator.core.leaf_validator import _RUNNABLE_SIGNAL
 from orchestrator.core.token_budget import (
-    WORKER_RESERVE_FRACTION,
     estimate_tokens,
+    worker_budget,
 )
 from orchestrator.models.schemas import CapabilityProfile, LeafTask, LeafType
 
@@ -133,9 +133,7 @@ def extract_features(
     # is exactly the leaf the planner did not think about.
     estimated_loc = leaf.estimated_loc if leaf.estimated_loc is not None else loc_limit
 
-    per_leaf_budget = max(
-        int(profile.context_window * (1 - WORKER_RESERVE_FRACTION)), 1
-    )
+    per_leaf_budget = max(worker_budget(profile.context_window), 1)
     context_tokens = estimate_tokens(leaf.plan_text or "")
 
     return DifficultyFeatures(

@@ -19,7 +19,11 @@ from orchestrator.core.github_credentials import (
     GitHubCredentialProvider,
     PatCredentialProvider,
 )
-from orchestrator.core.harnesses import REGISTRY, default_harness_id
+from orchestrator.core.harnesses import (
+    REGISTRY,
+    default_harness_id,
+    should_attempt_lm_studio_probe,
+)
 from orchestrator.core.worker_effort import resolve_worker_effort
 
 
@@ -362,8 +366,17 @@ class AgentManager:
             else await self._provider.token_for_repo(repo_url)
         )
 
+        # One shared predicate with the budgeting path (``core/context_window``)
+        # rather than two rules that can be wrong in different directions. This
+        # used to read ``harness_id != "agy"``, which is wrong twice over: it
+        # was the ONLY place that knew agy should not be probed, so the
+        # budgeting path probed it, missed, and fabricated an 8192-token
+        # window; and it happily probed LM Studio for an OpenCode project the
+        # operator had pointed at a hosted provider. A missing endpoint now
+        # means no probe, and a probe that comes back with nothing means the
+        # limit stays absent - never a substituted number.
         context_limit: int | None = None
-        if harness_id != "agy":
+        if should_attempt_lm_studio_probe(harness_id, lm_studio_url):
             context_limit = await detect_context_limit(lm_studio_url, model_name)
 
         environment = build_spawn_env(

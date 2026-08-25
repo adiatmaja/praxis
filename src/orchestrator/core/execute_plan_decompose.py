@@ -48,7 +48,7 @@ from orchestrator.core.plan_review import (
     build_review_prompt,
     parse_review_response,
 )
-from orchestrator.core.token_budget import WORKER_RESERVE_FRACTION
+from orchestrator.core.token_budget import worker_budget
 from orchestrator.models.schemas import LeafTask
 
 
@@ -381,7 +381,7 @@ async def decompose_plan(
             or if a leaf still scores below ``reject_below`` after it.
     """
     profile = await effective_settings.capability_profile(project_id=None, model=model)
-    per_leaf_budget = int(profile.context_window * (1 - WORKER_RESERVE_FRACTION))
+    per_leaf_budget = worker_budget(profile.context_window)
     if db is not None:
         runs = await fetch_recent_outcomes(
             db, model_name=model, project_id=project_id, limit=100

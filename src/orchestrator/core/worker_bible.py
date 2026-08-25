@@ -94,7 +94,11 @@ class BibleSources:
 
     goal: str
     handover: str
-    context_window: int
+    #: The worker's context window in tokens, or None when nobody could
+    #: establish it (see ``core/context_window``). None SKIPS the budget gate:
+    #: every section is kept and nothing raises. It is not a permissive
+    #: default, it is a refusal to judge, and the dispatcher logs it.
+    context_window: int | None
     plan_slice: str | None = None
     edit_locations: str | None = None
     acceptance: str | None = None
