@@ -39,6 +39,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from orchestrator.core.context_window import (
+    UNKNOWN_SOURCE,
     DeclaredWindows,
     ResolvedWindow,
     parse_declared_windows,
@@ -1067,7 +1068,14 @@ async def test_a_non_positive_int_override_is_not_a_window(override):
         project_override=override,
         declared=DeclaredWindows(),
     )
-    assert resolved.source != "project override"
+    # Assert what the answer IS, not only what it is not. A bare
+    # `source != "project override"` passes just as happily when the override
+    # was rejected and some LATER tier answered instead, so it cannot tell a
+    # rejected override from a resolution that quietly came from somewhere
+    # else. With no declarations and no endpoint, the only honest answer here
+    # is "nobody knows", and that is the fact worth pinning.
+    assert resolved.tokens is None
+    assert resolved.source == UNKNOWN_SOURCE
 
 
 @pytest.mark.unit
