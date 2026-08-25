@@ -94,11 +94,24 @@ def test_status_cell_is_unchanged_when_fields_are_present_but_zero_and_none() ->
     assert cell == "active"
 
 
-def test_status_cell_truncates_a_long_error_but_shows_attempt_without_one() -> None:
+def test_status_cell_truncates_a_long_error() -> None:
     long_error = "x" * 200
     cell = _status_cell(_plan(status="active", plan_attempts=1, error=long_error))
     assert cell.count("x") == 60
     assert cell.endswith("...)")
+
+
+def test_status_cell_shows_the_attempt_count_with_no_error_at_all() -> None:
+    """`attempts > 0` with no `error`: the `if attempts:` branch on its own.
+
+    A prior version of this file's truncation test claimed to cover this in
+    its name but always set BOTH `plan_attempts` and `error`, so the
+    attempt-only half of `if attempts: ... if error: ...` was never actually
+    exercised by anything.
+    """
+    cell = _status_cell(_plan(status="active", plan_attempts=1, error=None))
+    assert cell == "active (planning, attempt 1/3)"
+    assert "last error" not in cell
 
 
 def test_status_cell_ignores_the_suffix_for_a_terminal_status() -> None:

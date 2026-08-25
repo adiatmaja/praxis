@@ -91,6 +91,11 @@ def test_add_project_names_the_shell_rewrite_on_a_mangled_path(monkeypatch) -> N
     assert "shell rewrote this path" in output
     assert "MSYS_NO_PATHCONV=1" in output
     assert "path does not exist" in output
+    # Remedy LAST, the same standard `praxis doctor` holds every diagnostic
+    # to: the server's own error is the conclusion, the hint is the fix, and
+    # printing the hint first would scroll it off above the error an
+    # operator actually reads last.
+    assert output.index("path does not exist") < output.index("shell rewrote this path")
 
 
 @pytest.mark.unit

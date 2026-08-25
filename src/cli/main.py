@@ -404,20 +404,64 @@ def add_project(
         body["harness"] = harness
     with _client() as client:
         response = client.post("/api/projects", json=body)
-    # Checked on the FAILURE path only, so a correctly-typed repo path or URL
-    # never sees this note: Git Bash's MSYS layer rewrites a leading '/'
-    # argument before `praxis` ever runs, and `praxis add-project ...
-    # /run/desktop/mnt/host/c/...` arrives here as a path rooted at the Git
-    # install directory, which then 422s with a confusing "path does not
-    # exist" that names nothing about the shell that caused it.
-    if response.status_code >= 400 and _looks_msys_mangled(repo):
-        console.print(
-            "[yellow]Your shell rewrote this path.[/yellow] Git Bash "
-            "converts a leading '/' into an MSYS path. Re-run with "
-            "MSYS_NO_PATHCONV=1 prefixed to the command."
-        )
-    data = _check_dict(response)
+        # Checked on the FAILURE path only, so a correctly-typed repo path or
+        # URL never sees this note: Git Bash's MSYS layer rewrites a leading
+        # '/' argument before `praxis` ever runs, and `praxis add-project ...
+        # /run/desktop/mnt/host/c/...` arrives here as a path rooted at the
+        # Git install directory, which then 422s with a confusing "path does
+        # not exist" that names nothing about the shell that caused it.
+        #
+        # Folded into one message rather than printed before `_check_dict`:
+        # the server's own error is the CONCLUSION here and the hint is the
+        # REMEDY, so the remedy has to be the last thing on screen, the same
+        # standard `praxis doctor` holds every diagnostic to. Printed first,
+        # it would scroll off above the "Error 422: ..." line the operator
+        # actually reads last.
+        if response.status_code >= 400 and _looks_msys_mangled(repo):
+            console.print(f"[red]Error {response.status_code}:[/red] {response.text}")
+            console.print(
+                "[yellow]Your shell rewrote this path.[/yellow] Git Bash "
+                "converts a leading '/' into an MSYS path. Re-run with "
+                "MSYS_NO_PATHCONV=1 prefixed to the command."
+            )
+            raise typer.Exit(1)
+        data = _check_dict(response)
     console.print(f"[green]Created project:[/green] {data['id']}")
+
+
+#: Case-insensitive: Git Bash's MSYS layer intercepts an argv token that
+#: starts with a leading '/' and rewrites it to an absolute path rooted at
+#: the Git installation directory, in either slash style, before `praxis`
+#: ever sees it. That is the giveaway a mangled value carries: the ORIGINAL
+#: argument is gone by the time this process starts, so there is nothing to
+#: recover, only to recognize. `MSYSTEM` being set is not enough on its own:
+#: it is true for every Git Bash session, including ones passing a perfectly
+#: normal path or a `https://` URL that must not trip this message.
+#:
+#: Only covers the admin-default install location. A non-admin install
+#: (`%LOCALAPPDATA%\Programs\Git`), a `D:` (or other) drive, or a bare
+#: `C:\Git` will not match, so a mangled path from one of those still 422s
+#: with the raw, un-annotated server error rather than this hint. That is a
+#: silent miss, never a false alarm: it is exactly today's behaviour for
+#: those installs, not a regression.
+_MSYS_PATH_PREFIXES = ("c:/program files/git/", "c:\\program files\\git\\")
+
+
+def _looks_msys_mangled(value: str) -> bool:
+    """True when `value` looks like a leading '/' Git Bash rewrote.
+
+    Pure and testable without a subprocess: the tell is the rewritten VALUE
+    itself (it starts inside the Git install directory), not the shell that
+    produced it.
+
+    Args:
+        value: The raw `repo_url`/path argument as the CLI received it.
+
+    Returns:
+        True when `value` starts with the MSYS-rewritten prefix, in either
+        slash style, case-insensitively.
+    """
+    return value.strip().lower().startswith(_MSYS_PATH_PREFIXES)
 
 
 @app.command()
@@ -470,32 +514,6 @@ def configure(
     with _client() as client:
         data = _check_dict(client.patch(f"/api/projects/{project_id}", json=body))
     console.print(f"[green]Updated project:[/green] {data['name']}")
-
-
-#: Case-insensitive: Git Bash's MSYS layer intercepts an argv token that
-#: starts with a leading '/' and rewrites it to an absolute path rooted at
-#: the Git installation directory, in either slash style, before `praxis`
-#: ever sees it. That is the giveaway a mangled value carries: the ORIGINAL
-#: argument is gone by the time this process starts, so there is nothing to
-#: recover, only to recognize. `MSYSTEM` being set is not enough on its own:
-#: it is true for every Git Bash session, including ones passing a perfectly
-#: normal path or a `https://` URL that must not trip this message.
-_MSYS_PATH_PREFIXES = ("c:/program files/git/", "c:\\program files\\git\\")
-
-
-def _looks_msys_mangled(value: str) -> bool:
-    """True when `value` looks like a leading '/' Git Bash rewrote.
-
-    Pure and testable without a subprocess: the tell is the rewritten VALUE
-    itself (it starts inside the Git install directory), not the shell that
-    produced it. Args:
-        value: The raw `repo_url`/path argument as the CLI received it.
-
-    Returns:
-        True when `value` starts with the MSYS-rewritten prefix, in either
-        slash style, case-insensitively.
-    """
-    return value.strip().lower().startswith(_MSYS_PATH_PREFIXES)
 
 
 @app.command()
@@ -562,31 +580,38 @@ def submit(
             response = client.post(
                 f"/api/projects/{project_id}/plans", json={"spec": spec_text}
             )
-        except httpx.ConnectTimeout as exc:
-            # The opposite failure from ReadTimeout below: the connection
-            # itself never opened, so this request never reached the server
-            # and nothing was created. Conflating the two would tell an
-            # operator to go check for a plan that provably does not exist.
-            console.print(
-                "[red]Could not connect to the server[/red] "
-                f"({_api_url()}); the request never reached it, so no plan "
-                "was created."
-            )
-            raise typer.Exit(1) from exc
         except httpx.ReadTimeout as exc:
             # This endpoint clones the target repo to commit the spec doc
             # BEFORE it answers, which is the one request in this CLI that
             # regularly outruns `_DEFAULT_TIMEOUT` on a large repo. The
             # request DID reach the server, so the plan may well already
             # exist; only the response never arrived, which makes this an
-            # unknown to resolve, not a failure to report.
+            # unknown to resolve, not a failure to report. Caught FIRST and
+            # separately from `httpx.RequestError` below for exactly that
+            # reason: it is the one case in this whole family where something
+            # may have survived server-side.
             console.print(
                 "[yellow]Timed out waiting for the server, but the plan "
                 "may have been created:[/yellow] the spec is committed to "
                 "the repository before the response returns."
             )
             console.print("Check with:")
-            _copyable(f"  praxis plans {project_id}")
+            _copyable(f"praxis plans {project_id}")
+            raise typer.Exit(1) from exc
+        except httpx.RequestError as exc:
+            # The parent of every OTHER "never got an answer" shape httpx can
+            # raise here: `ConnectTimeout` (the TCP connect itself hung) and
+            # `ConnectError` (nothing was listening at all - the orchestrator
+            # simply not running, which used to exit 1 with empty stdout and
+            # no diagnostic, the same defect class this command exists to
+            # close). None of them reached the server, so none of them get
+            # the "may have been created" line above; that would send an
+            # operator to go check for a plan that provably does not exist.
+            console.print(
+                "[red]Could not reach the server[/red] "
+                f"({_api_url()}): {exc}. The request never reached it, so "
+                "no plan was created."
+            )
             raise typer.Exit(1) from exc
         data = _check_dict(response)
     console.print(f"[green]Plan created:[/green] {data['id']} ({data['status']})")
