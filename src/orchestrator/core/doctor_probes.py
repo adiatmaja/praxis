@@ -60,14 +60,16 @@ def probe_build_stamp(
     ``started_from`` is the HOST directory the running orchestrator's compose
     stack was started from, and it is named in EVERY detail below because it
     answers the question this row exists for in the case the commit cannot.
-    ``docker-compose.yml`` hardcodes ``container_name: orchestrator`` and a
+    ``docker-compose.yml``'s ``container_name`` defaults to ``orchestrator``
+    (overridable via ``PRAXIS_CONTAINER_NAME``, unset almost everywhere), and a
     container name is global to the daemon, so two checkouts on one machine
-    take the name from each other along with the data volume behind it, and the
-    loser's database appears to have vanished. The operator is then reading a
-    doctor table about an orchestrator that is not the one they are standing
-    in, and every row in it is true of the wrong install. Naming the directory
-    is the whole fix here: this row cannot compare it, because the CLI knows
-    which checkout it ran from and the server does not.
+    that have not set that variable take the name from each other along with
+    the data volume behind it, and the loser's database appears to have
+    vanished. The operator is then reading a doctor table about an
+    orchestrator that is not the one they are standing in, and every row in it
+    is true of the wrong install. Naming the directory is the whole fix here:
+    this row cannot compare it, because the CLI knows which checkout it ran
+    from and the server does not.
 
     Args:
         baked_commit: The commit stamped into the running image.

@@ -297,27 +297,37 @@ the orchestrator at any path the container can reach.
 the orchestrator container. `core/agent_manager.local_repo_volume` then hands
 that same string to the Docker daemon as a bind-mount **source**, which the
 daemon resolves in the HOST (or, on Docker Desktop, the Linux VM) namespace,
-not the orchestrator's. On Linux those two namespaces are the same filesystem,
-so a plain absolute path satisfies both and nobody notices the distinction.
-On Docker Desktop for Windows nothing satisfies both at once: a Windows path
-(`C:/Users/you/repos/x.git`) is invisible inside the orchestrator container,
-and a container-internal path (`/app/repos/x.git`) means nothing to the
-daemon, which creates an empty directory there instead of finding the repo.
+not the orchestrator's. A plain host path that only makes sense on one side
+(`C:/Users/you/repos/x.git` is invisible inside the orchestrator container;
+`/app/repos/x.git` means nothing to the daemon, which creates an empty
+directory there instead of finding the repo) satisfies neither.
 
-Two compose variables carry the two halves of the fix, and their names are
-fixed (a later doctor check reads them by name):
+**An identity mount is nonetheless enough, on Linux and on Docker Desktop
+alike.** On Linux those two namespaces are the same filesystem, so a plain
+absolute path satisfies both. On Docker Desktop, `/run/desktop/mnt/host/
+<drive>/...` is valid simultaneously as a daemon bind source AND as a path
+the orchestrator container can see (verified against Docker 29.6.1 / Compose
+v5.3.0, both as a direct bind mount and through compose) -- so the same
+single path works there too. Set one variable:
 
 | Variable | Namespace | Linux | Docker Desktop for Windows |
 |----------|-----------|-------|-----------------------------|
-| `LOCAL_REPOS_HOST_PATH` | the Docker daemon's bind-mount **source** | `/home/you/repos` | `C:/Users/you/repos` |
-| `LOCAL_REPOS_PATH` | what the **orchestrator** mounts and sees; also the required prefix for every local project's `repo_url` | `/home/you/repos` (same string) | `/run/desktop/mnt/host/c/Users/you/repos` |
+| `LOCAL_REPOS_PATH` | what the **orchestrator** mounts and sees; also the required prefix for every local project's `repo_url` | `/home/you/repos` | `/run/desktop/mnt/host/c/Users/you/repos` |
 
-Set both in `.env` (see the comment there for the full worked examples), then
-`docker compose up -d` to pick up the new bind mount. On Docker Desktop the
-`/run/desktop/mnt/host/<drive>/...` prefix is the VM's share path onto the
-Windows filesystem; a project's `repo_url` must be given under that prefix,
-because that is the path the orchestrator (and the preflight check) actually
-resolves.
+`LOCAL_REPOS_HOST_PATH` is the escape hatch, not the normal path: compose
+defaults it to `LOCAL_REPOS_PATH`'s value, so set it separately only when the
+Docker daemon's bind-mount **source** must be a different string from what the
+orchestrator sees (for example, a Windows path you would rather hand the
+daemon directly than resolve through the VM share prefix).
+
+Set the variable(s) in `.env`, then run `docker compose up -d` (never
+`restart`) to pick up the changed bind mount -- a mount is baked in at
+container CREATE, and this is one of the keys `env_drift` cannot see drift
+in, since it is never forwarded into the container's own environment. On
+Docker Desktop the `/run/desktop/mnt/host/<drive>/...` prefix is the VM's
+share path onto the Windows filesystem; a project's `repo_url` must be given
+under that prefix, because that is the path the orchestrator (and the
+preflight check) actually resolves.
 
 **This configuration is exercised on Linux; Docker Desktop for Windows is a
 less-travelled path for it.** A first real user hit the namespace split

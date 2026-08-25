@@ -180,14 +180,16 @@ def _resolve_self(client: Any) -> tuple[int | None, str | None]:
     recover the host-side value from inside the container.
 
     The compose working dir comes off the same inspect, and it answers a
-    question nothing else can. ``docker-compose.yml`` hardcodes
-    ``container_name: orchestrator``, and a container name is GLOBAL to the
-    daemon, so two checkouts of Praxis on one machine (which this project's own
-    dogfooding workflow creates: the repo, plus a fresh clone to walk through)
-    fight over it. Whichever ``docker compose`` command ran last owns the name
-    AND points it at its own data volume, so the other install's database
-    appears to have vanished: a fresh migration log, a re-seeded admin user, and
-    every task 404. Measured live on 2026-08-25, twice.
+    question nothing else can. ``docker-compose.yml``'s ``container_name``
+    defaults to ``orchestrator`` (overridable per checkout via
+    ``PRAXIS_CONTAINER_NAME``, which is unset almost everywhere), and a
+    container name is GLOBAL to the daemon, so two checkouts of Praxis on one
+    machine that have not set it (which this project's own dogfooding workflow
+    creates: the repo, plus a fresh clone to walk through) fight over it.
+    Whichever ``docker compose`` command ran last owns the name AND points it
+    at its own data volume, so the other install's database appears to have
+    vanished: a fresh migration log, a re-seeded admin user, and every task
+    404. Measured live on 2026-08-25, twice.
 
     The build-stamp row cannot catch that on its own, because a container
     mounts no working tree and has no commit to compare against. It can say

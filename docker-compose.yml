@@ -10,11 +10,11 @@ services:
     # Two checkouts of this repo on one machine share a single Docker daemon,
     # and container_name is GLOBAL to it, unlike every other per-project
     # setting here: whichever checkout starts second silently steals the
-    # running container AND its data volume from the first (see
-    # docs/gotchas.md). The default stays "orchestrator" on purpose -- every
-    # doc and debugging recipe in this repo says `docker logs orchestrator` --
-    # so set PRAXIS_CONTAINER_NAME in .env only on a machine running more than
-    # one checkout.
+    # running container AND its data volume from the first. The default
+    # stays "orchestrator" on purpose -- every doc and debugging recipe in
+    # this repo says `docker logs orchestrator` -- so set
+    # PRAXIS_CONTAINER_NAME in .env only on a machine running more than one
+    # checkout.
     container_name: ${PRAXIS_CONTAINER_NAME:-orchestrator}
     ports:
       - "${PORT:-12323}:8080"
@@ -77,19 +77,31 @@ services:
       # path HERE) and to the Docker daemon (the bind-mount SOURCE
       # `agent_manager.local_repo_volume` passes when a worker is spawned,
       # which the daemon resolves in the HOST namespace, not this
-      # container's). On Linux both namespaces coincide, so
-      # LOCAL_REPOS_HOST_PATH and LOCAL_REPOS_PATH are the same absolute
-      # path. On Docker Desktop for Windows they cannot be: the daemon needs
-      # the Windows path as its bind source while the orchestrator needs the
-      # VM share path to see the same files, e.g. host path
-      # C:/Users/you/repos mounted at
-      # /run/desktop/mnt/host/c/Users/you/repos. Read-write: LocalGitBackend
-      # runs `git merge`/`git push` against this repo directly from inside
-      # the orchestrator, not only from a worker. Unset, this mounts ./docker
-      # (already read above, harmless) onto an unused path, a no-op that
-      # keeps `docker compose config` valid with neither variable defined.
-      # See docs/configurations.md "Evaluate with no GitHub credential".
-      - ${LOCAL_REPOS_HOST_PATH:-./docker}:${LOCAL_REPOS_PATH:-/app/.local-repos-unused}
+      # container's). An identity mount is enough on BOTH Linux and Docker
+      # Desktop for Windows: on Docker Desktop, `/run/desktop/mnt/host/
+      # <drive>/...` is valid simultaneously as a daemon bind source and as
+      # a path inside this container (verified against Docker 29.6.1 /
+      # Compose v5.3.0). So set ONE variable, LOCAL_REPOS_PATH, to a path
+      # valid in both places; the nested default below makes
+      # LOCAL_REPOS_HOST_PATH mirror it automatically. Only set
+      # LOCAL_REPOS_HOST_PATH separately when the daemon's bind source must
+      # literally be a different string (e.g. a Windows path you would
+      # rather not resolve through the VM share prefix).
+      #
+      # Unset, this is an EMPTY NAMED VOLUME (praxis_local_repos_unused),
+      # never a bind mount: a bind default here would expose some host
+      # directory read-write for every operator who never heard of this
+      # variable, which is exactly the defect this comment used to describe
+      # as harmless and was not (the default source picked, `./docker`,
+      # collided with the READ-ONLY `./docker:/app/docker` mount above and
+      # made both writable). A named volume has no host directory to leak.
+      # Read-write when a real path is given: LocalGitBackend runs `git
+      # merge`/`git push` against this repo directly from inside the
+      # orchestrator, not only from a worker. Applying an edit to either
+      # variable needs `docker compose up -d` (a mount change is baked at
+      # container CREATE), never `restart`. See docs/configurations.md
+      # "Evaluate with no GitHub credential".
+      - ${LOCAL_REPOS_HOST_PATH:-${LOCAL_REPOS_PATH:-praxis_local_repos_unused}}:${LOCAL_REPOS_PATH:-/app/.local-repos-unused}
     # Container-only variables, from a file git never sees.
     #
     # This exists for one job the `environment:` block below cannot do without
@@ -241,5 +253,9 @@ services:
 
 volumes:
   praxis_data:
+  # Empty by design: the default target of the local-repos mount above, so an
+  # operator who never set LOCAL_REPOS_PATH/LOCAL_REPOS_HOST_PATH gets a
+  # volume with nothing in it rather than any host directory bound in.
+  praxis_local_repos_unused:
   caddy_data:
   caddy_config:

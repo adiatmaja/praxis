@@ -48,20 +48,48 @@ COMPOSE_FILES = {
 WORKER_PRESET_VARS = ("DEFAULT_WORKER_HARNESS", "DEFAULT_WORKER_MODEL")
 
 
+def _split_top_level(entry: str, sep: str = ":") -> list[str]:
+    """Split ``entry`` on ``sep``, but never inside a ``${...}`` block.
+
+    A volume entry's SOURCE or TARGET can itself be a compose substitution
+    like ``${SSH_KEY_PATH:-~/.ssh}`` or, nested one level deeper,
+    ``${LOCAL_REPOS_HOST_PATH:-${LOCAL_REPOS_PATH:-praxis_local_repos_unused}}``
+    -- both contain colons that are not field separators. A plain
+    right-to-left split is correct only when at most one side of the entry
+    contains such a substitution; with one on each side (or a nested one) it
+    lands inside a variable reference instead of at the intended boundary.
+    Tracking brace depth makes every colon inside a ``${...}`` block invisible
+    to the split, regardless of nesting.
+    """
+    parts: list[str] = []
+    buf: list[str] = []
+    depth = 0
+    for ch in entry:
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+        if ch == sep and depth == 0:
+            parts.append("".join(buf))
+            buf = []
+        else:
+            buf.append(ch)
+    parts.append("".join(buf))
+    return parts
+
+
 def _mounts(compose: dict) -> list[tuple[str, str, str]]:
     """Return the orchestrator's short-form volumes as (source, target, mode).
 
-    ``mode`` is "" when the entry omits it.  Sources like
-    ``${SSH_KEY_PATH:-~/.ssh}`` contain colons, so this splits from the right.
+    ``mode`` is "" when the entry omits it.
     """
     parsed: list[tuple[str, str, str]] = []
     for entry in compose["services"]["orchestrator"].get("volumes", []):
-        head, _, tail = entry.rpartition(":")
-        if tail in ("ro", "rw"):
-            source, _, target = head.rpartition(":")
-            parsed.append((source, target, tail))
+        pieces = _split_top_level(entry)
+        if len(pieces) == 3:
+            parsed.append((pieces[0], pieces[1], pieces[2]))
         else:
-            parsed.append((head, tail, ""))
+            parsed.append((pieces[0], pieces[1], ""))
     return parsed
 
 

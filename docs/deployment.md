@@ -250,25 +250,46 @@ orchestrator can spawn, and the profile keeps them out of a plain `docker compos
 | `./config` | `/app/config:ro` | Settings YAML, mounted so an edit needs a restart, not a rebuild |
 | `./docker` | `/app/docker:ro` | Entrypoint sources the image-freshness check hashes |
 | `./.env` | `/app/.env:ro` | What the `env_drift` check compares the running values against |
-| `${LOCAL_REPOS_HOST_PATH:-./docker}` | `${LOCAL_REPOS_PATH:-/app/.local-repos-unused}` | Local git backend only (read-write; see below). Unset, this resolves to a no-op mount of `./docker` onto an unused path |
+| `${LOCAL_REPOS_HOST_PATH:-${LOCAL_REPOS_PATH:-praxis_local_repos_unused}}` | `${LOCAL_REPOS_PATH:-/app/.local-repos-unused}` | Local git backend only (read-write; see below). Unset, this resolves to `praxis_local_repos_unused`, an EMPTY NAMED volume, never a host bind: no host directory is exposed to an operator who never set either variable |
 | `caddy_data` | `/data` | Caddy certificates (hosted only) |
 | `caddy_config` | `/config` | Caddy config (hosted only) |
 
-**The local-repos mount is the other half of a two-namespace split, and an identity
-mount (`$X:$X`) cannot bridge it.** `core/preflight._preflight_local` checks a
-project's local `repo_url` with `Path.exists()` **inside this container**; when a
-worker is spawned, `core/agent_manager.local_repo_volume` hands that same string to
-the Docker daemon as a bind-mount **source**, which the daemon resolves in the HOST
-(or Docker Desktop's Linux VM) namespace, not this container's. On Linux the two
-namespaces are one filesystem, so `LOCAL_REPOS_HOST_PATH` and `LOCAL_REPOS_PATH` are
-the same absolute path. On Docker Desktop for Windows they cannot be: the daemon
-needs the Windows path as its bind source (`C:/Users/you/repos`) while the
-orchestrator needs the VM's share path to see the same files
-(`/run/desktop/mnt/host/c/Users/you/repos`). Mounted read-write, not `:ro`, because
-`LocalGitBackend` runs `git merge`/`git push` against the bare repo directly from
-inside this container, not only from a worker. See
+**The local-repos mount bridges a two-namespace split, and one variable is enough.**
+`core/preflight._preflight_local` checks a project's local `repo_url` with
+`Path.exists()` **inside this container**; when a worker is spawned,
+`core/agent_manager.local_repo_volume` hands that same string to the Docker daemon
+as a bind-mount **source**, which the daemon resolves in the HOST (or Docker
+Desktop's Linux VM) namespace, not this container's. On Linux the two namespaces
+are one filesystem, so a plain absolute path satisfies both. **On Docker Desktop
+they still do:** `/run/desktop/mnt/host/<drive>/...` is valid simultaneously as a
+daemon bind source and as a path this container can see (verified against Docker
+29.6.1 / Compose v5.3.0, both directly and through compose), so an **identity**
+mount works on Docker Desktop too. Set `LOCAL_REPOS_PATH` to that path; the nested
+compose default above makes `LOCAL_REPOS_HOST_PATH` mirror it automatically, so one
+variable is the normal case. `LOCAL_REPOS_HOST_PATH` is an escape hatch for the
+rarer case where the daemon's bind source must be a *different* string from what
+this container sees. Mounted read-write, not `:ro`, because `LocalGitBackend` runs
+`git merge`/`git push` against the bare repo directly from inside this container,
+not only from a worker. A mount change (either variable) needs
+`docker compose up -d`, never `restart`: a bind source/target is baked in at
+container CREATE, and `env_drift` cannot see the difference, because these keys are
+never forwarded into the container's own environment. See
 `docs/configurations.md` ("Evaluate with no GitHub credential") for the full worked
-examples and `.env.example` for the variables.
+examples, including the concrete Linux value, and `.env.example` for the variables.
+
+Worked values:
+
+```
+# Linux: one variable, same absolute path both places
+LOCAL_REPOS_PATH=/home/you/repos
+
+# Docker Desktop for Windows: one variable, the VM share path
+LOCAL_REPOS_PATH=/run/desktop/mnt/host/c/Users/you/repos
+```
+
+This configuration is exercised on Linux; Docker Desktop for Windows is a
+less-travelled path for it, so treat a fresh Windows report against this area as
+plausible even after this fix ships.
 
 **The database volume is a NAMED volume, and a host bind mount is the configuration that
 breaks.** On Docker Desktop the host bind-mount filesystem (9p/virtiofs) does not support
