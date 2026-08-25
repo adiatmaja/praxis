@@ -1,31 +1,52 @@
-"""Redact secrets and cap the size of caller-supplied worker context.
+"""Redact secrets from caller-supplied worker context, at two different times.
 
 The MCP caller (e.g. Claude Code) is asked to pass only task-relevant memory,
 but this is the one untrusted-for-secrets channel that gets written into the
-agent's repo clone. We never trust curation alone: redact obvious secret shapes
-and hard-cap length before the text reaches the worker container.
+DB and the agent's repo clone. We never trust curation alone: redact obvious
+secret shapes wherever this text is handled.
 
-The cap used to be a flat 12 000 characters for every worker, regardless of the
-model's real context window. That truncated a legitimately-sized 14 KB spec on
-a cloud model whose window is on the order of a million tokens, glueing a
-truncation notice into the middle of the leaf contract or the caller-supplied
-context of a task that would have fit easily. It is a *different* defect than
-the one ``core/context_window.py`` fixes (that one is a silent 8192
-fabrication); this one is visible - the notice says so - but it is still a bad
-default, not a lie, so the fix here is to size the cap, not to remove it.
+**Redaction and length-capping are two different concerns, done at two
+different times, and this module used to conflate them.** Redaction is an
+intake-time concern: the text arrives on an untrusted channel (``api/dispatch.py``,
+``core/execute_plan_decompose.py``) and must be scrubbed of secrets before it
+is ever written to the DB or a repo, regardless of anything else. Length
+capping is NOT an intake concern, because at intake nobody has resolved the
+worker's real context window yet - ``core/context_window.resolve_context_window``
+is the only thing that can, and it requires a live LM Studio probe for a model
+that is not declared anywhere, which intake must not pay for on every request.
 
-``resolve_scrub_cap`` is the single place that turns a resolved context window
-(``core/context_window.resolve_context_window``, or a caller's own equivalent
-resolution such as ``effective_settings.capability_profile().context_window``)
-into a character cap. It reuses ``token_budget.worker_budget`` (the same
-reserve-fraction policy every other worker-context seam already applies) and
-``token_budget._CHARS_PER_TOKEN`` (the same chars/token assumption the budget
-gate already assumes) rather than inventing a second ratio. A window at or
-below the shipped local-model default (8192, see
-``effective_settings.capability_profile``'s docstring) keeps today's flat
-12 000-character cap exactly, so a stock LM Studio install is not silently
-resized by this change; only a window meaningfully larger than that earns a
-larger cap.
+Capping at intake with an UNRESOLVED window used to mean capping at a flat
+12 000 characters regardless of the model's real window: a legitimately-sized
+14 KB spec on a cloud model whose window is on the order of a million tokens
+was mangled with a truncation notice glued into the middle of it, and -
+critically - that truncation happened BEFORE ``core/worker_bible.build_bible``
+ever got a chance to resolve the true window (probe included) and re-cap
+correctly, because a re-scrub cannot lengthen a string that intake already
+cut. Deferring capping entirely to ``build_bible`` (the one seam that has
+actually resolved the window) is what fixes this; capping again at intake
+just reintroduces the same defect under a new number.
+
+So intake (``api/dispatch.py``, ``core/execute_plan_decompose.py``) calls
+:func:`scrub_context` with :data:`INTAKE_ABUSE_CEILING_CHARS` - a large FIXED
+ceiling, unrelated to any model's window, that exists only to stop a
+pathological multi-megabyte payload from being written into the DB/repo
+unbounded. It is an abuse guard, not a context budget, and it is sized so a
+legitimate spec never comes close to it.
+
+``resolve_scrub_cap`` is the single place that turns a RESOLVED context window
+(``core/context_window.resolve_context_window``, threaded through as
+``BibleSources.context_window``) into the real, window-sized character cap.
+``core/worker_bible.build_bible`` is the ONLY caller: it is the one seam that
+has actually resolved the window (declared, project override, or the live
+probe), so it is the sole place the length cap is enforced. It reuses
+``token_budget.worker_budget`` (the same reserve-fraction policy every other
+worker-context seam already applies) and ``token_budget._CHARS_PER_TOKEN``
+(the same chars/token assumption the budget gate already assumes) rather than
+inventing a second ratio. A window at or below the shipped local-model
+default (8192, see ``effective_settings.capability_profile``'s docstring)
+keeps today's flat 12 000-character cap exactly, so a stock LM Studio install
+is not silently resized by this change; only a window meaningfully larger
+than that earns a larger cap.
 """
 
 from __future__ import annotations
@@ -40,6 +61,19 @@ from orchestrator.core.token_budget import (
 
 
 _DEFAULT_MAX_CHARS = 12_000
+
+#: A fixed ceiling applied at INTAKE (``api/dispatch.py``,
+#: ``core/execute_plan_decompose.py``), before any context-window resolution
+#: has run. This is NOT a context budget: it does not track any model's
+#: window and must never be derived from :func:`resolve_scrub_cap` or from
+#: ``context_window``. Its only job is to stop a pathological multi-megabyte
+#: payload from being written into the DB/repo unbounded. 500 000 characters
+#: is roughly 35x the reported 14 KB spec that motivated this fix - a
+#: legitimate spec will never come close to it - while the real, window-sized
+#: cap is enforced exactly once, downstream, in
+#: ``core/worker_bible.build_bible``, the only seam that has resolved the
+#: worker's actual window (declared, project override, or the live probe).
+INTAKE_ABUSE_CEILING_CHARS = 500_000
 
 #: The shipped ``capability.default.context_window`` (effective_settings.py:
 #: "8192 as shipped, sized for a local open-weight worker"), and the same
@@ -132,13 +166,16 @@ def scrub_context(
     Args:
         text: Raw caller-supplied context, or None.
         max_chars: Hard cap on output length (excluding the truncation notice).
-            Callers that know the worker's resolved context window should pass
-            ``resolve_scrub_cap(context_window).max_chars`` rather than the
-            unsized default.
+            ``core/worker_bible.build_bible`` (the only seam with a resolved
+            window) should pass ``resolve_scrub_cap(context_window).max_chars``.
+            An intake seam that has not resolved a window should pass
+            :data:`INTAKE_ABUSE_CEILING_CHARS` instead - a fixed abuse guard,
+            not a context budget - rather than the unsized default.
         cap_reason: Human-readable reason for ``max_chars``, folded into the
             truncation notice so it names the cause, not just the number.
-            Pass ``resolve_scrub_cap(context_window).reason``. Defaults to a
-            generic phrase when omitted.
+            Pass ``resolve_scrub_cap(context_window).reason``, or a short
+            note that this is the intake abuse guard. Defaults to a generic
+            phrase when omitted.
 
     Returns:
         Scrubbed text, or None when the input is None/blank.

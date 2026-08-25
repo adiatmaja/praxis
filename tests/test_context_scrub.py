@@ -3,6 +3,7 @@ import pytest
 from orchestrator.core.context_scrub import (
     _DEFAULT_MAX_CHARS,
     _TYPICAL_LOCAL_MODEL_WINDOW_TOKENS,
+    INTAKE_ABUSE_CEILING_CHARS,
     resolve_scrub_cap,
     scrub_context,
 )
@@ -41,6 +42,28 @@ def test_caps_size():
     assert out.startswith("x" * 10_000)
     assert "x" * 10_001 not in out  # nothing beyond the cap survives
     assert "truncated" in out.lower()
+
+
+@pytest.mark.unit
+def test_intake_abuse_ceiling_is_a_fixed_constant_unrelated_to_any_window():
+    """The intake abuse guard must be a plain, fixed number - never derived
+    from ``resolve_scrub_cap`` or any resolved window - and comfortably
+    larger than any legitimate spec (the reported case was 14 409 chars)."""
+    assert INTAKE_ABUSE_CEILING_CHARS > 100_000
+    # Not equal to a window-derived cap for any plausible window: proves it
+    # is a plain constant, not silently re-computed from resolve_scrub_cap.
+    assert resolve_scrub_cap(1_000_000).max_chars != INTAKE_ABUSE_CEILING_CHARS
+
+
+@pytest.mark.unit
+def test_intake_abuse_ceiling_still_truncates_a_pathological_payload():
+    raw = "q" * (INTAKE_ABUSE_CEILING_CHARS + 1_000)
+    out = scrub_context(
+        raw, INTAKE_ABUSE_CEILING_CHARS, cap_reason="Praxis's intake abuse guard"
+    )
+    assert out.startswith("q" * INTAKE_ABUSE_CEILING_CHARS)
+    assert "q" * (INTAKE_ABUSE_CEILING_CHARS + 1) not in out
+    assert "abuse guard" in out
 
 
 @pytest.mark.unit

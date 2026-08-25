@@ -8,6 +8,7 @@ from unittest.mock import patch
 
 import pytest
 
+from orchestrator.core.context_scrub import INTAKE_ABUSE_CEILING_CHARS
 from orchestrator.core.execute_plan_decompose import (
     count_plan_tasks,
     decompose_plan,
@@ -42,7 +43,13 @@ class _FakeProfile:
 
 
 class _FakeEffective:
-    async def capability_profile(self, project_id: Any, model: str) -> _FakeProfile:
+    async def capability_profile(
+        self,
+        project_id: Any,
+        model: str,
+        harness: Any = None,
+        project_context_window: Any = None,
+    ) -> _FakeProfile:
         return _FakeProfile()
 
 
@@ -899,8 +906,16 @@ async def test_decompose_uses_fetched_outcome_history_when_db_provided(db):
 
 
 # ---------------------------------------------------------------------------
-# Residual defect: the context/local_context scrub cap must follow the
-# resolved context window (profile.context_window), not a flat 12 000 chars.
+# Residual defect (round 2): this intake seam must never size-cap by
+# ``profile.context_window`` at all - that lookup is a coarse, model-only
+# capability default, not the authoritative, probe-aware resolution
+# (core/context_window.resolve_context_window) that core/worker_bible.
+# build_bible uses downstream to re-scrub this same context_text/repo_memory.
+# Capping here first just cuts the text before build_bible ever runs; a
+# re-scrub cannot lengthen a string intake already shortened. So intake now
+# applies only a fixed, window-independent abuse ceiling
+# (INTAKE_ABUSE_CEILING_CHARS); the real cap is deferred entirely to
+# build_bible.
 # ---------------------------------------------------------------------------
 
 
@@ -912,7 +927,11 @@ class _FakeLargeWindowProfile(_FakeProfile):
 
 class _FakeLargeWindowEffective:
     async def capability_profile(
-        self, project_id: Any, model: str
+        self,
+        project_id: Any,
+        model: str,
+        harness: Any = None,
+        project_context_window: Any = None,
     ) -> _FakeLargeWindowProfile:
         return _FakeLargeWindowProfile()
 
@@ -931,9 +950,37 @@ def _single_task_raw() -> str:
     )
 
 
-async def test_decompose_plan_large_window_preserves_oversized_context():
-    """The reporter's case at this seam: a declared million-token window must
-    not truncate caller context to what an 8K floor model would need."""
+async def test_decompose_plan_never_pretruncates_context_on_a_small_profile_window():
+    """The regression this remediation exists for: even with
+    ``_FakeProfile.context_window == 8192`` (the shipped local-model
+    default, which used to size the intake cap down to 12 000 chars), a
+    14 KB context/local_context must survive intake completely intact -
+    this profile lookup is a coarse capability default, not the
+    authoritative, probe-aware window resolution, and capping on it at
+    intake permanently loses text before ``core/worker_bible.build_bible``
+    (the seam that DOES resolve the true window) ever runs. Must go red
+    against the pre-fix code and green against this one."""
+    router = _FakeRouter(_single_task_raw())
+    opus_plan = await decompose_plan(
+        plan="do something",
+        model="qwen3.6-27b",
+        context=_OVERSIZED_CONTEXT,
+        local_context=_OVERSIZED_CONTEXT,
+        router=router,
+        effective_settings=_FakeEffective(),  # context_window == 8192
+        project_id=None,
+    )
+    task = opus_plan["tasks"][0]
+    assert task["context_text"] == _OVERSIZED_CONTEXT
+    assert task["repo_memory"] == _OVERSIZED_CONTEXT
+    assert "truncated by Praxis" not in task["context_text"]
+    assert "TAILMARK" in task["context_text"]
+
+
+async def test_decompose_plan_never_pretruncates_context_on_a_large_profile_window():
+    """Same guarantee holds regardless of the profile's declared window -
+    proof that intake capping is not merely relaxed for a small window but
+    genuinely decoupled from ``profile.context_window`` altogether."""
     router = _FakeRouter(_single_task_raw())
     opus_plan = await decompose_plan(
         plan="do something",
@@ -947,26 +994,23 @@ async def test_decompose_plan_large_window_preserves_oversized_context():
     task = opus_plan["tasks"][0]
     assert task["context_text"] == _OVERSIZED_CONTEXT
     assert task["repo_memory"] == _OVERSIZED_CONTEXT
-    assert "truncated by Praxis" not in task["context_text"]
 
 
-async def test_decompose_plan_typical_window_still_truncates_as_before():
-    """Pin today's behavior: ``_FakeProfile.context_window == 8192`` (the
-    shipped local-model default) must still cap at the legacy 12 000 chars,
-    unchanged, or an existing LM Studio install is silently resized."""
+async def test_decompose_plan_abuse_ceiling_still_caps_a_pathological_payload():
+    """The abuse guard is real and unrelated to any window."""
+    pathological = "z" * (INTAKE_ABUSE_CEILING_CHARS + 10_000)
     router = _FakeRouter(_single_task_raw())
     opus_plan = await decompose_plan(
         plan="do something",
         model="qwen3.6-27b",
-        context=_OVERSIZED_CONTEXT,
-        local_context=_OVERSIZED_CONTEXT,
+        context=pathological,
         router=router,
-        effective_settings=_FakeEffective(),  # context_window == 8192
+        effective_settings=_FakeEffective(),
         project_id=None,
     )
     task = opus_plan["tasks"][0]
-    assert "TAILMARK" not in task["context_text"]
     assert "truncated by Praxis" in task["context_text"]
-    run = re.search(r"c{100,}", task["context_text"])
+    assert "abuse guard" in task["context_text"]
+    run = re.search(r"z{100,}", task["context_text"])
     assert run is not None
-    assert len(run.group(0)) == 12_000  # unchanged from the legacy flat cap
+    assert len(run.group(0)) == INTAKE_ABUSE_CEILING_CHARS

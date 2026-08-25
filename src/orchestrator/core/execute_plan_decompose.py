@@ -25,7 +25,7 @@ from orchestrator.core.capability_history import (
     fetch_recent_outcomes,
     summarize_outcomes,
 )
-from orchestrator.core.context_scrub import resolve_scrub_cap, scrub_context
+from orchestrator.core.context_scrub import INTAKE_ABUSE_CEILING_CHARS, scrub_context
 from orchestrator.core.difficulty import (
     DEFAULT_BIAS,
     DEFAULT_WEIGHTS,
@@ -588,16 +588,34 @@ async def decompose_plan(
             "leaf_count": leaf_count,
         }
 
-    # Reuses ``profile.context_window`` - already resolved above for the
-    # per-leaf budget - rather than a second, divergent resolution: it is
-    # this function's existing answer to "how big is this model's window",
-    # not a new one.
-    cap = resolve_scrub_cap(profile.context_window)
-    scrubbed_context = scrub_context(context, cap.max_chars, cap_reason=cap.reason)
+    # This is intake, not the worker-bible assembly: ``profile.context_window``
+    # above is a coarse, model-only capability lookup, not the authoritative,
+    # harness-and-probe-aware resolution (``core/context_window.
+    # resolve_context_window``) that actually sizes a worker's budget. Capping
+    # by it here would cut ``context_text``/``repo_memory`` before
+    # ``core/worker_bible.build_bible`` - the seam that resolves the TRUE
+    # window - ever re-scrubs this same text as ``caller_context``/
+    # ``repo_memory``; a re-scrub cannot lengthen a string intake already
+    # shortened. So the only cap here is a fixed abuse guard, not a context
+    # budget: it exists to stop a pathological multi-megabyte payload from
+    # being written into the DB, nothing more.
+    scrubbed_context = scrub_context(
+        context,
+        INTAKE_ABUSE_CEILING_CHARS,
+        cap_reason="Praxis's intake abuse guard (not sized to any worker's "
+        "context window - the real budget is enforced later, once the "
+        "worker's window is resolved)",
+    )
     if scrubbed_context is not None:
         for task in opus_plan["tasks"]:
             task.setdefault("context_text", scrubbed_context)
-    scrubbed_local = scrub_context(local_context, cap.max_chars, cap_reason=cap.reason)
+    scrubbed_local = scrub_context(
+        local_context,
+        INTAKE_ABUSE_CEILING_CHARS,
+        cap_reason="Praxis's intake abuse guard (not sized to any worker's "
+        "context window - the real budget is enforced later, once the "
+        "worker's window is resolved)",
+    )
     if scrubbed_local is not None:
         for task in opus_plan["tasks"]:
             task.setdefault("repo_memory", scrubbed_local)

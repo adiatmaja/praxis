@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from httpx import AsyncClient
 
+from orchestrator.core.context_scrub import INTAKE_ABUSE_CEILING_CHARS
 from orchestrator.database import Database
 from tests.conftest import seed_user
 
@@ -861,73 +862,89 @@ async def test_dispatch_threads_local_context_as_repo_memory(
 
 
 # ---------------------------------------------------------------------------
-# Residual defect: the scrub cap on `context`/`local_context` must follow the
-# worker's resolved context window, not a flat 12 000 characters.
+# Residual defect (round 2): intake must never size-cap by a resolved
+# context window at all. The window is only resolvable, for an undeclared
+# model, via a live LM Studio probe - and this seam must not pay for that on
+# every dispatch request. Capping here with whatever a probe-less resolution
+# produces just re-creates the original defect under a smaller number,
+# because core/worker_bible.build_bible (the seam that DOES resolve the true
+# window, probe included) re-scrubs this same text afterwards, and a re-scrub
+# cannot lengthen a string intake already cut. So intake now applies only a
+# large, fixed, window-INDEPENDENT abuse ceiling
+# (``INTAKE_ABUSE_CEILING_CHARS``); the real cap is deferred entirely to
+# build_bible.
 # ---------------------------------------------------------------------------
 
 _OVERSIZED_CONTEXT = ("d" * 14_000) + "TAILMARK"
 
 
 @pytest.mark.integration
-async def test_dispatch_declared_window_preserves_oversized_context(
+async def test_dispatch_never_pretruncates_context_for_a_probe_only_window(
     client: AsyncClient,
     auth_headers: dict[str, str],
     seeded_user: str,
     db: Database,
 ) -> None:
-    """The reporter's case at this seam: harness "agy" + "Gemini 3.7 Flash
-    (High)" resolve to the shipped 1,000,000-token DECLARED window (see
-    ``core/context_window.DEFAULT_DECLARED_HARNESS_WINDOWS`` /
-    ``DEFAULT_DECLARED_MODEL_WINDOWS`` - shipped defaults, so this does not
-    depend on the mutable settings file), so a 14 KB context field must
-    survive intact rather than being cut to what an 8K local model needs."""
+    """The regression this remediation exists for: a model/harness combo
+    nobody declared a window for - the reference configuration, an
+    undeclared local or hosted OpenAI-compatible model, whose real window is
+    only discoverable by the live probe ``core/worker_bible.build_bible``
+    runs later - must NOT have its context pre-truncated at intake. Before
+    this fix, intake resolved a probe-less window (always "unknown" here,
+    since the probe is deliberately never attempted at intake) and capped at
+    12 000 chars accordingly, permanently losing everything past that point
+    before the one seam that could have sized it correctly ever ran. This
+    must go red against that code and green against the fix.
+    """
     with patch("orchestrator.api.dispatch.GitOps") as mock_git:
         mock_git.return_value.remote_head_sha = AsyncMock(return_value="abcdef")
         resp = await client.post(
             "/api/dispatch",
             headers=auth_headers,
             json={
-                "repo_url": "https://github.com/o/agy-large-window",
-                "instructions": "do x",
-                "model": "Gemini 3.7 Flash (High)",
-                "harness": "agy",
-                "context": _OVERSIZED_CONTEXT,
-            },
-        )
-    assert resp.status_code == 201, resp.text
-    plan_id = resp.json()["plan_id"]
-
-    plan_row = await db.fetch_one(
-        "SELECT opus_plan FROM plans WHERE id = ?", (plan_id,)
-    )
-    opus_plan = json.loads(plan_row["opus_plan"])
-    context_text = opus_plan["tasks"][0]["context_text"]
-    assert context_text == _OVERSIZED_CONTEXT
-    assert "truncated by Praxis" not in context_text
-
-
-@pytest.mark.integration
-async def test_dispatch_unresolved_window_still_truncates_like_today(
-    client: AsyncClient,
-    auth_headers: dict[str, str],
-    seeded_user: str,
-    db: Database,
-) -> None:
-    """A model/harness combo nobody declared a window for (and the LM Studio
-    probe is deliberately never attempted at this intake seam - see the
-    comment in api/dispatch.py) resolves to UNKNOWN, which must still cap
-    conservatively, at the same 12 000 characters as before this change, and
-    the notice must say the window was unknown."""
-    with patch("orchestrator.api.dispatch.GitOps") as mock_git:
-        mock_git.return_value.remote_head_sha = AsyncMock(return_value="abcdef")
-        resp = await client.post(
-            "/api/dispatch",
-            headers=auth_headers,
-            json={
-                "repo_url": "https://github.com/o/unresolved-window",
+                "repo_url": "https://github.com/o/probe-only-window",
                 "instructions": "do x",
                 "model": "some-undeclared-model-xyz",
                 "context": _OVERSIZED_CONTEXT,
+                "local_context": _OVERSIZED_CONTEXT,
+            },
+        )
+    assert resp.status_code == 201, resp.text
+    plan_id = resp.json()["plan_id"]
+
+    plan_row = await db.fetch_one(
+        "SELECT opus_plan FROM plans WHERE id = ?", (plan_id,)
+    )
+    opus_plan = json.loads(plan_row["opus_plan"])
+    task = opus_plan["tasks"][0]
+    assert task["context_text"] == _OVERSIZED_CONTEXT
+    assert task["repo_memory"] == _OVERSIZED_CONTEXT
+    assert "truncated by Praxis" not in task["context_text"]
+    assert "TAILMARK" in task["context_text"]
+
+
+@pytest.mark.integration
+async def test_dispatch_abuse_ceiling_still_caps_a_pathological_payload(
+    client: AsyncClient,
+    auth_headers: dict[str, str],
+    seeded_user: str,
+    db: Database,
+) -> None:
+    """The abuse guard is real and unrelated to any window: a payload well
+    past ``INTAKE_ABUSE_CEILING_CHARS`` is still cut, and the notice names it
+    as an abuse guard rather than a context budget (nothing here should
+    mention a token window at all)."""
+    pathological = "e" * (INTAKE_ABUSE_CEILING_CHARS + 10_000)
+    with patch("orchestrator.api.dispatch.GitOps") as mock_git:
+        mock_git.return_value.remote_head_sha = AsyncMock(return_value="abcdef")
+        resp = await client.post(
+            "/api/dispatch",
+            headers=auth_headers,
+            json={
+                "repo_url": "https://github.com/o/pathological-payload",
+                "instructions": "do x",
+                "model": "some-undeclared-model-xyz",
+                "context": pathological,
             },
         )
     assert resp.status_code == 201, resp.text
@@ -938,9 +955,8 @@ async def test_dispatch_unresolved_window_still_truncates_like_today(
     )
     opus_plan = json.loads(plan_row["opus_plan"])
     context_text = opus_plan["tasks"][0]["context_text"]
-    assert "TAILMARK" not in context_text
     assert "truncated by Praxis" in context_text
-    assert "unknown" in context_text
-    run = re.search(r"d{100,}", context_text)
+    assert "abuse guard" in context_text
+    run = re.search(r"e{100,}", context_text)
     assert run is not None
-    assert len(run.group(0)) == 12_000  # unchanged from the legacy flat cap
+    assert len(run.group(0)) == INTAKE_ABUSE_CEILING_CHARS
