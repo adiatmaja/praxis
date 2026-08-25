@@ -362,7 +362,12 @@ async def decompose_plan(
         plan: The externally-authored plan text to decompose.
         model: Local worker model name (used for capability profiling).
         context: Optional caller-supplied context to thread onto each leaf.
-        router: LLMRouter-compatible object with ``run(call_site, prompt, project_id)``
+        router: LLMRouter-compatible object with ``run(call_site, prompt,
+            project_id)``. Pass the ``OpusBridge`` (see
+            ``opus_bridge.parking_brain_runner``), not the bare ``LLMRouter``:
+            only the bridge parks ``opus_state`` on a subscription throttle,
+            and without that the caller re-attempts this decomposition on every
+            orchestration tick for the whole five-hour window.
         effective_settings: Object with ``capability_profile(project_id, model)``
             returning a profile with a ``context_window`` attribute.
         project_id: Project id for router routing context; may be None.

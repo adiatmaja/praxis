@@ -111,24 +111,41 @@ def is_rate_limited(code: int, stdout: str, stderr: str) -> bool:
     which exits with doctor's status code.
 
     Args:
-        code: The CLI's exit code.  Required, not optional: the second clause
-            below cannot be evaluated without it, and a caller that cannot pass
-            it is a caller that will diverge.
+        code: The CLI's exit code.  Required, not optional: NEITHER clause
+            below may be evaluated without it, and a caller that cannot pass it
+            is a caller that will diverge.
         stdout: What the CLI printed to stdout.
         stderr: What the CLI printed to stderr.
 
     Returns:
-        True when the output names a known limit signature, or when the CLI
-        FAILED and said "limit" at all.  The second clause is the broad one on
+        True when the CLI FAILED and its output either names a known limit
+        signature or says "limit" at all.  The second half is the broad one on
         purpose: the wordings vary ("5-hour limit", "weekly limit exceeded",
         "quota limit"), and mistaking a throttle for a fault costs an operator
         a false red, while mistaking a fault for a throttle only delays it to
-        the next tick.  It is gated on a non-zero exit so a successful answer
-        that merely discusses limits is never read as one.
+        the next tick.
+
+    The whole predicate is gated on a non-zero exit, signature clause included.
+    Ungated, that clause read a SUCCESSFUL answer discussing rate limiting as a
+    throttle -- ``is_rate_limited(0, '{"plan_slug": "rate-limit", ...}', '')``
+    was True -- so planning a spec about rate limiting parked the brain for five
+    hours over the planner's own words, and Praxis plans specs about its own
+    subsystems routinely.  Both live consumers already hand-gated around it
+    (``LLMRouter._execute_one`` asks only about a call that already failed; the
+    doctor round trip's prompt can only answer "PONG"), and a hand-gate that
+    every future consumer must remember is the precondition nobody enforces.
+
+    The narrow cost is deliberate: a provider that reported a throttle while
+    exiting ZERO would now read as an ordinary answer.  No CLI here does that
+    -- all four real Claude wordings in ``tests/test_rate_limit_parity.py``
+    come with exit 1 -- and the failure mode of guessing wrong in that
+    direction is one delayed tick, against five parked hours in the other.
     """
     combined = f"{stdout} {stderr}".lower()
+    if code == 0:
+        return False
     return any(pattern in combined for pattern in RATE_LIMIT_SIGNATURES) or (
-        code != 0 and "limit" in combined
+        "limit" in combined
     )
 
 
@@ -420,6 +437,52 @@ class OpusBridge:
             await self._park_rate_limited(exc.provider)
             raise
 
+    async def run(
+        self,
+        call_site: str,
+        prompt: str,
+        project_id: str | None = None,
+        cwd: str | None = None,
+    ) -> str:
+        """Run one routed brain call, parking ``opus_state`` on a throttle.
+
+        The public door onto :meth:`_run_routed`, for the seats that build
+        their own prompt rather than use one of the templates above:
+        ``execute_plan_decompose.decompose_plan`` and
+        ``leaf_triage.triage_leaf``. Both document their dependency as "an
+        ``LLMRouter``-compatible object with ``run(call_site, prompt,
+        project_id)``", and this signature satisfies that contract exactly, so
+        handing them the BRIDGE instead of the bare router is the whole
+        change at those seats.
+
+        They called the router directly, so neither could park: a throttle at
+        the decompose seat raised a type ``decompose_pending_execute_plan``
+        does not catch, escaped into ``run_once``'s per-plan quarantine, and
+        left the plan PENDING to be re-attempted on every tick -- about 3600
+        throttled CLI spawns over one five-hour window, with `praxis status`
+        reporting the brain available throughout. At the triage seat a throttle
+        was caught as an ordinary failure and answered ``decision="human"``,
+        converting a self-healing wait into a permanent human gate.
+
+        Nothing here writes ``opus_state``: the write stays in
+        :meth:`_park_rate_limited`, which :meth:`_run_routed` calls, so this
+        adds callers rather than a third writer.
+
+        Args:
+            call_site: The routed call-site name, e.g. ``"plan_review"``.
+            prompt: The full prompt text.
+            project_id: Project whose per-call-site overrides apply.
+            cwd: Working directory for the provider, when it takes one.
+
+        Returns:
+            The provider's raw response.
+
+        Raises:
+            RuntimeError: No router is configured, so there is nothing to run.
+            Exception: Whatever the router raised, re-raised unchanged.
+        """
+        return await self._run_routed(call_site, prompt, project_id, cwd=cwd)
+
     async def _run_claude(
         self,
         prompt: str,
@@ -695,3 +758,31 @@ class OpusBridge:
         if last_pos:
             return max(last_pos, key=lambda c: last_pos[c])
         return "other"
+
+
+def parking_brain_runner(opus_bridge: object | None, llm_router: Any) -> Any:
+    """Pick the object a prompt-building seat must make its brain call through.
+
+    The bridge whenever there is a real, router-backed one, because
+    :meth:`OpusBridge.run` parks ``opus_state`` on a throttle through the
+    single writer both other brain paths already use. That is the entire fix
+    for the two seats that took ``LLMRouter`` directly, and stating it once
+    here keeps the two call sites from drifting apart.
+
+    The ``isinstance`` check is deliberate rather than duck-typed. ``run`` is
+    ordinary enough that any test double answers it, and a double that answered
+    it would be handed work the real object was supposed to do -- silently, and
+    only in the tests that were meant to be measuring something else. A double
+    is not an ``OpusBridge``, so it falls back to exactly the un-parked router
+    these seats used before, which is what those tests already assert against.
+
+    Args:
+        opus_bridge: The orchestrator's brain bridge, or None.
+        llm_router: The bare router, used when the bridge cannot route.
+
+    Returns:
+        An object exposing ``run(call_site, prompt, project_id=..., cwd=...)``.
+    """
+    if isinstance(opus_bridge, OpusBridge) and opus_bridge._router is not None:
+        return opus_bridge
+    return llm_router

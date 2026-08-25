@@ -53,7 +53,7 @@ from orchestrator.core.orchestrator import Orchestrator
 from orchestrator.core.provider_errors import is_unavailability
 from orchestrator.core.task_queue import TaskQueue
 from orchestrator.database import Database
-from orchestrator.models.schemas import PlanStatus
+from orchestrator.models.schemas import CapabilityProfile, PlanStatus, TaskStatus
 
 
 #: What a throttled Claude subscription actually says.  Reproduced from the
@@ -729,3 +729,355 @@ async def test_nothing_replays_a_queued_action_the_pending_plan_row_does(
     # And the ledger no longer claims work is waiting.
     assert await _queued(db) == []
     assert await _status(db) == "available"
+
+
+# --------------------------------------------------------------------------
+# A throttle anywhere in a fallback chain is not lost.
+# --------------------------------------------------------------------------
+
+
+async def _mixed_chain(call_site: str, project_id: str | None) -> list[dict]:  # noqa: ARG001
+    """A subscription CLI backed by a local endpoint.
+
+    Not exotic: ``docs/configurations.md`` presents exactly this arrangement,
+    and it is the only shape in which the last entry can fail DIFFERENTLY from
+    the first.  On the shipped claude-only chains a throttle hits every entry,
+    which is why this gap survived the first fix.
+    """
+    return [
+        {"provider": "claude", "model": "claude-sonnet-4-6", "effort": None},
+        {"provider": "local", "model": "qwen", "effort": None},
+    ]
+
+
+@pytest.mark.integration
+async def test_a_throttle_at_a_non_final_chain_position_still_parks(
+    db: Database, mocker: Any
+) -> None:
+    """The throttle must survive a LATER entry failing for another reason.
+
+    ``run`` remembered a non-final unavailability in ``last_exc`` and then
+    raised whatever the final entry threw, so a throttle at position 0 followed
+    by a dead LM Studio at position 1 surfaced as an ``httpx.ConnectError``:
+    not a ``ProviderRateLimitError``, so ``_run_routed`` never parked and the
+    plan was charged a retry for a subscription limit.
+
+    Both failures reach the operator.  The TYPE is the throttle, because that
+    is the actionable one and the one the state machine can wait out; the
+    entry that actually ended the attempt is named in the message and chained
+    as ``__cause__`` so nothing is silently discarded.
+    """
+    proc = _cli_proc(mocker, stdout=_THROTTLE_TEXT.encode(), stderr=b"", returncode=1)
+    mocker.patch(
+        "asyncio.create_subprocess_exec", new=mocker.AsyncMock(return_value=proc)
+    )
+    mocker.patch(
+        "httpx.AsyncClient.post",
+        side_effect=httpx.ConnectError("connection refused"),
+    )
+    bridge = OpusBridge(
+        db, router=LLMRouter(_mixed_chain, lm_studio_url="http://lm:1234")
+    )
+
+    assert await _status(db) == "available"
+    with pytest.raises(ProviderRateLimitError) as caught:
+        await bridge.plan_spec("spec", "https://r")
+
+    assert await _status(db) == "rate_limited"
+    assert _THROTTLE_TEXT in str(caught.value)
+    assert "connection refused" in str(caught.value)
+    assert isinstance(caught.value.__cause__, httpx.ConnectError)
+
+
+@pytest.mark.integration
+async def test_an_all_claude_chain_reports_only_the_last_entrys_failure(
+    db: Database, mocker: Any
+) -> None:
+    """The shipped shape must read exactly as it did before.
+
+    ``plan: [sonnet, opus]`` throttles at BOTH entries, so combining them would
+    hand the operator the same sentence twice for one subscription limit.  The
+    combination is for two DIFFERENT failures, and only for those.
+    """
+    proc = _cli_proc(mocker, stdout=_THROTTLE_TEXT.encode(), stderr=b"", returncode=1)
+    mocker.patch(
+        "asyncio.create_subprocess_exec", new=mocker.AsyncMock(return_value=proc)
+    )
+
+    async def _shipped_plan_chain(call_site: str, project_id: str | None) -> list[dict]:  # noqa: ARG001
+        return [
+            {"provider": "claude", "model": "claude-sonnet-4-6", "effort": None},
+            {"provider": "claude", "model": "claude-opus-4-8", "effort": "high"},
+        ]
+
+    bridge = OpusBridge(db, router=LLMRouter(_shipped_plan_chain))
+
+    with pytest.raises(ProviderRateLimitError) as caught:
+        await bridge.plan_spec("spec", "https://r")
+
+    message = str(caught.value)
+    assert message.count("rate limited") == 1, message
+    assert "then gave up at" not in message
+    assert await _status(db) == "rate_limited"
+
+
+@pytest.mark.integration
+async def test_a_chain_that_recovers_after_a_throttle_does_not_park(
+    db: Database, mocker: Any
+) -> None:
+    """A fallback that ANSWERS is the chain doing its job, not an outage.
+
+    Parking here would gate every other seat -- including the ``local`` one
+    that just answered -- behind a five-hour wait nothing about this call
+    needs.  The throttle is still recorded: ``run`` publishes a
+    ``model_fallback`` event naming ``ProviderRateLimitError`` as the reason.
+
+    The positive control is load-bearing: 'available' is where the row starts,
+    so without it this passes just as well when parking is dead everywhere.
+    """
+    proc = _cli_proc(mocker, stdout=_THROTTLE_TEXT.encode(), stderr=b"", returncode=1)
+    mocker.patch(
+        "asyncio.create_subprocess_exec", new=mocker.AsyncMock(return_value=proc)
+    )
+    url = "http://lm:1234/v1/chat/completions"
+    mocker.patch(
+        "httpx.AsyncClient.post",
+        new=mocker.AsyncMock(
+            return_value=httpx.Response(
+                200,
+                request=httpx.Request("POST", url),
+                json={"choices": [{"message": {"content": json.dumps(_VALID_PLAN)}}]},
+            )
+        ),
+    )
+    bridge = OpusBridge(
+        db, router=LLMRouter(_mixed_chain, lm_studio_url="http://lm:1234")
+    )
+
+    graph = await bridge.plan_spec("spec", "https://r")
+
+    assert graph["plan_slug"] == "auth"
+    assert await _status(db) == "available"
+
+    await _assert_parking_still_works(db, mocker)
+
+
+# --------------------------------------------------------------------------
+# The two seats that used to call ``router.run`` directly.
+# --------------------------------------------------------------------------
+
+
+async def _pending_execute_plan(db: Database) -> tuple[TaskQueue, str, dict[str, Any]]:
+    """A project whose execute-plan plan is PENDING, awaiting decomposition."""
+    task_queue, plan_id, project = await _project_and_plan(db)
+    await db.execute(
+        "UPDATE plans SET source = 'execute-plan', pending_input = ? WHERE id = ?",
+        (
+            json.dumps(
+                {
+                    "plan": "### Task 1\nDo the thing.",
+                    "model": "qwen3.8-27b",
+                    "context": None,
+                    "local_context": None,
+                    "branch": "plan/execute-do-the-thing",
+                }
+            ),
+            plan_id,
+        ),
+    )
+    return task_queue, plan_id, project
+
+
+def _decompose_orchestrator(
+    task_queue: TaskQueue, bridge: OpusBridge, router: LLMRouter
+) -> Orchestrator:
+    """An Orchestrator wired the way ``main.py`` wires one: bridge AND router.
+
+    ``_llm_router`` is the object this seat used to call directly, and it is
+    left in place on purpose -- the fix is which of the two the seat reaches
+    for, so removing the old one would decide the test's verdict by
+    construction.
+    """
+    settings = AsyncMock()
+    settings.capability_profile.return_value = CapabilityProfile(
+        model_name="qwen3.8-27b", parameter_count_b=27.0, context_window=32000
+    )
+    orchestrator = _orchestrator(task_queue, bridge)
+    orchestrator._effective_settings = settings
+    orchestrator._llm_router = router
+    return orchestrator
+
+
+@pytest.mark.integration
+async def test_a_throttle_at_the_decompose_seat_parks_and_stops_re_attempting(
+    db: Database, mocker: Any
+) -> None:
+    """The decompose seat of the flagship feature, on a five-hour throttle.
+
+    ``decompose_plan`` called ``router.run`` directly, so nothing parked, and
+    the exception it raised is not a ``PlanReviewError`` -- it escaped
+    ``decompose_pending_execute_plan`` into ``run_once``'s per-plan
+    quarantine.  The plan stayed PENDING and re-attempted on EVERY tick: about
+    3600 throttled ``claude`` spawns over one five-hour window, with `praxis
+    status` reporting the brain available throughout.
+
+    The flat spawn count across the later ticks is the assertion that pins
+    that, not the state row: parking is only worth anything here because the
+    ``is_available`` branch at the top of the seat then short-circuits.
+    """
+    proc = _cli_proc(mocker, stdout=_THROTTLE_TEXT.encode(), stderr=b"", returncode=1)
+    spawn = mocker.patch(
+        "asyncio.create_subprocess_exec", new=mocker.AsyncMock(return_value=proc)
+    )
+
+    async def _chain(call_site: str, project_id: str | None) -> list[dict]:  # noqa: ARG001
+        return [{"provider": "claude", "model": "claude-sonnet-4-6", "effort": None}]
+
+    router = LLMRouter(_chain)
+    task_queue, plan_id, project = await _pending_execute_plan(db)
+    orchestrator = _decompose_orchestrator(
+        task_queue, OpusBridge(db, router=router), router
+    )
+
+    assert await _status(db) == "available"
+    # Must not raise: an escaping exception is the quarantined-and-retried
+    # shape this fix exists to remove.
+    await orchestrator.decompose_pending_execute_plan(plan_id, project)
+
+    assert await _status(db) == "rate_limited"
+    assert spawn.await_count == 1
+    plan = await task_queue.get_plan(plan_id)
+    assert plan is not None
+    # Waiting, not failed, and no attempt consumed.
+    assert plan["status"] == PlanStatus.PENDING
+    assert plan["plan_attempts"] == 0
+    assert "rate limit" in str(plan["error"]).lower()
+
+    for _tick in range(5):
+        await orchestrator.decompose_pending_execute_plan(plan_id, project)
+
+    assert spawn.await_count == 1, (
+        "the parked state must stop the seat spending a CLI invocation per "
+        "tick; this is the ~3600-spawn defect"
+    )
+    assert await _queued(db) == [
+        {"action": "execute_plan", "plan_id": plan_id, "project_id": "p1"}
+    ]
+
+
+@pytest.mark.integration
+async def test_an_ordinary_decompose_failure_neither_parks_nor_defers(
+    db: Database, mocker: Any
+) -> None:
+    """A broken brain at the decompose seat must stay broken and visible.
+
+    The deferral is for the ONE failure that heals itself.  Widen it to any
+    provider error and a genuinely broken planner becomes a silent five-hour
+    wait -- the same inversion the parking predicate itself is gated against.
+    """
+    proc = _cli_proc(mocker, stdout=b"", stderr=b"Blocked by policy", returncode=1)
+
+    async def _chain(call_site: str, project_id: str | None) -> list[dict]:  # noqa: ARG001
+        return [{"provider": "claude", "model": "claude-sonnet-4-6", "effort": None}]
+
+    router = _router_over(mocker, proc)
+    task_queue, plan_id, project = await _pending_execute_plan(db)
+    orchestrator = _decompose_orchestrator(
+        task_queue, OpusBridge(db, router=router), router
+    )
+
+    with pytest.raises(RuntimeError) as caught:
+        await orchestrator.decompose_pending_execute_plan(plan_id, project)
+
+    assert not isinstance(caught.value, ProviderRateLimitError)
+    assert await _status(db) == "available"
+
+    await _assert_parking_still_works(db, mocker)
+
+
+@pytest.mark.integration
+async def test_a_throttle_at_the_triage_seat_parks_and_decides_nothing(
+    orchestrator_fixture: tuple[Any, str, dict[str, Any]],
+    db: Database,
+    mocker: Any,
+) -> None:
+    """A throttle is not a triage outcome, and ``human`` is irreversible.
+
+    ``triage_leaf`` caught ``Exception`` and answered
+    ``TriageDecision(decision="human")``, which ``_run_leaf_triage`` applies by
+    failing the task terminally.  A five-hour wait that heals itself was
+    therefore converted into a permanent human gate on a leaf that had two
+    retries left -- and the only trace was one log line.
+
+    The leaf now stays REVIEWING with no triage decision stamped, so when the
+    limit clears the next pass reviews and triages it exactly as it would
+    have.  REVIEWING counts as active, so the plan neither completes nor
+    reports itself stalled while it waits.
+    """
+    orchestrator, task_id, project = orchestrator_fixture
+    proc = _cli_proc(mocker, stdout=_THROTTLE_TEXT.encode(), stderr=b"", returncode=1)
+    router = _router_over(mocker, proc)
+    orchestrator._opus = OpusBridge(db, router=router)
+    # Left in place deliberately; see _decompose_orchestrator.
+    orchestrator._llm_router = router
+
+    await orchestrator._tq.retry_task(task_id)
+    await orchestrator._tq.update_task_status(task_id, TaskStatus.REVIEWING)
+    task = await orchestrator._tq.get_task(task_id)
+    assert task is not None
+    plan = await orchestrator._tq.get_plan(task["plan_id"])
+    assert plan is not None
+
+    assert await _status(db) == "available"
+    handled = await orchestrator._run_leaf_triage(
+        dict(task), project, dict(plan), "it failed", 1, 4, "diff"
+    )
+
+    assert handled is True, "the caller must not fall through to the retry path"
+    assert await _status(db) == "rate_limited"
+    after = await orchestrator._tq.get_task(task_id)
+    assert after is not None
+    assert after["status"] == TaskStatus.REVIEWING
+    assert after["triage_decision"] is None, (
+        "a throttle must not burn the one triage call this leaf gets"
+    )
+    assert after["attempt"] == task["attempt"]
+
+
+@pytest.mark.integration
+async def test_an_ordinary_triage_failure_still_falls_back_to_human(
+    orchestrator_fixture: tuple[Any, str, dict[str, Any]],
+    db: Database,
+    mocker: Any,
+) -> None:
+    """Triage must still never wedge a task on anything else.
+
+    "Never raises" was the module's whole contract, and exactly one exception
+    is now carved out of it.  Carve out two and a provider outage stops being
+    a human gate and starts being an unhandled exception in the review path.
+    """
+    orchestrator, task_id, project = orchestrator_fixture
+    proc = _cli_proc(mocker, stdout=b"", stderr=b"Blocked by policy", returncode=1)
+    router = _router_over(mocker, proc)
+    orchestrator._opus = OpusBridge(db, router=router)
+    orchestrator._llm_router = router
+
+    await orchestrator._tq.retry_task(task_id)
+    await orchestrator._tq.update_task_status(task_id, TaskStatus.REVIEWING)
+    task = await orchestrator._tq.get_task(task_id)
+    assert task is not None
+    plan = await orchestrator._tq.get_plan(task["plan_id"])
+    assert plan is not None
+
+    handled = await orchestrator._run_leaf_triage(
+        dict(task), project, dict(plan), "it failed", 1, 4, "diff"
+    )
+
+    assert handled is True
+    after = await orchestrator._tq.get_task(task_id)
+    assert after is not None
+    assert after["status"] == TaskStatus.FAILED
+    assert after["triage_decision"] == "human"
+    assert await _status(db) == "available"
+
+    await _assert_parking_still_works(db, mocker)

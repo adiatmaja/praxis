@@ -47,9 +47,11 @@ from orchestrator.core.git_ops import (
 )
 from orchestrator.core.leaf_split import child_slugs
 from orchestrator.core.leaf_triage import TriageEvidence, triage_leaf
+from orchestrator.core.llm_router import ProviderRateLimitError
 from orchestrator.core.log_context import task_logger
 from orchestrator.core.merge_policy import auto_merge_eligible
 from orchestrator.core.micro_edit import BRAIN_IMPLEMENTER
+from orchestrator.core.opus_bridge import parking_brain_runner
 from orchestrator.core.outcome_recorder import record_outcome
 from orchestrator.core.plan_graph import (
     build_graph_index,
@@ -946,8 +948,17 @@ class ReviewMixin:
     async def _triage_leaf(
         self, evidence: TriageEvidence, project_id: str | None
     ) -> TriageDecision:
-        """Seam for the triage brain call, so tests can substitute it."""
-        return await triage_leaf(evidence, self._llm_router, project_id)
+        """Seam for the triage brain call, so tests can substitute it.
+
+        Routed through the BRIDGE, not the bare router: this seat called
+        ``LLMRouter.run`` directly and so was the one brain call in the process
+        that could not park ``opus_state`` on a throttle.
+        """
+        return await triage_leaf(
+            evidence,
+            parking_brain_runner(self._opus, self._llm_router),
+            project_id,
+        )
 
     async def _run_leaf_triage(
         self,
@@ -974,10 +985,14 @@ class ReviewMixin:
             diff: The failed attempt's diff.
 
         Returns:
-            True when the decision was handled here, so the caller must NOT
-            fall through to the plain retry path; False to keep the old
-            behavior (no plan graph or no settings to work against, or a split
-            the graph refused).
+            True when this call took responsibility for the task's next state,
+            so the caller must NOT fall through to the plain retry path. That
+            includes deliberately leaving it REVIEWING for a later pass when
+            the brain is throttled: deciding nothing is a decision about the
+            next state too, and falling through would consume a retry for a
+            limit that clears by itself. False keeps the old behavior (no plan
+            graph or no settings to work against, or a split the graph
+            refused).
         """
         settings = self._effective_settings
         if plan is None or settings is None:
@@ -1050,7 +1065,41 @@ class ReviewMixin:
             escalation_available=pair is not None,
         )
 
-        decision = await self._triage_leaf(evidence, project["id"])
+        try:
+            decision = await self._triage_leaf(evidence, project["id"])
+        except ProviderRateLimitError as exc:
+            # DEFER, do not decide. ``opus_state`` was already parked on the
+            # way out (``OpusBridge.run``), so nothing here writes it.
+            #
+            # The leaf is left REVIEWING, which is the only state that costs
+            # nothing: no attempt is consumed, no triage decision is stamped,
+            # and REVIEWING counts as active, so the plan neither completes
+            # short of this leaf nor reports itself stalled while it waits.
+            # The next pass finds the brain parked and returns at
+            # ``review_task``'s own availability check without spending a call;
+            # the pass after the limit clears reviews and triages it exactly as
+            # this one would have.
+            #
+            # The cost is one duplicate review round trip and a second
+            # ``task_outcomes`` row for this attempt once the wait ends. That
+            # is the price of not answering ``human``, which fails the leaf
+            # terminally and which no clock undoes.
+            log = task_logger(logger, plan_id=task.get("plan_id"), task_id=task_id)
+            log.warning(
+                "triage deferred: %s is rate limited, so the leaf stays in "
+                "review and is triaged again once the limit clears (%s)",
+                exc.provider,
+                exc,
+            )
+            self._bus.publish(
+                {
+                    "type": "task_triage_deferred",
+                    "task_id": task_id,
+                    "provider": exc.provider,
+                    "reason": str(exc),
+                }
+            )
+            return True
         # Stamped BEFORE acting, so a decision that cannot be applied still
         # burns the one triage call this leaf gets.
         await self._tq.record_triage_decision(task_id, decision.decision)

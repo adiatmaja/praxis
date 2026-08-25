@@ -23,10 +23,11 @@ from orchestrator.core.git_backend import (
     resolve_backend,
 )
 from orchestrator.core.git_ops import clone_with_token
-from orchestrator.core.llm_router import ProviderAuthError
+from orchestrator.core.llm_router import ProviderAuthError, ProviderRateLimitError
 from orchestrator.core.opus_bridge import (
     BrainMalformedJsonError,
     BrainProseResponseError,
+    parking_brain_runner,
 )
 from orchestrator.core.orchestrator_dispatch import DispatchMixin
 from orchestrator.core.orchestrator_improve import ImprovementMixin
@@ -784,7 +785,18 @@ class Orchestrator(DispatchMixin, ReviewMixin, ReconcileMixin, ImprovementMixin)
     async def decompose_pending_execute_plan(
         self, plan_id: str, project: dict[str, Any]
     ) -> None:
-        """Run the brain decomposition for a pending execute-plan, then activate."""
+        """Run the brain decomposition for a pending execute-plan, then activate.
+
+        Three outcomes, and the third is the one that used to be missing: the
+        plan activates, or it FAILS terminally on a rejected decomposition, or
+        it WAITS on a throttled brain -- still PENDING, no attempt consumed,
+        with a reason on the row saying so. Anything else escapes to
+        ``run_once``'s per-plan quarantine, which is a silent retry loop.
+
+        Args:
+            plan_id: The pending execute-plan.
+            project: Its project row.
+        """
         import json as _json
 
         from orchestrator.core.execute_plan_decompose import decompose_plan
@@ -811,7 +823,11 @@ class Orchestrator(DispatchMixin, ReviewMixin, ReconcileMixin, ImprovementMixin)
                 plan=payload["plan"],
                 model=payload["model"],
                 context=payload.get("context"),
-                router=self._llm_router,
+                # The BRIDGE, not the bare router. This seat called
+                # ``LLMRouter.run`` directly, so a throttle here never touched
+                # ``opus_state`` and the ``is_available`` gate above could not
+                # fire on the next pass; see the rate-limit arm below.
+                router=parking_brain_runner(self._opus, self._llm_router),
                 effective_settings=self._effective_settings,
                 project_id=project["id"],
                 local_context=payload.get("local_context"),
@@ -825,6 +841,32 @@ class Orchestrator(DispatchMixin, ReviewMixin, ReconcileMixin, ImprovementMixin)
                 harness=project.get("harness"),
                 project_context_window=project.get("context_window"),
             )
+        except ProviderRateLimitError as exc:
+            # WAIT, do not fail and do not let this escape. The state row was
+            # parked on the way out (``OpusBridge.run``), which is what makes
+            # the ``is_available`` gate at the top of this method fire from the
+            # next pass on.
+            #
+            # Escaping was the whole defect: this type is not a
+            # ``PlanReviewError``, so it left this method for ``run_once``'s
+            # per-plan quarantine, which logs and moves on. The plan stayed
+            # PENDING and was re-decomposed on EVERY tick -- at the shipped
+            # five-second interval, roughly 3600 throttled CLI invocations
+            # across one five-hour window, while `praxis status` reported the
+            # brain available throughout.
+            #
+            # No attempt is consumed, exactly as ``plan_and_activate`` does not
+            # consume one for the same failure, and the same operator-facing
+            # sentence is written so both planning paths say the same thing.
+            reason = _unavailable_reason(exc)
+            logger.warning(
+                "execute-plan decomposition for %s is waiting on the provider "
+                "(%s). No attempt was consumed.",
+                plan_id,
+                exc,
+            )
+            await self._tq.set_plan_error(plan_id, reason)
+            return
         except PlanReviewError as exc:
             await self._tq.set_plan_error(plan_id, str(exc))
             await self._tq.update_plan_status(plan_id, PlanStatus.FAILED)

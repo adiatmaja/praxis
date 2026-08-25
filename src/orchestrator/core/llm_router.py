@@ -194,6 +194,33 @@ def build_argv(
 Resolver = Callable[[str, str | None], Awaitable[list[dict]]]
 
 
+def _throttle_carrying_both(
+    throttle: ProviderRateLimitError, final: BaseException
+) -> ProviderRateLimitError:
+    """Combine a throttle seen earlier in a chain with the failure that ended it.
+
+    Two different failures happened and neither may be dropped. The TYPE is the
+    throttle's, because that is the one the state machine can act on: only
+    :class:`ProviderRateLimitError` parks ``opus_state``, and only a parked
+    state turns a five-hour subscription limit into a wait rather than a
+    consumed retry. The final entry's failure is what actually ended the
+    attempt, so it is named in the message an operator reads and chained as
+    ``__cause__`` by the caller.
+
+    Args:
+        throttle: The first throttle seen while walking the chain.
+        final: The exception the last entry raised.
+
+    Returns:
+        A new error carrying both, attributed to the throttled provider.
+    """
+    return ProviderRateLimitError(
+        throttle.provider,
+        f"{throttle} -- the fallback chain then gave up at "
+        f"{type(final).__name__}: {final}",
+    )
+
+
 class LLMRouter:
     """Resolve a call-site to an ordered chain and execute with fallback."""
 
@@ -214,15 +241,55 @@ class LLMRouter:
         project_id: str | None,
         cwd: str | None = None,
     ) -> str:
+        """Execute a call-site against its chain, falling back on unavailability.
+
+        Args:
+            call_site: The routed call-site name.
+            prompt: The full prompt text.
+            project_id: Project whose per-call-site overrides apply.
+            cwd: Working directory for the provider, when it takes one.
+
+        Returns:
+            The first entry's usable output.
+
+        Raises:
+            ProviderRateLimitError: The chain was exhausted and at least one
+                entry reported a subscription throttle. A chain that RECOVERS
+                after a throttle raises nothing and parks nothing: the fallback
+                did exactly its job, and parking would gate every other seat --
+                including the one that just answered -- behind a five-hour wait
+                this call did not need. The throttle is still recorded, as the
+                ``model_fallback`` event's ``reason``.
+            Exception: Whatever the last entry raised, otherwise.
+        """
         from orchestrator.core.provider_errors import is_unavailability
 
         chain = await self._resolve_chain(call_site, project_id)
         last_exc: BaseException | None = None
+        # The first throttle seen anywhere in the chain. Held because falling
+        # through to the next entry used to DISCARD it: the loop re-raised
+        # whatever the LAST entry threw, so a throttled `claude` followed by an
+        # unreachable `local` surfaced as a connection error, `_run_routed`
+        # never parked, and the plan was charged a retry for a subscription
+        # limit. Unreachable on the shipped claude-only chains (one
+        # subscription throttles every entry) and reachable on any mixed chain
+        # ending in `local`, which docs/configurations.md presents as supported.
+        throttle: ProviderRateLimitError | None = None
         for index, cfg in enumerate(chain):
             try:
                 return await self._execute_one(cfg, prompt, cwd)
             except Exception as exc:  # noqa: BLE001 - re-raised below
+                if throttle is None and isinstance(exc, ProviderRateLimitError):
+                    throttle = exc
                 if not is_unavailability(exc) or index == len(chain) - 1:
+                    if throttle is not None and not isinstance(
+                        exc, ProviderRateLimitError
+                    ):
+                        # Only for two DIFFERENT failures. When the last entry
+                        # throttled too -- the shipped `plan: [sonnet, opus]`
+                        # shape -- combining would hand the operator the same
+                        # sentence twice for one subscription limit.
+                        raise _throttle_carrying_both(throttle, exc) from exc
                     raise
                 last_exc = exc
                 nxt = chain[index + 1]
