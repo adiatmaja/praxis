@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+import httpx
 import pytest
 
 import orchestrator.core.orchestrator_reconcile as rec
@@ -339,13 +340,14 @@ async def test_sweep_refuses_a_ledger_with_no_liveness_signal(
     }
 
     with caplog.at_level(logging.ERROR, logger=rec.__name__):
-        await rec.sweep_dead_branches(
+        outcome = await rec.sweep_dead_branches(
             repo_url=REPO_URL,
             list_remote_branches=fake_list_remote_branches,
             delete_remote_branch=fake_delete_remote_branch,
             ledger=ledger,
         )
 
+    assert outcome == "refused"
     assert deleted == []
     # It bails before even asking the remote, and says why.
     assert listed is False
@@ -491,6 +493,63 @@ async def test_each_ledger_signal_separately_spares_an_unintegrated_plan_branch(
     assert branch not in captured["merged_plan"]
     # Guard 2: its integration PR is an open PR, which vetoes outright.
     assert branch in captured["open_pr_branches"]
+
+
+@pytest.mark.asyncio
+async def test_repo_probe_quarantines_on_httpx_connect_errors_too(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A GitHub App credential provider mints tokens over the network
+    (core/github_credentials.py); a connect failure there raises
+    ``httpx.ConnectError``, NOT a ``RuntimeError``. This must quarantine
+    exactly like an ordinary ``git ls-remote`` failure -- an install using
+    GitHub App auth with a flaky/dead network must not traceback forever
+    just because the failure came from a different exception type inside
+    the same call.
+    """
+    repo_url = "https://example.invalid/app-auth-repo.git"
+    attempts = 0
+
+    async def fake_list_remote_branches(url: str) -> list[str]:
+        nonlocal attempts
+        attempts += 1
+        msg = "Connection refused"
+        raise httpx.ConnectError(msg)
+
+    async def fake_delete_remote_branch(url: str, branch: str) -> None:
+        pass
+
+    ledger = {
+        "open_pr_branches": set(),
+        "terminal_failed": set(),
+        "merged_plan": set(),
+        "live_branches": set(),
+        "protected_branches": set(),
+    }
+    repo_probe_state: dict[str, rec.RepoProbeState] = {}
+    threshold = rec.REPO_PROBE_FAILURE_QUARANTINE_THRESHOLD
+
+    with caplog.at_level(logging.WARNING, logger=rec.__name__):
+        for _ in range(threshold + 4):
+            outcome = await rec.sweep_dead_branches(
+                repo_url=repo_url,
+                list_remote_branches=fake_list_remote_branches,
+                delete_remote_branch=fake_delete_remote_branch,
+                ledger=ledger,
+                repo_probe_state=repo_probe_state,
+                project_ids=["proj-app-auth"],
+            )
+
+    # Quarantined just like the RuntimeError path: only `threshold` real
+    # attempts, one warning, no traceback.
+    assert outcome == "quarantined"
+    assert attempts == threshold
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(warnings) == 1
+    assert "proj-app-auth" in warnings[0].message
+    for record in caplog.records:
+        assert record.exc_info is None
+        assert record.levelno < logging.ERROR
 
 
 @pytest.mark.asyncio
@@ -859,6 +918,54 @@ async def test_reconcile_runs_quarantines_a_dead_project_repo_and_names_it(
     assert len(warnings) == 1
     assert "p1" in warnings[0].message
     assert REPO_URL in warnings[0].message
+
+
+async def _seed_second_project_sharing_a_repo(
+    db: Database, project_id: str, *, default_branch: str
+) -> None:
+    """A second project pointed at the SAME ``repo_url`` as ``_seed_project``.
+
+    Two projects sharing a remote is the ordinary case here (the DB is
+    routinely reset with ``rm data/orchestrator.db`` while the remote is
+    not), so the quarantine warning must be able to name more than one.
+    """
+    await db.execute(
+        "INSERT INTO projects (id, user_id, name, repo_url, default_branch) "
+        "VALUES (?, ?, ?, ?, ?)",
+        (project_id, "u1", "proj2", REPO_URL, default_branch),
+    )
+
+
+@pytest.mark.asyncio
+async def test_reconcile_runs_names_every_project_sharing_a_dead_repo(
+    db: Database, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Two projects can share one ``repo_url``. The quarantine warning must
+    name BOTH project ids, not just whichever the SQL happened to return
+    first: ``project_ids_by_repo`` aggregates every project id per repo
+    precisely so this doesn't silently degrade to naming only one. Reading
+    a single id off the front of the list would read as correct on the
+    (much more common) one-project case and only show its gap here.
+    """
+    await _seed_project(db, default_branch="main")
+    await _seed_second_project_sharing_a_repo(db, "p2", default_branch="main")
+
+    git = _FailingGit()
+    harness = _ReconcileHarness(TaskQueue(db), git)
+    threshold = rec.REPO_PROBE_FAILURE_QUARANTINE_THRESHOLD
+
+    with caplog.at_level(logging.WARNING, logger=rec.__name__):
+        for _ in range(threshold + 2):
+            await harness.reconcile_runs()
+
+    # Still only ONE repo_url to probe (both projects share it), so the same
+    # threshold-then-quarantine shape applies -- this is not two independent
+    # quarantines racing each other.
+    assert git.attempts == threshold
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(warnings) == 1
+    assert "p1" in warnings[0].message
+    assert "p2" in warnings[0].message
 
 
 @pytest.mark.asyncio

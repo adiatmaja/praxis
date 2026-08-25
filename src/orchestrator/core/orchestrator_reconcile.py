@@ -15,6 +15,8 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Literal, cast
 
+import httpx
+
 from orchestrator.core import branch_sweeper
 from orchestrator.core.status_vocab import TERMINAL_STATUSES
 from orchestrator.models.schemas import PlanStatus, TaskStatus
@@ -206,13 +208,26 @@ async def sweep_dead_branches(
 
     try:
         remote_branches = await list_remote_branches(repo_url)
-    except RuntimeError as exc:
-        # git_ops raises RuntimeError for an ordinary `git ls-remote`
-        # failure (bad host, a deleted local/scratch path, auth failure,
-        # repository gone) -- a CONDITION, not a crash. logger.exception's
-        # stack trace is reserved for the genuinely unexpected `except
-        # Exception` fallback below; this well-understood failure gets no
-        # traceback at all, and nothing is logged below the quarantine
+    except (RuntimeError, httpx.HTTPError, OSError) as exc:
+        # These three cover every way "this remote is not reachable right
+        # now" is known to surface from this call, and all of them are a
+        # CONDITION, not a crash:
+        #   - RuntimeError: git_ops raises this for an ordinary
+        #     `git ls-remote` failure (bad host, a deleted local/scratch
+        #     path, repository gone), and CredentialError (PAT/App auth
+        #     failures) is itself a RuntimeError subclass.
+        #   - httpx.HTTPError: GitHubAppCredentialProvider.token_for_repo
+        #     mints tokens over the network (core/github_credentials.py);
+        #     a connect error, timeout, or DNS failure there raises this,
+        #     NOT a RuntimeError, and is exactly as ordinary/transient as
+        #     the git-command failure above on an install using GitHub App
+        #     auth.
+        #   - OSError: if the `git` binary itself is missing from PATH,
+        #     asyncio.create_subprocess_exec raises FileNotFoundError (an
+        #     OSError subclass) rather than a git exit code.
+        # logger.exception's stack trace is reserved for the genuinely
+        # unexpected `except Exception` fallback below; none of these three
+        # get a traceback, and nothing is logged below the quarantine
         # threshold (the previous behaviour -- a traceback on every single
         # attempt, every ~5s -- is exactly the noise this replaces).
         state.consecutive_failures += 1
