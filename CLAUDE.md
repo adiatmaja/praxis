@@ -98,9 +98,11 @@ The rest of `core/`, grouped by concern:
   `escalation`, `worker_presets`, `bench_mode`
 - **Execution:** `task_queue`, `agent_manager`, `agent_prompt`, `worker_bible`, `harnesses`,
   `preflight`, `session_resume`, `progress_handover`, `clarification_states`,
-  `token_budget`, `micro_edit`
+  `token_budget`, `context_window` (resolves a worker's context window, or says unknown),
+  `micro_edit`
 - **Git & platform:** `git_ops`, `git_backend` (GitHub / local), `github_credentials`,
-  `repo_url_policy`, `merge_policy`, `branch_sweeper`, `diff_guard`, `diff_stats`
+  `repo_url_policy`, `merge_policy`, `branch_sweeper`, `diff_guard`, `diff_stats`,
+  `blast_radius` (repo-wide reach of the identifiers a diff changes, for the review prompt)
 - **Capability engine:** `execute_plan_decompose`, `plan_derive`, `plan_graph`, `plan_review`,
   `leaf_validator`, `leaf_templates`, `leaf_split`, `leaf_triage`, `difficulty`,
   `capabilities`, `capability_events`, `capability_history`, `outcome_recorder`,
@@ -343,6 +345,13 @@ story. New gotchas go in `docs/gotchas.md` first. (No count is quoted on purpose
   ANY `entrypoint.sh` change or a stale image runs silently. Staleness is judged by the
   `org.praxis.entrypoint-sha256` label (content, not mtime); rebuild via `praxis init` +
   `docker compose --profile agents build` - a bare `docker build` leaves the label EMPTY.
+- **A local `repo_url` is validated in one namespace and mounted in another**: preflight
+  checks it with `Path.exists()` INSIDE the orchestrator container, but the daemon resolves
+  the same string as a bind-mount source on the HOST. `LOCAL_REPOS_PATH` (+ the
+  `LOCAL_REPOS_HOST_PATH` escape hatch) bridges it; apply with `up -d`, never `restart`.
+- **A doctor probe must not mutate what it diagnoses**: the agy credentials probe mounts
+  the real volume read-only and layers a tmpfs over the writable path, so the kernel
+  guarantees it cannot silently seed the "no credentials" state it is checking for.
 - **Worker preset env vars are BARE compose pass-throughs** (`- DEFAULT_WORKER_HARNESS`),
   never `${VAR:-default}`: any expansion form sets the var even when unset and silently
   suppresses the mounted YAML.
@@ -452,6 +461,20 @@ story. New gotchas go in `docs/gotchas.md` first. (No count is quoted on purpose
   closed if it cannot read it back. `tests/test_submit_spec_seam.py` covers the seam
   end-to-end; keep it that way.
 - **Agent runs non-root** in `/home/agent/workspace`, git auth via `GH_TOKEN`.
+- **A planner that answers in prose is PERMANENTLY failed, never retried**: no JSON
+  anywhere in the reply means a refusal/question/permission request, structural not
+  keyword-matched; malformed JSON is the transient bucket and retries to a bound.
+- **An unknown context window SKIPS the budget gate and says so**: `core/context_window`
+  never falls back to a guessed number; harness identity is not the correctness
+  mechanism, only whether a probe answered.
+- **`opus_state` has ONE writer per transition and the queue is a ledger nobody drains**:
+  `OpusStatus.RESUMING` is written by nothing; work resumes because the loop re-enters.
+  `claude`'s throttle notice is on STDOUT, not stderr - check both streams.
+- **An unreachable repo is quarantined with backoff, not retried every tick**: consecutive
+  `git ls-remote` failures back off to a ceiling and log ONCE; a success resets the count.
+- **`scrub_context` does two jobs and only redaction belongs at intake**: length capping
+  needs the resolved worker window, so it belongs solely to `worker_bible.build_bible`;
+  an intake cap taken without the probe truncates permanently before the real budget runs.
 
 **Contracts that break fixtures**
 

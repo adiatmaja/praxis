@@ -668,10 +668,21 @@ class DispatchRequest(BaseModel):
     model: str
     harness: str | None = None
     branch: str | None = None
-    """Base branch for the dispatched task. The worker always cuts a NEW
-    agent/<slug> branch from this and opens a NEW PR; passing an existing PR's
-    head here does NOT push follow-up commits onto that PR. Re-dispatching
-    always creates a fresh PR. (Continue-on-PR mode is a planned follow-up.)"""
+    """Base branch, or the work branch itself - which one depends on the mode
+    active when the task is dispatched.
+
+    In the DEFAULT (non-auto-delegate) mode, this is a BASE branch: the
+    worker cuts a NEW ``agent/<slug>`` branch from it and opens a NEW PR;
+    passing an existing PR's head here does NOT push follow-up commits onto
+    that PR, and re-dispatching always creates a fresh PR. (Continue-on-PR
+    mode for this arm is a planned follow-up.)
+
+    In auto-delegate (single-branch) mode, this IS the work branch itself:
+    the worker (or the micro-edit lane) commits directly onto ``branch``, no
+    new branch is cut and no new PR opened per task. A second dispatch naming
+    the same branch stacks its commit on top of the first's; both are
+    preserved. Omit ``branch`` to let Praxis name one itself
+    (``plan/mcp-<slug>``)."""
     name: str | None = None
     plan_path: str | None = None
     plan_text: str | None = None
