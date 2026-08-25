@@ -107,6 +107,34 @@ _GATE_FAILED = "failed"
 # orchestrator log with an up-to-8000-char command dump.
 _LOG_EXCERPT_CHARS = 200
 
+# The four outcomes of the integration stage, named so a consumer of
+# ``plan_integration_ready`` never has to infer which one it got from the
+# emptiness of ``pr_url``. Two of them carry no URL and they mean OPPOSITE
+# things: ``nothing_to_integrate`` says the work is already on the base branch,
+# ``failed`` says it is STRANDED on the plan branch. Until this existed both
+# published the same payload, and four completed plans in a live database were
+# indistinguishable from every surface.
+_INTEGRATION_OPENED = "opened"
+_INTEGRATION_REUSED = "reused"
+_INTEGRATION_NOTHING = "nothing_to_integrate"
+_INTEGRATION_FAILED = "failed"
+
+# Consecutive ticks a task may fail its review on something that is NOT a
+# genuine throttle before the task is failed and the plan allowed to move on.
+#
+# Three, matching ``REPO_PROBE_FAILURE_QUARANTINE_THRESHOLD`` in
+# core/orchestrator_reconcile.py and for the same reason: at the shipped
+# five-second loop interval it is enough to tell a real outage from a one-off
+# gateway blip, without needlessly converting that blip into a re-dispatched
+# container and a consumed retry.
+#
+# There is no bound at all on a genuine throttle, deliberately. That one parks
+# ``opus_state``, the ``is_available()`` gate at the top of ``review_task``
+# then returns before any call is made, and waiting therefore costs nothing.
+# An auth failure or a gateway 403/5xx never parks, which is exactly why it
+# needs a bound: it spent a real provider call on every tick, forever.
+REVIEW_ERROR_ATTEMPT_CAP: int = 3
+
 
 def _log_excerpt(output: str) -> str:
     """Collapse whitespace and cap ``output`` for a single log line."""
@@ -438,6 +466,97 @@ class ReviewMixin:
                 }
             )
 
+    def _review_error_streaks(self) -> dict[str, int]:
+        """Per-task consecutive review-error counts, for this process only.
+
+        An in-memory dict lazily attached to the instance, exactly like
+        ``_branch_delete_failures`` and ``_repo_probe_failures`` in
+        ``ReconcileMixin`` and for the same reasons: ``Orchestrator.__init__``
+        lives outside this file, and a restart clearing the count is CORRECT
+        because a restart may itself be what fixed the credential or the
+        gateway the failures were caused by.
+
+        Bounded in practice: an entry is removed when a review completes and
+        when the cap fires, so only tasks that are STILL failing hold a key,
+        and each is a single int.
+        """
+        streaks: dict[str, int] | None = getattr(self, "_review_errors", None)
+        if streaks is None:
+            streaks = {}
+            self._review_errors = streaks
+        return streaks
+
+    async def _handle_review_error(
+        self,
+        task: dict[str, Any],
+        project: dict[str, Any],
+        log: Any,
+        exc: Exception,
+    ) -> None:
+        """Decide what a failed review attempt means, and bound the retrying.
+
+        Two classes, and only one of them may wait indefinitely.
+
+        A genuine throttle parks ``opus_state`` before it re-raises, so the
+        ``is_available()`` gate at the top of ``review_task`` short-circuits
+        every following tick before a call is made. Waiting is therefore free,
+        and failing the task for it would blame a worker for a subscription
+        window and burn a retry that the wait returns for nothing.
+
+        Everything else is bounded. An auth failure and a gateway 403/5xx are
+        unavailabilities too, but they never park, so "wait for it to clear"
+        meant a real provider call every ``loop_interval`` seconds forever
+        while the task sat in REVIEWING -- which counts as active, so the plan
+        could neither complete nor publish ``plan_stalled``. Past the cap the
+        task is failed, which is what the unparseable-``pr_url`` arm one branch
+        over already does with a review that cannot start: the plan has to be
+        able to reach a terminal state.
+
+        Args:
+            task: The task row being reviewed.
+            project: Its project row, read for ``max_retries``.
+            log: The task-scoped logger ``review_task`` already built.
+            exc: What the diff fetch or the brain call raised.
+        """
+        task_id = str(task["id"])
+        streaks = self._review_error_streaks()
+        if (
+            isinstance(exc, ProviderRateLimitError)
+            or not await self._opus.is_available()
+        ):
+            log.warning(
+                "review is waiting on a throttled provider (%s); the task keeps "
+                "its attempt and nothing is spent until the limit clears",
+                exc,
+            )
+            return
+
+        streak = streaks.get(task_id, 0) + 1
+        if streak < REVIEW_ERROR_ATTEMPT_CAP:
+            streaks[task_id] = streak
+            log.warning(
+                "review attempt %d of %d failed (%s: %s); retrying on the next pass",
+                streak,
+                REVIEW_ERROR_ATTEMPT_CAP,
+                type(exc).__name__,
+                exc,
+            )
+            return
+
+        streaks.pop(task_id, None)
+        # Worded for the FLOOR model that reads it next: ``core/worker_bible``
+        # injects this string verbatim into the re-dispatched worker's prompt,
+        # and a sentence that blamed the change would send that worker to fix a
+        # defect nobody has observed. It says the REVIEWER did not run.
+        feedback = (
+            f"Review could not run: the reviewer failed on "
+            f"{REVIEW_ERROR_ATTEMPT_CAP} consecutive attempts "
+            f"({type(exc).__name__}: {exc}). The change itself was never "
+            "judged, so nothing here says it is wrong."
+        )
+        log.warning("%s Failing the task so the plan can progress.", feedback)
+        await self._fail_and_maybe_retry(task_id, task, project, feedback)
+
     async def _review_diff_for(
         self,
         backend: Any,
@@ -681,7 +800,14 @@ class ReviewMixin:
             # fail the task; on gate failure the diff is unused (verdict is fail).
             diff = ""
             if review is None:
-                diff, scope = await self._review_diff_for(backend, ref, task, log)
+                try:
+                    diff, scope = await self._review_diff_for(backend, ref, task, log)
+                except Exception as exc:  # noqa: BLE001 - bounded, never per-tick
+                    # `gh pr diff` (or the bare repo) over a network nobody
+                    # controls, on the same unguarded path as the brain call
+                    # below and wedging the plan the same way.
+                    await self._handle_review_error(task, project, log, exc)
+                    return
                 if not diff.strip():
                     # An empty diff is a FACT, not a verdict. Both backends
                     # fetch it through a checked command, so a non-zero exit
@@ -699,6 +825,13 @@ class ReviewMixin:
                     # a task that added none of its own to a branch that is full
                     # of other tasks' work. Reporting the second as the first is
                     # a statement anyone can open the pull request and disprove.
+                    #
+                    # A decision was reached, so the error streak is cleared
+                    # here as well as on the verdict path below. The bound
+                    # counts CONSECUTIVE failures; a task that carried an old
+                    # streak into a later outage would be failed on the first
+                    # blip after it.
+                    self._review_error_streaks().pop(task_id, None)
                     await self._decide_empty_pr_diff(task, project, plan, log, scope)
                     return
                 # A micro edit is reviewed at the re-review tier. On a micro
@@ -727,16 +860,29 @@ class ReviewMixin:
                 # observe that defect class. Fails open: see
                 # ``_blast_radius_for_review``.
                 radius, blast_section = await _blast_radius_for_review(diff, checkout)
-                review = await self._opus.review_diff(
-                    diff,
-                    task["description"] or task["title"],
-                    model=project.get("agent_model"),
-                    effort=project.get("agent_model_effort"),
-                    tier=tier,
-                    plan_text=plan_text_for_review,
-                    cwd=checkout,
-                    blast_radius=blast_section,
-                )
+                try:
+                    review = await self._opus.review_diff(
+                        diff,
+                        task["description"] or task["title"],
+                        model=project.get("agent_model"),
+                        effort=project.get("agent_model_effort"),
+                        tier=tier,
+                        plan_text=plan_text_for_review,
+                        cwd=checkout,
+                        blast_radius=blast_section,
+                    )
+                except Exception as exc:  # noqa: BLE001 - bounded, never per-tick
+                    # The call this whole function exists to make, and it had
+                    # no arm at all. Anything it raised escaped into
+                    # ``process_plan_once`` (aborting the rest of THIS plan's
+                    # task loop for the tick) and then into ``run_once``'s
+                    # per-plan quarantine, leaving the task REVIEWING with its
+                    # attempt unspent and the next tick re-entering here.
+                    await self._handle_review_error(task, project, log, exc)
+                    return
+        # A verdict was produced, so whatever was failing has stopped. See the
+        # matching reset on the empty-diff path above.
+        self._review_error_streaks().pop(task_id, None)
         # Stripped. Everything that is not exactly "pass" falls through to the
         # failure path, which comments on the PR, retries, and writes a `fail`
         # row that counts against the worker in the calibration data. A model
@@ -2282,6 +2428,18 @@ class ReviewMixin:
             )
 
             pr_url: str | None = None
+            # WHICH of the four outcomes this plan got, and why. Two of them
+            # carry no ``pr_url`` and mean opposite things, and until these
+            # existed both published the identical payload below.
+            integration_status: str
+            integration_detail: str | None = None
+            # The SEAM, not ``self._git``. Every other git operation on this
+            # path already resolves a backend; the integration stage reaching
+            # straight for ``GitOps`` is why a local project got the whole
+            # governed loop except its last link: the slug was built by
+            # splitting the repo URL on "github.com/", which for a filesystem
+            # path is the path, and `gh pr create --repo /repos/demo` fails.
+            backend = self._resolve_backend(repo_url)
             existing_pr = await self._existing_integration_pr(
                 repo_url, base, plan_branch
             )
@@ -2290,6 +2448,7 @@ class ReviewMixin:
                 # integration PR. Reuse it rather than fail a second
                 # `gh pr create` against the same (base, head) pair.
                 pr_url = existing_pr
+                integration_status = _INTEGRATION_REUSED
                 log.info(
                     "integration PR skipped: branch=%s already has an open "
                     "PR against base=%s, reusing %s",
@@ -2310,6 +2469,8 @@ class ReviewMixin:
                 # correct outcome. This is the same fact-versus-verdict split
                 # as `no_changes` one layer down: the absence is a fact, and
                 # what it MEANS is decided here.
+                integration_status = _INTEGRATION_NOTHING
+                integration_detail = nothing_to_integrate
                 log.info(
                     "nothing to integrate for plan %s: %s",
                     plan_id,
@@ -2317,8 +2478,7 @@ class ReviewMixin:
                 )
             else:
                 try:
-                    pr_url = await self._git.open_integration_pr(
-                        repo_url=repo_url,
+                    pr_url = await backend.open_integration_pr(
                         base=base,
                         head=plan_branch,
                         title=f"Integrate {plan_branch}",
@@ -2327,10 +2487,36 @@ class ReviewMixin:
                             f"`{plan_branch}`. Review and merge to `{base}` to integrate."
                         ),
                     )
-                except Exception as exc:  # noqa: BLE001
+                    integration_status = _INTEGRATION_OPENED
+                except Exception as exc:  # noqa: BLE001 - reported, never fatal
+                    integration_status = _INTEGRATION_FAILED
+                    # Names the branch the work is stranded on and the base it
+                    # never reached. A reason an operator cannot act on is the
+                    # same silence as no reason at all.
+                    integration_detail = (
+                        f"the integration pull request for branch={plan_branch} "
+                        f"onto base={base} could not be opened ({exc}), so this "
+                        "plan's work is on the plan branch and has NOT reached "
+                        "the base branch"
+                    )
                     logger.warning(
                         "Integration PR open failed for %s: %s", plan_id, exc
                     )
+                    # Onto the PLAN ROW, not only into the log. The stage runs
+                    # exactly once -- `process_plan_once` writes COMPLETED
+                    # before calling this, and `get_runnable_plans` returns
+                    # only PENDING and ACTIVE plans, so nothing re-enters here
+                    # -- and `plans.error` is what `PlanResponse` and MCP
+                    # `poll_plan` serve. Without it the stranding was
+                    # discoverable only from one `docker logs` line.
+                    try:
+                        await self._tq.set_plan_error(plan_id, integration_detail)
+                    except Exception:  # noqa: BLE001 - never wedge the loop
+                        logger.warning(
+                            "Failed to record the integration failure for plan %s",
+                            plan_id,
+                            exc_info=True,
+                        )
 
             if pr_url:
                 # Persist BEFORE publishing: the SSE event below is consumed
@@ -2389,6 +2575,16 @@ class ReviewMixin:
                     "plan_branch": plan_branch,
                     "base_branch": base,
                     "pr_url": pr_url,
+                    # Which of the four outcomes, stated rather than inferred.
+                    # A consumer reading only ``pr_url`` cannot tell "the work
+                    # is already on base, nothing to do" from "the pull request
+                    # could not be opened and the work is stranded", and those
+                    # are the two cases that most need telling apart.
+                    "integration_status": integration_status,
+                    # Why, in the words already logged for that outcome. None
+                    # for the two statuses that carry a URL, where the URL is
+                    # the whole answer.
+                    "integration_detail": integration_detail,
                     "compare_url": compare_url(repo_url, base, plan_branch),
                     "verify_status": verify_status.status,
                 }

@@ -304,18 +304,31 @@ def stage_and_commit(
     return True
 
 
-def compare_url(repo_url: str, base: str, head: str) -> str:
+def compare_url(repo_url: str, base: str, head: str) -> str | None:
     """Build a GitHub compare URL for base...head (no network call).
 
+    None when the repository is not on github.com, which is the honest answer
+    rather than a defensive one. The old split on ``"github.com/"`` finds
+    nothing in a filesystem path and hands the whole path back as the slug, so
+    a local-mode project got
+    ``https://github.com/C:\\repos\\demo/compare/main...plan/x?expand=1``: a
+    link that looks real, rides the ``plan_integration_ready`` event beside a
+    genuine integration reference, and 404s. A non-GitHub host produced the
+    same shape of nonsense. Resolved through ``GitOps.repo_slug``, which
+    already answers exactly the question this URL depends on.
+
     Args:
-        repo_url: Full GitHub repository URL (HTTPS or with .git suffix).
+        repo_url: Repository URL or local bare-repo path.
         base: Base branch name.
         head: Head branch name.
 
     Returns:
-        A GitHub compare URL with ``?expand=1`` to pre-fill a PR description.
+        A GitHub compare URL with ``?expand=1`` to pre-fill a PR description,
+        or None when there is no such page to link to.
     """
-    slug = repo_url.rstrip("/").removesuffix(".git").split("github.com/")[-1]
+    slug = GitOps.repo_slug(repo_url)
+    if slug is None:
+        return None
     return f"https://github.com/{slug}/compare/{base}...{head}?expand=1"
 
 

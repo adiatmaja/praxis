@@ -844,9 +844,11 @@ async def dispatch_task(
 
     SIDE EFFECTS on the project row, which is why they are stated here: an
     unknown ``repo_url`` CREATES a project, and a known one has its stored
-    ``model_name`` and ``harness`` OVERWRITTEN with the values passed here. A
-    one-off model argument therefore re-points the repo's configured worker for
-    every future dispatch, including what get_project will report.
+    ``model_name`` OVERWRITTEN with the value passed here. A one-off model
+    argument therefore re-points the repo's configured worker for every future
+    dispatch, including what get_project will report. ``harness`` is NOT
+    overwritten when omitted: it is passed through as None so an unstated
+    harness can never downgrade an existing project.
 
     repo_url: ``https://github.com/owner/repo`` or ``git@github.com:owner/repo``.
     GitHub only; other https hosts and ssh://, git://, ext:: are rejected. A

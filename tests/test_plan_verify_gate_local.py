@@ -341,12 +341,16 @@ async def test_on_plan_completed_publishes_a_real_local_verdict(
     plan_id = await _seed_plan(db, str(bare_repo), _VERIFY_FAILS)
     bus = EventBus()
     events = _drain(bus)
-    # An AsyncMock git keeps ``open_integration_pr`` from shelling out to gh.
-    # Its ``_provider`` mirrors production so a regression that routed local
-    # mode back through the GitHub path would skip, and be caught here.
+    # ``open_integration_pr`` is deliberately NOT mocked here any more. It used
+    # to be, with a comment saying the mock kept it from shelling out to gh --
+    # which was the defect wearing its own explanation: local mode really did
+    # reach ``gh pr create`` with a filesystem path as the repo slug, and this
+    # was the only test that drove a real local repo through this method. It
+    # now goes through the backend seam and produces a local reference.
+    # ``_provider`` still mirrors production so a regression that routed local
+    # mode back through the GitHub path would skip the gate, and be caught here.
     git = AsyncMock()
     git._provider = PatCredentialProvider("")
-    git.open_integration_pr = AsyncMock(return_value=None)
     orch = _orchestrator(db, bus=bus, git=git)
 
     await orch.on_plan_completed(plan_id)

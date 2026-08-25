@@ -234,6 +234,24 @@ class GitBackend(Protocol):
         """Squash-merge the change into its base."""
         ...
 
+    async def open_integration_pr(
+        self, base: str, head: str, title: str, body: str
+    ) -> str:
+        """Open the change that carries ``head`` onto ``base``; return its ref.
+
+        The last link of the loop, and the one that was not on this seam. Every
+        other git operation here already routes through the backend, so the
+        integration stage reaching straight for ``GitOps`` meant a local
+        project got the whole governed loop except its final step.
+
+        Returns a string storable in ``plans.integration_pr_url`` and parseable
+        by :meth:`PullRequestRef.from_url`, so ``praxis merge-plan`` can land it
+        through :meth:`merge` on either backend. Raises rather than returning a
+        falsy value: the caller records the reason on the plan row, and a
+        silent "no reference" is exactly the outcome this seam exists to end.
+        """
+        ...
+
 
 class GitHubBackend:
     """The existing ``gh``-CLI behavior, unchanged, behind the protocol."""
@@ -366,6 +384,49 @@ class GitHubBackend:
     async def merge(self, ref: PullRequestRef) -> None:
         """Squash-merge the PR and delete its branch."""
         await self._git.merge_pr(".", ref.number, repo=self._repo(ref))
+
+    async def open_integration_pr(
+        self, base: str, head: str, title: str, body: str
+    ) -> str:
+        """Open the plan's integration PR with ``gh pr create``.
+
+        Unchanged behavior behind the protocol: the same ``GitOps`` call the
+        review mixin used to make directly, with the repository this backend is
+        bound to rather than one passed in beside it.
+
+        Args:
+            base: The branch the plan's work has to reach.
+            head: The plan branch the work accumulated on.
+            title: PR title.
+            body: PR body text.
+
+        Returns:
+            The GitHub pull request URL.
+
+        Raises:
+            ValueError: If this backend was built without a repository URL.
+                ``gh pr create`` would then carry no ``--repo`` and resolve
+                against the orchestrator's own working directory, which is the
+                same wrong-repository fault :meth:`_repo` refuses.
+            RuntimeError: Whatever ``gh`` failed with, unwrapped. The caller
+                records it on the plan row instead of swallowing it.
+        """
+        if not self._repo_url:
+            message = (
+                "GitHub backend was built without a repository URL; refusing to "
+                "run gh pr create against the orchestrator's own working directory"
+            )
+            raise ValueError(message)
+        return cast(
+            str,
+            await self._git.open_integration_pr(
+                repo_url=self._repo_url,
+                base=base,
+                head=head,
+                title=title,
+                body=body,
+            ),
+        )
 
 
 class LocalGitBackend:
@@ -548,6 +609,59 @@ class LocalGitBackend:
                 )
         finally:
             shutil.rmtree(workdir, onerror=_clear_readonly_and_retry)
+
+    async def open_integration_pr(
+        self, base: str, head: str, title: str, body: str
+    ) -> str:
+        """Return the mergeable reference that carries ``head`` onto ``base``.
+
+        A bare repo has no pull-request object, and this deliberately does not
+        invent one. It returns the SAME ``praxis-local://`` reference every
+        task on this backend already uses: :meth:`PullRequestRef.from_url`
+        parses it and :meth:`merge` squash-merges it, so ``praxis merge-plan``
+        lands a local plan through exactly the code that lands a GitHub one.
+        What local mode lacks is the review SURFACE, not the merge.
+
+        The head branch is checked first, and that check is the honest part.
+        "There is no PR object" is not a licence to hand back a reference to a
+        branch this repository does not have: the string would be stored on
+        ``plans.integration_pr_url`` and handed to the merge verb days later,
+        where it would fail talking about a merge rather than about a branch
+        that never existed. ``gh pr create`` refuses the same case outright
+        with "Head ref must be a branch".
+
+        Args:
+            base: The branch the plan's work has to reach.
+            head: The plan branch the work accumulated on.
+            title: The title a pull request would have carried.
+            body: The body a pull request would have carried.
+
+        Returns:
+            A ``praxis-local://`` reference, storable in
+            ``plans.integration_pr_url``.
+
+        Raises:
+            RuntimeError: If ``head`` is not a branch in this repository.
+        """
+        if await self.head_sha(head) is None:
+            message = (
+                f"cannot open an integration reference: {head} is not a branch "
+                f"in {self._path}"
+            )
+            raise RuntimeError(message)
+        url = PullRequestRef(backend="local", branch=head, base=base).to_url()
+        # Logged for the same reason ``comment`` logs its body: there is no
+        # pull-request page carrying this text, so the log is the only place it
+        # survives at all.
+        logger.info(
+            "local integration reference for %s onto %s: %s (%s)",
+            head,
+            base,
+            url,
+            title,
+        )
+        logger.debug("local integration body: %s", body)
+        return url
 
 
 def resolve_backend(repo_url: str, git_ops: Any) -> GitBackend:
