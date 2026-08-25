@@ -174,6 +174,9 @@ could not verify.
 Diff:
 {diff}
 
+Blast radius - how far the things this diff changes reach:
+{blast_radius}
+
 Respond with ONLY valid JSON in this exact format:
 {{
   "verdict": "pass" or "fail",
@@ -185,6 +188,18 @@ Pass if the code correctly implements the task and has no critical issues.
 Fail if there are bugs, missing functionality, security problems, or it deletes
 existing functionality/config the task did not ask to remove.
 """
+
+#: What stands in for the blast-radius section when nothing was measured.
+#:
+#: A neutral LINE, never an empty heading and never silence. The measurement is
+#: skipped whenever the PR head could not be checked out and dropped whenever
+#: the walk raised, and in both cases a blank section reads as "we looked and
+#: the change is contained" -- which is the exact misleading green the section
+#: was added to remove.
+NO_BLAST_RADIUS_LINE = (
+    "Not measured for this review (no checkout was available, or the "
+    "measurement failed). Do not read that as evidence the change is contained."
+)
 
 IMPROVEMENT_PROMPT_TEMPLATE = """You are a senior software architect. Analyze this project for improvements.
 
@@ -404,11 +419,33 @@ class OpusBridge:
         tier: str = "first",
         plan_text: str | None = None,
         cwd: str | None = None,
+        blast_radius: str | None = None,
     ) -> dict[str, Any]:
+        """Review a diff against the task and plan it must satisfy.
+
+        Args:
+            diff: The change under review.
+            task_description: What the task asked for.
+            model: Explicit model override for the legacy CLI path.
+            effort: Explicit effort override for the legacy CLI path.
+            project_id: Project whose per-call-site overrides apply.
+            tier: ``"first"`` or ``"rereview"``, selecting the call site.
+            plan_text: The plan contract the change must satisfy.
+            cwd: A clean checkout of the PR head to run the provider in.
+            blast_radius: A rendered
+                :func:`orchestrator.core.blast_radius.render_blast_radius`
+                section, or None. OPTIONAL on purpose: the measurement fails
+                open, so every caller must be able to omit it, and omitting it
+                renders ``NO_BLAST_RADIUS_LINE`` rather than an empty heading.
+
+        Returns:
+            The decoded review verdict.
+        """
         prompt = REVIEW_PROMPT_TEMPLATE.format(
             diff=diff,
             task_description=task_description,
             plan_text=(plan_text or "(no plan text was provided)"),
+            blast_radius=(blast_radius or NO_BLAST_RADIUS_LINE),
         )
         router: LLMRouter | None = getattr(self, "_router", None)
         if router is not None:
