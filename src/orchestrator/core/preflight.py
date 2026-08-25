@@ -172,7 +172,18 @@ async def _preflight_local(repo_url: str, base: str, branch: str | None) -> list
     if not path.exists():
         raise PreflightError(
             PreflightKind.MISSING_REPO,
-            f"local repository path does not exist: {path}",
+            f"local repository path does not exist inside the orchestrator "
+            f"container: {path}. This path must resolve IDENTICALLY inside "
+            "the orchestrator (checked right here) and on the Docker host "
+            "(used as the bind-mount SOURCE when a worker container is "
+            "spawned) -- a path valid in only one of those namespaces will "
+            "pass this check and still fail at spawn, or the reverse. On "
+            "Docker Desktop for Windows the two are never the same string: "
+            "mount your repos directory at an identical path in both "
+            "places using the VM share prefix, e.g. host path "
+            "C:/Users/you/repos mounted at "
+            "/run/desktop/mnt/host/c/Users/you/repos (see "
+            "LOCAL_REPOS_HOST_PATH and LOCAL_REPOS_PATH in .env.example).",
         )
 
     async def _git(*args: str) -> tuple[int, str]:

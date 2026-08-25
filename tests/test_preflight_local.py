@@ -43,6 +43,29 @@ async def test_a_missing_local_path_is_422(tmp_path):
 
 
 @pytest.mark.integration
+async def test_a_missing_local_path_names_the_namespace_split(tmp_path):
+    """The 422 must name the constraint and the remedy, not just the fact.
+
+    Asserted on substance (individual keywords), not the whole string, so a
+    future reword of the message does not break this test spuriously as long
+    as it still explains: the two namespaces must resolve identically, one of
+    them is a Docker bind-mount source, and the Docker Desktop remedy uses the
+    VM share prefix.
+    """
+    with pytest.raises(PreflightError) as exc:
+        await preflight_remote(
+            git=None,
+            repo_url=str(tmp_path / "nope.git"),
+            base="main",
+            credential_configured=False,
+        )
+    message = str(exc.value).lower()
+    assert "identical" in message
+    assert "bind" in message
+    assert "/run/desktop/mnt/host" in message
+
+
+@pytest.mark.integration
 async def test_a_non_bare_directory_is_422(tmp_path):
     # A plain directory that is not a git repo at all would raise NOT_A_REPO
     # via the "not a git repository" branch, never reaching the bare check.

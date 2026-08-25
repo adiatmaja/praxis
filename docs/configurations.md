@@ -292,6 +292,39 @@ involved at all.
 This admission is off by default because it lets an authenticated caller point
 the orchestrator at any path the container can reach.
 
+**The path has to resolve identically in TWO namespaces, not one.**
+`core/preflight._preflight_local` checks the path with `Path.exists()` inside
+the orchestrator container. `core/agent_manager.local_repo_volume` then hands
+that same string to the Docker daemon as a bind-mount **source**, which the
+daemon resolves in the HOST (or, on Docker Desktop, the Linux VM) namespace,
+not the orchestrator's. On Linux those two namespaces are the same filesystem,
+so a plain absolute path satisfies both and nobody notices the distinction.
+On Docker Desktop for Windows nothing satisfies both at once: a Windows path
+(`C:/Users/you/repos/x.git`) is invisible inside the orchestrator container,
+and a container-internal path (`/app/repos/x.git`) means nothing to the
+daemon, which creates an empty directory there instead of finding the repo.
+
+Two compose variables carry the two halves of the fix, and their names are
+fixed (a later doctor check reads them by name):
+
+| Variable | Namespace | Linux | Docker Desktop for Windows |
+|----------|-----------|-------|-----------------------------|
+| `LOCAL_REPOS_HOST_PATH` | the Docker daemon's bind-mount **source** | `/home/you/repos` | `C:/Users/you/repos` |
+| `LOCAL_REPOS_PATH` | what the **orchestrator** mounts and sees; also the required prefix for every local project's `repo_url` | `/home/you/repos` (same string) | `/run/desktop/mnt/host/c/Users/you/repos` |
+
+Set both in `.env` (see the comment there for the full worked examples), then
+`docker compose up -d` to pick up the new bind mount. On Docker Desktop the
+`/run/desktop/mnt/host/<drive>/...` prefix is the VM's share path onto the
+Windows filesystem; a project's `repo_url` must be given under that prefix,
+because that is the path the orchestrator (and the preflight check) actually
+resolves.
+
+**This configuration is exercised on Linux; Docker Desktop for Windows is a
+less-travelled path for it.** A first real user hit the namespace split
+exactly as described above (field report, 2026-08-25) before either variable
+existed; treat a fresh Windows report against this area as plausible even
+after this fix ships.
+
 ## Ceilings
 
 Stated plainly rather than buried.

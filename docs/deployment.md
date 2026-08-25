@@ -250,8 +250,25 @@ orchestrator can spawn, and the profile keeps them out of a plain `docker compos
 | `./config` | `/app/config:ro` | Settings YAML, mounted so an edit needs a restart, not a rebuild |
 | `./docker` | `/app/docker:ro` | Entrypoint sources the image-freshness check hashes |
 | `./.env` | `/app/.env:ro` | What the `env_drift` check compares the running values against |
+| `${LOCAL_REPOS_HOST_PATH:-./docker}` | `${LOCAL_REPOS_PATH:-/app/.local-repos-unused}` | Local git backend only (read-write; see below). Unset, this resolves to a no-op mount of `./docker` onto an unused path |
 | `caddy_data` | `/data` | Caddy certificates (hosted only) |
 | `caddy_config` | `/config` | Caddy config (hosted only) |
+
+**The local-repos mount is the other half of a two-namespace split, and an identity
+mount (`$X:$X`) cannot bridge it.** `core/preflight._preflight_local` checks a
+project's local `repo_url` with `Path.exists()` **inside this container**; when a
+worker is spawned, `core/agent_manager.local_repo_volume` hands that same string to
+the Docker daemon as a bind-mount **source**, which the daemon resolves in the HOST
+(or Docker Desktop's Linux VM) namespace, not this container's. On Linux the two
+namespaces are one filesystem, so `LOCAL_REPOS_HOST_PATH` and `LOCAL_REPOS_PATH` are
+the same absolute path. On Docker Desktop for Windows they cannot be: the daemon
+needs the Windows path as its bind source (`C:/Users/you/repos`) while the
+orchestrator needs the VM's share path to see the same files
+(`/run/desktop/mnt/host/c/Users/you/repos`). Mounted read-write, not `:ro`, because
+`LocalGitBackend` runs `git merge`/`git push` against the bare repo directly from
+inside this container, not only from a worker. See
+`docs/configurations.md` ("Evaluate with no GitHub credential") for the full worked
+examples and `.env.example` for the variables.
 
 **The database volume is a NAMED volume, and a host bind mount is the configuration that
 breaks.** On Docker Desktop the host bind-mount filesystem (9p/virtiofs) does not support
@@ -371,6 +388,9 @@ env vars); secrets (`AUTH_TOKEN`, GitHub App private key or `GITHUB_TOKEN`) stay
 | `GEMINI_CREDS_VOLUME` | No | `praxis-gemini-creds` | Docker volume holding agy OAuth creds; only used by the `agy` harness (see [agy setup](#agy-antigravity--gemini-harness--one-time-credential-setup)) |
 | `OPENCODE_SESSIONS_VOLUME` | No | `praxis-opencode-sessions` | BASE name for the per-task OpenCode session volumes used by worker session resume; the actual volume is `<base>-<task-id>` (see [OpenCode session volume](#opencode-session-volume-no-setup-required)). Unlike `GEMINI_CREDS_VOLUME`, needs no interactive seeding; unset disables persistence (cold starts, never an error) |
 | `PRAXIS_CONFIG_PATH` | No | `config/praxis.yaml` | Path to the global settings YAML. Compose sets it to `/app/config/praxis.yaml`, inside the read-only `./config` bind mount. Unlike every other `PRAXIS_*` var it is a pointer to the file, not a setting inside it, so it is never folded into the loaded settings |
+| `LOCAL_REPOS_HOST_PATH` | No | none (mount is a no-op) | Local git backend only. The Docker daemon's bind-mount SOURCE, in the HOST namespace (see "Volumes" above and `docs/configurations.md`) |
+| `LOCAL_REPOS_PATH` | No | none (mount is a no-op) | Local git backend only. The mount TARGET inside the orchestrator, and the required prefix for every local project's `repo_url` |
+| `PRAXIS_CONTAINER_NAME` | No | `orchestrator` | Compose `container_name`. Two checkouts on one machine otherwise steal the container and its data volume from each other, since `container_name` is global to the Docker daemon; set only when running more than one checkout |
 
 Global orchestrator defaults also live in `config/praxis.yaml` (env-overridable via `PRAXIS_*`),
 including the auto-delegate global default worker:
