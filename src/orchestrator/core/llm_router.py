@@ -30,6 +30,39 @@ class ProviderOutputError(RuntimeError):
     """Raised when a provider exits cleanly but yields no usable output."""
 
 
+class ProviderRateLimitError(RuntimeError):
+    """Raised when a CLI provider's own output says its subscription is throttled.
+
+    A distinct TYPE rather than a wording, because the evidence is often
+    unquotable: ``claude`` prints "usage limit reached" to STDOUT, while the
+    ``RuntimeError`` the router used to raise carried only stderr.  Anything
+    downstream that re-classified that exception by text therefore saw an
+    ordinary failure and charged the plan a retry attempt.
+
+    Subclasses ``RuntimeError`` on purpose: every existing ``except
+    RuntimeError`` caller (including ``provider_errors.is_unavailability``'s
+    text branch and the router's own fallback chain) keeps behaving exactly as
+    it did, and only code that asks for the narrower type sees the difference.
+
+    Raised ONLY from the CLI arm of :meth:`LLMRouter._execute_one`, which is
+    what makes "a ``local`` endpoint outage never parks the global brain state"
+    a structural fact rather than a wording that could rot.
+
+    Attributes:
+        provider: The provider that reported the throttle.
+    """
+
+    def __init__(self, provider: str, message: str) -> None:
+        """Record which provider is throttled.
+
+        Args:
+            provider: The provider name, e.g. ``"claude"``.
+            message: The operator-facing description, carrying the evidence.
+        """
+        self.provider = provider
+        super().__init__(message)
+
+
 # Per-provider command the human must run to (re)authenticate. Surfaced in
 # ProviderAuthError and the dashboard so login stays an explicit manual step.
 LOGIN_HINTS: dict[str, str] = {
@@ -243,6 +276,7 @@ class LLMRouter:
         stdin_input = None if prompt_in_argv else prompt.encode()
         stdout, stderr = await proc.communicate(input=stdin_input)
         err = stderr.decode()
+        raw_out = stdout.decode()
         # Auth check first: codex exits 0 while printing a 401 to stderr, so a
         # returncode-only check would silently accept a failed-auth response.
         if _looks_like_auth_failure(err):
@@ -250,9 +284,38 @@ class LLMRouter:
                 provider, LOGIN_HINTS.get(provider, f"re-authenticate {provider}")
             )
         if proc.returncode:
+            # Imported here, not at module scope: ``opus_bridge`` reaches the
+            # database and the schemas, and importing it eagerly would make
+            # this module's import graph depend on both. Same dodge ``run``
+            # already uses for ``provider_errors``.
+            from orchestrator.core.opus_bridge import is_rate_limited
+
+            # THE shared predicate, given the same three inputs the legacy
+            # ``_run_claude`` path gives it, so both paths reach one verdict
+            # (``tests/test_rate_limit_parity.py`` exists because sharing only
+            # the SIGNATURE STRINGS was not enough to guarantee that).
+            #
+            # Deliberately asked only about a call that ALREADY FAILED. The
+            # predicate's first clause is not gated on the exit code, so
+            # running it over a successful response would read a plan for a
+            # spec about rate limiting as a throttle and park the brain for
+            # five hours over the planner's own words. A failed call's stdout
+            # is not a model answer, so here there is nothing to misread.
+            #
+            # Both streams are passed because the evidence lands on either:
+            # ``claude`` prints its usage message to stdout while the message
+            # below carries stderr, which is how a throttle came to surface as
+            # "claude failed (exit 1):" with no evidence attached at all.
+            if is_rate_limited(proc.returncode, raw_out, err):
+                evidence = err.strip() or raw_out.strip()
+                message = (
+                    f"{provider} reports its subscription is rate limited "
+                    f"(exit {proc.returncode}): {evidence}"
+                )
+                raise ProviderRateLimitError(provider, message)
             message = f"{provider} failed (exit {proc.returncode}): {err.strip()}"
             raise RuntimeError(message)
-        out = stdout.decode().strip()
+        out = raw_out.strip()
         if not out:
             # agy's --print renders only to an interactive TTY and yields no
             # capturable stdout when run non-interactively (exit 0, empty out).

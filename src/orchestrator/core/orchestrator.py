@@ -652,16 +652,23 @@ class Orchestrator(DispatchMixin, ReviewMixin, ReconcileMixin, ImprovementMixin)
                 # A throttle or an outage must NOT consume an attempt. Both
                 # halves are load-bearing and neither subsumes the other.
                 #
-                # `opus_state` is parked by `_check_and_handle_rate_limit`,
-                # which only the LEGACY `_run_claude` path reaches; on a stock
-                # install `plan_spec` goes through the router, which never
-                # touches that row. Reading the state alone therefore missed
-                # every real rate limit, and at the shipped five-second
-                # interval that failed a healthy plan fifteen seconds into a
-                # five-hour wait: an inertness converted into data loss.
-                # `is_unavailability` reads the EXCEPTION, so it fires on the
-                # router path too. The state check stays because it is the
-                # structural signal wherever the legacy path did park it.
+                # `opus_state` used to be parked ONLY by
+                # `_check_and_handle_rate_limit`, which only the legacy
+                # `_run_claude` path reaches; on a stock install `plan_spec`
+                # goes through the router, which did not touch that row.
+                # Reading the state alone therefore missed every real rate
+                # limit, and at the shipped five-second interval that failed a
+                # healthy plan fifteen seconds into a five-hour wait: an
+                # inertness converted into data loss.
+                #
+                # The router now parks it too (`OpusBridge._run_routed`), so
+                # the state check has teeth on THIS pass's successor. Both
+                # halves stay: `is_unavailability` reads the EXCEPTION and is
+                # what saves the FIRST tick, on which the state is still
+                # 'available' because the throttle has only just been
+                # discovered; the state check is what makes every later tick
+                # cheap, and it also covers the seats that call the router
+                # directly rather than through the bridge.
                 reason = _with_checkout_note(_unavailable_reason(exc), degraded)
                 logger.warning(
                     "Planning for plan %s is waiting on the provider (%s). "

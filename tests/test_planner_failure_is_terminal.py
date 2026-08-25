@@ -305,41 +305,58 @@ async def test_a_plan_that_recovers_does_not_carry_a_stale_attempt_count(
 
 @pytest.mark.integration
 async def test_a_rate_limit_does_not_consume_an_attempt(
-    db: Database, no_remote_clone: list[tuple[str, str]]
+    db: Database,
+    no_remote_clone: list[tuple[str, str]],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The one failure this system already knows how to wait out.
 
-    Driven through the REAL ``OpusBridge`` on the REAL ``LLMRouter``, which is
-    the path a stock install takes: ``main.py`` always wires the router, so
-    ``plan_spec`` never reaches the legacy ``_run_claude``. That matters
-    because ``opus_state`` is parked in exactly one place,
-    ``_check_and_handle_rate_limit``, reachable only from ``_run_claude`` --
-    the router never writes it. An earlier version of this test hand-fed
-    ``is_available.side_effect = [True, False]`` and therefore proved nothing:
-    the production path leaves ``opus_state`` on 'available' throughout, and a
-    live probe showed a healthy plan reaching FAILED on tick 3, fifteen seconds
-    into a five-hour wait at the shipped ``loop_interval`` of 5.
+    Driven through the REAL ``OpusBridge`` on the REAL ``LLMRouter`` down to
+    the real ``_execute_one``, which is the path a stock install takes:
+    ``main.py`` always wires the router, so ``plan_spec`` never reaches the
+    legacy ``_run_claude``. An earlier version hand-fed
+    ``is_available.side_effect = [True, False]`` and proved nothing; the
+    version after it stubbed ``_execute_one`` wholesale, which skipped the one
+    place a throttle is recognised. Only the subprocess is faked here.
+
+    The throttle text is on STDOUT, where ``claude`` really puts it. That is
+    load-bearing: the router's ``RuntimeError`` quotes stderr only, so a
+    classification made from the exception's text sees "claude failed (exit
+    1):" with no evidence at all, charges the plan an attempt, and a live probe
+    showed a healthy plan reaching FAILED on tick 3 -- fifteen seconds into a
+    five-hour wait at the shipped ``loop_interval`` of 5.
 
     Three ticks, because three is the whole budget: if any of them is charged,
     the plan is dead.
     """
     task_queue, plan_id, project = await _project_and_plan(db)
+    spawns: list[tuple[Any, ...]] = []
+
+    class _Throttled:
+        returncode = 1
+
+        async def communicate(self, input: bytes | None = None) -> tuple[bytes, bytes]:  # noqa: A002
+            return (
+                b"Claude usage limit reached. Your limit will reset at 3pm.",
+                b"",
+            )
+
+    async def _fake_exec(*argv: Any, **_kwargs: Any) -> _Throttled:
+        spawns.append(argv)
+        return _Throttled()
+
+    monkeypatch.setattr("orchestrator.core.llm_router.shutil.which", lambda name: name)
+    monkeypatch.setattr("asyncio.create_subprocess_exec", _fake_exec)
 
     async def _resolve_chain(call_site: str, project_id: str | None) -> list[dict]:
         return [{"provider": "claude", "model": "claude-sonnet-4-6", "effort": None}]
 
-    router = LLMRouter(_resolve_chain)
-
-    async def _throttled(cfg: dict, prompt: str, cwd: str | None) -> str:
-        message = (
-            "claude failed (exit 1): Claude usage limit reached. "
-            "Your limit will reset at 3pm."
-        )
-        raise RuntimeError(message)
-
-    router._execute_one = _throttled  # type: ignore[method-assign]
-    bridge = OpusBridge(db, router=router)
+    bridge = OpusBridge(db, router=LLMRouter(_resolve_chain))
     orchestrator = _orchestrator(task_queue, bridge)
+
+    before = await db.fetch_one("SELECT status FROM opus_state WHERE id = 1")
+    assert before is not None
+    assert before["status"] == "available"
 
     for _tick in range(_MAX_PLANNING_ATTEMPTS):
         await orchestrator.plan_and_activate(plan_id, project)
@@ -354,13 +371,18 @@ async def test_a_rate_limit_does_not_consume_an_attempt(
     assert "WAITING" in error
     assert "Do NOT resubmit" in error
 
-    # Documents the deferred half of the fix: the router still never parks
-    # `opus_state`, so the queue-and-resume path at the top of
-    # `plan_and_activate` is still dead on this route. Change this line only
-    # when that is actually fixed in `opus_bridge.py`.
+    # The router now parks `opus_state`, so the queue-and-resume branch at the
+    # top of `plan_and_activate` finally fires on this route: only the FIRST
+    # tick reaches a provider, and the other two return without spending a
+    # planner call or a clone. Revert the parking and this goes red on the
+    # spawn count long before it goes red on the status.
     state = await db.fetch_one("SELECT status FROM opus_state WHERE id = 1")
     assert state is not None
-    assert state["status"] == "available"
+    assert state["status"] == "rate_limited"
+    assert len(spawns) == 1, spawns
+    assert await bridge.get_queued_actions() == [
+        {"action": "plan", "plan_id": plan_id, "project_id": "p1"}
+    ]
 
 
 @pytest.mark.integration

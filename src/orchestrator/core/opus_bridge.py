@@ -17,6 +17,7 @@ import re
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, cast
 
+from orchestrator.core.llm_router import ProviderRateLimitError
 from orchestrator.database import Database
 from orchestrator.models.schemas import OpusStatus
 
@@ -309,15 +310,27 @@ class OpusBridge:
             stderr.decode().strip(),
         )
 
-    async def _check_and_handle_rate_limit(
-        self,
-        code: int,
-        stdout: str,
-        stderr: str,
-    ) -> bool:
-        if not is_rate_limited(code, stdout, stderr):
-            return False
+    async def _park_rate_limited(self, provider: str = "claude") -> None:
+        """Write the throttle to ``opus_state``. THE only writer of that state.
 
+        Both routes to a rate limit end here: the legacy ``_run_claude`` path
+        via :meth:`_check_and_handle_rate_limit`, and the router path via
+        :meth:`_run_routed`. Keeping the write in one body is the point of the
+        split -- the defect this fixes was two paths disagreeing about whether
+        the state got written at all, and a third path that also wrote would
+        recreate it in a new shape.
+
+        The state is a SINGLE global gate on every brain call, so a throttle
+        reported by any subscription CLI parks all of them. That is broader
+        than ideal (a throttled ``codex`` parks a healthy ``claude``) and is a
+        deliberate limit: per-provider state needs a schema change, and the
+        reference configuration points every routed seat at one provider
+        anyway, so in practice one throttle really does mean all of them.
+
+        Args:
+            provider: Which provider reported the throttle, for the log line.
+                Not stored: the row has no column for it.
+        """
         now = datetime.now(UTC)
         resume_at = now + timedelta(hours=5, minutes=1)
         await self._db.execute(
@@ -326,8 +339,80 @@ class OpusBridge:
                WHERE id = 1""",
             (OpusStatus.RATE_LIMITED, now.isoformat(), resume_at.isoformat()),
         )
-        logger.warning("Opus rate limited. Will resume at %s", resume_at.isoformat())
+        logger.warning(
+            "Brain provider %s is rate limited. Queuing brain calls until %s",
+            provider,
+            resume_at.isoformat(),
+        )
+
+    async def _check_and_handle_rate_limit(
+        self,
+        code: int,
+        stdout: str,
+        stderr: str,
+    ) -> bool:
+        """Detect a throttle in a legacy CLI result and park the state if so.
+
+        Args:
+            code: The CLI's exit code.
+            stdout: What the CLI printed to stdout.
+            stderr: What the CLI printed to stderr.
+
+        Returns:
+            True when the output named a throttle (and the state was parked).
+        """
+        if not is_rate_limited(code, stdout, stderr):
+            return False
+        await self._park_rate_limited()
         return True
+
+    async def _run_routed(
+        self,
+        call_site: str,
+        prompt: str,
+        project_id: str | None,
+        cwd: str | None = None,
+    ) -> str:
+        """Run a brain call through the router, parking the state on a throttle.
+
+        The router is the path a stock install takes: ``main.py`` always wires
+        it, so every routed call-site here reached a provider without ever
+        touching ``opus_state``. The queue-and-resume branch at the top of
+        ``plan_and_activate`` reads that row and so could never fire, which
+        made a five-hour subscription wait indistinguishable from a broken
+        planner.
+
+        Only :class:`~orchestrator.core.llm_router.ProviderRateLimitError`
+        parks. That type is raised solely from the router's CLI arm, so a
+        ``local`` (LM Studio) endpoint being unreachable or returning 429
+        cannot park the global gate: an endpoint outage ends when somebody
+        restarts it, not on the five-hour clock this state models. Auth
+        failures and empty answers do not park either -- both need a human, and
+        waiting them out never ends them.
+
+        Args:
+            call_site: The routed call-site name.
+            prompt: The full prompt text.
+            project_id: Project whose per-call-site overrides apply.
+            cwd: Working directory for the provider, when it takes one.
+
+        Returns:
+            The provider's raw response.
+
+        Raises:
+            Exception: Whatever the router raised, re-raised unchanged. The
+                caller's classification is unaffected; only the state row is a
+                side effect.
+        """
+        router = self._router
+        if router is None:  # pragma: no cover - callers check first
+            message = "no LLM router is configured"
+            raise RuntimeError(message)
+        try:
+            return await router.run(call_site, prompt, project_id, cwd=cwd)
+        except ProviderRateLimitError as exc:
+            await self._park_rate_limited(exc.provider)
+            raise
 
     async def _run_claude(
         self,
@@ -404,7 +489,7 @@ class OpusBridge:
         prompt = PLAN_PROMPT_TEMPLATE.format(spec=spec, repo_url=repo_url)
         router: LLMRouter | None = getattr(self, "_router", None)
         if router is not None:
-            raw = await router.run("plan_spec", prompt, project_id, cwd=cwd)
+            raw = await self._run_routed("plan_spec", prompt, project_id, cwd=cwd)
         else:
             raw = await self._run_claude(prompt, model, effort, cwd=cwd)
         return self._extract_json(raw)
@@ -452,7 +537,7 @@ class OpusBridge:
             call_site = (
                 "review_diff_rereview" if tier == "rereview" else "review_diff_first"
             )
-            raw = await router.run(call_site, prompt, project_id, cwd=cwd)
+            raw = await self._run_routed(call_site, prompt, project_id, cwd=cwd)
         else:
             raw = await self._run_claude(prompt, model, effort, cwd=cwd)
         return self._extract_json(raw)
@@ -474,7 +559,7 @@ class OpusBridge:
         )
         router: LLMRouter | None = getattr(self, "_router", None)
         if router is not None:
-            raw = await router.run("answer_clarification", prompt, project_id)
+            raw = await self._run_routed("answer_clarification", prompt, project_id)
         else:
             raw = await self._run_claude(prompt, model, effort)
         return self._extract_json(raw)
@@ -489,7 +574,7 @@ class OpusBridge:
         prompt = IMPROVEMENT_PROMPT_TEMPLATE.format(project_summary=project_summary)
         router: LLMRouter | None = getattr(self, "_router", None)
         if router is not None:
-            raw = await router.run("analyze_improvements", prompt, project_id)
+            raw = await self._run_routed("analyze_improvements", prompt, project_id)
         else:
             raw = await self._run_claude(prompt, model, effort)
         return self._extract_json(raw)
@@ -508,17 +593,47 @@ class OpusBridge:
         if state["status"] == OpusStatus.RATE_LIMITED and state["resume_at"]:
             resume_at = datetime.fromisoformat(state["resume_at"])
             if datetime.now(UTC) >= resume_at:
+                # The ledger is emptied with the same write that lifts the
+                # throttle. Nothing REPLAYS a queued action (see
+                # ``queue_action``); the work resumes because the plan and task
+                # rows the actions describe are still pending and the loop
+                # re-reads them. Leaving the entries behind would make
+                # ``/api/status`` report work waiting on a brain that is no
+                # longer waiting, permanently.
                 await self._db.execute(
-                    "UPDATE opus_state SET status = ? WHERE id = 1",
+                    """UPDATE opus_state
+                       SET status = ?, queued_actions = '[]'
+                       WHERE id = 1""",
                     (OpusStatus.AVAILABLE,),
                 )
-                logger.info("Opus rate limit expired, now available")
+                logger.info("Brain rate limit expired, now available")
                 return True
         return False
 
     async def queue_action(self, action: dict[str, Any]) -> None:
+        """Record that a brain call was deferred because the brain is parked.
+
+        A LEDGER, not a work list: nothing reads it back to re-run anything
+        (``get_queued_actions`` has no production caller). The replay is the
+        orchestration loop finding the plan still PENDING, or the task still
+        REVIEWING, on the pass after the limit clears.
+
+        Idempotent, and that is load-bearing rather than tidy. The callers run
+        once per orchestration pass for as long as the brain stays parked, and
+        at the shipped five-second interval a five-hour subscription throttle
+        is about 3600 passes: a plain append would rewrite an ever-growing JSON
+        blob 3600 times per waiting plan and report a meaningless
+        ``queued_count`` on ``/api/status``. Nothing noticed before because the
+        branch that calls this could not fire on the router path at all.
+
+        Args:
+            action: The deferred call, e.g.
+                ``{"action": "plan", "plan_id": ..., "project_id": ...}``.
+        """
         state = await self.get_opus_state()
         queued = json.loads(state["queued_actions"])
+        if action in queued:
+            return
         queued.append(action)
         await self._db.execute(
             "UPDATE opus_state SET queued_actions = ? WHERE id = 1",
@@ -545,7 +660,11 @@ class OpusBridge:
         prompt = self.CLASSIFY_PROMPT.format(text=text[:4000])
         router: LLMRouter | None = getattr(self, "_router", None)
         if router is not None:
-            raw = (await router.run("classify_doc", prompt, project_id)).strip().lower()
+            raw = (
+                (await self._run_routed("classify_doc", prompt, project_id))
+                .strip()
+                .lower()
+            )
         else:
             raw = (
                 (await self._run_claude(prompt, model="claude-haiku-4-5"))
