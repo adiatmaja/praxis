@@ -25,9 +25,11 @@ from unittest.mock import AsyncMock
 import pytest
 
 from orchestrator.core import orchestrator_review as review_mod
+from orchestrator.core.blast_radius import Occurrence
 from orchestrator.core.orchestrator_review import (
     _SKIP_CHECKOUT_UNAVAILABLE,
     _SKIP_NO_VERIFY_CMD,
+    _review_scope_statement,
 )
 from orchestrator.models.schemas import TaskStatus
 
@@ -113,8 +115,21 @@ async def test_the_reviewer_is_told_how_widely_used_the_changed_selector_is(
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize(
+    "failure",
+    [
+        pytest.param(OSError, id="oserror"),
+        # NOT an OSError, and that is the point: `except Exception` mutated to
+        # `except OSError` left every test green, so the single most
+        # load-bearing line in this feature was pinned only against the one
+        # type it is already narrowest for. A regex blowup, a decode error or a
+        # RecursionError on a deep tree are all real, and all fatal to the
+        # review if they escape.
+        pytest.param(RecursionError, id="not-an-oserror"),
+    ],
+)
 async def test_a_blast_radius_failure_leaves_the_review_completely_unaffected(
-    orchestrator_fixture, monkeypatch, caplog
+    orchestrator_fixture, monkeypatch, caplog, failure
 ):
     """THE test. A repo walk must never wedge a review.
 
@@ -128,7 +143,7 @@ async def test_a_blast_radius_failure_leaves_the_review_completely_unaffected(
 
     def _explode(_diff: str, _root: Any) -> Any:
         message = "the checkout vanished mid-walk"
-        raise OSError(message)
+        raise failure(message)
 
     orch, task_id, project = orchestrator_fixture
     backend = _passing_backend(checkout=_checkout_writing({"a.css": ".s-alert {}\n"}))
@@ -146,6 +161,69 @@ async def test_a_blast_radius_failure_leaves_the_review_completely_unaffected(
     assert updated["status"] == TaskStatus.PASSED
     warnings = [r.getMessage() for r in caplog.records if r.levelname == "WARNING"]
     assert any("blast radius" in m for m in warnings)
+
+
+@pytest.mark.unit
+async def test_a_measured_but_empty_result_still_reaches_the_reviewer(
+    orchestrator_fixture,
+):
+    """ "We measured and found nothing" is a finding, and must be SENT.
+
+    Passing None here made the prompt say "Not measured for this review (no
+    checkout was available, or the measurement failed)" after a real walk over
+    a real checkout. That sentence is false, and it collapses the distinction
+    between absent evidence and evidence of absence that the review path's own
+    docstring calls load-bearing.
+    """
+    orch, task_id, project = orchestrator_fixture
+    backend = _passing_backend(
+        # Real files, none of which reuses anything the diff defines.
+        checkout=_checkout_writing({"other.css": ".unrelated { color: red; }\n"})
+    )
+    orch._resolve_backend = lambda _repo_url: backend  # type: ignore[method-assign]
+    orch._opus.review_diff.return_value = {"verdict": "pass", "feedback": "ok"}
+
+    await _review(orch, task_id, project)
+
+    section = orch._opus.review_diff.await_args.kwargs["blast_radius"]
+    assert section is not None, "a real measurement was collapsed into 'not measured'"
+    assert "self-contained" in section
+
+
+@pytest.mark.unit
+async def test_the_walk_runs_off_the_event_loop(orchestrator_fixture, monkeypatch):
+    """Up to five seconds of synchronous filesystem work, on every review.
+
+    Measured at 1.6s against this checkout. It is the only blocking call left on
+    this path: ``backend.checkout``, ``run_verify`` and every ``gh`` call are
+    already async. Running it inline stalls every other plan's tick on the
+    install, which is a defect this repository has shipped before.
+
+    Asserted on the THREAD, not on elapsed time: a timing assertion would be
+    flaky and would still pass if the work merely got faster.
+    """
+    import threading
+
+    seen: list[str] = []
+    real = review_mod.measure_blast_radius
+
+    def _record(diff: str, root: Any) -> Any:
+        seen.append(threading.current_thread().name)
+        return real(diff, root)
+
+    orch, task_id, project = orchestrator_fixture
+    backend = _passing_backend(checkout=_checkout_writing({"a.css": ".s-alert {}\n"}))
+    orch._resolve_backend = lambda _repo_url: backend  # type: ignore[method-assign]
+    orch._opus.review_diff.return_value = {"verdict": "pass", "feedback": "ok"}
+    monkeypatch.setattr(review_mod, "measure_blast_radius", _record)
+
+    await _review(orch, task_id, project)
+
+    assert len(seen) == 1
+    assert seen[0] != threading.current_thread().name, (
+        "the repo walk ran on the event-loop thread; it must go through "
+        "asyncio.to_thread or it blocks every other plan on this install"
+    )
 
 
 @pytest.mark.unit
@@ -350,6 +428,96 @@ async def test_the_scope_statement_reports_a_verify_gate_that_actually_ran(
         "review_scope"
     ]
     assert "verify gate passed (`pytest -q`)" in scope
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "occurrences",
+    [
+        pytest.param((), id="empty"),
+        pytest.param((Occurrence(".s-alert", 3),), id="partial-list"),
+    ],
+)
+def test_the_scope_statement_never_states_a_finding_from_a_partial_walk(occurrences):
+    """A walk cut off by a cap supports NEITHER sentence the full walk supports.
+
+    Executed against the first version of this: a cut-off walk with no results
+    produced "blast radius measured, nothing changed here is reused" -- a
+    positive claim about the repository sourced from a partial read of it,
+    delivered to `tasks.review_feedback` and the parked-PR event, which are the
+    two surfaces this statement exists to keep honest. With results it stated a
+    lower bound as exact. The renderer got this right and the scope statement,
+    one function away, did not.
+    """
+    from orchestrator.core.blast_radius import BlastRadius
+
+    scope = _review_scope_statement(
+        checkout_available=True,
+        verify_state="passed",
+        verify_cmd="pytest -q",
+        radius=BlastRadius(
+            occurrences=occurrences, complete=False, omitted=0, identifiers=4
+        ),
+    )
+
+    assert "INCOMPLETE" in scope
+    assert "hit a cap" in scope
+    assert "nothing changed here is reused" not in scope
+
+
+@pytest.mark.unit
+def test_the_scope_statement_says_the_list_is_capped_rather_than_complete():
+    """Stating a TOP_N-capped length alone reports a cap as the whole answer."""
+    from orchestrator.core.blast_radius import BlastRadius
+
+    scope = _review_scope_statement(
+        checkout_available=True,
+        verify_state="passed",
+        verify_cmd="pytest -q",
+        radius=BlastRadius(
+            occurrences=(Occurrence(".s-alert", 373),),
+            complete=True,
+            omitted=13,
+            identifiers=14,
+        ),
+    )
+
+    assert "1 reused identifier and 13 more" in scope
+
+
+@pytest.mark.unit
+def test_the_scope_statement_distinguishes_all_five_blast_radius_outcomes():
+    """Five facts, five sentences. Any two sharing wording is the defect.
+
+    ``None`` (never measured), a cut-off walk, a diff that defines nothing this
+    check tracks, a diff whose reused names are all too generic to report, and
+    a genuine "nothing is reused". The first four are NOT the fifth, and it was
+    rendering all of them as the fifth that made the statement a liability.
+    """
+    from orchestrator.core.blast_radius import BlastRadius
+
+    def _scope(radius: Any) -> str:
+        return _review_scope_statement(
+            checkout_available=True,
+            verify_state="passed",
+            verify_cmd="pytest -q",
+            radius=radius,
+        )
+
+    sentences = {
+        "none": _scope(None),
+        "cut off": _scope(BlastRadius((), False, 0, 4)),
+        "defines nothing": _scope(BlastRadius((), True, 0, 0)),
+        "all generic": _scope(BlastRadius((), True, 3, 3)),
+        "nothing reused": _scope(BlastRadius((), True, 0, 4)),
+    }
+
+    assert len(set(sentences.values())) == 5, sentences
+    assert "not measured" in sentences["none"]
+    assert "nothing changed here is reused" in sentences["nothing reused"]
+    for label, text in sentences.items():
+        if label != "nothing reused":
+            assert "nothing changed here is reused" not in text, label
 
 
 @pytest.mark.unit

@@ -69,6 +69,74 @@ TOP_N = 10
 #: that say "this is new", which the diff already said.
 MIN_INTERESTING_COUNT = 2
 
+#: Shortest BARE identifier whose text count can mean anything.
+#:
+#: MEASURED against a realistic Python/JS diff of this repository, where ranking
+#: by raw count returned ``run`` 4159, ``state`` 1282, ``init`` 543 and
+#: ``__init__`` 282, and dropped the one informative name. That is not a blast
+#: radius, it is a collision count: this counter is text-based and cannot
+#: resolve scope, so on a short generic name a huge number means LOW CONFIDENCE
+#: in the match, not HIGH risk in the change. A reviewer handed ``run: 4159``
+#: either burns turns on it or learns to skip the whole block.
+#:
+#: Bare identifiers only. A CSS selector carries its ``.``/``#`` sigil and is
+#: usually hyphenated, so ``.s-alert`` at 373 is 373 real uses of one class,
+#: which is exactly the case this module was built for.
+MIN_IDENTIFIER_LENGTH = 4
+
+#: Bare identifiers whose text count is noise in ANY codebase, regardless of
+#: length. Not a style opinion and not tied to this repository: these are the
+#: names every language and framework reuses, so a count over them measures the
+#: corpus rather than the change. Kept deliberately short -- a long list starts
+#: suppressing names that genuinely are the change (``render``, ``dispatch``),
+#: and the length rule above already removes the worst offenders.
+GENERIC_IDENTIFIERS: frozenset[str] = frozenset(
+    {
+        "main",
+        "init",
+        "setup",
+        "start",
+        "stop",
+        "close",
+        "open",
+        "read",
+        "write",
+        "load",
+        "save",
+        "data",
+        "value",
+        "name",
+        "item",
+        "items",
+        "result",
+        "results",
+        "test",
+        "tests",
+        "self",
+        "args",
+        "kwargs",
+        "type",
+        "state",
+        "status",
+        "error",
+        "index",
+        "count",
+        "size",
+        "length",
+        "text",
+        "path",
+        "file",
+        "line",
+        "list",
+        "dict",
+        "config",
+        "options",
+        "params",
+        "response",
+        "request",
+    }
+)
+
 #: Cap on identifiers carried from the diff into the walk. The walk cost is
 #: linear in the number of files and effectively constant in the number of
 #: identifiers (they are compiled into one alternation), but the EXTRACTION and
@@ -116,13 +184,14 @@ SNIFF_BYTES = 8192
 #: dependencies, build output, caches. ``.git`` is the one that matters most --
 #: on its own it can hold more objects than the entire source tree.
 #:
-#: Matched by NAME here, and separately by the ``.git`` SUFFIX in
-#: :func:`_excluded_dir`. A bare clone is conventionally ``<name>.git``, which
-#: this set cannot match and which holds exactly the same pack files: measured
-#: against this repository, ``bench/.work/repos/*.git`` alone was 2.4 GB.
+#: ``.git`` is deliberately ABSENT: :func:`_excluded_dir` excludes anything
+#: ENDING in ``.git``, which covers both the ordinary ``.git`` directory and a
+#: bare clone's ``<name>.git`` (measured here: ``bench/.work/repos/*.git`` alone
+#: is 2.4 GB). Listing it here as well would be a second guard derived from the
+#: same data as the first, which is one guard for mutation testing and a
+#: standing invitation to "fix" the wrong one.
 EXCLUDED_DIRS: frozenset[str] = frozenset(
     {
-        ".git",
         ".hg",
         ".svn",
         "node_modules",
@@ -219,11 +288,47 @@ BINARY_SUFFIXES: frozenset[str] = frozenset(
 def _excluded_dir(name: str) -> bool:
     """Whether ``os.walk`` should refuse to descend into a directory.
 
-    Two rules, and the second is not redundant: ``EXCLUDED_DIRS`` matches the
-    exact name ``.git``, while a BARE clone is conventionally ``<name>.git`` and
-    holds the identical pack files under a name the set can never contain.
+    ONE rule for git, not two: anything ending in ``.git`` is excluded, which
+    covers the ordinary ``.git`` directory and a bare clone's ``<name>.git``
+    alike. ``.git`` is therefore absent from ``EXCLUDED_DIRS`` on purpose --
+    listing it in both places would make the set entry unfalsifiable, since a
+    test deleting it would still pass on the suffix rule.
     """
     return name in EXCLUDED_DIRS or name.endswith(".git")
+
+
+def is_reportable(identifier: str) -> bool:
+    """Whether a text count of this identifier can carry any signal.
+
+    Pure, and exported so the rule is testable on its own rather than only
+    through a walk.
+
+    The counter matches text, not symbols. For a distinctive name that is a good
+    approximation of "how widely used is this thing"; for ``run`` it is a count
+    of an English word across a corpus, and presenting it beside a real finding
+    trains the reader to skip the section. Three rules, cheapest first:
+
+    - A CSS selector always reports. Its ``.``/``#`` sigil plus the usual
+      hyphenation makes it unambiguous text, which is why ``.s-alert`` at 373 is
+      the motivating GOOD case rather than noise.
+    - A dunder is a language protocol name (``__init__``, ``__str__``). Its
+      count measures how many classes the repository has.
+    - Everything else must clear ``MIN_IDENTIFIER_LENGTH`` and not be a
+      ``GENERIC_IDENTIFIERS`` member.
+
+    Args:
+        identifier: An extracted identifier, sigil included for selectors.
+
+    Returns:
+        True when the identifier is distinctive enough to report.
+    """
+    if identifier[:1] in (".", "#"):
+        return True
+    if identifier.startswith("__") and identifier.endswith("__"):
+        return False
+    if len(identifier) < MIN_IDENTIFIER_LENGTH:
+        return False
+    return identifier.lower() not in GENERIC_IDENTIFIERS
 
 
 @dataclass(frozen=True)
@@ -236,24 +341,49 @@ class Occurrence:
 
 @dataclass(frozen=True)
 class BlastRadius:
-    """The measurement, plus whether the walk finished.
+    """The measurement, and every way it falls short of a complete one.
 
-    ``complete`` is not decoration. A walk that stopped on a cap has counted
-    part of the repository, so its numbers are lower bounds; rendering a lower
-    bound as an exact count is the same shape of false statement this whole
-    module exists to remove, one level down.
+    Three of these four fields exist because a partial answer rendered as a
+    whole one is the exact false statement this module was written to remove.
+    Getting that right in the renderer and wrong in a caller one function away
+    is how the first version of this shipped.
+
+    Attributes:
+        occurrences: The identifiers reported, ranked by count descending.
+        complete: The walk read the whole checkout, so the counts are EXACT.
+            False makes every count a lower bound, and makes an EMPTY
+            ``occurrences`` mean nothing at all rather than "nothing is reused":
+            a walk that was cut off cannot support that claim.
+        omitted: Reused identifiers NOT in ``occurrences`` -- past ``TOP_N``,
+            filtered by :func:`is_reportable`, or never measured because the
+            diff exceeded ``MAX_IDENTIFIERS``. Non-zero means "there is more
+            reach here than the list shows", so an empty list with a non-zero
+            ``omitted`` must never read as "nothing is reused".
+        identifiers: How many identifiers were actually measured. Zero means the
+            diff defines nothing this check tracks, which is a different fact
+            from "nothing it defines is reused" and is reported differently.
     """
 
     occurrences: tuple[Occurrence, ...]
     complete: bool
+    omitted: int = 0
+    identifiers: int = 0
 
 
 @dataclass(frozen=True)
 class OccurrenceCounts:
-    """Raw per-identifier counts from a walk, before ranking and filtering."""
+    """Raw per-identifier counts from a walk, before ranking and filtering.
+
+    ``files_read`` is the sample size, and it is load-bearing rather than
+    diagnostic: ``os.walk`` over a missing, empty or unreadable root yields
+    nothing and RAISES nothing, so without it a walk that opened zero files
+    returns all-zero counts that are indistinguishable from a real finding of
+    "nothing here is reused". See :func:`count_occurrences`.
+    """
 
     counts: dict[str, int]
     complete: bool
+    files_read: int = 0
 
 
 # A CSS rule head is a selector list up to the first ``{``. The excluded
@@ -312,9 +442,15 @@ def extract_identifiers(diff: str) -> list[str]:
         diff: A unified diff.
 
     Returns:
-        Deduplicated identifiers, capped at ``MAX_IDENTIFIERS``. CSS selectors
+        Deduplicated identifiers in first-seen order, UNCAPPED. CSS selectors
         keep their ``.``/``#`` sigil, because that is what is counted in the
         checkout and what the reviewer will recognise.
+
+        ``MAX_IDENTIFIERS`` is applied by :func:`measure_blast_radius`, not
+        here, so that the overflow can be COUNTED and reported. Capping in a
+        function whose return type is a bare list silently discarded the
+        overflow, and a 200-identifier diff then produced 60 measurements
+        labelled complete.
     """
     found: list[str] = []
     seen: set[str] = set()
@@ -334,7 +470,7 @@ def extract_identifiers(diff: str) -> list[str]:
             if match is not None:
                 _add(match.group(1))
 
-    return found[:MAX_IDENTIFIERS]
+    return found
 
 
 def _occurrence_pattern(identifiers: Sequence[str]) -> re.Pattern[str]:
@@ -390,8 +526,15 @@ def _read_text_bounded(path: Path) -> str | None:
     An over-size file is SKIPPED, never truncated. Truncating spent
     ``MAX_FILE_BYTES`` of the walk's budget per giant file to count noise, which
     on a real repository ended the walk before it reached the source.
+
+    The ``is_file`` gate is not redundant with ``os.walk`` listing it under
+    filenames: a FIFO, a device node or a socket is listed there too, and
+    OPENING one blocks forever. The deadline is only consulted BETWEEN files, so
+    a single blocking syscall is unbounded no matter what the time budget says.
     """
     if path.suffix.lower() in BINARY_SUFFIXES:
+        return None
+    if not path.is_file():
         return None
     if path.stat().st_size > MAX_FILE_BYTES:
         return None
@@ -421,16 +564,25 @@ def count_occurrences(
         time_budget_seconds: Wall-clock cap on the whole walk.
 
     Returns:
-        Counts for every identifier (zero included) and whether the walk
-        finished. A cap reached makes the counts LOWER BOUNDS, which is why the
-        flag travels with them rather than being logged and dropped.
+        Counts for every identifier (zero included), how many files were read,
+        and whether the walk finished. A cap reached makes the counts LOWER
+        BOUNDS, which is why the flag travels with them rather than being logged
+        and dropped.
+
+        A walk that read ZERO files reports ``complete=False``. ``os.walk`` over
+        a path that does not exist, holds nothing, or cannot be read yields
+        nothing and raises nothing, so all-zero counts would otherwise be
+        returned as a positive finding of "nothing here is reused" by a check
+        that never opened a file. That is a check which structurally cannot
+        fail, returning green, which is the defect this whole module exists to
+        remove.
 
     Raises:
         OSError: The caller fails open; see the module docstring.
     """
     counts: dict[str, int] = dict.fromkeys(identifiers, 0)
     if not identifiers:
-        return OccurrenceCounts(counts=counts, complete=True)
+        return OccurrenceCounts(counts=counts, complete=True, files_read=0)
 
     pattern = _occurrence_pattern(identifiers)
     index_to_identifier = {f"g{i}": name for i, name in enumerate(identifiers)}
@@ -457,7 +609,9 @@ def count_occurrences(
                     files_read,
                     bytes_read,
                 )
-                return OccurrenceCounts(counts=counts, complete=complete)
+                return OccurrenceCounts(
+                    counts=counts, complete=complete, files_read=files_read
+                )
             path = Path(dirpath, filename)
             try:
                 text = _read_text_bounded(path)
@@ -469,11 +623,26 @@ def count_occurrences(
             if text is None:
                 continue
             files_read += 1
+            # DECODED CHARACTERS, not bytes on disk, so ``MAX_TOTAL_BYTES`` is a
+            # soft ceiling: a UTF-8 file of non-ASCII text counts fewer here
+            # than it occupies. The gap is bounded and always in the safe
+            # direction for the time budget, which is the real backstop.
             bytes_read += len(text)
             for group, hits in count_in_text(text, pattern).items():
                 counts[index_to_identifier[group]] += hits
 
-    return OccurrenceCounts(counts=counts, complete=complete)
+    if files_read == 0:
+        # Not a finding. See this function's Returns section: a walk that opened
+        # nothing has measured nothing, and all-zero counts must not be handed
+        # on as "nothing here is reused".
+        logger.warning(
+            "blast radius: walk of %s read no files at all; reporting the "
+            "measurement as incomplete rather than as 'nothing is reused'",
+            root,
+        )
+        return OccurrenceCounts(counts=counts, complete=False, files_read=0)
+
+    return OccurrenceCounts(counts=counts, complete=complete, files_read=files_read)
 
 
 def measure_blast_radius(diff: str, root: Path | str) -> BlastRadius:
@@ -484,50 +653,78 @@ def measure_blast_radius(diff: str, root: Path | str) -> BlastRadius:
         root: A clean checkout of the PR head.
 
     Returns:
-        The top ``TOP_N`` identifiers by count, excluding counts below
-        ``MIN_INTERESTING_COUNT``, ordered by count descending then name so the
-        section is byte-identical for an identical review.
+        The top ``TOP_N`` REPORTABLE identifiers by count, excluding counts
+        below ``MIN_INTERESTING_COUNT``, ordered by count descending then name
+        so the section is byte-identical for an identical review.
+
+        Every identifier dropped along the way is COUNTED into
+        ``BlastRadius.omitted``: past ``TOP_N``, filtered by
+        :func:`is_reportable`, or never measured because the diff carried more
+        than ``MAX_IDENTIFIERS``. A cap that discards silently turns a partial
+        report into an apparently exhaustive one, and an empty list into an
+        apparent finding of "nothing is reused".
+
+        Identifiers below ``MIN_INTERESTING_COUNT`` are NOT omissions: one
+        occurrence is the definition itself, which is a measured answer of
+        "not reused" rather than something withheld.
 
     Raises:
         OSError: Propagated from the walk. The caller fails open.
     """
-    identifiers = extract_identifiers(diff)
-    if not identifiers:
+    extracted = extract_identifiers(diff)
+    if not extracted:
         # No walk at all: a prose-only diff has nothing whose reach could be
         # counted, and reading the repository to prove it is pure cost.
-        return BlastRadius(occurrences=(), complete=True)
+        # ``identifiers=0`` is what makes this distinguishable downstream from
+        # "measured, and nothing it defines is reused".
+        return BlastRadius(occurrences=(), complete=True, omitted=0, identifiers=0)
 
-    measured = count_occurrences(root, identifiers)
+    selected = extracted[:MAX_IDENTIFIERS]
+    unmeasured = len(extracted) - len(selected)
+    measured = count_occurrences(root, selected)
+
+    reused = [
+        Occurrence(identifier=name, count=count)
+        for name, count in measured.counts.items()
+        if count >= MIN_INTERESTING_COUNT
+    ]
     ranked = sorted(
-        (
-            Occurrence(identifier=name, count=count)
-            for name, count in measured.counts.items()
-            if count >= MIN_INTERESTING_COUNT
-        ),
+        (occurrence for occurrence in reused if is_reportable(occurrence.identifier)),
         key=lambda occurrence: (-occurrence.count, occurrence.identifier),
     )
-    return BlastRadius(occurrences=tuple(ranked[:TOP_N]), complete=measured.complete)
+    shown = ranked[:TOP_N]
+    return BlastRadius(
+        occurrences=tuple(shown),
+        complete=measured.complete,
+        omitted=unmeasured + (len(reused) - len(shown)),
+        identifiers=len(selected),
+    )
 
 
 def render_blast_radius(radius: BlastRadius) -> str:
-    """Render the prompt section, or "" when there is nothing to report.
+    """Render the prompt section for a measurement that WAS taken.
 
     Brain-facing, so the floor-model register that governs
     ``core/agent_prompt.py`` and ``core/worker_bible.py`` does NOT apply here:
     this is written for a capable reader.
 
-    Returns "" rather than a heading with no rows. An empty heading reads as "we
-    measured and the change is contained", which is the misleading green this
-    module exists to prevent, restated inside the fix.
+    NEVER returns "". Every empty-list case gets a sentence naming WHY it is
+    empty, because the caller's only other option is to send nothing, and the
+    prompt renders nothing as "Not measured for this review (no checkout was
+    available, or the measurement failed)". Collapsing a real walk over a real
+    checkout into that sentence is literally false, and it destroys the one
+    distinction the caller documents as load-bearing: absent evidence versus
+    evidence of absence. Four states, four sentences.
 
     Args:
-        radius: The measurement.
+        radius: The measurement. A caller with no measurement at all must pass
+            ``None`` to the prompt instead of calling this.
 
     Returns:
-        A markdown-ish block, or "".
+        A markdown-ish block. Always non-empty.
     """
     if not radius.occurrences:
-        return ""
+        return _render_empty_blast_radius(radius)
 
     qualifier = "" if radius.complete else "at least "
     lines = [
@@ -553,9 +750,58 @@ def render_blast_radius(radius: BlastRadius) -> str:
         "These are literal text occurrences, not a call graph. Treat them as a "
         "hint about reach.",
     ]
+    if radius.omitted:
+        lines += [
+            "",
+            f"{radius.omitted} further changed {identifier_noun(radius.omitted)} "
+            "are reused and not listed: past the top ten, too generically named "
+            "for a text count to mean anything, or past the extraction cap. "
+            "This list is not exhaustive.",
+        ]
     if not radius.complete:
         lines += [
             "",
             "The walk hit its size or time cap, so these are lower bounds.",
         ]
     return "\n".join(lines)
+
+
+def identifier_noun(count: int) -> str:
+    """``identifier`` or ``identifiers``, for a countable clause."""
+    return "identifier" if count == 1 else "identifiers"
+
+
+def _render_empty_blast_radius(radius: BlastRadius) -> str:
+    """Say WHY the list is empty. Four causes, four different meanings.
+
+    Only the last is the finding "this change looks self-contained by text
+    reach". Rendering the other three as that finding is the defect class this
+    module exists to catch, committed by the module itself.
+    """
+    if not radius.complete:
+        return (
+            "The walk hit its size or time cap before it could establish "
+            "anything, so NOTHING may be concluded from the absence of results "
+            "here. This is not a finding that the change is contained."
+        )
+    if radius.identifiers == 0:
+        return (
+            "This diff defines or redefines no identifiers of the kinds this "
+            "check tracks (CSS selectors, and function/class/const definition "
+            "sites), so there was nothing whose reach could be measured. Judge "
+            "the diff on its own; the absence of a measurement is not evidence "
+            "the change is contained."
+        )
+    if radius.omitted:
+        return (
+            f"{radius.omitted} changed {identifier_noun(radius.omitted)} are "
+            "reused elsewhere, but all of them are too generically named for a "
+            "text count to mean anything, so none is listed. Reach here is "
+            "real but unmeasurable by this check, NOT absent."
+        )
+    return (
+        "Nothing this diff defines or redefines occurs more than once across "
+        "the checkout. That is a measurement, not a missing one: by text reach "
+        "the change looks self-contained. It does not rule out coupling the "
+        "text cannot show, such as a dynamic lookup or a name built at runtime."
+    )

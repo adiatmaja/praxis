@@ -7,6 +7,7 @@ mixin: it is only ever mixed into ``Orchestrator`` and reads attributes set in
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import json
 import logging
@@ -18,6 +19,7 @@ from typing import TYPE_CHECKING, Any
 from orchestrator.core.bench_mode import verify_gate_disabled
 from orchestrator.core.blast_radius import (
     BlastRadius,
+    identifier_noun,
     measure_blast_radius,
     render_blast_radius,
 )
@@ -107,7 +109,7 @@ def _log_excerpt(output: str) -> str:
     return f"{flat[:_LOG_EXCERPT_CHARS]}..."
 
 
-def _blast_radius_for_review(
+async def _blast_radius_for_review(
     diff: str, checkout: str | None
 ) -> tuple[BlastRadius | None, str | None]:
     """Measure how far the identifiers in ``diff`` reach, and render it.
@@ -118,12 +120,20 @@ def _blast_radius_for_review(
     this measurement exists to catch, so ANY exception drops the section and
     the review proceeds unchanged.
 
-    The distinction between the two falsy answers is load-bearing:
+    Off the event loop via ``asyncio.to_thread``. The walk is up to five seconds
+    of synchronous filesystem work (measured: 1.4s on this checkout), and it is
+    the only blocking call left on this path -- ``backend.checkout``,
+    ``run_verify`` and every ``gh`` call are already async. Blocking the loop
+    here would stall every other plan's tick on this install, which is a defect
+    this repository has already shipped once.
 
-    - ``None``: not measured. No checkout to walk, or the walk raised. Nothing
-      may be concluded from it, and the prompt says so in words.
-    - ``BlastRadius(occurrences=())``: measured, and nothing the diff changed
-      occurs more than once. That IS a finding.
+    ``None`` is reserved for what the prompt's absent-section line actually
+    claims: no checkout, or the measurement raised. A real walk that found
+    nothing reused is NOT that, and must never be collapsed into it -- the
+    prompt would then say "Not measured for this review", which is false and
+    destroys the distinction between absent evidence and evidence of absence.
+    ``render_blast_radius`` therefore always returns a sentence, and there is
+    deliberately no ``or None`` on it here.
 
     Rendering happens inside the same ``try`` as the walk, deliberately: the
     guarantee is "any exception and the review proceeds with no section", and a
@@ -136,14 +146,13 @@ def _blast_radius_for_review(
             failed and the review degraded to diff-only.
 
     Returns:
-        ``(radius, section)``. ``radius`` feeds the scope statement, ``section``
-        is the prompt block or None when there is nothing to put in the prompt.
+        ``(radius, section)``, both None only when nothing was measured at all.
     """
     if checkout is None:
         return None, None
     try:
-        radius = measure_blast_radius(diff, Path(checkout))
-        return radius, (render_blast_radius(radius) or None)
+        radius = await asyncio.to_thread(measure_blast_radius, diff, Path(checkout))
+        return radius, render_blast_radius(radius)
     except Exception:  # noqa: BLE001 - a repo walk must never wedge a review
         logger.warning(
             "review: blast radius could not be measured; reviewing without it",
@@ -195,14 +204,37 @@ def _review_scope_statement(
     else:
         clauses.append(f"verify gate did not run ({verify_state})")
 
+    # Ordered by how much may be concluded, least first. ``radius.complete`` is
+    # checked BEFORE the emptiness of the list, because a walk that was cut off
+    # cannot support "nothing is reused" at all: that sentence would be a
+    # positive claim about the repository sourced from a partial read of it,
+    # delivered to `tasks.review_feedback` and the parked-PR event, which are
+    # the two surfaces this whole statement exists to keep honest.
     if radius is None:
         clauses.append("blast radius not measured")
+    elif not radius.complete:
+        found = len(radius.occurrences)
+        clauses.append(
+            f"blast radius INCOMPLETE, the walk hit a cap "
+            f"({found} reused {identifier_noun(found)} found before it stopped)"
+        )
+    elif radius.identifiers == 0:
+        clauses.append("blast radius not applicable, this diff defines nothing")
+    elif not radius.occurrences and radius.omitted:
+        clauses.append(
+            f"blast radius measured, {radius.omitted} reused "
+            f"{identifier_noun(radius.omitted)} too generic to report"
+        )
     elif not radius.occurrences:
         clauses.append("blast radius measured, nothing changed here is reused")
     else:
-        noun = "identifier" if len(radius.occurrences) == 1 else "identifiers"
+        found = len(radius.occurrences)
+        # "and N more" rather than a bare count: the list is TOP_N-capped and
+        # filtered, so stating its length alone reports a capped number as if it
+        # were the whole answer.
+        more = f" and {radius.omitted} more" if radius.omitted else ""
         clauses.append(
-            f"blast radius measured ({len(radius.occurrences)} reused {noun})"
+            f"blast radius measured ({found} reused {identifier_noun(found)}{more})"
         )
 
     return "Review scope: " + "; ".join(clauses) + "."
@@ -672,7 +704,7 @@ class ReviewMixin:
                 # says so, so the reviewer's green was structurally unable to
                 # observe that defect class. Fails open: see
                 # ``_blast_radius_for_review``.
-                radius, blast_section = _blast_radius_for_review(diff, checkout)
+                radius, blast_section = await _blast_radius_for_review(diff, checkout)
                 review = await self._opus.review_diff(
                     diff,
                     task["description"] or task["title"],
