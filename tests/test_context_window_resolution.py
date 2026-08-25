@@ -220,6 +220,42 @@ async def test_the_agy_dispatch_used_a_declared_window_not_a_skipped_gate(
     assert "Skipping the pre-dispatch context budget gate" not in caplog.text
 
 
+@pytest.mark.unit
+async def test_the_reported_case_survives_a_real_effective_settings_object(
+    orchestrator_fixture, db, test_settings, caplog
+):
+    """The anti-vacuity test for this whole fix.
+
+    Every other dispatch test here reads its declarations off an ``AsyncMock``,
+    and that single mocked line would hide a TOTAL failure: misname the method
+    the dispatcher calls and the mock answers anyway, every test stays green,
+    and production raises ``AttributeError`` on the first dispatch. The
+    declared-window lookup would also be entirely fictional if the real
+    ``EffectiveSettings`` did not have it.
+
+    So this one wires the REAL object - real settings file, real database - and
+    drives the reported 14 KB agy case through it end to end. Nothing about the
+    window is stubbed.
+    """
+    from orchestrator.core.effective_settings import EffectiveSettings
+
+    orch, _task_id, _project = orchestrator_fixture
+    project = await _project_using(orch, harness="agy", model=AGY_MODEL)
+    orch._effective_settings = EffectiveSettings(test_settings, db)
+    plan_id = await _plan_with_description(orch, REPORTED_INSTRUCTIONS)
+    orch._agents.spawn_agent.return_value = "container-1"
+
+    with caplog.at_level(logging.INFO, logger=_DISPATCH_LOGGER):
+        await orch.dispatch_pending_tasks(plan_id, project)
+
+    status, feedback = await _status_of(orch, plan_id)
+    assert status == TaskStatus.IN_PROGRESS
+    assert feedback is None
+    orch._agents.spawn_agent.assert_awaited_once()
+    # The gate RAN, at a real declared number read off the real settings layer.
+    assert "1000000 tokens" in caplog.text
+
+
 # ---------------------------------------------------------------------------
 # The window is known by PROBE: the endpoint is LM Studio and it has the model
 # ---------------------------------------------------------------------------
