@@ -36,6 +36,13 @@ class HarnessSpec:
     cons: tuple[str, ...]
     maturity: str
     recommended: bool = False
+    #: Whether this harness CAN be driven through an OpenAI-compatible endpoint
+    #: at all. It is a "may", never an "is": OpenCode answers True and is just
+    #: as happily pointed at a hosted provider as at a local LM Studio, so this
+    #: flag can tell you a probe is pointless (agy speaks only to Google) but
+    #: never that a probe will succeed. It governs whether an endpoint is
+    #: REQUIRED (``api/doctor``, ``api/system``) and whether an LM Studio probe
+    #: is worth attempting (``should_attempt_lm_studio_probe`` below).
     supports_local_llm: bool = True
     does_own_git: bool = True
     effort_channel: str = "none"
@@ -153,6 +160,61 @@ def get_harness(harness_id: str) -> HarnessSpec:
     """Return the spec for ``harness_id`` or raise ``KeyError``."""
 
     return REGISTRY[harness_id]
+
+
+def may_use_lm_studio(harness_id: str | None) -> bool:
+    """Return True when this harness CAN be driven by an OpenAI-compatible endpoint.
+
+    A capability, not a fact about any particular project. OpenCode answers
+    True whether the operator pointed it at a local LM Studio or at a hosted
+    provider; agy answers False because it speaks only to Google and no
+    endpoint will ever change that.
+
+    An UNREGISTERED id answers False: nothing is known about how it is served,
+    and a probe on a guess can only produce an answer nobody can trust.
+    """
+
+    spec = REGISTRY.get(harness_id or default_harness_id())
+    if spec is None:
+        return False
+    return spec.supports_local_llm
+
+
+def should_attempt_lm_studio_probe(
+    harness_id: str | None, endpoint_url: str | None
+) -> bool:
+    """Return True when asking LM Studio for a context window is worth a try.
+
+    The single predicate shared by ``agent_manager.spawn_agent`` and
+    ``core/context_window``, so the two cannot hold different wrong rules. It
+    used to be a hardcoded ``harness_id != "agy"`` in one of them and nothing
+    at all in the other.
+
+    Read the name literally: WORTH A TRY. This is an optimization that avoids a
+    round trip that cannot succeed, and it is NOT the correctness mechanism.
+    Harness identity does not determine whether a model is locally served: an
+    OpenCode project pointed at a hosted OpenAI-compatible provider answers
+    True here, the probe hits an endpoint that is not LM Studio, and
+    ``detect_context_limit`` returns None. What makes that safe is the rule
+    downstream, not this predicate: a probe that does not come back with a
+    number means UNKNOWN, and unknown skips the budget gate rather than
+    substituting one. Any attempt to make this function decide correctness -
+    by pattern-matching hostnames, say - would be a new guess in the exact
+    place a guess caused the defect.
+
+    Args:
+        harness_id: The harness that will run the task, or None for the default.
+        endpoint_url: The worker endpoint this project will actually be given.
+            Empty or None means there is nothing to ask.
+
+    Returns:
+        True only when there is an endpoint AND the harness could be served
+        through one.
+    """
+
+    if not endpoint_url:
+        return False
+    return may_use_lm_studio(harness_id)
 
 
 def list_harnesses() -> list[dict[str, Any]]:

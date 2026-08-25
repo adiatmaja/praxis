@@ -12,8 +12,15 @@ from collections.abc import Mapping
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, cast
 
-from orchestrator.core.agent_manager import detect_context_limit
 from orchestrator.core.bench_mode import verify_gate_disabled
+from orchestrator.core.context_window import (
+    YAML_KEY as CONTEXT_WINDOWS_YAML_KEY,
+)
+from orchestrator.core.context_window import (
+    DeclaredWindows,
+    ResolvedWindow,
+    resolve_context_window,
+)
 from orchestrator.core.harnesses import default_harness_id
 from orchestrator.core.leaf_validator import is_runnable_verification
 from orchestrator.core.log_context import task_logger
@@ -34,6 +41,7 @@ from orchestrator.core.progress_handover import (
     render_handover,
 )
 from orchestrator.core.session_resume import resolve_resume_session
+from orchestrator.core.settings_file import config_file_path
 from orchestrator.core.token_budget import ContextBudgetExceeded
 from orchestrator.core.verify_gate import normalize_verify_cmd
 from orchestrator.core.worker_bible import BibleSources, build_bible
@@ -61,6 +69,28 @@ DEFAULT_FLAG_BELOW = 0.55
 # This one has no review-side equivalent: only the per-wave gate verifies the
 # accumulated PLAN branch, so only it can be missing one.
 _SKIP_NO_PLAN_BRANCH = "no plan branch or repo_url recorded on the plan"
+
+
+def resolve_implementer(
+    task: Mapping[str, Any], project: Mapping[str, Any]
+) -> tuple[str, str]:
+    """Return the ``(harness_id, model_name)`` that will actually run ``task``.
+
+    An escalated leaf carries its own implementer: the implement seat is
+    spawn-baked, so escalation only takes effect at dispatch. Falling back to
+    the project defaults keeps every non-escalated dispatch byte-identical to
+    its pre-escalation behavior.
+
+    Shared by the spawn and by the context-window resolution that sizes the
+    pack handed to that spawn. Two copies of this would let an escalated leaf
+    be budgeted for the project's default model and then run on another.
+    """
+    harness_id = (
+        task.get("implement_harness") or project.get("harness") or default_harness_id()
+    )
+    model_name = task.get("implement_model") or project["model_name"]
+    return str(harness_id), str(model_name)
+
 
 MANDATORY_ACCEPTANCE = (
     "This leaf was flagged high risk before dispatch and declares no acceptance "
@@ -345,7 +375,7 @@ class DispatchMixin:
             # conventions), scrubbed and trimmed to the model's window, so the
             # goal/progress survive compaction and cross-run re-dispatch.
             try:
-                bible = await self._build_worker_bible(
+                bible, resolved_window = await self._build_worker_bible(
                     task,
                     plan_task,
                     project,
@@ -365,16 +395,7 @@ class DispatchMixin:
                 )
                 continue
 
-            # An escalated leaf carries its own implementer: the implement seat
-            # is spawn-baked, so escalation only takes effect here. Falling back
-            # to the project defaults keeps every non-escalated dispatch
-            # byte-identical to its pre-escalation behavior.
-            harness_id = (
-                task.get("implement_harness")
-                or project.get("harness")
-                or default_harness_id()
-            )
-            worker_model = task.get("implement_model") or project["model_name"]
+            harness_id, worker_model = resolve_implementer(task, project)
             resume_session = resolve_resume_session(task, harness_id)
 
             try:
@@ -395,6 +416,14 @@ class DispatchMixin:
                     task_summary=f"{task['title']}\n\n{task['description']}",
                     single_branch=single_branch,
                     worker_session_id=resume_session,
+                    # The window the pack was ACTUALLY budgeted against, not a
+                    # second resolution. ``spawn_agent`` used to re-probe on its
+                    # own, so a declared window budgeted the orchestrator side at
+                    # (say) 128 000 and then handed the container no
+                    # MODEL_CONTEXT_LIMIT at all, leaving OpenCode to compact
+                    # against its own built-in default. Two probes per dispatch,
+                    # two different answers, and the disagreement was invisible.
+                    context_limit=resolved_window.tokens,
                 )
             except RuntimeError as exc:
                 # Disk-headroom or concurrency-cap preflight failed. Leave the
@@ -440,6 +469,12 @@ class DispatchMixin:
                     "container_id": container_id,
                     "difficulty_score": score,
                     "difficulty_flagged": flagged,
+                    # Every dispatch says which window it was budgeted against
+                    # and where that number came from. Null here means the gate
+                    # did not run; a `context_budget_skipped` event was
+                    # published at resolution time saying so.
+                    "context_window": resolved_window.tokens,
+                    "context_window_source": resolved_window.source,
                 }
             )
 
@@ -796,7 +831,7 @@ class DispatchMixin:
         branch: str,
         *,
         difficulty_flagged: bool = False,
-    ) -> str:
+    ) -> tuple[str, ResolvedWindow]:
         """Assemble the Static Bible for a task: goal + handover + context.
 
         Reconstructs the progress handover deterministically from the task
@@ -812,6 +847,12 @@ class DispatchMixin:
             difficulty_flagged: True when the pre-dispatch score fell between
                 ``reject_below`` and ``flag_below``. Makes the acceptance slot
                 mandatory instead of optional.
+
+        Returns:
+            The assembled Bible, and the window it was budgeted against. The
+            window is returned rather than recomputed by the caller because
+            ``spawn_agent`` needs the SAME number: resolving twice gave the
+            orchestrator a declared window and the container none at all.
 
         Raises:
             ContextBudgetExceeded: If the floor context exceeds the model window.
@@ -857,15 +898,71 @@ class DispatchMixin:
             )
         handover = render_handover(items, commits, task.get("progress_note"))
 
+        # Which model is about to run this, not which model the project names:
+        # an escalated leaf carries its own implementer, and budgeting the pack
+        # against the project default would size it for a model that is not
+        # going to see it.
+        harness_id, worker_model = resolve_implementer(task, project)
+
+        lm_studio_url = ""
+        declared: DeclaredWindows | Any = None
         if self._effective_settings is not None:
             lm_studio_url = await self._effective_settings.lm_studio_url()
+            declared = await self._effective_settings.declared_context_windows()
+        resolved = await resolve_context_window(
+            harness_id=harness_id,
+            model_name=worker_model,
+            project_override=project.get("context_window"),
+            declared=declared,
+            lm_studio_url=lm_studio_url,
+        )
+        log = task_logger(logger, plan_id=task.get("plan_id"), task_id=task["id"])
+        if resolved.known:
+            log.info(
+                "Context budget for %s/%s: %d tokens (%s)",
+                harness_id,
+                worker_model,
+                resolved.tokens,
+                resolved.source,
+            )
         else:
-            lm_studio_url = ""
-        context_window = (
-            await detect_context_limit(lm_studio_url, project["model_name"])
-            if lm_studio_url
-            else None
-        ) or 8192
+            # SAID on a SURFACE, not only in the orchestrator log. A log line is
+            # not a product surface here: `praxis logs <task-id>` reads the AGENT
+            # CONTAINER log, and nothing else in the product reads this one. So
+            # the skip is published, and it is published HERE rather than folded
+            # into `agent_dispatched` alone, because that event fires only after
+            # a successful spawn: a task deferred by the disk or concurrency
+            # preflight would otherwise have its skipped gate disappear.
+            #
+            # The gate is the only thing that can refuse an oversized pack, so a
+            # tick where it did not run must be distinguishable from a tick where
+            # it ran and approved - otherwise "no failure" means both "the pack
+            # fits" and "nobody checked", which is the shape that shipped 8192.
+            self._bus.publish(
+                {
+                    "type": "context_budget_skipped",
+                    "plan_id": task.get("plan_id"),
+                    "task_id": task["id"],
+                    "harness": harness_id,
+                    "model": worker_model,
+                    "reason": (
+                        "no context window could be established, so the "
+                        "pre-dispatch context budget gate did not run"
+                    ),
+                }
+            )
+            log.warning(
+                "No context window is known for %s/%s: neither the project's "
+                "context_window column, nor a declared window in the settings "
+                "file, nor the LM Studio probe could establish one. Skipping "
+                "the pre-dispatch context budget gate for this task. Declare "
+                "one under `%s` in %s, or set the project's context_window, to "
+                "have it enforced.",
+                harness_id,
+                worker_model,
+                CONTEXT_WINDOWS_YAML_KEY,
+                config_file_path(),
+            )
 
         edit_locations = _normalize_edit_locations(plan_task.get("files"))
 
@@ -918,11 +1015,11 @@ class DispatchMixin:
         if difficulty_flagged and not is_runnable_verification(acceptance):
             acceptance = MANDATORY_ACCEPTANCE
 
-        return build_bible(
+        bible = build_bible(
             BibleSources(
                 goal=goal,
                 handover=handover,
-                context_window=context_window,
+                context_window=resolved.tokens,
                 plan_slice=plan_task.get("plan_text"),
                 # Rank 2 of the standard: where to edit, before any narrative.
                 edit_locations=edit_locations,
@@ -944,3 +1041,4 @@ class DispatchMixin:
                 ),
             )
         )
+        return bible, resolved

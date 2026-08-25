@@ -9,6 +9,12 @@ Contract: build an evidence pack, ask ``leaf_failure_triage`` for a
 ``TriageDecision``, re-ask exactly once on malformed output, then fall back to
 ``human``.  Downgrade any decision the caller cannot honour (escalation ladder
 exhausted, split would breach ``max_leaves_per_plan``).  Never guess.
+
+Exactly one failure leaves here as an exception rather than a decision: a
+subscription throttle.  ``human`` is terminal and irreversible, so answering it
+for a limit that clears by itself in five hours converts a self-healing wait
+into a permanent human gate on a leaf that still had retries.  A throttle is
+not a triage outcome, and the caller defers instead.
 """
 
 from __future__ import annotations
@@ -21,6 +27,7 @@ from typing import Any, Literal
 
 from pydantic import ValidationError
 
+from orchestrator.core.llm_router import ProviderRateLimitError
 from orchestrator.models.schemas import CapabilityProfile, TriageDecision
 
 
@@ -263,16 +270,30 @@ async def triage_leaf(
     exception (provider down, auth failure) also falls back to ``human``, and so
     does an evidence pack this module cannot even render: triage is an
     optimization over the existing retry path and must never be able to wedge a
-    task, so no path out of here raises.
+    task, so only ONE path out of here raises.
+
+    That path is a subscription throttle, and it is carved out of "never
+    raises" on purpose.  ``human`` is applied by failing the task terminally,
+    so answering it for a five-hour limit trades a wait that ends by itself for
+    a block that ends only when a person notices -- strictly worse than the
+    unwedged behaviour the blanket catch exists to guarantee.  The caller
+    leaves the leaf REVIEWING and triages it again once the limit clears.
 
     Args:
         evidence: The bounded evidence pack.
         router: An ``LLMRouter``-compatible object with ``run(call_site, prompt,
-            project_id)``.
+            project_id)``.  Pass the ``OpusBridge`` (see
+            ``opus_bridge.parking_brain_runner``): the bare router cannot park
+            ``opus_state``, so the throttle raised here would be one nothing
+            downstream can wait out.
         project_id: Project scope for router resolution.
 
     Returns:
         A validated, downgraded-if-necessary ``TriageDecision``.
+
+    Raises:
+        ProviderRateLimitError: The brain is throttled.  Not a decision; the
+            caller must defer without consuming the leaf's one triage call.
     """
     try:
         base_prompt = build_triage_prompt(evidence)
@@ -290,6 +311,18 @@ async def triage_leaf(
     for attempt in range(1, _TRIAGE_ATTEMPTS + 1):
         try:
             raw = await router.run("leaf_failure_triage", prompt, project_id=project_id)
+        except ProviderRateLimitError:
+            # Ahead of the blanket catch below, and the only thing that gets
+            # past it. A throttle is the one failure this system already knows
+            # how to wait out; answering "human" for it would fail the leaf
+            # terminally and no clock brings it back.
+            logger.warning(
+                "The triage brain is rate limited for %s; deferring rather "
+                "than deciding, so the leaf is triaged again once the limit "
+                "clears",
+                evidence.task_slug,
+            )
+            raise
         except Exception:  # noqa: BLE001 - triage must never wedge a task
             logger.exception(
                 "Triage brain call failed for %s; parking for a human",

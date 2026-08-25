@@ -300,9 +300,12 @@ belongs among the everyday traps.
   injected into the decompose prompt as a `HARD CONSTRAINTS` block, one line per limit,
   stating that violating leaves will be rejected automatically. The brain is expected
   to comply; prose guidance alone is not enforcement — F3 enforces it. Budget
-  consistency uses the same `WORKER_RESERVE_FRACTION = 0.6` (`core/token_budget.py`) as
+  consistency goes through the same `token_budget.worker_budget()` as
   `worker_bible`/`fit_sections`, replacing the independent `_LEAF_BUDGET_FRACTION = 0.4`
-  that existed before and no longer exists anywhere under `src/`.
+  that existed before and no longer exists anywhere under `src/`. That helper reserves
+  the SMALLER of `WORKER_RESERVE_FRACTION` (0.6) and `WORKER_RESERVE_CAP_TOKENS`
+  (32 768), so every window at or below 54 613 tokens is budgeted exactly as it always
+  was and only genuinely large windows stop reserving a proportion they cannot use.
 - **F3 leaf validator is deterministic and fail-closed** — `core/leaf_validator.py`
   runs after `_normalize_slugs` in `decompose_plan`. It checks: DAG + depth limits,
   no dangling `depends_on` slugs, file/LOC limits, verbatim `plan_text` (≥70% fuzzy
@@ -578,7 +581,8 @@ belongs among the everyday traps.
   DESCRIPTIONS also truncate, at 2 KB each, but Praxis was measured on
   2026-08-06 and its largest is 942 B, so there is nothing to fix there.
 - **`praxis doctor` is the front door to every problem**: `core/doctor.py`
-  registers twelve read-only checks, each with a fix hint;
+  registers the checks, each with a fix hint (the count is deliberately not
+  quoted here; it grew and this sentence did not);
   `core/doctor_probes.py` holds the pure decision logic (facts in, verdict out)
   so every check is testable with no Docker, network, or filesystem. Two checks
   exist specifically to convert this project's oldest silent failures into red
@@ -1842,3 +1846,157 @@ prompt") for the auto-delegate path, and inside the decompose prompt
 (`core/plan_review.py`) for the `execute_plan` path, so both entrances teach the same
 floor-model style. If one of the three surfaces (template, guide, decompose prompt) is
 corrected, check the other two in the same commit; they answer the same question.
+
+## A local repo path is validated in one namespace and mounted in another
+
+`core/preflight._preflight_local` checks a caller-supplied local `repo_url` with
+`Path.exists()` from inside the orchestrator container. `core/agent_manager.local_repo_volume`
+hands that identical string to the Docker daemon as a bind-mount SOURCE, which the daemon
+resolves in the HOST namespace (or Docker Desktop's Linux VM), never the orchestrator
+container's. On a plain Linux host the two namespaces are one filesystem, so a path that
+satisfies the first check satisfies the second by construction. On Docker Desktop they need
+not: the orchestrator sees its own container filesystem plus whatever compose bind-mounted
+into it, while the daemon resolves the SOURCE against the host or the VM.
+
+The remedy is one environment variable, `LOCAL_REPOS_PATH`, bind-mounted into the
+orchestrator at that same path. An IDENTITY mount works even on Docker Desktop: the VM share
+prefix `/run/desktop/mnt/host/<drive>/...` is valid simultaneously as a bind-mount source for
+the daemon and as a path the orchestrator container can see directly, which is why one
+variable is the normal case. `LOCAL_REPOS_HOST_PATH` is the escape hatch for the rarer case
+where the two namespaces genuinely need different strings; compose defaults it to
+`LOCAL_REPOS_PATH`'s value, so it needs setting only when it must differ. Applying either
+variable is `docker compose up -d`, never `restart`: a bind mount is baked in at container
+CREATE, and `restart` reuses the existing container definition unchanged. Full worked values
+and the doctor row that reports a path resolving in only one namespace: `docs/deployment.md`
+("The local-repos mount bridges a two-namespace split").
+
+## A planner that answers in prose will never become JSON on retry
+
+Every planner prompt in this class demands JSON only. `core/opus_bridge.BrainProseResponseError`
+fires when a response carries no JSON at all, fenced or bare: structurally that is a refusal, a
+question, or a permission request, never a formatting slip, and the same prompt sent again
+produces the same answer. `orchestrator.py`'s planning path treats it as PERMANENT: the plan is
+failed on the first occurrence, with a message naming the likely cause (the planner could not
+read the repository), pointing at `praxis doctor`, and asking for a resubmit, rather than being
+requeued to retry forever. Malformed JSON is a different bucket: a `json.JSONDecodeError` is
+transient and gets retried up to the class's own bound.
+
+The classification is on the SHAPE of the response, never its wording. Nothing here inspects
+the English of the reply, because a keyword list rots as phrasing varies; the only question is
+whether any JSON span was present at all.
+
+The field case this closed: the planner ran with the orchestrator's own working directory as
+`cwd`, while the project's repo sat outside it entirely. The planner answered with a permission
+request instead of a plan, the plan retried on every pass, and `praxis plans` reported it
+`active` throughout, which is exactly what a healthy decomposition prints while genuinely in
+progress. Nothing short of reading the raw response distinguished the two.
+
+## An unknown context window skips the budget gate and says so, never guesses a default
+
+`core/context_window.resolve_context_window` returns a window whose value is `None` when
+nothing could establish the worker's real context: no project override, no declared window for
+the model or the harness, and either no endpoint worth probing or a probe that came back with
+nothing usable. `None` is the answer, not a placeholder for one; every caller must report the
+skip rather than substitute a number.
+
+The predecessor bug substituted one anyway: the worker-bible assembly used to call the LM
+Studio probe and write `... or 8192` after it. For a cloud harness (agy/Gemini, and the same
+defect latent for claude and codex) LM Studio has never heard of the model, so the probe always
+answered unknown and the fallback silently became a small, confident, and wrong number. The
+per-leaf budget gate then ran against that invented ceiling instead of the model's real window,
+so a correctly sized task against a model with a window in the hundreds of thousands of tokens
+was failed within seconds, blaming the task's size rather than the missing configuration.
+Smaller tasks had passed before, which made it read as a size problem rather than a
+configuration one.
+
+This is the same shape as two guards this repo already had right: `verify_gate.normalize_verify_cmd`
+(a blank verify command is "not configured", never a pass, because a blank shell exits 0) and
+`bench/grade.py` (an unrecognized report shape refuses to grade rather than writing a row of
+`False`). A budget gate that cannot establish the window is in exactly that position.
+
+Harness identity is deliberately NOT the correctness mechanism. The obvious fix, "only probe
+local harnesses", is wrong: OpenCode is a harness, not a model host, and an OpenCode project
+pointed at a hosted OpenAI-compatible provider is a supported configuration whose model LM
+Studio has never heard of either. `should_attempt_lm_studio_probe` only skips a round trip that
+cannot succeed; whatever the harness, whatever the endpoint, a probe that does not return a
+usable number resolves to unknown. An unrecognized response shape from that probe RAISES rather
+than silently returning nothing, and the caller owns that exception, because letting it escape
+uncaught inside the dispatch loop reads as a plan that stops dispatching forever, not as one
+failed probe.
+
+## `opus_state` has exactly one writer per transition, and the queue is a ledger nobody drains
+
+`OpusBridge._park_rate_limited` is the only code that writes the `available -> rate_limited`
+transition; `is_available` writes the reverse transition when the parked window expires, and
+`queue_action` only appends to `queued_actions`. `OpusStatus.RESUMING` is declared in the enum
+and written by nothing: work resumes because the loop re-enters and finds the plan row still
+PENDING or the task still REVIEWING, not because anything reads the queue back and replays it.
+`get_queued_actions` has no production caller; the ledger is diagnostic, not a work list.
+
+The detection fact that let a rate limit go unnoticed for a whole subscription window: `claude`
+prints its throttle notice to STDOUT, and the router's rate-limit exception used to quote only
+STDERR. A throttled response therefore reached the orchestrator carrying no evidence a
+text-based detector could see. The check now reads both streams, because "stderr, else stdout"
+is not equivalent to "both": a host with a `~/.claude` hook can put unrelated text on stderr
+while the real throttle notice sits on stdout, and stopping at the first stream with content
+would have named the wrong cause.
+
+## An unreachable repo is quarantined with backoff, not retried every tick
+
+`orchestrator_reconcile.py` tracks consecutive `git ls-remote` failures per `repo_url` and
+quarantines after a small threshold, doubling the number of sweep passes skipped on every
+re-probe that still fails, up to a ceiling, and logging the quarantine ONCE per episode rather
+than on every pass. A repository whose path no longer exists used to fail this call on every
+reconcile pass, each failure a full traceback, and one field report's log grew long enough that
+the repeated traceback buried two real dispatch failures the operator was actually trying to
+find.
+
+The backoff recovers a transient blip quickly (the first re-probe follows within roughly a
+minute at the shipped interval) while a repository that is genuinely gone for good is retried
+with growing patience instead of at a fixed rate, and a success at any point resets the counter
+to zero so a fixed repo is not still throttled by its own history. The sweep reports one of an
+explicit small set of outcomes rather than a boolean, because "quarantined, skipped outright"
+and "probed, and there was nothing to sweep" both read as "nothing got deleted" if collapsed,
+and that collapse is exactly how a sweep that silently stopped working looks identical to a
+sweep with nothing to do.
+
+## A doctor probe must not be able to mutate what it is diagnosing
+
+The agy credentials probe used to run the CLI against the real credentials volume mounted
+read-write, which is exactly what an operator's own sign-in does, except with no credentials
+present: it wrote an empty `antigravity-cli/` directory into the volume. The worker
+entrypoint's own "no credentials" warning is keyed on the presence of exactly that directory,
+so one `praxis doctor` run would have permanently silenced the warning it exists to protect,
+without an operator ever having signed in.
+
+The fix is structural rather than a promise to be careful: the probe mounts the real volume
+read-only and layers a `tmpfs` over the writable path the CLI actually touches, copying the
+read-only source into the tmpfs before running. Whatever the probe writes lands in memory that
+vanishes with the container, and the kernel enforces that, not a code-review convention. A
+probe whose only enforcement is "don't write here" is one refactor away from reintroducing
+exactly this bug.
+
+## `scrub_context` does two jobs, and only one of them belongs at intake
+
+`core/context_scrub.scrub_context` both redacts secrets and caps length in one pass, and the two
+halves have different correct timing. Secret redaction must run at intake, the moment untrusted
+caller-supplied text first reaches the process, because that text is persisted (into
+`plans.opus_plan`, into a repo, or both) and there is no later seam that is more trustworthy to
+defer it to.
+
+Length capping is the opposite. The correct cap is sized to the WORKER'S real context window,
+and the only seam that can resolve that window correctly is `core/worker_bible.build_bible`,
+because it is the one place that runs the live probe (see the context-window gotcha above). An
+earlier fix had the intake seams (`api/dispatch.py`, `execute_plan_decompose.py`) resolve a
+window WITHOUT that probe and cap caller-supplied context at intake using that weaker
+resolution: on the reference configuration (an undeclared local or hosted OpenAI-compatible
+harness) the probe-less resolution always came back unknown, so intake always truncated at a
+fixed, low length, permanently, before `build_bible` ever got a chance to size it against the
+real window. A re-scrub cannot lengthen a string that intake already cut short, so an earlier
+comment claiming "the later, better-informed resolution supersedes this" was false: text
+truncated at intake and written into `plans.opus_plan` stays truncated at that length for the
+life of the plan.
+
+Intake now applies only a fixed, window-independent abuse guard against a pathological payload
+(`INTAKE_ABUSE_CEILING_CHARS`) and does not resolve or reference any context window at all.
+`build_bible` remains the sole seam that enforces a real, window-sized budget.

@@ -321,7 +321,7 @@ fi
 
 echo "--- Verifying OAuth creds are present ---"
 # The orchestrator mounts the praxis-gemini-creds volume read-write at
-# ~/.gemini. It is populated once by an interactive `agy login` (see
+# ~/.gemini. It is populated once by an interactive `agy` session (see
 # docs/deployment.md). Read-write so agy can persist refreshed access tokens
 # (they expire in ~1h). A fresh worker process reads these Linux-native creds
 # back and authenticates without any browser flow.
@@ -336,7 +336,25 @@ if [ -f "/home/agent/.gemini/antigravity-cli/conversation_summaries.db" ] \
     echo "OAuth creds volume present at ~/.gemini"
 else
     echo "WARNING: ~/.gemini has no agy credentials; authentication will fail."
-    echo "Run the one-time 'agy login' setup described in docs/deployment.md."
+    # There is NO 'agy login' subcommand: measured 2026-08-25 against
+    # agy-agent:latest, whose 'agy --help' lists agent, changelog, help,
+    # install, mcp, models, plugin and update. Naming it here sent the
+    # operator to a usage error, from the one line in this whole run that is
+    # supposed to name the remedy. Both steps are required: a fresh volume is
+    # root-owned and agy runs as uid 1000, so the chown is not optional.
+    # The volume NAME is spelled out rather than referenced: the orchestrator
+    # does not pass GEMINI_CREDS_VOLUME into this container, so "$VAR" here
+    # would print empty (or, escaped, print an unrunnable literal). The
+    # default is right on essentially every install, and the one line below
+    # covers the operator who overrode it.
+    echo "Seed the credentials volume once, from the HOST, in two steps"
+    echo "(substitute your own name if you set GEMINI_CREDS_VOLUME):"
+    echo "  docker run --rm --user root -v praxis-gemini-creds:/home/agent/.gemini \\"
+    echo "    --entrypoint bash agy-agent:latest -c 'chown -R agent:agent /home/agent/.gemini'"
+    echo "  docker run --rm -it -v praxis-gemini-creds:/home/agent/.gemini \\"
+    echo "    --entrypoint bash agy-agent:latest -c 'agy'"
+    echo "Starting the CLI with no arguments is what begins the OAuth flow."
+    echo "See docs/deployment.md; 'praxis doctor' checks this without a browser."
 fi
 
 echo "--- Running agy (headless) ---"

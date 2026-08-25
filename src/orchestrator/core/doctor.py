@@ -100,6 +100,18 @@ CHECKS: tuple[Check, ...] = (
         "`PRAXIS_BUILD_SHA=$(git rev-parse --short HEAD) docker compose up --build -d`",
     ),
     Check(
+        # Sits next to build_stamp on purpose: that row names the host
+        # directory the running orchestrator was started from, and this one
+        # names WHO currently owns the container name every recipe in this
+        # repo types. Neither repeats the other's fact.
+        "container_identity",
+        "The container name points at this orchestrator",
+        "container_name is GLOBAL to the Docker daemon, so a second checkout "
+        "takes the name -- and the data volume behind it -- from the first. "
+        "Set PRAXIS_CONTAINER_NAME in .env to a distinct name per checkout, "
+        "then `docker compose up -d`; see docs/deployment.md",
+    ),
+    Check(
         "agent_images",
         "Agent images present",
         "run `docker compose --profile agents build`",
@@ -128,6 +140,17 @@ CHECKS: tuple[Check, ...] = (
         "`file://` repo to evaluate without any credential",
     ),
     Check(
+        "local_repo_paths",
+        # A topic, not an assertion, for the same reason planner_cli's is: the
+        # row's verdict ranges over "no local project at all" to "configured
+        # in a way that passes preflight and fails at spawn".
+        "Local repository paths",
+        "mount your repos directory into the orchestrator at the SAME path "
+        "the Docker daemon sees, via LOCAL_REPOS_PATH in .env, and put every "
+        "local project's repo_url under it; then `docker compose up -d`, "
+        "never `restart`. See docs/deployment.md",
+    ),
+    Check(
         "planner_cli",
         # A topic, not an assertion. Every earlier wording asserted one
         # particular outcome and then contradicted a detail this same row can
@@ -148,6 +171,21 @@ CHECKS: tuple[Check, ...] = (
         # documented way, and it rewrites the DEFAULT_WORKER_* keys in .env.
         "start the endpoint and load the configured model, or switch preset "
         "with `praxis init --preset <name>`",
+    ),
+    Check(
+        "agy_credentials",
+        "agy worker credentials answer `agy models`",
+        # Deliberately short and doc-pointing, unlike every live branch of
+        # probe_agy_credentials, which builds the full two-step commands
+        # around the CONFIGURED volume name. This registry entry cannot know
+        # that name, so spelling the commands out here would be a second copy
+        # that is wrong on any install overriding GEMINI_CREDS_VOLUME.
+        # NOT `agy login`: no such subcommand exists, and an operator who runs
+        # it gets a usage error that reads as "the remedy is broken".
+        "seed the GEMINI_CREDS_VOLUME once: chown it to the agent user, then "
+        "start an interactive `agy` session against it (with NO arguments -- "
+        "there is no `agy login` subcommand). Both commands are in "
+        "docs/deployment.md",
     ),
     Check(
         "callback_url",

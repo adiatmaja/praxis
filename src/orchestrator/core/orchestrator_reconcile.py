@@ -10,9 +10,12 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
+from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, Literal, cast
+
+import httpx
 
 from orchestrator.core import branch_sweeper
 from orchestrator.core.status_vocab import TERMINAL_STATUSES
@@ -41,6 +44,80 @@ _GIT_BRANCH_EXISTS_RE = re.compile(r"fatal: a branch named '", re.IGNORECASE)
 # further ATTEMPTS for that branch, it never raises or wedges the loop.
 BRANCH_DELETE_FAILURE_CAP: int = 3
 
+# Consecutive `git ls-remote` failures against the SAME repo_url (a distinct
+# failure mode from BRANCH_DELETE_FAILURE_CAP above: this one guards the
+# LISTING call, which runs unconditionally at the top of every sweep pass,
+# not the per-branch delete). A project whose repo path no longer exists
+# fails this every ~5s reconcile pass (loop_interval's shipped default)
+# forever, and each failure used to be a full traceback -- in one field
+# report a 9 400-line log dump was overwhelmingly this traceback, burying two
+# real dispatch failures the operator was trying to find. Set equal to
+# BRANCH_DELETE_FAILURE_CAP for the same reason: three tries is enough to
+# tell a genuine outage from a one-off blip without needlessly delaying the
+# quarantine.
+REPO_PROBE_FAILURE_QUARANTINE_THRESHOLD: int = 3
+
+# Sweep passes to skip once quarantined, doubling on every re-probe that
+# still fails, capped at the ceiling. Chosen over a flat periodic re-probe
+# because it recovers a transient blip (a network hiccup, a momentarily
+# unreachable host) quickly -- the first re-probe is only ~10 passes away --
+# while a repository that is truly gone for good is retried with growing
+# patience instead of at a fixed rate, without ever requiring an operator to
+# restart the orchestrator just to get one more attempt. At the shipped ~5s
+# reconcile interval this starts at roughly 50s and ceils around 10 minutes.
+_QUARANTINE_INITIAL_COOLDOWN_PASSES: int = 10
+_QUARANTINE_MAX_COOLDOWN_PASSES: int = 120
+
+# Doublings past which the product is already at or above the ceiling, so the
+# shift below is clamped BEFORE it happens rather than after. Clamping only the
+# product is correct and arrives too late: ``consecutive_failures`` keeps
+# growing for as long as the repository stays unreachable, so a repository that
+# has been gone for a year builds an enormous integer on every re-probe purely
+# to throw it away in ``min``. Derived from the two constants above rather than
+# written out, so it cannot go stale when either moves: ``bit_length`` gives
+# the smallest k with ``2**k`` greater than the ratio.
+_QUARANTINE_MAX_COOLDOWN_DOUBLINGS: int = (
+    _QUARANTINE_MAX_COOLDOWN_PASSES // _QUARANTINE_INITIAL_COOLDOWN_PASSES
+).bit_length()
+
+# The observable outcome of one sweep_dead_branches call. Kept explicit (over
+# returning None) so a repo that was genuinely PROBED and found to have
+# nothing to reclaim ("swept") stays distinguishable in tests from one that
+# was skipped outright because it is quarantined ("quarantined"): the two
+# read identically from "nothing got deleted" alone, and collapsing them is
+# exactly how a sweep that silently stopped working looks the same as a
+# sweep with nothing to do.
+SweepOutcome = Literal["refused", "probe_failed", "quarantined", "swept"]
+
+
+@dataclass
+class RepoProbeState:
+    """Per-repo consecutive-failure tracking for ``list_remote_branches``.
+
+    Lives in an in-memory dict on the caller (``ReconcileMixin`` holds one at
+    ``_repo_probe_failures``, lazily created), for the process's lifetime
+    only -- exactly like ``failure_counts`` in ``sweep_dead_branches`` below.
+    A restart clears it, which is correct here too: a restart may itself have
+    fixed whatever made the repo unreachable, and a restart is exactly when
+    an operator wants a fresh attempt regardless of backoff.
+
+    Attributes:
+        consecutive_failures: Failed probes since the last success. Reset to
+            0 the moment a probe succeeds.
+        cooldown_remaining: Sweep passes left to skip before the next
+            re-probe is attempted. Counts down by one on every quarantined
+            pass; a probe is attempted again once it reaches 0.
+        warned: Whether THIS quarantine episode has already logged its one
+            warning. Reset to False on recovery, so a repo that goes bad
+            again later gets a fresh single warning rather than permanent
+            silence.
+    """
+
+    consecutive_failures: int = 0
+    cooldown_remaining: int = 0
+    warned: bool = False
+
+
 # Plan statuses past which nothing more will ever be dispatched onto the plan's
 # branch. Deliberately expressed as the TERMINAL set and complemented at the
 # call site, so a plan status added later reads as LIVE (keep the branch)
@@ -68,7 +145,9 @@ async def sweep_dead_branches(
     delete_remote_branch: Callable[[str, str], Awaitable[None]],
     ledger: dict[str, set[str]],
     failure_counts: dict[tuple[str, str], int] | None = None,
-) -> None:
+    repo_probe_state: dict[str, RepoProbeState] | None = None,
+    project_ids: Sequence[str] = (),
+) -> SweepOutcome:
     """Sweep dead branches on repo_url using ledger sets best-effort.
 
     Args:
@@ -92,9 +171,30 @@ async def sweep_dead_branches(
             until either the branch disappears out-of-band or the process
             restarts. Pass ``None`` (the default) for a call with no
             cross-pass memory.
+        repo_probe_state: Mutable ``repo_url -> RepoProbeState`` map, shared
+            by the caller across sweep passes exactly like ``failure_counts``.
+            Once ``list_remote_branches`` has failed
+            ``REPO_PROBE_FAILURE_QUARANTINE_THRESHOLD`` times in a row for
+            this repo, further passes are skipped outright (no call, no log)
+            until a backoff cooldown lapses. Pass ``None`` (the default) for
+            a call with no cross-pass memory, which disables quarantine.
+        project_ids: Project id(s) whose ``repo_url`` this is, used only to
+            name the project in the one quarantine warning. Cosmetic: an
+            empty sequence still quarantines correctly, it just cannot name
+            a project in the log line.
+
+    Returns:
+        ``"refused"`` when the ledger was incomplete (nothing attempted),
+        ``"quarantined"`` when this pass was skipped because the repo is in
+        its cooldown, ``"probe_failed"`` when ``list_remote_branches`` was
+        called and raised, or ``"swept"`` when it was called and succeeded
+        (whether or not any branch was actually dead). Callers that do not
+        care may discard it.
     """
     if failure_counts is None:
         failure_counts = {}
+    if repo_probe_state is None:
+        repo_probe_state = {}
 
     # Refuse to sweep at all rather than sweep half-informed. A missing veto
     # set means the caller could not establish what is live or protected, and
@@ -107,13 +207,83 @@ async def sweep_dead_branches(
             repo_url,
             ", ".join(missing),
         )
-        return
+        return "refused"
+
+    state = repo_probe_state.setdefault(repo_url, RepoProbeState())
+    if state.cooldown_remaining > 0:
+        # Quarantined: this repo has already failed
+        # REPO_PROBE_FAILURE_QUARANTINE_THRESHOLD times in a row and its one
+        # warning has already been logged. Skip the call entirely -- no
+        # attempt, no log -- until the cooldown lapses.
+        state.cooldown_remaining -= 1
+        return "quarantined"
 
     try:
         remote_branches = await list_remote_branches(repo_url)
+    except (RuntimeError, httpx.HTTPError, OSError) as exc:
+        # These three cover every way "this remote is not reachable right
+        # now" is known to surface from this call, and all of them are a
+        # CONDITION, not a crash:
+        #   - RuntimeError: git_ops raises this for an ordinary
+        #     `git ls-remote` failure (bad host, a deleted local/scratch
+        #     path, repository gone), and CredentialError (PAT/App auth
+        #     failures) is itself a RuntimeError subclass.
+        #   - httpx.HTTPError: GitHubAppCredentialProvider.token_for_repo
+        #     mints tokens over the network (core/github_credentials.py);
+        #     a connect error, timeout, or DNS failure there raises this,
+        #     NOT a RuntimeError, and is exactly as ordinary/transient as
+        #     the git-command failure above on an install using GitHub App
+        #     auth.
+        #   - OSError: if the `git` binary itself is missing from PATH,
+        #     asyncio.create_subprocess_exec raises FileNotFoundError (an
+        #     OSError subclass) rather than a git exit code.
+        # logger.exception's stack trace is reserved for the genuinely
+        # unexpected `except Exception` fallback below; none of these three
+        # get a traceback, and nothing is logged below the quarantine
+        # threshold (the previous behaviour -- a traceback on every single
+        # attempt, every ~5s -- is exactly the noise this replaces).
+        state.consecutive_failures += 1
+        if (
+            state.consecutive_failures >= REPO_PROBE_FAILURE_QUARANTINE_THRESHOLD
+            and not state.warned
+        ):
+            state.warned = True
+            who = f" for project(s) {', '.join(project_ids)}" if project_ids else ""
+            logger.warning(
+                "Reconcile cannot reach repo %s%s after %d consecutive "
+                "attempts; disabling branch sweeps for it. It will retry "
+                "automatically with backoff; delete the project if this "
+                "repository is gone for good. Last error: %s",
+                repo_url,
+                who,
+                state.consecutive_failures,
+                exc,
+            )
+        if state.consecutive_failures >= REPO_PROBE_FAILURE_QUARANTINE_THRESHOLD:
+            doublings = min(
+                state.consecutive_failures - REPO_PROBE_FAILURE_QUARANTINE_THRESHOLD,
+                _QUARANTINE_MAX_COOLDOWN_DOUBLINGS,
+            )
+            cooldown = _QUARANTINE_INITIAL_COOLDOWN_PASSES * (2**doublings)
+            state.cooldown_remaining = min(cooldown, _QUARANTINE_MAX_COOLDOWN_PASSES)
+        return "probe_failed"
     except Exception:
         logger.exception("Failed to list remote branches for %s", repo_url)
-        return
+        return "probe_failed"
+
+    if state.consecutive_failures > 0:
+        # Recovery: the repo answered after a run of failures. Reset the
+        # streak and the one-warning latch so a LATER outage gets its own
+        # fresh warning rather than permanent silence.
+        logger.info(
+            "Repo %s is reachable again after %d consecutive failures; "
+            "resuming branch sweeps.",
+            repo_url,
+            state.consecutive_failures,
+        )
+        state.consecutive_failures = 0
+        state.cooldown_remaining = 0
+        state.warned = False
 
     dead = branch_sweeper.dead_branches(
         remote_branches,
@@ -155,6 +325,8 @@ async def sweep_dead_branches(
         else:
             failure_counts.pop(key, None)
 
+    return "swept"
+
 
 class ReconcileMixin:
     """Reconciliation half of the Orchestrator (see class Orchestrator)."""
@@ -170,6 +342,7 @@ class ReconcileMixin:
         _effective_settings: Any
         _git: Any
         _branch_delete_failures: dict[tuple[str, str], int]
+        _repo_probe_failures: dict[str, RepoProbeState]
 
     def _safe_logs(self, container_id: str) -> str:
         """Fetch full container logs, swallowing any backend errors."""
@@ -279,9 +452,15 @@ class ReconcileMixin:
             # a remote but disagreeing on the default branch protect both,
             # which is the fail-safe direction.
             project_rows = await self._tq._db.fetch_all(
-                "SELECT repo_url, default_branch FROM projects"
+                "SELECT id, repo_url, default_branch FROM projects"
             )
             default_branch_by_repo: dict[str, set[str]] = {}
+            # Which project(s) name this repo_url, carried only so the
+            # quarantine warning below can name the project rather than just
+            # the (possibly-cryptic) remote URL. Always non-empty for any
+            # repo_url that reaches the sweep call, since both maps are built
+            # from the same rows.
+            project_ids_by_repo: dict[str, list[str]] = {}
             for row in project_rows:
                 row_repo = row.get("repo_url")
                 if not row_repo:
@@ -290,6 +469,9 @@ class ReconcileMixin:
                 row_default = (row.get("default_branch") or "").strip()
                 if row_default:
                     bucket.add(row_default)
+                row_id = row.get("id")
+                if row_id:
+                    project_ids_by_repo.setdefault(row_repo, []).append(str(row_id))
 
             git_ops = getattr(self, "_git", None)
             if default_branch_by_repo and git_ops is not None:
@@ -424,6 +606,17 @@ class ReconcileMixin:
                     branch_delete_failures = {}
                     self._branch_delete_failures = branch_delete_failures
 
+                # Per-repo probe-failure/quarantine state, kept the same way
+                # and for the same reason as branch_delete_failures above: an
+                # in-memory dict lazily attached to the instance, cleared by
+                # a restart. This is what stops a repo whose path no longer
+                # exists from being re-probed (and re-tracebacked) every
+                # single reconcile pass forever.
+                repo_probe_failures = getattr(self, "_repo_probe_failures", None)
+                if repo_probe_failures is None:
+                    repo_probe_failures = {}
+                    self._repo_probe_failures = repo_probe_failures
+
                 for repo_url, repo_defaults in default_branch_by_repo.items():
                     # A plan with no plan_branch_name dispatches straight onto
                     # project["default_branch"], so that branch reaches
@@ -446,6 +639,8 @@ class ReconcileMixin:
                             "protected_branches": repo_defaults,
                         },
                         failure_counts=branch_delete_failures,
+                        repo_probe_state=repo_probe_failures,
+                        project_ids=project_ids_by_repo.get(repo_url, ()),
                     )
         except Exception:  # noqa: BLE001 - sweeper call is best-effort
             logger.exception("Failed to sweep dead branches during reconcile pass")

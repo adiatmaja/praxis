@@ -265,10 +265,10 @@ of what ships, not a pitch:
    against the *actual* local worker: `core/execute_plan_decompose.py`
    (`decompose_plan`) asks `effective_settings.capability_profile(model=...)` for the
    worker's profile (context window, keyed on param count) and sizes each leaf's
-   context budget to it (`build_review_prompt`, then
-   `int(context_window * (1 - WORKER_RESERVE_FRACTION))`, the constant living once in
-   `core/token_budget.py` so the decomposer and the worker bible cannot disagree about
-   how much of the window is the worker's own). A plan gets
+   context budget to it (`build_review_prompt`, then `worker_budget(context_window)`,
+   which lives once in `core/token_budget.py` so the decomposer and the worker bible
+   cannot disagree about how much of the window is the worker's own; the reserve is
+   the smaller of 60 percent and an absolute 32 768 tokens). A plan gets
    broken down to fit the model that will implement it, rather than handing a small
    model a task it cannot hold.
 

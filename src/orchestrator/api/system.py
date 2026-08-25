@@ -383,7 +383,9 @@ async def probe_provider_roundtrip(target: str | PlannerTarget) -> RoundTripResu
         probed", which ``probe_planner_cli`` reports as AMBER: an ``agy``
         planner reaches that branch with ``authenticated`` derived from ``agy
         help`` exiting 0, while the harness registry says agy needs an
-        interactive ``agy login``, so green there was a pass nothing earned.
+        interactive sign-in (started by launching ``agy`` with NO arguments;
+        there is no ``agy login`` subcommand), so green there was a pass
+        nothing earned.
     """
     spec = PlannerTarget(target) if isinstance(target, str) else target
     if spec.provider != "claude":

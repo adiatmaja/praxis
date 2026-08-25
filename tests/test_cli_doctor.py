@@ -4,6 +4,7 @@ from typer.testing import CliRunner
 
 from cli.doctor import render
 from cli.main import app
+from tests.cli_text import plain
 
 
 runner = CliRunner()
@@ -237,3 +238,78 @@ def test_doctor_renders_a_table_on_a_500(monkeypatch):
     assert "500" in result.stdout
     # The orchestrator_health check's own registry hint.
     assert "docker compose up" in result.stdout
+
+
+# --- A detail is third-party output, not console markup ---------------------
+#
+# The agy row prints what `agy models` said, VERBATIM. rich reads a bare "["
+# as the start of a markup tag, so before `render()` wrapped server strings in
+# `rich.text.Text` a detail could take the front door down entirely.
+
+
+def _payload_with_detail(detail: str, hint: str = "h") -> dict:
+    return {
+        "status": "amber",
+        "checks": [
+            {
+                "check_id": "agy_credentials",
+                "label": "agy worker credentials",
+                "status": "amber",
+                "detail": detail,
+                "hint": hint,
+            }
+        ],
+    }
+
+
+@pytest.mark.unit
+def test_a_detail_with_a_closing_markup_tag_does_not_raise(capsys):
+    """Measured: this raised rich.errors.MarkupError out of `render()`.
+
+    `doctor()` catches only `httpx.RequestError`, so the operator got a
+    traceback and NO TABLE AT ALL -- from the one command whose stated
+    contract is that it always answers, in the branch whose whole purpose is
+    handing over raw third-party output.
+    """
+    render(_payload_with_detail("agy said: [/red] and then stopped"))
+
+    assert "agy said" in capsys.readouterr().out
+
+
+@pytest.mark.unit
+def test_a_detail_that_looks_like_markup_is_printed_not_swallowed(capsys):
+    """The quieter half: `[bold]` did not crash, it was silently DELETED.
+
+    A verbatim row that drops part of the answer is worse than one that
+    crashes, because nothing says it happened.
+    """
+    render(_payload_with_detail("agy said: [bold] tokens [dim] here"))
+
+    out = capsys.readouterr().out
+    assert "[bold]" in out
+    assert "[dim]" in out
+
+
+@pytest.mark.unit
+def test_the_truncation_marker_survives_rendering(capsys):
+    """The marker is the only thing separating truncation from a silent cut.
+
+    rich was eating `[truncated at 300 characters]` as a markup tag, which
+    defeated the one docstring that explains why the marker exists.
+
+    Asserted through `plain()`: the marker lands in a table cell narrow enough
+    to wrap it, so a raw substring check would fail on the line break rather
+    than on the bug. Box glyphs are stripped before whitespace is collapsed,
+    per `tests/cli_text.py`.
+    """
+    render(_payload_with_detail("a" * 20 + " [truncated at 300 characters]"))
+
+    assert "[truncated at 300 characters]" in plain(capsys.readouterr().out)
+
+
+@pytest.mark.unit
+def test_a_hint_that_looks_like_markup_is_printed_literally(capsys):
+    """Hints carry shell commands, and a bracket in one must not vanish."""
+    render(_payload_with_detail("d", hint="run `foo --opt [a|b]` then retry"))
+
+    assert "[a|b]" in capsys.readouterr().out

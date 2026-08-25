@@ -164,3 +164,140 @@ async def test_escalation_policy_defaults_block(
     effective_settings: EffectiveSettings,
 ) -> None:
     assert await effective_settings.escalation_policy(project_id=None) == "block"
+
+
+# ---------------------------------------------------------------------------
+# Declared context windows
+#
+# The quieter half of the cloud-harness budgeting defect. This profile's
+# ``context_window`` is the denominator for ``difficulty.extract_features``'s
+# ``context_ratio``, the decomposer's per-leaf budget, ``leaf_triage``'s prompt
+# and ``plan_review``'s prompt. All four read one shipped number (8192, sized
+# for a local open-weight worker), so a cloud-harness project was decomposed as
+# though its model had an 8 K window.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+async def test_capability_profile_takes_a_declared_window_over_the_yaml_default(
+    effective_settings: EffectiveSettings,
+) -> None:
+    """The one line that reaches all four downstream readers at once."""
+    default = await effective_settings.capability_profile(project_id=None)
+    declared = await effective_settings.capability_profile(
+        project_id=None, model="Gemini 3.7 Flash (High)"
+    )
+    assert default.context_window == 8192
+    assert declared.context_window == 1_000_000
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "model",
+    ["Gemini 3.7 Pro", "gemini-3.7-flash-high", "Gemini 4 Flash"],
+)
+async def test_capability_profile_uses_the_harness_tier_for_an_unenumerated_model(
+    effective_settings: EffectiveSettings, model: str
+) -> None:
+    """The decomposer and the dispatch gate must agree about one model.
+
+    Without ``harness`` in scope this seam consulted the model map only, so
+    every agy model string except the one enumerated entry resolved to a real
+    window at dispatch and was STILL decomposed at 8192. The agy id spelling
+    ``gemini-3.7-flash-high`` is documented in ``core/doctor_probes`` as a real
+    and common one, so this is not a hypothetical variant.
+    """
+    without = await effective_settings.capability_profile(project_id=None, model=model)
+    with_harness = await effective_settings.capability_profile(
+        project_id=None, model=model, harness="agy"
+    )
+    assert without.context_window == 8192
+    assert with_harness.context_window == 1_000_000
+
+
+@pytest.mark.unit
+async def test_the_project_window_column_reaches_the_capability_profile(
+    effective_settings: EffectiveSettings,
+) -> None:
+    """An operator following the skip warning must fix BOTH seams, not one.
+
+    Setting ``projects.context_window`` fixed the dispatch gate and left the
+    decomposer at 8 K with nothing saying so.
+    """
+    prof = await effective_settings.capability_profile(
+        project_id=None, model="glm-4.7", project_context_window=128_000
+    )
+    assert prof.context_window == 128_000
+
+
+@pytest.mark.unit
+async def test_the_project_window_column_outranks_a_capability_override(
+    effective_settings: EffectiveSettings, seed_override
+) -> None:
+    """Same precedence as the gate, deliberately.
+
+    The column wins over everything at dispatch. If it lost to the capability
+    override here, one model would carry two different windows depending on
+    which seam asked, which is the disagreement this change exists to remove.
+    """
+    await seed_override(
+        "capability.qwen3.8-27b",
+        {"parameter_count_b": 30, "context_window": 32_768},
+        project_id="p1",
+    )
+    prof = await effective_settings.capability_profile(
+        project_id="p1", model="qwen3.8-27b", project_context_window=112_277
+    )
+    assert prof.context_window == 112_277
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("column", [0, -1, "131072", True, None])
+async def test_a_junk_project_window_column_is_not_a_window(
+    effective_settings: EffectiveSettings, column
+) -> None:
+    """Same coercion as the gate: junk falls through, it never becomes a window."""
+    prof = await effective_settings.capability_profile(
+        project_id=None, model="qwen3.8-27b", project_context_window=column
+    )
+    assert prof.context_window == 8192
+
+
+@pytest.mark.unit
+async def test_capability_profile_leaves_an_undeclared_model_untouched(
+    effective_settings: EffectiveSettings,
+) -> None:
+    """A local model nobody declared keeps the settings file's number exactly.
+
+    Delete this and a regression that declared a window for every model would
+    go unnoticed; the point of the layer is that it is narrow.
+    """
+    prof = await effective_settings.capability_profile(
+        project_id=None, model="qwen3.8-27b"
+    )
+    assert prof.context_window == 8192
+
+
+@pytest.mark.unit
+async def test_a_project_capability_override_still_beats_a_declared_window(
+    effective_settings: EffectiveSettings, seed_override
+) -> None:
+    await seed_override(
+        "capability.Gemini 3.7 Flash (High)",
+        {"parameter_count_b": 70, "context_window": 123_456},
+        project_id="p1",
+    )
+    prof = await effective_settings.capability_profile(
+        project_id="p1", model="Gemini 3.7 Flash (High)"
+    )
+    assert prof.context_window == 123_456
+
+
+@pytest.mark.unit
+async def test_declared_context_windows_exposes_the_shipped_defaults(
+    effective_settings: EffectiveSettings,
+) -> None:
+    declared = await effective_settings.declared_context_windows()
+    assert declared.for_model("Gemini 3.7 Flash (High)") == 1_000_000
+    assert declared.for_harness("agy") == 1_000_000
+    assert declared.for_model("qwen3.8-27b") is None

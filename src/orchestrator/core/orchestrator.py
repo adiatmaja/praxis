@@ -3,20 +3,37 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
+import shutil
+import stat
+import uuid
 from datetime import UTC, datetime
-from typing import Any
+from pathlib import Path
+from typing import Any, cast
 
 from orchestrator.core.agent_prompt import build_implementer_prompt
 from orchestrator.core.capability_events import CapabilityEventEmitter
 from orchestrator.core.clarification_states import RESUMABLE_CLARIFICATION_STATES
 from orchestrator.core.event_bus import EventBus
-from orchestrator.core.git_backend import GitBackend, resolve_backend
-from orchestrator.core.llm_router import ProviderAuthError
+from orchestrator.core.git_backend import (
+    GitBackend,
+    PullRequestRef,
+    is_local_repo_url,
+    resolve_backend,
+)
+from orchestrator.core.git_ops import clone_with_token
+from orchestrator.core.llm_router import ProviderAuthError, ProviderRateLimitError
+from orchestrator.core.opus_bridge import (
+    BrainMalformedJsonError,
+    BrainProseResponseError,
+    parking_brain_runner,
+)
 from orchestrator.core.orchestrator_dispatch import DispatchMixin
 from orchestrator.core.orchestrator_improve import ImprovementMixin
 from orchestrator.core.orchestrator_reconcile import ReconcileMixin
 from orchestrator.core.orchestrator_review import ReviewMixin
+from orchestrator.core.provider_errors import is_unavailability
 from orchestrator.core.task_queue import TaskQueue
 from orchestrator.models.schemas import PlanStatus, TaskStatus
 
@@ -49,6 +66,243 @@ _MIN_LOOP_INTERVAL_SECONDS = 1.0
 _ACTIVATABLE_PLAN_STATUSES: frozenset[str] = frozenset(
     {PlanStatus.PENDING.value, PlanStatus.ACTIVE.value}
 )
+
+# How many times planning may fail transiently before the plan goes terminal.
+# The number is small on purpose: a planner that has produced unparseable JSON
+# three passes running is not warming up, and every extra attempt is another
+# tick in which a stuck plan is indistinguishable from a healthy one.
+#
+# The PERMANENT class of failure does not consume this budget at all; it goes
+# terminal on the first occurrence. Neither does a rate limit, which is the one
+# failure this system already knows how to wait out.
+#
+# PUBLIC because it is served: ``PlanResponse.max_planning_attempts`` reads it
+# so `praxis plans` can print "attempt 2/3" with a denominator it was TOLD
+# rather than one it mirrors. The CLI used to hold its own copy of the number
+# and said so in a comment ("there is no second source of truth to keep it
+# honest"); raising this constant then printed "attempt 4/3" at an operator,
+# a denominator saying the plan is already dead, with the suite green.
+MAX_PLANNING_ATTEMPTS = 3
+
+# Where the planner's throwaway repository clones are made. Relative, so it
+# resolves under the process's working directory: ``/app`` in the shipped
+# container (and ``/app/data`` is a named volume, not a host bind mount, so a
+# clone here does not cross the Docker Desktop filesystem boundary). ``data/``
+# is already this project's CWD-relative state directory and is gitignored, so
+# a bare checkout does not gain an untracked directory either.
+_PLANNER_WORKSPACE_DIR = "data/planner-workspaces"
+
+# Ceiling on the planner's repository clone. The clone runs in a worker thread
+# so the loop is not blocked while it waits, but an unbounded wait would still
+# park THIS plan forever on a hung network fetch, and a plan parked forever is
+# the failure mode this whole change exists to remove.
+#
+# Honest limitation: cancelling the wait does not kill the git process, which
+# keeps running in its thread and may still be writing into the workspace the
+# cleanup then tries to delete. The cleanup logs when it cannot. Unblocking the
+# plan is worth a leaked process; the alternative is an orchestrator that
+# stops answering.
+_CLONE_TIMEOUT_SECONDS = 300.0
+
+# Keys the activation path READS. Nothing upstream validates them: the plan
+# prompt is a plain template with no ``json_schema``, so a model that answers
+# in perfectly valid JSON and drops one key is an ordinary slip.
+_REQUIRED_PLAN_KEYS = ("plan_slug", "tasks")
+_REQUIRED_TASK_KEYS = ("title", "slug", "description")
+
+
+def _planner_workspace_base() -> Path:
+    """Return the absolute directory planner clones are made under."""
+    return Path(_PLANNER_WORKSPACE_DIR).resolve()
+
+
+def _remove_planner_workspace(workspace: Path) -> None:
+    """Delete a planner clone, including the files git marks read-only.
+
+    A bare ``shutil.rmtree(..., ignore_errors=True)`` LEAKS on Windows: git
+    write-protects the files under ``.git/objects``, ``os.unlink`` raises
+    PermissionError, and ``ignore_errors`` swallows it, so every planned plan
+    leaves a whole clone behind and nothing says so. The fast path is tried
+    first because on the container's Linux filesystem it always succeeds.
+
+    Args:
+        workspace: The clone directory to remove.
+    """
+    try:
+        shutil.rmtree(workspace)
+    except FileNotFoundError:
+        return
+    except OSError:
+        # Grant owner-write and retry. Deliberately additive: forcing a fixed
+        # mode would strip the execute bit off directories on POSIX and make
+        # the tree untraversable, so the retry would fail where the first
+        # attempt had merely stumbled.
+        for path in workspace.rglob("*"):
+            with contextlib.suppress(OSError):
+                path.chmod(path.stat().st_mode | stat.S_IWUSR)
+        shutil.rmtree(workspace, ignore_errors=True)
+        if workspace.exists():
+            logger.warning(
+                "Planner workspace %s could not be removed; it will accumulate "
+                "until an operator clears it",
+                workspace,
+            )
+
+
+def _read_workspace_doc(workspace: str, path: str) -> str | None:
+    """Read a repo-relative doc out of a checkout that already exists.
+
+    The spec reader clones the whole repository at depth 50 to read ONE file
+    and then deletes it, milliseconds before the planner workspace clones the
+    same repository at the same depth again. Reading out of the workspace
+    removes that entire second clone.
+
+    Args:
+        workspace: An existing checkout of the project repository.
+        path: The repo-relative document path.
+
+    Returns:
+        The document text, or None when it is not in this checkout, so the
+        caller can fall back to the spec reader rather than fail a plan over
+        the shape of a shallow clone.
+    """
+    root = Path(workspace).resolve()
+    target = (root / path).resolve()
+    # Containment check, same as the spec reader's: a ``spec_path`` is
+    # attacker-influenced input and ``../`` must not escape the checkout.
+    if not target.is_relative_to(root) or not target.is_file():
+        return None
+    try:
+        return target.read_text(encoding="utf-8")
+    except OSError as exc:
+        logger.warning("Could not read %s from the planner checkout: %s", path, exc)
+        return None
+
+
+def _validate_plan_shape(opus_plan: Any) -> None:
+    """Reject a well-formed JSON answer the activation path cannot read.
+
+    ``_extract_json`` proves the answer is JSON. It proves nothing about the
+    SHAPE. A response carrying ``plan_summary`` and ``tasks`` but no
+    ``plan_slug`` used to raise ``KeyError`` one line PAST the guarded block,
+    escape to ``run_once``, and leave the plan pending with no attempt counted
+    and no error recorded: the same invisible forever-retry this change exists
+    to close, one line further down, with the same symptom on the same
+    surface. Reproduced live before this validator existed.
+
+    Classified TRANSIENT rather than permanent: a model that dropped one key
+    while otherwise answering in the requested shape may well not drop it on
+    the next sample, so it earns the bounded retry rather than an immediate
+    terminal verdict.
+
+    Args:
+        opus_plan: Whatever the planner's JSON decoded to.
+
+    Raises:
+        BrainMalformedJsonError: The answer is missing something the loop reads.
+    """
+    raw = str(opus_plan)
+    if not isinstance(opus_plan, dict):
+        message = (
+            f"the planner returned a JSON {type(opus_plan).__name__}, not an object"
+        )
+        raise BrainMalformedJsonError(message, raw)
+    missing = [key for key in _REQUIRED_PLAN_KEYS if key not in opus_plan]
+    if missing:
+        message = f"the planner's JSON is missing required key(s): {', '.join(missing)}"
+        raise BrainMalformedJsonError(message, raw)
+    tasks = opus_plan["tasks"]
+    if not isinstance(tasks, list):
+        message = f"the planner's JSON 'tasks' is a {type(tasks).__name__}, not a list"
+        raise BrainMalformedJsonError(message, raw)
+    for index, task in enumerate(tasks):
+        if not isinstance(task, dict):
+            message = f"the planner's JSON task {index} is not an object"
+            raise BrainMalformedJsonError(message, raw)
+        absent = [key for key in _REQUIRED_TASK_KEYS if key not in task]
+        if absent:
+            message = (
+                f"the planner's JSON task {index} is missing required key(s): "
+                f"{', '.join(absent)}"
+            )
+            raise BrainMalformedJsonError(message, raw)
+
+
+def _with_checkout_note(reason: str, degraded: str | None) -> str:
+    """Append the degraded-checkout fact to a reason an operator will read.
+
+    A failed clone used to be a WARNING in the container log and nothing else,
+    so an operator reading ``plans.error`` was told to check that the
+    repository was reachable while the evidence that it was NOT reachable
+    existed only in ``docker logs``. That is the exact gap that cost the field
+    reporter an afternoon.
+
+    Args:
+        reason: The primary reason, already written for an operator.
+        degraded: How the clone failed, or None when it succeeded.
+
+    Returns:
+        The reason, with the checkout note appended when there is one.
+    """
+    if degraded is None:
+        return reason
+    return (
+        f"{reason}\n\nNote: the planner ran WITHOUT a readable checkout of the "
+        f"repository, because cloning it failed with: {degraded}"
+    )
+
+
+def _unavailable_reason(exc: BaseException) -> str:
+    """Explain a planner that is throttled or unreachable, and say to WAIT.
+
+    The action is the opposite of every other failure message here, which is
+    why it gets its own: resubmitting during a subscription throttle fails the
+    same way, and the limit clears on its own.
+
+    Args:
+        exc: The provider error that surfaced.
+
+    Returns:
+        The message to write to ``plans.error``.
+    """
+    return (
+        "the planner is temporarily unavailable (a subscription rate limit, or "
+        "a gateway or endpoint outage), so planning is WAITING rather than "
+        "failing. No attempt was consumed and the next pass retries by itself. "
+        "Do NOT resubmit the specification: a resubmission during a throttle "
+        "fails the same way, and a subscription limit resets on its own "
+        "(typically within five hours). `praxis status` reports the brain's "
+        f"state. The provider said: {exc}"
+    )
+
+
+def _prose_failure_reason(exc: BrainProseResponseError) -> str:
+    """Explain a planner that answered in prose, to ``praxis doctor`` standard.
+
+    Names what happened, the likeliest cause, the remedy, and the evidence.
+    The evidence matters most: the planner's own words are the only thing that
+    distinguishes a refusal from a question from a permission request, and they
+    exist nowhere else once the exception is swallowed.
+
+    Args:
+        exc: The classification error, carrying the raw response.
+
+    Returns:
+        The message to write to ``plans.error``.
+    """
+    return (
+        "the planner answered in prose instead of JSON, which means it "
+        "refused, asked a question, or requested permission rather than "
+        "failing. Retrying cannot change that, so this plan is terminal after "
+        "one attempt. The known cause is a planner that could not read the "
+        "repository: check that the project's repo_url is reachable from the "
+        "orchestrator (a local path outside the orchestrator's own working "
+        "directory is the usual culprit) and that the planner provider is "
+        "authenticated, with `praxis doctor`. Once that is fixed, resubmit the "
+        "specification: this plan is terminal and will not retry on its own. "
+        "The planner said:\n\n"
+        f"{exc.excerpt}"
+    )
 
 
 def _is_awaiting_an_answer(task: dict[str, Any]) -> bool:
@@ -171,7 +425,9 @@ class Orchestrator(DispatchMixin, ReviewMixin, ReconcileMixin, ImprovementMixin)
         """
         return resolve_backend(repo_url, self._git)
 
-    async def _load_spec_text(self, plan: dict[str, Any], repo_url: str) -> str:
+    async def _load_spec_text(
+        self, plan: dict[str, Any], repo_url: str, workspace: str | None = None
+    ) -> str:
         """Return the spec text a plan points at.
 
         ``plans.spec_path`` is a repo path, not the specification itself, so it
@@ -179,6 +435,21 @@ class Orchestrator(DispatchMixin, ReviewMixin, ReconcileMixin, ImprovementMixin)
         here raises: planning from an empty spec produces a plausible-looking
         task graph derived from the repository name and dispatches real workers
         against it, which is worse than not planning at all.
+
+        Args:
+            plan: The plan row, read for ``spec_path``.
+            repo_url: The project repository, for the spec reader's own clone.
+            workspace: A checkout of that repository the planner already made.
+                When the doc is in it, it is read straight off disk and the
+                spec reader's SECOND full clone of the same repository at the
+                same depth never happens. A miss falls back rather than fails:
+                a shallow clone is not a reason to fail a plan.
+
+        Returns:
+            The specification text.
+
+        Raises:
+            ValueError: No ``spec_path``, no way to read it, or an empty doc.
         """
 
         spec_path = plan.get("spec_path")
@@ -188,14 +459,18 @@ class Orchestrator(DispatchMixin, ReviewMixin, ReconcileMixin, ImprovementMixin)
                 "from; resubmit the specification"
             )
             raise ValueError(msg)
-        if self._spec_reader is None:
-            msg = f"no spec reader is configured, cannot read {spec_path}"
-            raise ValueError(msg)
-        text = await self._spec_reader.read_doc(repo_url, spec_path)
+        text: str | None = None
+        if workspace is not None:
+            text = _read_workspace_doc(workspace, str(spec_path))
+        if text is None:
+            if self._spec_reader is None:
+                msg = f"no spec reader is configured, cannot read {spec_path}"
+                raise ValueError(msg)
+            text = str(await self._spec_reader.read_doc(repo_url, spec_path))
         if not text.strip():
             msg = f"spec doc {spec_path} is empty"
             raise ValueError(msg)
-        return str(text)
+        return text
 
     async def _still_activatable(self, plan_id: str, stage: str) -> bool:
         """Re-read a plan's status and report whether it may still be activated.
@@ -241,6 +516,214 @@ class Orchestrator(DispatchMixin, ReviewMixin, ReconcileMixin, ImprovementMixin)
         )
         return False
 
+    async def _fail_plan(self, plan_id: str, reason: str) -> None:
+        """Take a plan terminal with a reason an operator can act on.
+
+        The three writes belong together: a FAILED plan with no ``error`` is
+        the same silence as no verdict at all, and an ``error`` on a plan still
+        reported PENDING is a note nobody reads.
+
+        Args:
+            plan_id: The plan to fail.
+            reason: What happened, why, and what to do about it.
+        """
+        logger.error("Planning failed for plan %s: %s", plan_id, reason)
+        await self._tq.set_plan_error(plan_id, reason)
+        await self._tq.update_plan_status(plan_id, PlanStatus.FAILED)
+        self._bus.publish({"type": "plan_failed", "plan_id": plan_id, "reason": reason})
+
+    async def _clone_for_planning(self, project: dict[str, Any], dest: str) -> None:
+        """Check the project repository out into ``dest`` for the planner to read.
+
+        ``plan_spec`` interpolates ``repo_url`` into its prompt and used to run
+        in the orchestrator's own working directory, so the model was asked to
+        reason about a path it could not open. In the field that produced a
+        prose permission request instead of a plan.
+
+        Provider-agnostic on purpose: a real checkout works for ``claude``,
+        ``codex``, ``agy`` and ``local`` alike, whereas ``claude --add-dir``
+        would only work for one of the four.
+
+        The remote arm runs in a worker thread under a timeout.
+        ``clone_with_token`` is a synchronous ``subprocess.run`` with no
+        deadline of its own, and calling it bare from a coroutine blocks the
+        single event loop this process has: not just the orchestration pass but
+        FastAPI, SSE and every agent callback, for as long as the fetch takes.
+        The local arm needs neither, because the local backend already shells
+        out through ``create_subprocess_exec``.
+
+        Args:
+            project: The project row, read for ``repo_url`` and ``default_branch``.
+            dest: An existing empty directory to clone into.
+
+        Raises:
+            TimeoutError: The clone outran ``_CLONE_TIMEOUT_SECONDS``.
+            Exception: Any clone failure; the caller degrades rather than wedge.
+        """
+        repo_url = str(project["repo_url"])
+        if is_local_repo_url(repo_url):
+            # The local backend's own checkout, so bare-repo handling stays in
+            # one place. It reads only ``branch``; ``base`` is set to the same
+            # value rather than left empty so a future checkout that did
+            # consult it would still resolve the branch being planned against.
+            branch = str(project.get("default_branch") or "main")
+            ref = PullRequestRef(backend="local", branch=branch, base=branch)
+            await self._resolve_backend(repo_url).checkout(ref, dest)
+            return
+
+        provider = getattr(self._git, "_provider", None)
+        if provider is None:
+            message = "no git credential provider is configured"
+            raise RuntimeError(message)
+        token = await provider.token_for_repo(repo_url)
+        if not token:
+            message = f"no credential is available for {repo_url}"
+            raise RuntimeError(message)
+        await asyncio.wait_for(
+            asyncio.to_thread(clone_with_token, repo_url, dest, token),
+            timeout=_CLONE_TIMEOUT_SECONDS,
+        )
+
+    async def _open_planner_workspace(
+        self, plan_id: str, project: dict[str, Any], workspace: Path
+    ) -> tuple[str | None, str | None]:
+        """Clone the repository for the planner, degrading rather than wedging.
+
+        Args:
+            plan_id: The plan being planned, for the log line.
+            project: The project row.
+            workspace: The directory to clone into.
+
+        Returns:
+            ``(cwd, degraded)``: the checkout to run the planner in and None,
+            or None and a description of why there is no checkout.
+        """
+        try:
+            workspace.mkdir(parents=True, exist_ok=True)
+            await self._clone_for_planning(project, str(workspace))
+        except Exception as exc:  # noqa: BLE001 - degrade, never wedge planning
+            # Exactly how review degrades to a diff-only pass when the PR head
+            # cannot be cloned: worse planning beats no planning, and the
+            # planner still has the spec text. WARNING, because a repository
+            # the orchestrator cannot reach is a broken deployment rather than
+            # an operator choice.
+            logger.warning(
+                "Planner checkout failed for plan %s (%s); planning without a "
+                "readable repository",
+                plan_id,
+                exc,
+            )
+            return None, f"{type(exc).__name__}: {exc}"
+        return str(workspace), None
+
+    async def _planned_graph_or_reported(
+        self,
+        plan_id: str,
+        project: dict[str, Any],
+        spec_text: str,
+        cwd: str | None,
+        degraded: str | None,
+    ) -> dict[str, Any] | None:
+        """Call the planner and classify whatever comes back.
+
+        Args:
+            plan_id: The plan being planned.
+            project: The project row.
+            spec_text: The specification to decompose.
+            cwd: A checkout for the planner to read, or None.
+            degraded: Why there is no checkout, appended to any reason written.
+
+        Returns:
+            The validated task graph, or None when the outcome has already been
+            written to the plan row (failed, waiting, or awaiting a retry).
+        """
+        try:
+            opus_plan = await self._opus.plan_spec(
+                spec_text,
+                project["repo_url"],
+                model=project.get("agent_model"),
+                effort=project.get("agent_model_effort"),
+                cwd=cwd,
+            )
+            _validate_plan_shape(opus_plan)
+        except BrainProseResponseError as exc:
+            # PERMANENT, and terminal on the first occurrence. The response
+            # carried no JSON at all, so it is a refusal, a question, or a
+            # permission request; the same prompt will produce the same answer
+            # on every tick from now until somebody looks.
+            await self._fail_plan(
+                plan_id, _with_checkout_note(_prose_failure_reason(exc), degraded)
+            )
+            return None
+        except Exception as exc:  # noqa: BLE001 - bounded retry, reported either way
+            if is_unavailability(exc) or not await self._opus.is_available():
+                # A throttle or an outage must NOT consume an attempt. Both
+                # halves are load-bearing and neither subsumes the other.
+                #
+                # `opus_state` used to be parked ONLY by
+                # `_check_and_handle_rate_limit`, which only the legacy
+                # `_run_claude` path reaches; on a stock install `plan_spec`
+                # goes through the router, which did not touch that row.
+                # Reading the state alone therefore missed every real rate
+                # limit, and at the shipped five-second interval that failed a
+                # healthy plan fifteen seconds into a five-hour wait: an
+                # inertness converted into data loss.
+                #
+                # The router now parks it too (`OpusBridge._run_routed`), and
+                # it parks BEFORE re-raising, so on the bridge path the state
+                # check below is already False by the time this line runs --
+                # even on the very first tick. `is_unavailability` is NOT what
+                # saves that tick.
+                #
+                # It is still load-bearing, for the cases parking does not
+                # cover. Most of what reaches here is an unavailability that
+                # deliberately never parks at all (`ProviderAuthError`, a
+                # gateway 403/429/5xx), and neither does a throttle raised by
+                # a seat that calls `router.run` directly rather than through
+                # `OpusBridge`, nor one lost when a fallback chain's LAST
+                # entry fails differently. Reading the EXCEPTION covers all of
+                # those; reading the state covers nothing but a throttle that
+                # already parked.
+                reason = _with_checkout_note(_unavailable_reason(exc), degraded)
+                logger.warning(
+                    "Planning for plan %s is waiting on the provider (%s). "
+                    "No attempt was consumed.",
+                    plan_id,
+                    exc,
+                )
+                await self._tq.set_plan_error(plan_id, reason)
+                return None
+            attempts = await self._tq.bump_plan_attempts(plan_id)
+            if attempts >= MAX_PLANNING_ATTEMPTS:
+                await self._fail_plan(
+                    plan_id,
+                    _with_checkout_note(
+                        f"planning failed on {attempts} of "
+                        f"{MAX_PLANNING_ATTEMPTS} permitted attempts and will "
+                        "not be retried, because a plan that keeps retrying is "
+                        "indistinguishable from one that is still being "
+                        "decomposed. Check the planner with `praxis doctor`, "
+                        f"then resubmit the specification. Last error: {exc}",
+                        degraded,
+                    ),
+                )
+                return None
+            # Left PENDING deliberately: the next tick retries. The reason is
+            # recorded now rather than only at the end, because a plan quietly
+            # burning attempts is the same invisible state as one wedged.
+            reason = _with_checkout_note(
+                f"planning attempt {attempts} of {MAX_PLANNING_ATTEMPTS} failed "
+                f"and will be retried on the next pass: {exc}",
+                degraded,
+            )
+            logger.warning("Plan %s: %s", plan_id, reason)
+            await self._tq.set_plan_error(plan_id, reason)
+            return None
+        # `_opus` is typed loosely so tests can pass a double, so the graph
+        # arrives as Any. `_validate_plan_shape` has already proven it is a
+        # dict with the keys the activation path reads.
+        return cast(dict[str, Any], opus_plan)
+
     async def plan_and_activate(self, plan_id: str, project: dict[str, Any]) -> None:
         """Ask Opus to plan a pending spec and activate the resulting task graph."""
 
@@ -255,29 +738,48 @@ class Orchestrator(DispatchMixin, ReviewMixin, ReconcileMixin, ImprovementMixin)
             self._bus.publish({"type": "opus_queued", "action": "plan"})
             return
 
+        # The checkout is opened FIRST so the spec can be read out of it. The
+        # spec reader clones the whole repository to read one file and deletes
+        # it, so loading the spec first meant two full clones of the same
+        # repository per attempt, and six before a throttled plan died.
+        workspace = _planner_workspace_base() / uuid.uuid4().hex
+        cwd, degraded = await self._open_planner_workspace(plan_id, project, workspace)
         try:
-            spec_text = await self._load_spec_text(plan, project["repo_url"])
-        except Exception as exc:  # noqa: BLE001 - terminal, reported on the plan
-            reason = f"could not load the plan's specification: {exc}"
-            logger.error("Planning aborted for plan %s: %s", plan_id, reason)
-            await self._tq.set_plan_error(plan_id, reason)
-            await self._tq.update_plan_status(plan_id, PlanStatus.FAILED)
-            self._bus.publish(
-                {"type": "plan_failed", "plan_id": plan_id, "reason": reason}
-            )
-            return
+            try:
+                spec_text = await self._load_spec_text(
+                    plan, project["repo_url"], workspace=cwd
+                )
+            except Exception as exc:  # noqa: BLE001 - terminal, reported on the plan
+                await self._fail_plan(
+                    plan_id,
+                    _with_checkout_note(
+                        f"could not load the plan's specification: {exc}", degraded
+                    ),
+                )
+                return
 
-        opus_plan = await self._opus.plan_spec(
-            spec_text,
-            project["repo_url"],
-            model=project.get("agent_model"),
-            effort=project.get("agent_model_effort"),
-        )
-        today = datetime.now(UTC).date().isoformat()
-        branch = f"plan/{today}-{opus_plan['plan_slug']}"
-        if not await self._still_activatable(plan_id, "plan_spec"):
-            return
-        await self._tq.activate_plan(plan_id, opus_plan, branch)
+            opus_plan = await self._planned_graph_or_reported(
+                plan_id, project, spec_text, cwd, degraded
+            )
+            if opus_plan is None:
+                return
+
+            # Reachable only past `_validate_plan_shape`, so neither of these
+            # subscripts can raise: they used to, one line past the guard, and
+            # the KeyError escaped to `run_once` leaving the plan pending with
+            # no attempt counted and no error recorded.
+            today = datetime.now(UTC).date().isoformat()
+            branch = f"plan/{today}-{opus_plan['plan_slug']}"
+            if not await self._still_activatable(plan_id, "plan_spec"):
+                return
+            await self._tq.activate_plan(plan_id, opus_plan, branch)
+        finally:
+            _remove_planner_workspace(workspace)
+
+        # A plan that recovered must not carry the count of the attempts it
+        # recovered from, or the next transient failure lands on a budget that
+        # is already partly spent.
+        await self._tq.reset_plan_attempts(plan_id)
         self._bus.publish(
             {
                 "type": "plan_activated",
@@ -290,7 +792,18 @@ class Orchestrator(DispatchMixin, ReviewMixin, ReconcileMixin, ImprovementMixin)
     async def decompose_pending_execute_plan(
         self, plan_id: str, project: dict[str, Any]
     ) -> None:
-        """Run the brain decomposition for a pending execute-plan, then activate."""
+        """Run the brain decomposition for a pending execute-plan, then activate.
+
+        Three outcomes, and the third is the one that used to be missing: the
+        plan activates, or it FAILS terminally on a rejected decomposition, or
+        it WAITS on a throttled brain -- still PENDING, no attempt consumed,
+        with a reason on the row saying so. Anything else escapes to
+        ``run_once``'s per-plan quarantine, which is a silent retry loop.
+
+        Args:
+            plan_id: The pending execute-plan.
+            project: Its project row.
+        """
         import json as _json
 
         from orchestrator.core.execute_plan_decompose import decompose_plan
@@ -317,14 +830,50 @@ class Orchestrator(DispatchMixin, ReviewMixin, ReconcileMixin, ImprovementMixin)
                 plan=payload["plan"],
                 model=payload["model"],
                 context=payload.get("context"),
-                router=self._llm_router,
+                # The BRIDGE, not the bare router. This seat called
+                # ``LLMRouter.run`` directly, so a throttle here never touched
+                # ``opus_state`` and the ``is_available`` gate above could not
+                # fire on the next pass; see the rate-limit arm below.
+                router=parking_brain_runner(self._opus, self._llm_router),
                 effective_settings=self._effective_settings,
                 project_id=project["id"],
                 local_context=payload.get("local_context"),
                 plan_id=plan_id,
                 emitter=self._emitter,
                 db=self._tq._db,
+                # The window this plan's leaves will actually be dispatched
+                # against. The pending_input payload carries the model but not
+                # the harness, and without both the decomposer sized leaves for
+                # an 8 K worker while the gate resolved the real window.
+                harness=project.get("harness"),
+                project_context_window=project.get("context_window"),
             )
+        except ProviderRateLimitError as exc:
+            # WAIT, do not fail and do not let this escape. The state row was
+            # parked on the way out (``OpusBridge.run``), which is what makes
+            # the ``is_available`` gate at the top of this method fire from the
+            # next pass on.
+            #
+            # Escaping was the whole defect: this type is not a
+            # ``PlanReviewError``, so it left this method for ``run_once``'s
+            # per-plan quarantine, which logs and moves on. The plan stayed
+            # PENDING and was re-decomposed on EVERY tick -- at the shipped
+            # five-second interval, roughly 3600 throttled CLI invocations
+            # across one five-hour window, while `praxis status` reported the
+            # brain available throughout.
+            #
+            # No attempt is consumed, exactly as ``plan_and_activate`` does not
+            # consume one for the same failure, and the same operator-facing
+            # sentence is written so both planning paths say the same thing.
+            reason = _unavailable_reason(exc)
+            logger.warning(
+                "execute-plan decomposition for %s is waiting on the provider "
+                "(%s). No attempt was consumed.",
+                plan_id,
+                exc,
+            )
+            await self._tq.set_plan_error(plan_id, reason)
+            return
         except PlanReviewError as exc:
             await self._tq.set_plan_error(plan_id, str(exc))
             await self._tq.update_plan_status(plan_id, PlanStatus.FAILED)

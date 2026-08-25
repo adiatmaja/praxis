@@ -16,7 +16,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 
 from orchestrator.api.auth import verify_token
-from orchestrator.core.context_scrub import scrub_context
+from orchestrator.core.context_scrub import INTAKE_ABUSE_CEILING_CHARS, scrub_context
 from orchestrator.core.git_ops import GitOps
 from orchestrator.core.github_credentials import (
     GitHubCredentialProvider,
@@ -251,6 +251,7 @@ async def dispatch_task(request: Request, body: DispatchRequest) -> dict[str, An
     )
     if project is None:
         project_id = str(uuid.uuid4())
+        effective_harness = body.harness or default_harness_id()
         await db.execute(
             """INSERT INTO projects
                (id, user_id, name, repo_url, default_branch, approval_gate,
@@ -281,7 +282,7 @@ async def dispatch_task(request: Request, body: DispatchRequest) -> dict[str, An
                 # improvement plans nobody has approved to RUN".
                 True,
                 body.model,
-                body.harness or default_harness_id(),
+                effective_harness,
             ),
         )
     else:
@@ -307,10 +308,32 @@ async def dispatch_task(request: Request, body: DispatchRequest) -> dict[str, An
         task_dict["plan_path"] = body.plan_path
     if body.plan_text is not None:
         task_dict["plan_text"] = body.plan_text
-    scrubbed_context = scrub_context(body.context)
+    # This is intake, not the worker-bible assembly: nobody here has resolved
+    # the worker's real context window (that requires a live LM Studio probe
+    # for an undeclared model, which every dispatch request must not pay
+    # for), so the ONLY cap applied here is a fixed abuse guard, not a
+    # context budget. The real, window-sized cap is enforced exactly once,
+    # downstream, in ``core/worker_bible.build_bible`` - the seam that
+    # actually resolves the window - when this same text is re-scrubbed as
+    # ``caller_context`` / ``repo_memory``. Capping here at anything smaller
+    # would cut the text before that seam ever runs; a re-scrub cannot
+    # lengthen a string intake already shortened.
+    scrubbed_context = scrub_context(
+        body.context,
+        INTAKE_ABUSE_CEILING_CHARS,
+        cap_reason="Praxis's intake abuse guard (not sized to any worker's "
+        "context window - the real budget is enforced later, once the "
+        "worker's window is resolved)",
+    )
     if scrubbed_context is not None:
         task_dict["context_text"] = scrubbed_context
-    scrubbed_local = scrub_context(body.local_context)
+    scrubbed_local = scrub_context(
+        body.local_context,
+        INTAKE_ABUSE_CEILING_CHARS,
+        cap_reason="Praxis's intake abuse guard (not sized to any worker's "
+        "context window - the real budget is enforced later, once the "
+        "worker's window is resolved)",
+    )
     if scrubbed_local is not None:
         task_dict["repo_memory"] = scrubbed_local
     if body.files is not None:

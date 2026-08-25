@@ -7,6 +7,7 @@ mixin: it is only ever mixed into ``Orchestrator`` and reads attributes set in
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import json
 import logging
@@ -16,6 +17,12 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from orchestrator.core.bench_mode import verify_gate_disabled
+from orchestrator.core.blast_radius import (
+    BlastRadius,
+    identifier_noun,
+    measure_blast_radius,
+    render_blast_radius,
+)
 from orchestrator.core.capability_events import TaskEscalatedEvent, TaskSplitEvent
 from orchestrator.core.clarification_states import (
     ANSWERED_BY_BRAIN,
@@ -40,9 +47,11 @@ from orchestrator.core.git_ops import (
 )
 from orchestrator.core.leaf_split import child_slugs
 from orchestrator.core.leaf_triage import TriageEvidence, triage_leaf
+from orchestrator.core.llm_router import ProviderRateLimitError
 from orchestrator.core.log_context import task_logger
 from orchestrator.core.merge_policy import auto_merge_eligible
 from orchestrator.core.micro_edit import BRAIN_IMPLEMENTER
+from orchestrator.core.opus_bridge import parking_brain_runner
 from orchestrator.core.outcome_recorder import record_outcome
 from orchestrator.core.plan_graph import (
     build_graph_index,
@@ -78,6 +87,18 @@ _SKIP_NO_TOKEN = "no GitHub token for repo"  # nosec B105 - a log reason string
 _SKIP_BENCH_MODE_DISABLED = "bench mode disabled the gate"
 _SKIP_CHECKOUT_UNAVAILABLE = "PR checkout unavailable"
 
+# The two NON-skip outcomes of the per-task gate, named so ``verify_state``
+# covers all five outcomes with ONE variable. Without them the scope statement
+# would have to infer "it ran and passed" from the ABSENCE of a skip reason,
+# and absence is exactly what the existing ``gate_skipped`` already means
+# something narrower by (a CONFIGURED gate that could not run).
+#
+# ``_GATE_FAILED`` is RECORDED and deliberately never RENDERED: a failed gate
+# fails the task where it runs, so it cannot reach the scope statement. See
+# ``_review_scope_statement``.
+_GATE_PASSED = "passed"
+_GATE_FAILED = "failed"
+
 # How much of a failed/errored verify command's output rides in the log line
 # itself.  The full output already reaches the operator via the PR review
 # feedback or the ``plan_verify_failed`` event payload; the log line only
@@ -92,6 +113,152 @@ def _log_excerpt(output: str) -> str:
     if len(flat) <= _LOG_EXCERPT_CHARS:
         return flat
     return f"{flat[:_LOG_EXCERPT_CHARS]}..."
+
+
+async def _blast_radius_for_review(
+    diff: str, checkout: str | None
+) -> tuple[BlastRadius | None, str | None]:
+    """Measure how far the identifiers in ``diff`` reach, and render it.
+
+    FAILS OPEN, and that is the whole contract. This runs on every review, in
+    front of a brain call, over a repository whose size nobody controls. A
+    review that wedged on a repo walk would be strictly worse than the defect
+    this measurement exists to catch, so ANY exception drops the section and
+    the review proceeds unchanged.
+
+    Off the event loop via ``asyncio.to_thread``. The walk is up to five seconds
+    of synchronous filesystem work (measured: 1.4s on this checkout), and it is
+    the only blocking call left on this path -- ``backend.checkout``,
+    ``run_verify`` and every ``gh`` call are already async. Blocking the loop
+    here would stall every other plan's tick on this install, which is a defect
+    this repository has already shipped once.
+
+    ``None`` is reserved for what the prompt's absent-section line actually
+    claims: no checkout, or the measurement raised. A real walk that found
+    nothing reused is NOT that, and must never be collapsed into it -- the
+    prompt would then say "Not measured for this review", which is false and
+    destroys the distinction between absent evidence and evidence of absence.
+    ``render_blast_radius`` therefore always returns a sentence, and there is
+    deliberately no ``or None`` on it here.
+
+    Rendering happens inside the same ``try`` as the walk, deliberately: the
+    guarantee is "any exception and the review proceeds with no section", and a
+    guard that covered only the half most likely to raise would leave the other
+    half able to wedge the loop.
+
+    Args:
+        diff: The change under review.
+        checkout: A clean checkout of the PR head, or None when the clone
+            failed and the review degraded to diff-only.
+
+    Returns:
+        ``(radius, section)``, both None only when nothing was measured at all.
+    """
+    if checkout is None:
+        return None, None
+    try:
+        radius = await asyncio.to_thread(measure_blast_radius, diff, Path(checkout))
+        return radius, render_blast_radius(radius)
+    except Exception:  # noqa: BLE001 - a repo walk must never wedge a review
+        logger.warning(
+            "review: blast radius could not be measured; reviewing without it",
+            exc_info=True,
+        )
+        return None, None
+
+
+def _review_scope_statement(
+    *,
+    checkout_available: bool,
+    verify_state: str,
+    verify_cmd: str | None,
+    radius: BlastRadius | None,
+) -> str:
+    """State what this review actually observed, for the human at the gate.
+
+    The report's strongest general point: a green that reads as verification
+    when it is only a diff summary is actively misleading. The review already
+    knows exactly what it did and did not look at, and until now none of it
+    reached the person clicking approve.
+
+    Assembled from the EXISTING vocabulary (``_SKIP_*``) rather than a second
+    set of words for the same facts, so a reason in this sentence greps against
+    the same reason in the log.
+
+    Args:
+        checkout_available: Whether a clean PR-head checkout backed the review.
+        verify_state: One of ``_GATE_PASSED``, ``_GATE_FAILED`` or a ``_SKIP_*``
+            reason.
+        verify_cmd: The project's command, named only when it actually ran.
+        radius: The blast-radius measurement, or None when none was made.
+
+    Returns:
+        One sentence, always non-empty. An empty scope statement would be
+        indistinguishable from a surface that forgot to attach one.
+    """
+    clauses: list[str] = []
+
+    if checkout_available:
+        clauses.append("read a clean checkout of the PR head and the diff")
+    else:
+        clauses.append(f"read the diff text only ({_SKIP_CHECKOUT_UNAVAILABLE})")
+
+    # Two arms, not three, and there is deliberately no ``_GATE_FAILED`` one.
+    # A failing gate writes ``verdict: fail`` where it runs, before any brain
+    # call, and this function is reached only under ``verdict == "pass"``, so
+    # ``_GATE_FAILED`` cannot arrive here. The arm that rendered it (and its
+    # twin in the CLI's ``_scope_glance``) was unreachable while reading as a
+    # live feature: someone reasoning about the merge gate would conclude a
+    # failed gate is surfaced there. It is not, and it should not be -- a
+    # failed gate does not park at the merge gate at all. It takes the failure
+    # path, which comments on the PR and re-dispatches, and whose feedback
+    # ``core/worker_bible`` injects verbatim into the next worker's prompt,
+    # where a sentence about what the REVIEW covered is noise to a floor model
+    # at best.
+    #
+    # If that structure ever changes, route the fail path here DELIBERATELY.
+    # Letting it inherit this ``else`` would report a gate that ran and failed
+    # as one that never ran; ``test_a_failed_verify_gate_stores_no_scope_
+    # statement`` goes red the moment the premise stops holding.
+    if verify_state == _GATE_PASSED:
+        clauses.append(f"verify gate passed (`{verify_cmd}`)")
+    else:
+        clauses.append(f"verify gate did not run ({verify_state})")
+
+    # Ordered by how much may be concluded, least first. ``radius.complete`` is
+    # checked BEFORE the emptiness of the list, because a walk that was cut off
+    # cannot support "nothing is reused" at all: that sentence would be a
+    # positive claim about the repository sourced from a partial read of it,
+    # delivered to `tasks.review_feedback` and the parked-PR event, which are
+    # the two surfaces this whole statement exists to keep honest.
+    if radius is None:
+        clauses.append("blast radius not measured")
+    elif not radius.complete:
+        found = len(radius.occurrences)
+        clauses.append(
+            f"blast radius INCOMPLETE, the walk hit a cap "
+            f"({found} reused {identifier_noun(found)} found before it stopped)"
+        )
+    elif radius.identifiers == 0:
+        clauses.append("blast radius not applicable, this diff defines nothing")
+    elif not radius.occurrences and radius.omitted:
+        clauses.append(
+            f"blast radius measured, {radius.omitted} reused "
+            f"{identifier_noun(radius.omitted)} too generic to report"
+        )
+    elif not radius.occurrences:
+        clauses.append("blast radius measured, nothing changed here is reused")
+    else:
+        found = len(radius.occurrences)
+        # "and N more" rather than a bare count: the list is TOP_N-capped and
+        # filtered, so stating its length alone reports a capped number as if it
+        # were the whole answer.
+        more = f" and {radius.omitted} more" if radius.omitted else ""
+        clauses.append(
+            f"blast radius measured ({found} reused {identifier_noun(found)}{more})"
+        )
+
+    return "Review scope: " + "; ".join(clauses) + "."
 
 
 @dataclass(frozen=True)
@@ -462,8 +629,16 @@ class ReviewMixin:
             # configured is not a skip anyone needs warning about; one that is
             # configured and could not run is the whole point of this variable.
             gate_skipped: str | None = None
+            # The SAME facts as ``gate_skipped``, widened to cover all five
+            # outcomes so ``_review_scope_statement`` never has to infer a pass
+            # from the absence of a skip. Initialized to the no-command reason
+            # because that is what the final ``else`` arm below means, and an
+            # unset default would be a sixth state nothing produces.
+            verify_state: str = _SKIP_NO_VERIFY_CMD
+            radius: BlastRadius | None = None
             if verify_cmd and checkout is not None:
                 passed, gate_output = await run_verify(checkout, verify_cmd)
+                verify_state = _GATE_PASSED if passed else _GATE_FAILED
                 if passed:
                     log.info("verify gate passed (`%s`)", verify_cmd)
                 else:
@@ -488,6 +663,7 @@ class ReviewMixin:
                 # event, the human at the merge gate sees a clean PASS and has
                 # no way to know the gate never ran.
                 gate_skipped = _SKIP_CHECKOUT_UNAVAILABLE
+                verify_state = _SKIP_CHECKOUT_UNAVAILABLE
                 log.warning(
                     "verify gate skipped: %s (`%s`); the reviewer verdict is "
                     "the ONLY evidence for this task",
@@ -495,6 +671,7 @@ class ReviewMixin:
                     verify_cmd,
                 )
             elif bench_disabled:
+                verify_state = _SKIP_BENCH_MODE_DISABLED
                 log.info("verify gate skipped: %s", _SKIP_BENCH_MODE_DISABLED)
             else:
                 log.info("verify gate skipped: %s", _SKIP_NO_VERIFY_CMD)
@@ -541,6 +718,14 @@ class ReviewMixin:
                     if task.get("implement_harness") == BRAIN_IMPLEMENTER
                     else "first"
                 )
+                # The reviewer holds the diff and a real checkout, and until now
+                # it was never told how widely used the things in that diff are.
+                # A change can be correct in every line the diff shows and still
+                # make a property in an unshown block inert; nothing in the diff
+                # says so, so the reviewer's green was structurally unable to
+                # observe that defect class. Fails open: see
+                # ``_blast_radius_for_review``.
+                radius, blast_section = await _blast_radius_for_review(diff, checkout)
                 review = await self._opus.review_diff(
                     diff,
                     task["description"] or task["title"],
@@ -549,6 +734,7 @@ class ReviewMixin:
                     tier=tier,
                     plan_text=plan_text_for_review,
                     cwd=checkout,
+                    blast_radius=blast_section,
                 )
         # Stripped. Everything that is not exactly "pass" falls through to the
         # failure path, which comments on the PR, retries, and writes a `fail`
@@ -629,6 +815,29 @@ class ReviewMixin:
             )
 
         if verdict == "pass":
+            # What this green actually covers, attached to the green itself.
+            #
+            # PASS only, and that is not an oversight. A FAIL never parks at the
+            # merge gate, and its feedback is injected verbatim into the next
+            # worker's prompt by ``core/worker_bible``; a sentence about what
+            # the REVIEW observed is noise to a worker at best, and a floor
+            # model reading "verify gate did not run" as an instruction at
+            # worst.
+            scope_statement = _review_scope_statement(
+                checkout_available=checkout is not None,
+                verify_state=verify_state,
+                verify_cmd=verify_cmd,
+                radius=radius,
+            )
+            # Into the STORED feedback, not only onto the event. The event
+            # reaches whoever happened to be watching the stream;
+            # ``tasks.review_feedback`` is what `praxis task`, MCP `poll_task`
+            # and the dashboard render for a parked PR, and that is where the
+            # person about to click approve is actually looking.
+            feedback = (
+                f"{feedback}\n\n{scope_statement}" if feedback else scope_statement
+            )
+
             # Supply-chain gate: check for added dependencies and secrets.
             supply_chain = added_dependencies(diff) + detect_secrets(diff)
             if supply_chain:
@@ -714,6 +923,10 @@ class ReviewMixin:
                     # own mechanical gate did not run for this PASS, which the
                     # human approving the merge is entitled to see.
                     "verify_gate_skipped": gate_skipped,
+                    # The same entitlement, stated positively and in full: what
+                    # this PASS was based on, rather than only the one thing
+                    # that was missing from it.
+                    "review_scope": scope_statement,
                 }
             )
             return
@@ -754,8 +967,17 @@ class ReviewMixin:
     async def _triage_leaf(
         self, evidence: TriageEvidence, project_id: str | None
     ) -> TriageDecision:
-        """Seam for the triage brain call, so tests can substitute it."""
-        return await triage_leaf(evidence, self._llm_router, project_id)
+        """Seam for the triage brain call, so tests can substitute it.
+
+        Routed through the BRIDGE, not the bare router: this seat called
+        ``LLMRouter.run`` directly and so was the one brain call in the process
+        that could not park ``opus_state`` on a throttle.
+        """
+        return await triage_leaf(
+            evidence,
+            parking_brain_runner(self._opus, self._llm_router),
+            project_id,
+        )
 
     async def _run_leaf_triage(
         self,
@@ -782,10 +1004,14 @@ class ReviewMixin:
             diff: The failed attempt's diff.
 
         Returns:
-            True when the decision was handled here, so the caller must NOT
-            fall through to the plain retry path; False to keep the old
-            behavior (no plan graph or no settings to work against, or a split
-            the graph refused).
+            True when this call took responsibility for the task's next state,
+            so the caller must NOT fall through to the plain retry path. That
+            includes deliberately leaving it REVIEWING for a later pass when
+            the brain is throttled: deciding nothing is a decision about the
+            next state too, and falling through would consume a retry for a
+            limit that clears by itself. False keeps the old behavior (no plan
+            graph or no settings to work against, or a split the graph
+            refused).
         """
         settings = self._effective_settings
         if plan is None or settings is None:
@@ -805,8 +1031,18 @@ class ReviewMixin:
         )
         plan_task: dict[str, Any] = slug_to_graph_task(graph_tasks).get(task_slug, {})
 
+        # Every scoping argument this seam has, passed. ``project_id=None``
+        # here meant the per-project capability override could never apply and
+        # the new ``projects.context_window`` column never reached triage, so an
+        # operator who set the window fixed the dispatch gate and left triage
+        # sizing leaves for an 8 K worker, with nothing saying so. ``harness``
+        # is what makes the per-harness declaration tier reachable for a model
+        # string nobody enumerated.
         profile = await settings.capability_profile(
-            project_id=None, model=project.get("model_name")
+            project_id=project.get("id"),
+            model=project.get("model_name"),
+            harness=project.get("harness"),
+            project_context_window=project.get("context_window"),
         )
         ladder = await settings.implement_escalation()
         ceiling = await settings.max_leaves_per_plan()
@@ -848,7 +1084,41 @@ class ReviewMixin:
             escalation_available=pair is not None,
         )
 
-        decision = await self._triage_leaf(evidence, project["id"])
+        try:
+            decision = await self._triage_leaf(evidence, project["id"])
+        except ProviderRateLimitError as exc:
+            # DEFER, do not decide. ``opus_state`` was already parked on the
+            # way out (``OpusBridge.run``), so nothing here writes it.
+            #
+            # The leaf is left REVIEWING, which is the only state that costs
+            # nothing: no attempt is consumed, no triage decision is stamped,
+            # and REVIEWING counts as active, so the plan neither completes
+            # short of this leaf nor reports itself stalled while it waits.
+            # The next pass finds the brain parked and returns at
+            # ``review_task``'s own availability check without spending a call;
+            # the pass after the limit clears reviews and triages it exactly as
+            # this one would have.
+            #
+            # The cost is one duplicate review round trip and a second
+            # ``task_outcomes`` row for this attempt once the wait ends. That
+            # is the price of not answering ``human``, which fails the leaf
+            # terminally and which no clock undoes.
+            log = task_logger(logger, plan_id=task.get("plan_id"), task_id=task_id)
+            log.warning(
+                "triage deferred: %s is rate limited, so the leaf stays in "
+                "review and is triaged again once the limit clears (%s)",
+                exc.provider,
+                exc,
+            )
+            self._bus.publish(
+                {
+                    "type": "task_triage_deferred",
+                    "task_id": task_id,
+                    "provider": exc.provider,
+                    "reason": str(exc),
+                }
+            )
+            return True
         # Stamped BEFORE acting, so a decision that cannot be applied still
         # burns the one triage call this leaf gets.
         await self._tq.record_triage_decision(task_id, decision.decision)

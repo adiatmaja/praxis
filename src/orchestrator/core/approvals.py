@@ -103,6 +103,44 @@ def plan_awaits_approval(row: dict[str, Any]) -> bool:
     )
 
 
+def _review_scope_from_feedback(review_feedback: str | None) -> str | None:
+    """Recover the review's own scope statement from ``tasks.review_feedback``.
+
+    A PASS'd review writes its scope statement into ``review_feedback``
+    (``_review_scope_statement`` in ``orchestrator_review.py``), optionally
+    prefixed by a diff-guard or supply-chain warning. Slicing from the marker
+    ``"Review scope: "`` recovers exactly the same fact the
+    ``task_awaiting_merge`` event's own ``review_scope`` field carries, rather
+    than opening a second channel for it to drift from.
+
+    From the LAST marker, not the first, and that is the whole difference
+    between a rule and a hope. The producer APPENDS its sentence to the MODEL's
+    own feedback, so the last occurrence is the review's own by construction.
+    Taking the first made "exactly one producer emits this marker" a
+    precondition nothing enforces: a reviewer whose prose happens to contain
+    "Review scope: " -- which a reviewer reading a diff that touches this very
+    feature writes as a matter of course -- would have its own words rendered
+    at the merge gate as the review's account of what it looked at, up to and
+    including claiming a checkout the review never had.
+
+    A row with no feedback, or pre-dating this feature, has no marker and
+    returns ``None`` rather than fabricating a statement it never made.
+
+    Args:
+        review_feedback: The task row's ``review_feedback`` column.
+
+    Returns:
+        The scope statement alone, or ``None``.
+    """
+    if not review_feedback:
+        return None
+    marker = "Review scope: "
+    idx = review_feedback.rfind(marker)
+    if idx == -1:
+        return None
+    return review_feedback[idx:].strip()
+
+
 def summarize_pending(
     rows: list[dict[str, Any]],
     plan_rows: list[dict[str, Any]] | None = None,
@@ -129,9 +167,19 @@ def summarize_pending(
     Returns:
         ``{"count", "task_count", "plan_count", "proposal_count",
         "oldest_hours",
-        "tasks": [{"task_id", "title", "branch", "pr_url", "age_hours"}],
+        "tasks": [{"task_id", "title", "branch", "pr_url", "age_hours",
+        "review_scope"}],
         "plans": [{"plan_id", "project_id", "branch", "pr_url", "age_hours"}],
         "proposals": [{"plan_id", "project_id", "age_hours"}]}``.
+
+        ``review_scope`` is the review's own account of what it looked at
+        (checkout vs. diff text, whether the verify gate ran and passed,
+        whether blast radius was measured) -- the same fact
+        ``tasks.review_feedback``, ``praxis task``, and MCP ``poll_task``
+        already carry. This is the surface a human actually reads before
+        approving a merge, so a PASS'd task with no scope statement (a row
+        older than this feature) reports ``None`` rather than a fabricated
+        one.
     """
     parked = [r for r in rows if str(r.get("status")) in GATED_STATUSES]
     unsorted_tasks: list[dict[str, Any]] = [
@@ -141,6 +189,7 @@ def summarize_pending(
             "branch": r.get("branch_name"),
             "pr_url": r.get("pr_url"),
             "age_hours": _age_hours(r.get("updated_at")),
+            "review_scope": _review_scope_from_feedback(r.get("review_feedback")),
         }
         for r in parked
     ]

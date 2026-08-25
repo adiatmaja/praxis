@@ -98,9 +98,11 @@ The rest of `core/`, grouped by concern:
   `escalation`, `worker_presets`, `bench_mode`
 - **Execution:** `task_queue`, `agent_manager`, `agent_prompt`, `worker_bible`, `harnesses`,
   `preflight`, `session_resume`, `progress_handover`, `clarification_states`,
-  `token_budget`, `micro_edit`
+  `token_budget`, `context_window` (resolves a worker's context window, or says unknown),
+  `micro_edit`
 - **Git & platform:** `git_ops`, `git_backend` (GitHub / local), `github_credentials`,
-  `repo_url_policy`, `merge_policy`, `branch_sweeper`, `diff_guard`, `diff_stats`
+  `repo_url_policy`, `merge_policy`, `branch_sweeper`, `diff_guard`, `diff_stats`,
+  `blast_radius` (repo-wide reach of the identifiers a diff changes, for the review prompt)
 - **Capability engine:** `execute_plan_decompose`, `plan_derive`, `plan_graph`, `plan_review`,
   `leaf_validator`, `leaf_templates`, `leaf_split`, `leaf_triage`, `difficulty`,
   `capabilities`, `capability_events`, `capability_history`, `outcome_recorder`,
@@ -148,9 +150,11 @@ docker compose --profile hosted up --build                                      
 # Run - bare uvicorn (quick one-off only; process dies with the terminal and orphans in-flight tasks)
 uv run uvicorn orchestrator.main:app --host 127.0.0.1 --port 8080
 
-# Tests. Run the NARROWEST selection that covers the change; the full suite is
-# ~4.5 minutes and 2880 tests, and running it after every edit is the single
-# most expensive habit in this repo.
+# Tests. Run the NARROWEST selection that covers the change; the full suite runs
+# in minutes, and running it after every edit is the single most expensive habit
+# in this repo. Run it from GIT BASH: under PowerShell `bash` resolves to the WSL
+# relay, whose /bin/bash does not exist, and every entrypoint shell test fails
+# with execvpe - which reads as a broken suite rather than a wrong shell.
 uv run pytest tests/test_<the_file_you_touched>.py -q
 uv run pytest -q -k "<subject>"
 
@@ -221,8 +225,16 @@ Tables: `users`, `projects`, `plans`, `tasks`, `agent_runs`, `opus_state`,
   plan's last step; without them the integration PR is invisible to read-only surfaces.
 - `tasks.review_base_sha` (migration 10) is where a task's own work STARTS on a shared
   branch. NULLABLE and the NULL is load-bearing: it means "review the whole pull
-  request" (two-tier mode and every pre-migration row). Schema version is 10;
-  `tests/test_migrations.py` pins it.
+  request" (two-tier mode and every pre-migration row).
+- `plans.plan_attempts` (migration 11) bounds the planning retry; `plans.error` carries
+  the reason. Both are on `PlanResponse` and on MCP `poll_plan`, with the cap served
+  alongside the count so no client mirrors it.
+- `projects.context_window` (migration 12) is the per-project override that outranks a
+  declared window and the LM Studio probe alike.
+- **Schema version is 12; `tests/test_migrations.py` pins it.** Idempotency is proved by
+  invoking a step DIRECTLY TWICE, never by rewinding `user_version`: a rewind that no
+  longer reaches far enough silently stops re-running the step, and a `count(...) == 1`
+  assertion passes whether the step re-ran or never ran at all.
 - **`plans.spec` was dropped (Spec 2)** - markdown docs are the source of truth; the DB
   is a thin execution ledger. `plans` keeps `opus_plan` (the runtime task graph -
   `get_dispatchable_tasks` reads it for `depends_on` ordering, NOT redundant),
@@ -343,12 +355,21 @@ story. New gotchas go in `docs/gotchas.md` first. (No count is quoted on purpose
   ANY `entrypoint.sh` change or a stale image runs silently. Staleness is judged by the
   `org.praxis.entrypoint-sha256` label (content, not mtime); rebuild via `praxis init` +
   `docker compose --profile agents build` - a bare `docker build` leaves the label EMPTY.
+- **A local `repo_url` is validated in one namespace and mounted in another**: preflight
+  checks it with `Path.exists()` INSIDE the orchestrator container, but the daemon resolves
+  the same string as a bind-mount source on the HOST. `LOCAL_REPOS_PATH` (+ the
+  `LOCAL_REPOS_HOST_PATH` escape hatch) bridges it; apply with `up -d`, never `restart`.
+- **A doctor probe must not mutate what it diagnoses**: the agy credentials probe mounts
+  the real volume read-only and layers a tmpfs over the writable path, so the kernel
+  guarantees it cannot silently seed the "no credentials" state it is checking for.
 - **Worker preset env vars are BARE compose pass-throughs** (`- DEFAULT_WORKER_HARNESS`),
   never `${VAR:-default}`: any expansion form sets the var even when unset and silently
   suppresses the mounted YAML.
-- **`praxis doctor` is the front door**: twelve checks, read-only against repo and DB but
-  spends one planner call per run (cached 60s); a rate limit is AMBER. Decision logic in
-  `core/doctor_probes.py`, fact gathering in `api/doctor.py`.
+- **`praxis doctor` is the front door**: read-only against repo and DB, but it does SPEND
+  (one planner call per run, and one `agy models` container when an agy harness is in
+  play), each cached 60s; a rate limit is AMBER. Decision logic in
+  `core/doctor_probes.py`, fact gathering in `api/doctor.py`. (No check count is quoted
+  on purpose: the last one was stale.)
 - **The planner check probes the CONFIGURED planner** (via `call_site_chain` +
   `build_argv`, same objects the loop uses) and names what it probed. A `local` planner
   is AMBER; `codex`/`agy` stay "not probed". `GET /api/status` and `praxis status`
@@ -450,6 +471,20 @@ story. New gotchas go in `docs/gotchas.md` first. (No count is quoted on purpose
   closed if it cannot read it back. `tests/test_submit_spec_seam.py` covers the seam
   end-to-end; keep it that way.
 - **Agent runs non-root** in `/home/agent/workspace`, git auth via `GH_TOKEN`.
+- **A planner that answers in prose is PERMANENTLY failed, never retried**: no JSON
+  anywhere in the reply means a refusal/question/permission request, structural not
+  keyword-matched; malformed JSON is the transient bucket and retries to a bound.
+- **An unknown context window SKIPS the budget gate and says so**: `core/context_window`
+  never falls back to a guessed number; harness identity is not the correctness
+  mechanism, only whether a probe answered.
+- **`opus_state` has ONE writer per transition and the queue is a ledger nobody drains**:
+  `OpusStatus.RESUMING` is written by nothing; work resumes because the loop re-enters.
+  `claude`'s throttle notice is on STDOUT, not stderr - check both streams.
+- **An unreachable repo is quarantined with backoff, not retried every tick**: consecutive
+  `git ls-remote` failures back off to a ceiling and log ONCE; a success resets the count.
+- **`scrub_context` does two jobs and only redaction belongs at intake**: length capping
+  needs the resolved worker window, so it belongs solely to `worker_bible.build_bible`;
+  an intake cap taken without the probe truncates permanently before the real budget runs.
 
 **Contracts that break fixtures**
 

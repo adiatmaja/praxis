@@ -134,6 +134,113 @@ async def test_poll_plan_reports_the_integration_pr() -> None:
 
 
 @pytest.mark.unit
+async def test_poll_plan_reports_the_attempt_count() -> None:
+    """`plan_attempts` is the only signal that tells a stuck retry from a
+    healthy decomposition: both present as `active`/`pending` with no tasks.
+    Migration 11 added the column and `PlanResponse.plan_attempts` already
+    returns it over REST; `poll_plan_impl` dropped it on the floor.
+    """
+    client = FakeClient(
+        {
+            ("GET", "/api/plans/p1"): {
+                "status": "active",
+                "opus_plan": None,
+                "error": None,
+                "plan_attempts": 2,
+                "max_planning_attempts": 3,
+            },
+            ("GET", "/api/plans/p1/tasks"): [],
+            ("GET", "/api/approvals/pending"): {"count": 0},
+        }
+    )
+    result = await server.poll_plan_impl(client, plan_id="p1")
+    assert result["plan_attempts"] == 2
+    # The count alone is an unanswerable question. "Failed twice" does not say
+    # whether the next tick retries or ends the plan, and a caller polling for
+    # a terminal status needs exactly that. Served, never mirrored: the CLI
+    # once held its own copy of this cap and would have printed "attempt 4/3"
+    # against an engine that had moved.
+    assert result["max_planning_attempts"] == 3
+
+
+@pytest.mark.unit
+async def test_poll_plan_omits_the_cap_an_older_server_does_not_send() -> None:
+    """An older orchestrator has no `max_planning_attempts` to give.
+
+    The honest answer is then None, so a caller shows the bare count. A
+    hardcoded fallback here would be the mirror this field exists to retire,
+    wearing a default: it would read as the server's cap while being this
+    process's guess about a container built from a different tree.
+    """
+    client = FakeClient(
+        {
+            ("GET", "/api/plans/p1"): {
+                "status": "active",
+                "opus_plan": None,
+                "error": None,
+                "plan_attempts": 2,
+            },
+            ("GET", "/api/plans/p1/tasks"): [],
+            ("GET", "/api/approvals/pending"): {"count": 0},
+        }
+    )
+    result = await server.poll_plan_impl(client, plan_id="p1")
+    assert result["plan_attempts"] == 2
+    assert result["max_planning_attempts"] is None
+
+
+@pytest.mark.unit
+async def test_a_fresh_plan_and_a_mid_retry_plan_are_distinguishable_via_mcp() -> None:
+    """Zero attempts and a retry in progress must not read the same over MCP.
+
+    Both plans are `active` with zero tasks from the outside; `plan_attempts`
+    is the only field that tells them apart, so it must actually vary with the
+    underlying count rather than being a constant or an omitted key.
+    """
+
+    def _client(attempts: int) -> FakeClient:
+        return FakeClient(
+            {
+                ("GET", "/api/plans/p1"): {
+                    "status": "active",
+                    "opus_plan": None,
+                    "error": None,
+                    "plan_attempts": attempts,
+                },
+                ("GET", "/api/plans/p1/tasks"): [],
+                ("GET", "/api/approvals/pending"): {"count": 0},
+            }
+        )
+
+    fresh = await server.poll_plan_impl(_client(0), plan_id="p1")
+    retrying = await server.poll_plan_impl(_client(2), plan_id="p1")
+    assert fresh["plan_attempts"] == 0
+    assert retrying["plan_attempts"] == 2
+
+
+@pytest.mark.unit
+async def test_poll_task_reports_the_attempt_count_the_docstring_already_promises() -> (
+    None
+):
+    """`poll_task`'s own docstring lists `attempt` in the normal payload.
+
+    The REST twin (`GET /api/tasks/{id}`) returns it on the raw task row
+    (`tasks.attempt`), and `_task_summary` reads it to build the one-line
+    summary, but the field was never copied into the payload itself, so a
+    caller reading the STRUCTURED result (not the prose summary) had no way to
+    tell attempt 1 from attempt 3.
+    """
+    client = FakeClient(
+        {
+            ("GET", "/api/tasks/t1"): {"task": _task("in_progress", attempt=2)},
+            ("GET", "/api/approvals/pending"): {"count": 0},
+        }
+    )
+    result = await server.poll_task_impl(client, task_id="t1")
+    assert result["attempt"] == 2
+
+
+@pytest.mark.unit
 async def test_pending_approvals_never_asserts_empty_from_an_unreadable_reply() -> None:
     """A positive claim of emptiness must come from a readable answer.
 

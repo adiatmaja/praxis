@@ -30,6 +30,39 @@ class ProviderOutputError(RuntimeError):
     """Raised when a provider exits cleanly but yields no usable output."""
 
 
+class ProviderRateLimitError(RuntimeError):
+    """Raised when a CLI provider's own output says its subscription is throttled.
+
+    A distinct TYPE rather than a wording, because the evidence is often
+    unquotable: ``claude`` prints "usage limit reached" to STDOUT, while the
+    ``RuntimeError`` the router used to raise carried only stderr.  Anything
+    downstream that re-classified that exception by text therefore saw an
+    ordinary failure and charged the plan a retry attempt.
+
+    Subclasses ``RuntimeError`` on purpose: every existing ``except
+    RuntimeError`` caller (including ``provider_errors.is_unavailability``'s
+    text branch and the router's own fallback chain) keeps behaving exactly as
+    it did, and only code that asks for the narrower type sees the difference.
+
+    Raised ONLY from the CLI arm of :meth:`LLMRouter._execute_one`, which is
+    what makes "a ``local`` endpoint outage never parks the global brain state"
+    a structural fact rather than a wording that could rot.
+
+    Attributes:
+        provider: The provider that reported the throttle.
+    """
+
+    def __init__(self, provider: str, message: str) -> None:
+        """Record which provider is throttled.
+
+        Args:
+            provider: The provider name, e.g. ``"claude"``.
+            message: The operator-facing description, carrying the evidence.
+        """
+        self.provider = provider
+        super().__init__(message)
+
+
 # Per-provider command the human must run to (re)authenticate. Surfaced in
 # ProviderAuthError and the dashboard so login stays an explicit manual step.
 LOGIN_HINTS: dict[str, str] = {
@@ -161,6 +194,33 @@ def build_argv(
 Resolver = Callable[[str, str | None], Awaitable[list[dict]]]
 
 
+def _throttle_carrying_both(
+    throttle: ProviderRateLimitError, final: BaseException
+) -> ProviderRateLimitError:
+    """Combine a throttle seen earlier in a chain with the failure that ended it.
+
+    Two different failures happened and neither may be dropped. The TYPE is the
+    throttle's, because that is the one the state machine can act on: only
+    :class:`ProviderRateLimitError` parks ``opus_state``, and only a parked
+    state turns a five-hour subscription limit into a wait rather than a
+    consumed retry. The final entry's failure is what actually ended the
+    attempt, so it is named in the message an operator reads and chained as
+    ``__cause__`` by the caller.
+
+    Args:
+        throttle: The first throttle seen while walking the chain.
+        final: The exception the last entry raised.
+
+    Returns:
+        A new error carrying both, attributed to the throttled provider.
+    """
+    return ProviderRateLimitError(
+        throttle.provider,
+        f"{throttle} -- the fallback chain then gave up at "
+        f"{type(final).__name__}: {final}",
+    )
+
+
 class LLMRouter:
     """Resolve a call-site to an ordered chain and execute with fallback."""
 
@@ -181,15 +241,55 @@ class LLMRouter:
         project_id: str | None,
         cwd: str | None = None,
     ) -> str:
+        """Execute a call-site against its chain, falling back on unavailability.
+
+        Args:
+            call_site: The routed call-site name.
+            prompt: The full prompt text.
+            project_id: Project whose per-call-site overrides apply.
+            cwd: Working directory for the provider, when it takes one.
+
+        Returns:
+            The first entry's usable output.
+
+        Raises:
+            ProviderRateLimitError: The chain was exhausted and at least one
+                entry reported a subscription throttle. A chain that RECOVERS
+                after a throttle raises nothing and parks nothing: the fallback
+                did exactly its job, and parking would gate every other seat --
+                including the one that just answered -- behind a five-hour wait
+                this call did not need. The throttle is still recorded, as the
+                ``model_fallback`` event's ``reason``.
+            Exception: Whatever the last entry raised, otherwise.
+        """
         from orchestrator.core.provider_errors import is_unavailability
 
         chain = await self._resolve_chain(call_site, project_id)
         last_exc: BaseException | None = None
+        # The first throttle seen anywhere in the chain. Held because falling
+        # through to the next entry used to DISCARD it: the loop re-raised
+        # whatever the LAST entry threw, so a throttled `claude` followed by an
+        # unreachable `local` surfaced as a connection error, `_run_routed`
+        # never parked, and the plan was charged a retry for a subscription
+        # limit. Unreachable on the shipped claude-only chains (one
+        # subscription throttles every entry) and reachable on any mixed chain
+        # ending in `local`, which docs/configurations.md presents as supported.
+        throttle: ProviderRateLimitError | None = None
         for index, cfg in enumerate(chain):
             try:
                 return await self._execute_one(cfg, prompt, cwd)
             except Exception as exc:  # noqa: BLE001 - re-raised below
+                if throttle is None and isinstance(exc, ProviderRateLimitError):
+                    throttle = exc
                 if not is_unavailability(exc) or index == len(chain) - 1:
+                    if throttle is not None and not isinstance(
+                        exc, ProviderRateLimitError
+                    ):
+                        # Only for two DIFFERENT failures. When the last entry
+                        # throttled too -- the shipped `plan: [sonnet, opus]`
+                        # shape -- combining would hand the operator the same
+                        # sentence twice for one subscription limit.
+                        raise _throttle_carrying_both(throttle, exc) from exc
                     raise
                 last_exc = exc
                 nxt = chain[index + 1]
@@ -243,6 +343,7 @@ class LLMRouter:
         stdin_input = None if prompt_in_argv else prompt.encode()
         stdout, stderr = await proc.communicate(input=stdin_input)
         err = stderr.decode()
+        raw_out = stdout.decode()
         # Auth check first: codex exits 0 while printing a 401 to stderr, so a
         # returncode-only check would silently accept a failed-auth response.
         if _looks_like_auth_failure(err):
@@ -250,9 +351,64 @@ class LLMRouter:
                 provider, LOGIN_HINTS.get(provider, f"re-authenticate {provider}")
             )
         if proc.returncode:
+            # Imported here, not at module scope: ``opus_bridge`` reaches the
+            # database and the schemas, and importing it eagerly would make
+            # this module's import graph depend on both. Same dodge ``run``
+            # already uses for ``provider_errors``.
+            from orchestrator.core.opus_bridge import is_rate_limited
+
+            # THE shared predicate, given the same three inputs the legacy
+            # ``_run_claude`` path gives it, so both paths reach one verdict
+            # (``tests/test_rate_limit_parity.py`` exists because sharing only
+            # the SIGNATURE STRINGS was not enough to guarantee that).
+            #
+            # The predicate gates ITSELF on the exit code: ``is_rate_limited``
+            # returns False for ``code == 0`` before any signature is matched,
+            # so no consumer has to establish that the call failed first. It is
+            # asked here, inside the failure branch, for the ordinary reason
+            # that this IS the failure branch -- everything below builds an
+            # error message and raises.
+            #
+            # An earlier version of this note argued the opposite, and it is
+            # worth keeping the reason it was wrong: the first clause used to
+            # be ungated, so over a SUCCESSFUL response it read a plan for a
+            # spec about rate limiting as a throttle and parked the brain for
+            # five hours over the planner's own words, and Praxis plans specs
+            # about its own subsystems routinely. That hazard now lives in one
+            # place. A comment arguing for a precondition the callee already
+            # enforces is how the next consumer learns to hand-gate too, and a
+            # hand-gate every consumer must remember is the precondition
+            # nobody enforces.
+            #
+            # Both streams are passed because the evidence lands on either:
+            # ``claude`` prints its usage message to stdout while the message
+            # below carries stderr, which is how a throttle came to surface as
+            # "claude failed (exit 1):" with no evidence attached at all.
+            if is_rate_limited(proc.returncode, raw_out, err):
+                # Quote whichever stream actually CARRIES the throttle, and
+                # both when both do. "stderr, else stdout" reads plausible and
+                # is wrong here: on a host with a `~/.claude` hook, stderr is
+                # "warning: VPN killswitch bypassed ..." while the real message
+                # is on stdout, so the operator-facing string would name the
+                # warning and drop the evidence -- the exact silence this whole
+                # change exists to remove, one layer up. Classification is by
+                # TYPE, so this only ever affects what a human reads.
+                carriers = [
+                    text.strip()
+                    for text in (raw_out, err)
+                    if text.strip() and is_rate_limited(proc.returncode, text, "")
+                ]
+                evidence = " / ".join(carriers) or " / ".join(
+                    text.strip() for text in (raw_out, err) if text.strip()
+                )
+                message = (
+                    f"{provider} reports its subscription is rate limited "
+                    f"(exit {proc.returncode}): {evidence}"
+                )
+                raise ProviderRateLimitError(provider, message)
             message = f"{provider} failed (exit {proc.returncode}): {err.strip()}"
             raise RuntimeError(message)
-        out = stdout.decode().strip()
+        out = raw_out.strip()
         if not out:
             # agy's --print renders only to an interactive TTY and yields no
             # capturable stdout when run non-interactively (exit 0, empty out).

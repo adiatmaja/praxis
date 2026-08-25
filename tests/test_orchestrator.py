@@ -112,7 +112,19 @@ class TestOrchestrationDispatch:
         # Live-log monitor must attach at dispatch so short-lived containers
         # still stream agent_log events (not only if reconcile catches them).
         assert started == [(run["id"], task_id, "container-123")]
-        assert events.get_nowait()["type"] == "agent_dispatched"
+        # Drained, not `get_nowait()` on the head. This orchestrator is built
+        # with no effective settings at all, so no context window can be
+        # established and the dispatch publishes `context_budget_skipped` BEFORE
+        # `agent_dispatched`. Asserting on the head made the test a statement
+        # about event ORDER that nobody intended; asserting the pair is what the
+        # test always meant, and it pins the skip as a real published fact
+        # rather than something to be stepped over.
+        published = []
+        while not events.empty():
+            published.append(events.get_nowait())
+        types = [e["type"] for e in published]
+        assert "agent_dispatched" in types
+        assert "context_budget_skipped" in types
 
     async def test_dispatch_forwards_harness_to_spawn_agent(self, db: Database) -> None:
         """dispatch_pending_tasks must pass the project's harness to spawn_agent."""

@@ -282,6 +282,11 @@ class ProjectCreate(BaseModel):
     agent_model: str | None = None
     agent_model_effort: str | None = None
     harness: str | None = None
+    #: Worker context window in tokens. None means "not declared", which falls
+    #: through to the settings file's declaration and then to the LM Studio
+    #: probe (``core/context_window``). Set it for a model nobody has declared,
+    #: so the pre-dispatch budget gate can run instead of being skipped.
+    context_window: int | None = Field(default=None, gt=0)
 
     @field_validator("harness")
     @classmethod
@@ -354,6 +359,11 @@ class ProjectUpdate(BaseModel):
     agent_model: str | None = None
     agent_model_effort: str | None = None
     harness: str | None = None
+    #: See ``ProjectCreate.context_window``. ``exclude_none`` on the update
+    #: path means omitting it leaves the stored value alone; there is no way
+    #: to clear it back to NULL through this endpoint, exactly as for every
+    #: other nullable column here.
+    context_window: int | None = Field(default=None, gt=0)
 
     @field_validator("harness")
     @classmethod
@@ -427,7 +437,34 @@ class ProjectResponse(BaseModel):
     agent_model: str | None = None
     agent_model_effort: str | None = None
     harness: str = Field(default_factory=default_harness_id)
+    #: The window this PROJECT declares, or None when it declares none.
+    #:
+    #: None does NOT mean the budget gate was skipped, and an earlier version of
+    #: this comment said it did. Every agy project resolves through a declared
+    #: window with this column NULL, so the field cannot answer that question and
+    #: must not be read as if it could. What answers it is the
+    #: ``context_budget_skipped`` event and the ``context_window`` /
+    #: ``context_window_source`` fields on ``agent_dispatched``, both per
+    #: DISPATCH, which is the only scope at which the question is meaningful:
+    #: an escalated leaf can run on a different harness than its project names.
+    context_window: int | None = None
     created_at: str
+
+
+def _max_planning_attempts() -> int:
+    """The engine's planning-retry cap, read from its single definition.
+
+    Imported inside the factory rather than at module scope because
+    ``core/orchestrator.py`` imports THIS module, so a top-level import would
+    be a cycle. Same dodge ``core/llm_router.py`` already uses for
+    ``opus_bridge``, and for the same reason.
+
+    Returns:
+        ``core.orchestrator.MAX_PLANNING_ATTEMPTS``.
+    """
+    from orchestrator.core.orchestrator import MAX_PLANNING_ATTEMPTS
+
+    return MAX_PLANNING_ATTEMPTS
 
 
 class PlanResponse(BaseModel):
@@ -442,6 +479,19 @@ class PlanResponse(BaseModel):
     confidence_reason: str | None = None
     status: PlanStatus
     error: str | None = None
+    #: How many times planning has been attempted and failed. Exposed because
+    #: a plan that is retrying looks exactly like a plan that is decomposing
+    #: from the outside: both are pending with no tasks. The count is the only
+    #: thing that tells them apart, and it is what says how close the plan is
+    #: to the bound that stops the retry.
+    plan_attempts: int = 0
+    #: The cap those attempts count against, so a reader can say how close the
+    #: plan is to terminal. Served rather than mirrored: a client that keeps its
+    #: own copy of this number prints "attempt 4/3" the day the engine's cap
+    #: moves, and a denominator that says the plan is already dead is worse than
+    #: no denominator at all. Every client reads it with a fallback, because a
+    #: server older than this field simply does not send it.
+    max_planning_attempts: int = Field(default_factory=_max_planning_attempts)
     spec_path: str | None = None
     plan_path: str | None = None
     #: The PR that carries this plan from its plan branch onto the project's
@@ -641,10 +691,21 @@ class DispatchRequest(BaseModel):
     model: str
     harness: str | None = None
     branch: str | None = None
-    """Base branch for the dispatched task. The worker always cuts a NEW
-    agent/<slug> branch from this and opens a NEW PR; passing an existing PR's
-    head here does NOT push follow-up commits onto that PR. Re-dispatching
-    always creates a fresh PR. (Continue-on-PR mode is a planned follow-up.)"""
+    """Base branch, or the work branch itself - which one depends on the mode
+    active when the task is dispatched.
+
+    In the DEFAULT (non-auto-delegate) mode, this is a BASE branch: the
+    worker cuts a NEW ``agent/<slug>`` branch from it and opens a NEW PR;
+    passing an existing PR's head here does NOT push follow-up commits onto
+    that PR, and re-dispatching always creates a fresh PR. (Continue-on-PR
+    mode for this arm is a planned follow-up.)
+
+    In auto-delegate (single-branch) mode, this IS the work branch itself:
+    the worker (or the micro-edit lane) commits directly onto ``branch``, no
+    new branch is cut and no new PR opened per task. A second dispatch naming
+    the same branch stacks its commit on top of the first's; both are
+    preserved. Omit ``branch`` to let Praxis name one itself
+    (``plan/mcp-<slug>``)."""
     name: str | None = None
     plan_path: str | None = None
     plan_text: str | None = None

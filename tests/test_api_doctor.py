@@ -444,6 +444,501 @@ def test_gather_docker_facts_reads_the_entrypoint_hash_label(monkeypatch):
     assert facts.image_labels["agy-agent:latest"] == "abc123"
 
 
+# --- The three field-report rows, at the GATHERING layer --------------------
+#
+# The decision half of each lives in tests/test_doctor_field_report_rows.py.
+# What is pinned here is the wiring that feeds them: which facts are read,
+# from where, and -- for agy -- whether anything is spent at all.
+
+
+class _FakeContainer:
+    """An inspected container with only the attributes doctor reads."""
+
+    def __init__(
+        self,
+        container_id: str,
+        name: str,
+        project: str | None = None,
+        working_dir: str | None = None,
+    ) -> None:
+        self.id = container_id
+        self.name = name
+        labels: dict[str, str] = {}
+        if project:
+            labels["com.docker.compose.project"] = project
+        if working_dir:
+            labels["com.docker.compose.project.working_dir"] = working_dir
+        self.attrs = {"Config": {"Labels": labels}}
+
+
+class _FakeContainers:
+    def __init__(self, by_name: dict[str, _FakeContainer], run=None) -> None:
+        self._by_name = by_name
+        self.run = run or _forbidden_run
+
+    def get(self, name: str) -> _FakeContainer:
+        try:
+            return self._by_name[name]
+        except KeyError as exc:
+            message = f"no such container: {name}"
+            raise docker.errors.NotFound(message) from exc
+
+
+def _forbidden_run(*args, **kwargs):
+    """A `containers.run` that must never be called from a doctor test."""
+    message = "the doctor spawned a container in a test"
+    raise AssertionError(message)
+
+
+class _FakeDockerClientWithContainers(_FakeDockerClient):
+    """`_FakeDockerClient` plus a container namespace to inspect."""
+
+    def __init__(self, images_get, containers: dict[str, _FakeContainer]) -> None:
+        super().__init__(images_get)
+        self.containers = _FakeContainers(containers)
+
+
+def _install_fake_docker_with_containers(
+    monkeypatch, images_get, containers: dict[str, _FakeContainer]
+) -> None:
+    from orchestrator.api import doctor as doctor_api
+
+    monkeypatch.setattr(doctor_api, "_in_container", lambda: False)
+    monkeypatch.setattr(
+        doctor_api.docker,
+        "from_env",
+        lambda: _FakeDockerClientWithContainers(images_get, containers),
+    )
+
+
+def _install_dotenv(monkeypatch, values: dict[str, str]) -> None:
+    """Replace the mounted `.env` the compose-substitution vars are read from."""
+    from orchestrator.api import doctor as doctor_api
+
+    monkeypatch.setattr(doctor_api, "_dotenv_on_disk", lambda: dict(values))
+
+
+async def _add_project(db, repo_url: str, name: str, harness: str = "opencode") -> None:
+    await db.execute(
+        """INSERT INTO projects (id, user_id, name, repo_url, default_branch, harness)
+           VALUES (?, ?, ?, ?, ?, ?)""",
+        (name, "test-user", name, repo_url, "main", harness),
+    )
+
+
+@pytest.mark.integration
+async def test_the_suite_never_spawns_an_agy_probe_container(
+    client, auth_headers, monkeypatch
+):
+    """The `no_live_agy_container` autouse fixture, pinned.
+
+    `config/praxis.yaml` ships `default_worker_harness: agy`, so this row is
+    in play on a stock install and the fixture is what stops a machine that
+    has built the image from starting a real container and waiting on a real
+    Gemini call. The worker is pinned here rather than inherited, because
+    settings precedence puts `.env` above the YAML and a developer whose
+    `.env` names opencode would silently turn this test into a no-op.
+    """
+    _install_fake_docker(monkeypatch, lambda _tag: _FakeImage())
+    _install_fake_worker_endpoint(monkeypatch, ["qwen3.6-27b"])
+    monkeypatch.setattr(
+        client.app.state.effective_settings,
+        "auto_delegate_worker",
+        lambda: {"harness": "agy", "model": "Gemini 3.7 Flash (High)"},
+    )
+
+    body = (await client.get("/api/doctor", headers=auth_headers)).json()
+
+    row = _rows(body)["agy_credentials"]
+    assert row["status"] == "amber"
+    assert "not probed" in row["detail"]
+    assert "the test suite never spawns a probe container" in row["detail"]
+
+
+@pytest.mark.integration
+async def test_no_container_is_spawned_when_no_agy_harness_is_in_play(
+    client, auth_headers, monkeypatch
+):
+    """The cost gate, in the direction that keeps `praxis doctor` fast.
+
+    `probe_agy_models` is replaced with a tripwire rather than a stub: the
+    assertion is that it is never REACHED, which a stub returning "not
+    probed" could not tell apart from a probe that ran and found nothing.
+    """
+    from orchestrator.api import doctor as doctor_api
+
+    async def _tripwire(image: str, volume: str):
+        message = "the agy probe ran with no agy harness in play"
+        raise AssertionError(message)
+
+    _install_fake_docker(monkeypatch, lambda _tag: _FakeImage())
+    _install_fake_worker_endpoint(monkeypatch, ["qwen3.6-27b"])
+    monkeypatch.setattr(doctor_api, "probe_agy_models", _tripwire)
+    monkeypatch.setattr(
+        client.app.state.effective_settings,
+        "auto_delegate_worker",
+        lambda: {"harness": "opencode", "model": "qwen3.6-27b"},
+    )
+
+    body = (await client.get("/api/doctor", headers=auth_headers)).json()
+
+    row = _rows(body)["agy_credentials"]
+    assert row["status"] == "green"
+    assert "not applicable" in row["detail"]
+    assert "no project uses the agy harness" in row["detail"]
+
+
+@pytest.mark.integration
+async def test_no_container_is_spawned_when_the_agy_image_is_not_built(
+    client, auth_headers, monkeypatch
+):
+    """The second half of the gate, and the one that names its reason.
+
+    An unbuilt image cannot answer, and trying anyway would turn one missing
+    image into a Docker error the operator has to decode.
+    """
+    from orchestrator.api import doctor as doctor_api
+
+    async def _tripwire(image: str, volume: str):
+        message = "the agy probe ran against an image that is not built"
+        raise AssertionError(message)
+
+    def _no_agy_image(tag: str):
+        if tag == "agy-agent:latest":
+            raise docker.errors.ImageNotFound(tag)
+        return _FakeImage()
+
+    _install_fake_docker(monkeypatch, _no_agy_image)
+    _install_fake_worker_endpoint(monkeypatch, ["qwen3.6-27b"])
+    monkeypatch.setattr(doctor_api, "probe_agy_models", _tripwire)
+    monkeypatch.setattr(
+        client.app.state.effective_settings,
+        "auto_delegate_worker",
+        lambda: {"harness": "agy", "model": "Gemini 3.7 Flash (High)"},
+    )
+
+    body = (await client.get("/api/doctor", headers=auth_headers)).json()
+
+    row = _rows(body)["agy_credentials"]
+    assert row["status"] == "amber"
+    assert "agy-agent:latest" in row["detail"]
+    assert "not built" in row["detail"]
+
+
+@pytest.mark.integration
+async def test_an_undescribable_agy_image_is_unknown_not_absent(
+    client, auth_headers, monkeypatch
+):
+    """A daemon that pings then fails the image query tells us NOTHING.
+
+    `_DockerFacts.image_errors` exists to keep "unknown" apart from "absent",
+    and reporting unknown as "not built" sends the operator to rebuild an
+    image that may be perfectly current. `image_present` has no entry for a
+    tag that errored, so a bare `.get()` silently reads it as missing.
+    """
+    from orchestrator.api import doctor as doctor_api
+
+    async def _tripwire(image: str, volume: str):
+        message = "the agy probe ran against an image nobody could describe"
+        raise AssertionError(message)
+
+    def _undescribable(tag: str):
+        if tag == "agy-agent:latest":
+            message = "500 Server Error: Internal Server Error"
+            raise docker.errors.APIError(message)
+        return _FakeImage()
+
+    _install_fake_docker(monkeypatch, _undescribable)
+    _install_fake_worker_endpoint(monkeypatch, ["qwen3.6-27b"])
+    monkeypatch.setattr(doctor_api, "probe_agy_models", _tripwire)
+    monkeypatch.setattr(
+        client.app.state.effective_settings,
+        "auto_delegate_worker",
+        lambda: {"harness": "agy", "model": "Gemini 3.7 Flash (High)"},
+    )
+
+    body = (await client.get("/api/doctor", headers=auth_headers)).json()
+
+    row = _rows(body)["agy_credentials"]
+    assert row["status"] == "amber"
+    assert "could not describe" in row["detail"]
+    assert "APIError" in row["detail"]
+    assert "not built" not in row["detail"]
+
+
+@pytest.mark.integration
+async def test_the_agy_probe_is_reached_when_agy_is_configured_and_built(
+    client, auth_headers, monkeypatch
+):
+    """The gate in the OTHER direction: a gate stuck closed probes nothing.
+
+    Both tests above pass against a `probe_agy_models` that is never called
+    under any circumstances, so without this one the whole row could be inert
+    and the suite green.
+    """
+    from orchestrator.api import doctor as doctor_api
+
+    async def _answered(image: str, volume: str):
+        assert image == "agy-agent:latest"
+        assert volume == "praxis-gemini-creds"
+        # The REAL two-column output, not an invented one: the invented
+        # fixtures are what hid a classifier that rejected the real thing.
+        return doctor_api._AgyProbeResult(
+            ran=True,
+            output=(
+                "Fetching available models...\n"
+                "gemini-3.7-flash-high\tGemini 3.7 Flash (High)\n"
+                "gemini-3.7-pro-high\tGemini 3.7 Pro (High)\n"
+            ),
+        )
+
+    _install_fake_docker(monkeypatch, lambda _tag: _FakeImage())
+    _install_fake_worker_endpoint(monkeypatch, ["qwen3.6-27b"])
+    monkeypatch.setattr(doctor_api, "probe_agy_models", _answered)
+    monkeypatch.setattr(
+        client.app.state.effective_settings,
+        "auto_delegate_worker",
+        lambda: {"harness": "agy", "model": "Gemini 3.7 Pro (High)"},
+    )
+
+    body = (await client.get("/api/doctor", headers=auth_headers)).json()
+
+    row = _rows(body)["agy_credentials"]
+    assert row["status"] == "green"
+    assert "2 model(s)" in row["detail"]
+    assert "praxis-gemini-creds" in row["detail"]
+
+
+def test_the_agy_probe_never_mounts_the_creds_volume_writable(monkeypatch):
+    """The probe must not be able to corrupt the thing it diagnoses.
+
+    Measured 2026-08-25: one `agy models` run with the volume mounted
+    read-write at ~/.gemini (the way a real worker mounts it) creates
+    `antigravity-cli/` containing conversation_summaries.db-wal, cli.log and
+    installation_id -- on an EMPTY volume, with no authentication at all.
+    `docker/agy-agent/entrypoint.sh` gates its "no credentials" warning on
+    exactly that directory being non-empty, deliberately, so one doctor run
+    silenced the worker's own warning permanently and restored the Go
+    stack-trace failure mode that warning exists to prevent.
+
+    So the real volume is mounted READ-ONLY at a side path and a tmpfs stands
+    in at ~/.gemini. This asserts the mount SHAPE rather than the outcome,
+    because the outcome needs a real daemon: mode "rw" on the volume, or a
+    missing tmpfs, is the regression, and either is one keyword away.
+    """
+    from orchestrator.api import doctor as doctor_api
+
+    captured: dict = {}
+
+    class _Container:
+        id = "probe123"
+
+        def wait(self, timeout=None):
+            return {"StatusCode": 0}
+
+        def logs(self, **kwargs):
+            return b"Fetching available models...\ngemini-x\tGemini X\n"
+
+        def remove(self, force=False):
+            captured["removed"] = True
+
+    class _Containers:
+        def run(self, image, **kwargs):
+            captured["image"] = image
+            captured.update(kwargs)
+            return _Container()
+
+    class _Client:
+        containers = _Containers()
+
+    monkeypatch.setattr(doctor_api.docker, "from_env", lambda: _Client())
+
+    result = doctor_api._run_agy_models("agy-agent:latest", "praxis-gemini-creds")
+
+    assert result.ran
+    volumes = captured["volumes"]
+    # The creds volume is mounted READ-ONLY, and NOT at the worker's path.
+    assert volumes["praxis-gemini-creds"]["mode"] == "ro"
+    assert volumes["praxis-gemini-creds"]["bind"] != "/home/agent/.gemini"
+    # ~/.gemini is a throwaway tmpfs, so every write agy makes dies with the
+    # container instead of landing in the operator's volume.
+    assert "/home/agent/.gemini" in captured["tmpfs"]
+    # And the copy actually happens, or the probe would answer about an empty
+    # home directory and report every authenticated install as signed out.
+    assert "cp -R" in captured["command"][1]
+    assert captured["removed"] is True
+
+
+@pytest.mark.integration
+async def test_a_project_on_the_agy_harness_puts_the_row_in_play(
+    client, auth_headers, monkeypatch, db
+):
+    """In play is not only "the default worker": a single project counts.
+
+    Reading the default worker alone would leave an install whose default is
+    opencode and whose one agy project fails every dispatch with no row about
+    it at all.
+    """
+    from orchestrator.api import doctor as doctor_api
+    from tests.conftest import seed_user
+
+    await seed_user(db)
+    await _add_project(db, "https://github.com/o/r", "p-agy", harness="agy")
+
+    async def _answered(image: str, volume: str):
+        return doctor_api._AgyProbeResult(
+            ran=True, output="Please sign in to view available models"
+        )
+
+    _install_fake_docker(monkeypatch, lambda _tag: _FakeImage())
+    _install_fake_worker_endpoint(monkeypatch, ["qwen3.6-27b"])
+    monkeypatch.setattr(doctor_api, "probe_agy_models", _answered)
+    monkeypatch.setattr(
+        client.app.state.effective_settings,
+        "auto_delegate_worker",
+        lambda: {"harness": "opencode", "model": "qwen3.6-27b"},
+    )
+
+    body = (await client.get("/api/doctor", headers=auth_headers)).json()
+
+    row = _rows(body)["agy_credentials"]
+    assert row["status"] == "amber"
+    assert (
+        "at least one project is configured with the agy harness" not in row["detail"]
+    )
+    assert "sign-in" in row["detail"]
+    assert "-c 'agy'" in row["hint"]
+
+
+@pytest.mark.integration
+async def test_a_local_project_whose_path_is_missing_reds_its_row(
+    client, auth_headers, monkeypatch, db
+):
+    """The 422 that cost the reporter an hour, as a light instead."""
+    from tests.conftest import seed_user
+
+    await seed_user(db)
+    await _add_project(db, "/repos/nowhere.git", "playground")
+
+    _install_fake_docker(monkeypatch, lambda _tag: _FakeImage())
+    _install_fake_worker_endpoint(monkeypatch, ["qwen3.6-27b"])
+    _install_dotenv(monkeypatch, {"LOCAL_REPOS_PATH": "/repos"})
+
+    body = (await client.get("/api/doctor", headers=auth_headers)).json()
+
+    row = _rows(body)["local_repo_paths"]
+    assert row["status"] == "red"
+    assert "playground" in row["detail"]
+    assert "/repos/nowhere.git" in row["detail"]
+    assert row["hint"]
+
+
+@pytest.mark.integration
+async def test_a_remote_project_never_reaches_the_local_repo_row(
+    client, auth_headers, monkeypatch, db
+):
+    """A GitHub project has no path to resolve, in either namespace."""
+    from tests.conftest import seed_user
+
+    await seed_user(db)
+    await _add_project(db, "https://github.com/o/r", "remote-only")
+
+    _install_fake_docker(monkeypatch, lambda _tag: _FakeImage())
+    _install_fake_worker_endpoint(monkeypatch, ["qwen3.6-27b"])
+    _install_dotenv(monkeypatch, {})
+
+    body = (await client.get("/api/doctor", headers=auth_headers)).json()
+
+    row = _rows(body)["local_repo_paths"]
+    assert row["status"] == "green"
+    assert "not applicable" in row["detail"]
+
+
+@pytest.mark.integration
+async def test_the_half_set_local_repos_config_is_read_from_the_mounted_env(
+    client, auth_headers, monkeypatch
+):
+    """LOCAL_REPOS_* reach this process ONLY through the mounted `.env`.
+
+    compose reads them on the host to build a volume mapping and forwards
+    neither into the container, so a gathering layer that consulted
+    `os.environ` alone would report every install as having them unset and
+    this row could never fire.
+    """
+    _install_fake_docker(monkeypatch, lambda _tag: _FakeImage())
+    _install_fake_worker_endpoint(monkeypatch, ["qwen3.6-27b"])
+    _install_dotenv(monkeypatch, {"LOCAL_REPOS_HOST_PATH": "C:/Users/me/repos"})
+
+    body = (await client.get("/api/doctor", headers=auth_headers)).json()
+
+    row = _rows(body)["local_repo_paths"]
+    assert row["status"] == "red"
+    assert "C:/Users/me/repos" in row["detail"]
+    assert ".local-repos-unused" in row["detail"]
+
+
+@pytest.mark.integration
+async def test_container_identity_names_the_owner_of_the_configured_name(
+    client, auth_headers, monkeypatch
+):
+    """A bare process beside a container that owns the name.
+
+    `_in_container` is False in the suite, so this is the state an operator
+    running `uv run uvicorn` in one checkout while another checkout's stack is
+    up actually sees.
+    """
+    _install_fake_docker_with_containers(
+        monkeypatch,
+        lambda _tag: _FakeImage(),
+        {
+            "orchestrator": _FakeContainer(
+                "def456", "orchestrator", "praxis", "/c/working-space/praxis"
+            )
+        },
+    )
+    _install_fake_worker_endpoint(monkeypatch, ["qwen3.6-27b"])
+    _install_dotenv(monkeypatch, {})
+
+    body = (await client.get("/api/doctor", headers=auth_headers)).json()
+
+    row = _rows(body)["container_identity"]
+    assert row["status"] == "amber"
+    assert "/c/working-space/praxis" in row["detail"]
+    assert "'praxis'" in row["detail"]
+
+
+@pytest.mark.integration
+async def test_the_container_name_is_read_from_the_mounted_env_too(
+    client, auth_headers, monkeypatch
+):
+    """PRAXIS_CONTAINER_NAME is a compose substitution variable, same as above.
+
+    With the default `orchestrator` hardcoded here, a checkout that set its
+    own name would have this row answer about a container it deliberately does
+    not own, which is the opposite of the fact it exists to establish.
+    """
+    _install_fake_docker_with_containers(
+        monkeypatch,
+        lambda _tag: _FakeImage(),
+        {
+            "orchestrator": _FakeContainer(
+                "def456", "orchestrator", "praxis", "/c/working-space/praxis"
+            )
+        },
+    )
+    _install_fake_worker_endpoint(monkeypatch, ["qwen3.6-27b"])
+    _install_dotenv(monkeypatch, {"PRAXIS_CONTAINER_NAME": "orchestrator-b"})
+
+    body = (await client.get("/api/doctor", headers=auth_headers)).json()
+
+    row = _rows(body)["container_identity"]
+    # Nothing holds `orchestrator-b`, and the container named `orchestrator`
+    # is somebody else's business now.
+    assert row["status"] == "green"
+    assert "orchestrator-b" in row["detail"]
+    assert "not applicable" in row["detail"]
+
+
 @pytest.mark.integration
 async def test_doctor_reds_planner_cli_when_the_round_trip_is_refused(
     client, auth_headers, monkeypatch

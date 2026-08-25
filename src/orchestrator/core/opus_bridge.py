@@ -17,6 +17,7 @@ import re
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, cast
 
+from orchestrator.core.llm_router import ProviderRateLimitError
 from orchestrator.database import Database
 from orchestrator.models.schemas import OpusStatus
 
@@ -27,6 +28,64 @@ if TYPE_CHECKING:
 
 
 logger = logging.getLogger(__name__)
+
+#: How much of a rejected response an operator-facing message may quote. Long
+#: enough to carry a refusal, a question or a permission request whole; short
+#: enough that a rambling answer does not become the whole ``plans.error``.
+_EXCERPT_LIMIT = 500
+
+
+class BrainResponseError(ValueError):
+    """The brain answered, but not with the JSON the call-site asked for.
+
+    Subclasses ``ValueError`` deliberately: ``_extract_json`` has always raised
+    ``ValueError`` (its own, plus ``json.JSONDecodeError``, which is one too),
+    and several callers guard with a bare ``except ValueError``. Widening the
+    type would have silently un-caught them.
+
+    The two subclasses split that single failure by whether a retry can change
+    the answer. Nothing about them inspects the ENGLISH of the response: the
+    rule is "was there any JSON in it at all", which is a property of the
+    format the prompt demanded and so cannot rot the way a keyword list does.
+
+    Attributes:
+        raw: The full response, kept whole for logs and diagnosis.
+    """
+
+    def __init__(self, message: str, raw: str) -> None:
+        """Record the failure and the response that caused it.
+
+        Args:
+            message: What went wrong, for the exception's own ``str()``.
+            raw: The complete raw response from the provider.
+        """
+        super().__init__(message)
+        self.raw = raw
+
+    @property
+    def excerpt(self) -> str:
+        """The first ``_EXCERPT_LIMIT`` characters of the raw response."""
+        return self.raw[:_EXCERPT_LIMIT]
+
+
+class BrainProseResponseError(BrainResponseError):
+    """The response contained no JSON at all. PERMANENT.
+
+    Every prompt on this class says "Respond with ONLY valid JSON". A response
+    carrying neither a fenced block nor a ``{...}`` span is therefore not a
+    formatting slip: it is a refusal, a question, or a permission request. None
+    of those become JSON because the same prompt was sent again, so a caller
+    that retries one is a caller that retries forever.
+    """
+
+
+class BrainMalformedJsonError(BrainResponseError):
+    """A JSON span was found and the parser rejected it. TRANSIENT.
+
+    The model was answering in the requested shape and truncated, over-quoted,
+    or trailed a comma. Sampling alone can fix that, so this is worth a retry.
+    """
+
 
 #: Substrings that identify a subscription rate limit in a CLI's own output.
 #: Read only by ``is_rate_limited`` below, which is what consumers must call:
@@ -52,24 +111,41 @@ def is_rate_limited(code: int, stdout: str, stderr: str) -> bool:
     which exits with doctor's status code.
 
     Args:
-        code: The CLI's exit code.  Required, not optional: the second clause
-            below cannot be evaluated without it, and a caller that cannot pass
-            it is a caller that will diverge.
+        code: The CLI's exit code.  Required, not optional: NEITHER clause
+            below may be evaluated without it, and a caller that cannot pass it
+            is a caller that will diverge.
         stdout: What the CLI printed to stdout.
         stderr: What the CLI printed to stderr.
 
     Returns:
-        True when the output names a known limit signature, or when the CLI
-        FAILED and said "limit" at all.  The second clause is the broad one on
+        True when the CLI FAILED and its output either names a known limit
+        signature or says "limit" at all.  The second half is the broad one on
         purpose: the wordings vary ("5-hour limit", "weekly limit exceeded",
         "quota limit"), and mistaking a throttle for a fault costs an operator
         a false red, while mistaking a fault for a throttle only delays it to
-        the next tick.  It is gated on a non-zero exit so a successful answer
-        that merely discusses limits is never read as one.
+        the next tick.
+
+    The whole predicate is gated on a non-zero exit, signature clause included.
+    Ungated, that clause read a SUCCESSFUL answer discussing rate limiting as a
+    throttle -- ``is_rate_limited(0, '{"plan_slug": "rate-limit", ...}', '')``
+    was True -- so planning a spec about rate limiting parked the brain for five
+    hours over the planner's own words, and Praxis plans specs about its own
+    subsystems routinely.  Both live consumers already hand-gated around it
+    (``LLMRouter._execute_one`` asks only about a call that already failed; the
+    doctor round trip's prompt can only answer "PONG"), and a hand-gate that
+    every future consumer must remember is the precondition nobody enforces.
+
+    The narrow cost is deliberate: a provider that reported a throttle while
+    exiting ZERO would now read as an ordinary answer.  No CLI here does that
+    -- all four real Claude wordings in ``tests/test_rate_limit_parity.py``
+    come with exit 1 -- and the failure mode of guessing wrong in that
+    direction is one delayed tick, against five parked hours in the other.
     """
     combined = f"{stdout} {stderr}".lower()
+    if code == 0:
+        return False
     return any(pattern in combined for pattern in RATE_LIMIT_SIGNATURES) or (
-        code != 0 and "limit" in combined
+        "limit" in combined
     )
 
 
@@ -116,6 +192,9 @@ could not verify.
 Diff:
 {diff}
 
+Blast radius - how far the things this diff changes reach:
+{blast_radius}
+
 Respond with ONLY valid JSON in this exact format:
 {{
   "verdict": "pass" or "fail",
@@ -127,6 +206,18 @@ Pass if the code correctly implements the task and has no critical issues.
 Fail if there are bugs, missing functionality, security problems, or it deletes
 existing functionality/config the task did not ask to remove.
 """
+
+#: What stands in for the blast-radius section when nothing was measured.
+#:
+#: A neutral LINE, never an empty heading and never silence. The measurement is
+#: skipped whenever the PR head could not be checked out and dropped whenever
+#: the walk raised, and in both cases a blank section reads as "we looked and
+#: the change is contained" -- which is the exact misleading green the section
+#: was added to remove.
+NO_BLAST_RADIUS_LINE = (
+    "Not measured for this review (no checkout was available, or the "
+    "measurement failed). Do not read that as evidence the change is contained."
+)
 
 IMPROVEMENT_PROMPT_TEMPLATE = """You are a senior software architect. Analyze this project for improvements.
 
@@ -236,15 +327,33 @@ class OpusBridge:
             stderr.decode().strip(),
         )
 
-    async def _check_and_handle_rate_limit(
-        self,
-        code: int,
-        stdout: str,
-        stderr: str,
-    ) -> bool:
-        if not is_rate_limited(code, stdout, stderr):
-            return False
+    async def _park_rate_limited(self, provider: str = "claude") -> None:
+        """Write the throttle to ``opus_state``.
 
+        THE only writer of the ``available -> rate_limited`` TRANSITION, which
+        is the narrow claim and the accurate one: ``is_available`` writes
+        ``status`` in the other direction when the limit expires, and
+        ``queue_action`` writes ``queued_actions``. Nothing else moves the row
+        INTO the parked state.
+
+        Both routes to a rate limit end here: the legacy ``_run_claude`` path
+        via :meth:`_check_and_handle_rate_limit`, and the router path via
+        :meth:`_run_routed`. Keeping the write in one body is the point of the
+        split -- the defect this fixes was two paths disagreeing about whether
+        the state got written at all, and a third path that also wrote would
+        recreate it in a new shape.
+
+        The state is a SINGLE global gate on every brain call, so a throttle
+        reported by any subscription CLI parks all of them. That is broader
+        than ideal (a throttled ``codex`` parks a healthy ``claude``) and is a
+        deliberate limit: per-provider state needs a schema change, and the
+        reference configuration points every routed seat at one provider
+        anyway, so in practice one throttle really does mean all of them.
+
+        Args:
+            provider: Which provider reported the throttle, for the log line.
+                Not stored: the row has no column for it.
+        """
         now = datetime.now(UTC)
         resume_at = now + timedelta(hours=5, minutes=1)
         await self._db.execute(
@@ -253,8 +362,126 @@ class OpusBridge:
                WHERE id = 1""",
             (OpusStatus.RATE_LIMITED, now.isoformat(), resume_at.isoformat()),
         )
-        logger.warning("Opus rate limited. Will resume at %s", resume_at.isoformat())
+        logger.warning(
+            "Brain provider %s is rate limited. Queuing brain calls until %s",
+            provider,
+            resume_at.isoformat(),
+        )
+
+    async def _check_and_handle_rate_limit(
+        self,
+        code: int,
+        stdout: str,
+        stderr: str,
+    ) -> bool:
+        """Detect a throttle in a legacy CLI result and park the state if so.
+
+        Args:
+            code: The CLI's exit code.
+            stdout: What the CLI printed to stdout.
+            stderr: What the CLI printed to stderr.
+
+        Returns:
+            True when the output named a throttle (and the state was parked).
+        """
+        if not is_rate_limited(code, stdout, stderr):
+            return False
+        await self._park_rate_limited()
         return True
+
+    async def _run_routed(
+        self,
+        call_site: str,
+        prompt: str,
+        project_id: str | None,
+        cwd: str | None = None,
+    ) -> str:
+        """Run a brain call through the router, parking the state on a throttle.
+
+        The router is the path a stock install takes: ``main.py`` always wires
+        it, so every routed call-site here reached a provider without ever
+        touching ``opus_state``. The queue-and-resume branch at the top of
+        ``plan_and_activate`` reads that row and so could never fire, which
+        made a five-hour subscription wait indistinguishable from a broken
+        planner.
+
+        Only :class:`~orchestrator.core.llm_router.ProviderRateLimitError`
+        parks. That type is raised solely from the router's CLI arm, so a
+        ``local`` (LM Studio) endpoint being unreachable or returning 429
+        cannot park the global gate: an endpoint outage ends when somebody
+        restarts it, not on the five-hour clock this state models. Auth
+        failures and empty answers do not park either -- both need a human, and
+        waiting them out never ends them.
+
+        Args:
+            call_site: The routed call-site name.
+            prompt: The full prompt text.
+            project_id: Project whose per-call-site overrides apply.
+            cwd: Working directory for the provider, when it takes one.
+
+        Returns:
+            The provider's raw response.
+
+        Raises:
+            Exception: Whatever the router raised, re-raised unchanged. The
+                caller's classification is unaffected; only the state row is a
+                side effect.
+        """
+        router = self._router
+        if router is None:  # pragma: no cover - callers check first
+            message = "no LLM router is configured"
+            raise RuntimeError(message)
+        try:
+            return await router.run(call_site, prompt, project_id, cwd=cwd)
+        except ProviderRateLimitError as exc:
+            await self._park_rate_limited(exc.provider)
+            raise
+
+    async def run(
+        self,
+        call_site: str,
+        prompt: str,
+        project_id: str | None = None,
+        cwd: str | None = None,
+    ) -> str:
+        """Run one routed brain call, parking ``opus_state`` on a throttle.
+
+        The public door onto :meth:`_run_routed`, for the seats that build
+        their own prompt rather than use one of the templates above:
+        ``execute_plan_decompose.decompose_plan`` and
+        ``leaf_triage.triage_leaf``. Both document their dependency as "an
+        ``LLMRouter``-compatible object with ``run(call_site, prompt,
+        project_id)``", and this signature satisfies that contract exactly, so
+        handing them the BRIDGE instead of the bare router is the whole
+        change at those seats.
+
+        They called the router directly, so neither could park: a throttle at
+        the decompose seat raised a type ``decompose_pending_execute_plan``
+        does not catch, escaped into ``run_once``'s per-plan quarantine, and
+        left the plan PENDING to be re-attempted on every tick -- about 3600
+        throttled CLI spawns over one five-hour window, with `praxis status`
+        reporting the brain available throughout. At the triage seat a throttle
+        was caught as an ordinary failure and answered ``decision="human"``,
+        converting a self-healing wait into a permanent human gate.
+
+        Nothing here writes ``opus_state``: the write stays in
+        :meth:`_park_rate_limited`, which :meth:`_run_routed` calls, so this
+        adds callers rather than a third writer.
+
+        Args:
+            call_site: The routed call-site name, e.g. ``"plan_review"``.
+            prompt: The full prompt text.
+            project_id: Project whose per-call-site overrides apply.
+            cwd: Working directory for the provider, when it takes one.
+
+        Returns:
+            The provider's raw response.
+
+        Raises:
+            RuntimeError: No router is configured, so there is nothing to run.
+            Exception: Whatever the router raised, re-raised unchanged.
+        """
+        return await self._run_routed(call_site, prompt, project_id, cwd=cwd)
 
     async def _run_claude(
         self,
@@ -273,16 +500,36 @@ class OpusBridge:
         return stdout
 
     def _extract_json(self, raw: str) -> dict[str, Any]:
+        """Parse the brain's answer, classifying failure by whether JSON exists.
+
+        Args:
+            raw: The provider's complete response.
+
+        Returns:
+            The decoded JSON object.
+
+        Raises:
+            BrainMalformedJsonError: A JSON span was present and unparseable.
+            BrainProseResponseError: No JSON span was present at all.
+        """
         code_block = re.search(r"```(?:json)?\s*\n(.*?)\n```", raw, re.DOTALL)
         if code_block is not None:
-            return cast(dict[str, Any], json.loads(code_block.group(1)))
+            try:
+                return cast(dict[str, Any], json.loads(code_block.group(1)))
+            except json.JSONDecodeError as exc:
+                message = f"Fenced JSON block did not parse: {exc}"
+                raise BrainMalformedJsonError(message, raw) from exc
 
         json_object = re.search(r"\{.*\}", raw, re.DOTALL)
         if json_object is not None:
-            return cast(dict[str, Any], json.loads(json_object.group(0)))
+            try:
+                return cast(dict[str, Any], json.loads(json_object.group(0)))
+            except json.JSONDecodeError as exc:
+                message = f"JSON span did not parse: {exc}"
+                raise BrainMalformedJsonError(message, raw) from exc
 
         message = f"Could not extract JSON from response: {raw[:200]}"
-        raise ValueError(message)
+        raise BrainProseResponseError(message, raw)
 
     async def plan_spec(
         self,
@@ -291,13 +538,29 @@ class OpusBridge:
         model: str | None = None,
         effort: str | None = None,
         project_id: str | None = None,
+        cwd: str | None = None,
     ) -> dict[str, Any]:
+        """Decompose a specification into a task graph.
+
+        Args:
+            spec: The specification text.
+            repo_url: The repository the work targets, named in the prompt.
+            model: Explicit model override for the legacy CLI path.
+            effort: Explicit effort override for the legacy CLI path.
+            project_id: Project whose per-call-site overrides apply.
+            cwd: A readable checkout of ``repo_url`` to run the provider in.
+                Without one the model is asked to reason about a path it cannot
+                open, which is how a planner comes to answer in prose.
+
+        Returns:
+            The decoded plan graph.
+        """
         prompt = PLAN_PROMPT_TEMPLATE.format(spec=spec, repo_url=repo_url)
         router: LLMRouter | None = getattr(self, "_router", None)
         if router is not None:
-            raw = await router.run("plan_spec", prompt, project_id)
+            raw = await self._run_routed("plan_spec", prompt, project_id, cwd=cwd)
         else:
-            raw = await self._run_claude(prompt, model, effort)
+            raw = await self._run_claude(prompt, model, effort, cwd=cwd)
         return self._extract_json(raw)
 
     async def review_diff(
@@ -310,18 +573,40 @@ class OpusBridge:
         tier: str = "first",
         plan_text: str | None = None,
         cwd: str | None = None,
+        blast_radius: str | None = None,
     ) -> dict[str, Any]:
+        """Review a diff against the task and plan it must satisfy.
+
+        Args:
+            diff: The change under review.
+            task_description: What the task asked for.
+            model: Explicit model override for the legacy CLI path.
+            effort: Explicit effort override for the legacy CLI path.
+            project_id: Project whose per-call-site overrides apply.
+            tier: ``"first"`` or ``"rereview"``, selecting the call site.
+            plan_text: The plan contract the change must satisfy.
+            cwd: A clean checkout of the PR head to run the provider in.
+            blast_radius: A rendered
+                :func:`orchestrator.core.blast_radius.render_blast_radius`
+                section, or None. OPTIONAL on purpose: the measurement fails
+                open, so every caller must be able to omit it, and omitting it
+                renders ``NO_BLAST_RADIUS_LINE`` rather than an empty heading.
+
+        Returns:
+            The decoded review verdict.
+        """
         prompt = REVIEW_PROMPT_TEMPLATE.format(
             diff=diff,
             task_description=task_description,
             plan_text=(plan_text or "(no plan text was provided)"),
+            blast_radius=(blast_radius or NO_BLAST_RADIUS_LINE),
         )
         router: LLMRouter | None = getattr(self, "_router", None)
         if router is not None:
             call_site = (
                 "review_diff_rereview" if tier == "rereview" else "review_diff_first"
             )
-            raw = await router.run(call_site, prompt, project_id, cwd=cwd)
+            raw = await self._run_routed(call_site, prompt, project_id, cwd=cwd)
         else:
             raw = await self._run_claude(prompt, model, effort, cwd=cwd)
         return self._extract_json(raw)
@@ -343,7 +628,7 @@ class OpusBridge:
         )
         router: LLMRouter | None = getattr(self, "_router", None)
         if router is not None:
-            raw = await router.run("answer_clarification", prompt, project_id)
+            raw = await self._run_routed("answer_clarification", prompt, project_id)
         else:
             raw = await self._run_claude(prompt, model, effort)
         return self._extract_json(raw)
@@ -358,7 +643,7 @@ class OpusBridge:
         prompt = IMPROVEMENT_PROMPT_TEMPLATE.format(project_summary=project_summary)
         router: LLMRouter | None = getattr(self, "_router", None)
         if router is not None:
-            raw = await router.run("analyze_improvements", prompt, project_id)
+            raw = await self._run_routed("analyze_improvements", prompt, project_id)
         else:
             raw = await self._run_claude(prompt, model, effort)
         return self._extract_json(raw)
@@ -377,17 +662,47 @@ class OpusBridge:
         if state["status"] == OpusStatus.RATE_LIMITED and state["resume_at"]:
             resume_at = datetime.fromisoformat(state["resume_at"])
             if datetime.now(UTC) >= resume_at:
+                # The ledger is emptied with the same write that lifts the
+                # throttle. Nothing REPLAYS a queued action (see
+                # ``queue_action``); the work resumes because the plan and task
+                # rows the actions describe are still pending and the loop
+                # re-reads them. Leaving the entries behind would make
+                # ``/api/status`` report work waiting on a brain that is no
+                # longer waiting, permanently.
                 await self._db.execute(
-                    "UPDATE opus_state SET status = ? WHERE id = 1",
+                    """UPDATE opus_state
+                       SET status = ?, queued_actions = '[]'
+                       WHERE id = 1""",
                     (OpusStatus.AVAILABLE,),
                 )
-                logger.info("Opus rate limit expired, now available")
+                logger.info("Brain rate limit expired, now available")
                 return True
         return False
 
     async def queue_action(self, action: dict[str, Any]) -> None:
+        """Record that a brain call was deferred because the brain is parked.
+
+        A LEDGER, not a work list: nothing reads it back to re-run anything
+        (``get_queued_actions`` has no production caller). The replay is the
+        orchestration loop finding the plan still PENDING, or the task still
+        REVIEWING, on the pass after the limit clears.
+
+        Idempotent, and that is load-bearing rather than tidy. The callers run
+        once per orchestration pass for as long as the brain stays parked, and
+        at the shipped five-second interval a five-hour subscription throttle
+        is about 3600 passes: a plain append would rewrite an ever-growing JSON
+        blob 3600 times per waiting plan and report a meaningless
+        ``queued_count`` on ``/api/status``. Nothing noticed before because the
+        branch that calls this could not fire on the router path at all.
+
+        Args:
+            action: The deferred call, e.g.
+                ``{"action": "plan", "plan_id": ..., "project_id": ...}``.
+        """
         state = await self.get_opus_state()
         queued = json.loads(state["queued_actions"])
+        if action in queued:
+            return
         queued.append(action)
         await self._db.execute(
             "UPDATE opus_state SET queued_actions = ? WHERE id = 1",
@@ -395,13 +710,17 @@ class OpusBridge:
         )
 
     async def get_queued_actions(self) -> list[dict[str, Any]]:
+        """Read the ledger of deferred brain calls.
+
+        No production caller: this is a read for tests and diagnosis. The
+        ledger is not a work list and nothing replays what it holds; see
+        :meth:`queue_action`.
+
+        Returns:
+            The deferred actions, oldest first.
+        """
         state = await self.get_opus_state()
         return cast(list[dict[str, Any]], json.loads(state["queued_actions"]))
-
-    async def clear_queued_actions(self) -> None:
-        await self._db.execute(
-            "UPDATE opus_state SET queued_actions = '[]' WHERE id = 1"
-        )
 
     CLASSIFY_PROMPT = (
         "Classify this markdown document as exactly one word: 'spec', 'plan', or 'other'. "
@@ -414,7 +733,11 @@ class OpusBridge:
         prompt = self.CLASSIFY_PROMPT.format(text=text[:4000])
         router: LLMRouter | None = getattr(self, "_router", None)
         if router is not None:
-            raw = (await router.run("classify_doc", prompt, project_id)).strip().lower()
+            raw = (
+                (await self._run_routed("classify_doc", prompt, project_id))
+                .strip()
+                .lower()
+            )
         else:
             raw = (
                 (await self._run_claude(prompt, model="claude-haiku-4-5"))
@@ -435,3 +758,31 @@ class OpusBridge:
         if last_pos:
             return max(last_pos, key=lambda c: last_pos[c])
         return "other"
+
+
+def parking_brain_runner(opus_bridge: object | None, llm_router: Any) -> Any:
+    """Pick the object a prompt-building seat must make its brain call through.
+
+    The bridge whenever there is a real, router-backed one, because
+    :meth:`OpusBridge.run` parks ``opus_state`` on a throttle through the
+    single writer both other brain paths already use. That is the entire fix
+    for the two seats that took ``LLMRouter`` directly, and stating it once
+    here keeps the two call sites from drifting apart.
+
+    The ``isinstance`` check is deliberate rather than duck-typed. ``run`` is
+    ordinary enough that any test double answers it, and a double that answered
+    it would be handed work the real object was supposed to do -- silently, and
+    only in the tests that were meant to be measuring something else. A double
+    is not an ``OpusBridge``, so it falls back to exactly the un-parked router
+    these seats used before, which is what those tests already assert against.
+
+    Args:
+        opus_bridge: The orchestrator's brain bridge, or None.
+        llm_router: The bare router, used when the bridge cannot route.
+
+    Returns:
+        An object exposing ``run(call_site, prompt, project_id=..., cwd=...)``.
+    """
+    if isinstance(opus_bridge, OpusBridge) and opus_bridge._router is not None:
+        return opus_bridge
+    return llm_router

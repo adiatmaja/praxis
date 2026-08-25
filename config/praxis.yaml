@@ -20,6 +20,27 @@ approvals_digest_interval_h: 6
 # `docker compose restart orchestrator`, never an image rebuild.
 allow_local_repo_paths: false
 
+# Declared worker context windows, in tokens. The gate and the decomposer both
+# read this, so a model declared here is sized the same in both places.
+# Precedence: the project's context_window column > models > harnesses > probe.
+# A model declared nowhere resolves to UNKNOWN: the budget gate is SKIPPED and
+# says so (naming this key and this file's path) rather than inventing a number.
+# That third state is the whole point. Before it existed, an undeclared cloud
+# model fell back to 8192 and a correctly-sized task was failed in two seconds
+# with a message blaming the task.
+context_windows:
+  models:
+    "Gemini 3.7 Flash (High)": 1000000
+    # glm-4.7 ships as a worker preset AND as an escalation rung, and its real
+    # window is not declared anywhere in this repo. Left commented DELIBERATELY:
+    # a guessed number here is the exact defect this key exists to remove.
+    # Set it to your provider's published figure and both seams pick it up.
+    # "glm-4.7": 200000
+  harnesses:
+    # Catches model-string variants nobody enumerated: Gemini 3.7 Pro, the agy
+    # id spelling gemini-3.7-flash-high, and future tiers.
+    agy: 1000000
+
 capability:
   default:
     parameter_count_b: 30
@@ -117,7 +138,7 @@ worker_reasoning_effort: medium
 # Listed in recommendation order, and `praxis init` offers the entry flagged
 # `default: true` as its menu default. That flag exists because init's fallback
 # rule (first preset needing no credential) cannot see that this deployment has
-# ALREADY completed gemini-agy's one-time `agy login`; without it, holding Enter
+# ALREADY completed gemini-agy's one-time interactive sign-in; without it, Enter
 # selected local-lmstudio and silently disagreed with default_worker_* above.
 # The flag changes what is OFFERED, not what is checked: init still challenges
 # an unmet requirement before accepting the choice.
@@ -138,8 +159,11 @@ worker_presets:
         docker run --rm --user root -v praxis-gemini-creds:/home/agent/.gemini \
           --entrypoint bash agy-agent:latest -c 'chown -R agent:agent /home/agent/.gemini'
         docker run --rm -it -v praxis-gemini-creds:/home/agent/.gemini \
-          --entrypoint bash agy-agent:latest -c 'agy login'
-      The second is interactive: agy prints an OAuth URL to open in a browser.
+          --entrypoint bash agy-agent:latest -c 'agy'
+      The second is interactive, and the bare `agy` is deliberate: there is
+      no `agy login` subcommand, and running one prints a usage error that
+      reads as a broken remedy. Launching the CLI with NO arguments is what
+      starts the OAuth flow; it prints a URL to open in a browser.
   - name: local-lmstudio
     label: "Local GPU via LM Studio"
     harness: opencode

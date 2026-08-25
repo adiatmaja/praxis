@@ -8,6 +8,7 @@ import httpx
 import typer
 from rich.console import Console
 from rich.table import Table
+from rich.text import Text
 
 
 console = Console()
@@ -32,6 +33,19 @@ def render(payload: dict) -> int:
     The exit code is unchanged, and deliberately: amber means "nothing here is
     known to be broken", so failing a scripted install on it would make every
     unprobeable planner a hard error. What changes is the sentence.
+
+    Every string that came from the SERVER is wrapped in ``rich.text.Text``,
+    which renders literally. Only the symbols this function writes itself keep
+    console markup. A doctor detail can carry raw third-party output verbatim
+    (the agy row prints what `agy models` said), and rich reads a bare "[" as
+    the start of a tag: a detail containing "[/red]" raises MarkupError out of
+    this function, and `doctor()` catches only httpx.RequestError, so the
+    operator got a traceback and NO TABLE AT ALL -- from the one command whose
+    stated contract is that it always answers. A detail containing "[bold]"
+    was silently deleted instead, which is worse than the crash. `cli/init.py`
+    already passes markup=False for config-authored text for exactly this
+    reason. This is also what keeps the "[truncated at N characters]" marker
+    visible; rich was eating it, making the truncation silent.
     """
     table = Table(title="praxis doctor")
     for column in ("", "Check", "Detail"):
@@ -39,8 +53,8 @@ def render(payload: dict) -> int:
     for check in payload["checks"]:
         table.add_row(
             _SYMBOL.get(check["status"], check["status"]),
-            check.get("label") or check["check_id"],
-            check["detail"],
+            Text(check.get("label") or check["check_id"]),
+            Text(check["detail"]),
         )
     console.print(table)
 
@@ -48,8 +62,8 @@ def render(payload: dict) -> int:
     ambers = [c for c in payload["checks"] if c["status"] == "amber"]
     for check in reds:
         console.print(
-            f"[red]FAIL[/red] {check.get('label') or check['check_id']}: "
-            f"{check['hint']}"
+            "[red]FAIL[/red]",
+            Text(f"{check.get('label') or check['check_id']}: {check['hint']}"),
         )
     # An amber's hint is written to be read ("nothing to fix if that is
     # deliberate", "re-run doctor once the daemon is up"), and printing it only
@@ -57,8 +71,8 @@ def render(payload: dict) -> int:
     for check in ambers:
         if check.get("hint"):
             console.print(
-                f"[yellow]NOTE[/yellow] {check.get('label') or check['check_id']}: "
-                f"{check['hint']}"
+                "[yellow]NOTE[/yellow]",
+                Text(f"{check.get('label') or check['check_id']}: {check['hint']}"),
             )
     if reds:
         console.print(f"\n[red]{len(reds)} check(s) failed.[/red]")

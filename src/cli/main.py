@@ -403,8 +403,65 @@ def add_project(
     if harness is not None:
         body["harness"] = harness
     with _client() as client:
-        data = _check_dict(client.post("/api/projects", json=body))
+        response = client.post("/api/projects", json=body)
+        # Checked on the FAILURE path only, so a correctly-typed repo path or
+        # URL never sees this note: Git Bash's MSYS layer rewrites a leading
+        # '/' argument before `praxis` ever runs, and `praxis add-project ...
+        # /run/desktop/mnt/host/c/...` arrives here as a path rooted at the
+        # Git install directory, which then 422s with a confusing "path does
+        # not exist" that names nothing about the shell that caused it.
+        #
+        # Folded into one message rather than printed before `_check_dict`:
+        # the server's own error is the CONCLUSION here and the hint is the
+        # REMEDY, so the remedy has to be the last thing on screen, the same
+        # standard `praxis doctor` holds every diagnostic to. Printed first,
+        # it would scroll off above the "Error 422: ..." line the operator
+        # actually reads last.
+        if response.status_code >= 400 and _looks_msys_mangled(repo):
+            console.print(f"[red]Error {response.status_code}:[/red] {response.text}")
+            console.print(
+                "[yellow]Your shell rewrote this path.[/yellow] Git Bash "
+                "converts a leading '/' into an MSYS path. Re-run with "
+                "MSYS_NO_PATHCONV=1 prefixed to the command."
+            )
+            raise typer.Exit(1)
+        data = _check_dict(response)
     console.print(f"[green]Created project:[/green] {data['id']}")
+
+
+#: Case-insensitive: Git Bash's MSYS layer intercepts an argv token that
+#: starts with a leading '/' and rewrites it to an absolute path rooted at
+#: the Git installation directory, in either slash style, before `praxis`
+#: ever sees it. That is the giveaway a mangled value carries: the ORIGINAL
+#: argument is gone by the time this process starts, so there is nothing to
+#: recover, only to recognize. `MSYSTEM` being set is not enough on its own:
+#: it is true for every Git Bash session, including ones passing a perfectly
+#: normal path or a `https://` URL that must not trip this message.
+#:
+#: Only covers the admin-default install location. A non-admin install
+#: (`%LOCALAPPDATA%\Programs\Git`), a `D:` (or other) drive, or a bare
+#: `C:\Git` will not match, so a mangled path from one of those still 422s
+#: with the raw, un-annotated server error rather than this hint. That is a
+#: silent miss, never a false alarm: it is exactly today's behaviour for
+#: those installs, not a regression.
+_MSYS_PATH_PREFIXES = ("c:/program files/git/", "c:\\program files\\git\\")
+
+
+def _looks_msys_mangled(value: str) -> bool:
+    """True when `value` looks like a leading '/' Git Bash rewrote.
+
+    Pure and testable without a subprocess: the tell is the rewritten VALUE
+    itself (it starts inside the Git install directory), not the shell that
+    produced it.
+
+    Args:
+        value: The raw `repo_url`/path argument as the CLI received it.
+
+    Returns:
+        True when `value` starts with the MSYS-rewritten prefix, in either
+        slash style, case-insensitively.
+    """
+    return value.strip().lower().startswith(_MSYS_PATH_PREFIXES)
 
 
 @app.command()
@@ -519,9 +576,44 @@ def submit(
         spec_text = spec
 
     with _client() as client:
-        data = _check_dict(
-            client.post(f"/api/projects/{project_id}/plans", json={"spec": spec_text})
-        )
+        try:
+            response = client.post(
+                f"/api/projects/{project_id}/plans", json={"spec": spec_text}
+            )
+        except httpx.ReadTimeout as exc:
+            # This endpoint clones the target repo to commit the spec doc
+            # BEFORE it answers, which is the one request in this CLI that
+            # regularly outruns `_DEFAULT_TIMEOUT` on a large repo. The
+            # request DID reach the server, so the plan may well already
+            # exist; only the response never arrived, which makes this an
+            # unknown to resolve, not a failure to report. Caught FIRST and
+            # separately from `httpx.RequestError` below for exactly that
+            # reason: it is the one case in this whole family where something
+            # may have survived server-side.
+            console.print(
+                "[yellow]Timed out waiting for the server, but the plan "
+                "may have been created:[/yellow] the spec is committed to "
+                "the repository before the response returns."
+            )
+            console.print("Check with:")
+            _copyable(f"praxis plans {project_id}")
+            raise typer.Exit(1) from exc
+        except httpx.RequestError as exc:
+            # The parent of every OTHER "never got an answer" shape httpx can
+            # raise here: `ConnectTimeout` (the TCP connect itself hung) and
+            # `ConnectError` (nothing was listening at all - the orchestrator
+            # simply not running, which used to exit 1 with empty stdout and
+            # no diagnostic, the same defect class this command exists to
+            # close). None of them reached the server, so none of them get
+            # the "may have been created" line above; that would send an
+            # operator to go check for a plan that provably does not exist.
+            console.print(
+                "[red]Could not reach the server[/red] "
+                f"({_api_url()}): {exc}. The request never reached it, so "
+                "no plan was created."
+            )
+            raise typer.Exit(1) from exc
+        data = _check_dict(response)
     console.print(f"[green]Plan created:[/green] {data['id']} ({data['status']})")
 
 
@@ -583,6 +675,25 @@ def plans(project_id: str = typer.Argument(..., help="Project ID")) -> None:
             )
 
 
+#: How much of a stored planner error to show inline in the status cell. A
+#: raw response excerpt runs to hundreds of characters, and unlike a plan id
+#: it carries no lookup contract, so truncating it is safe where truncating
+#: an id never would be.
+_ERROR_PREVIEW_LEN = 60
+
+
+def _truncate_error(error: str) -> str:
+    """Collapse and shorten a stored planner error for one status-cell line.
+
+    Whitespace is collapsed first: `plans.error` can carry a multi-line raw
+    excerpt, and a literal newline in a table cell wraps unpredictably.
+    """
+    collapsed = " ".join(error.split())
+    if len(collapsed) > _ERROR_PREVIEW_LEN:
+        return collapsed[:_ERROR_PREVIEW_LEN].rstrip() + " ..."
+    return collapsed
+
+
 def _status_cell(plan: dict[str, Any]) -> str:
     """Render a plan's status with what actually happened to its work.
 
@@ -596,6 +707,14 @@ def _status_cell(plan: dict[str, Any]) -> str:
     stay wide enough to print a uuid contiguously, since every other verb
     looks a plan up by exact match, and a narrow console splits a folded id
     across border characters.
+
+    An `active`/`pending` plan gets the same treatment for a different
+    reason: a planner stuck retrying JSON extraction forever looks IDENTICAL
+    from here to a plan decomposing normally, both print a bare `active`, and
+    `praxis tasks` says "has no tasks yet" for both too. `error`,
+    `plan_attempts` and `max_planning_attempts` are all read with `.get`,
+    defaulting to absent/zero, so a server that predates any of them renders
+    exactly as it did before that field existed.
     """
     status_text = str(plan.get("status") or "")
     if plan.get("integration_merged_at"):
@@ -604,6 +723,26 @@ def _status_cell(plan: dict[str, Any]) -> str:
         return f"{status_text} (PR open)"
     if status_text == "completed":
         return f"{status_text} (no PR)"
+    if status_text in ("active", "pending"):
+        attempts = plan.get("plan_attempts") or 0
+        error = plan.get("error")
+        # The denominator comes off the WIRE (`PlanResponse.max_planning_attempts`),
+        # never from a constant here. This file used to mirror the engine's cap
+        # and admit in a comment that nothing kept the copy honest: raising the
+        # engine's constant printed "attempt 4/3" at an operator -- a
+        # denominator saying the plan is already dead -- with the suite green.
+        # A server too old to send it gets no denominator rather than a guessed
+        # one, which is exactly what this cell printed before the cap existed.
+        cap = plan.get("max_planning_attempts")
+        if attempts or error:
+            detail = "planning"
+            if attempts:
+                detail += (
+                    f", attempt {attempts}/{cap}" if cap else f", attempt {attempts}"
+                )
+            if error:
+                detail += f"; last error: {_truncate_error(str(error))}"
+            return f"{status_text} ({detail})"
     return status_text
 
 
@@ -905,6 +1044,29 @@ def mode(action: str = typer.Argument(..., help="on | off | status")) -> None:
     console.print(f"auto-delegate: {enabled_str} (worker: {harness} / {model})")
 
 
+def _scope_glance(review_scope: str | None) -> str:
+    """A short glance at what a review covered, or "" when there is none.
+
+    Parsed straight off the review's own stored sentence (never re-derived
+    from other state), so the glance can never drift from the full statement
+    printed beside it. The two axes that actually matter to a human approving
+    a merge: did the review read a real checkout or only diff text, and did
+    the verify gate run and pass. "checkout, verify passed" must read as
+    plainly different from "diff only, no gate" -- that distinction is the
+    whole point of carrying this to the merge gate at all.
+    """
+    if not review_scope:
+        return ""
+    checkout = "checkout" if "read a clean checkout" in review_scope else "diff only"
+    # Two outcomes, not three. The producer never writes "verify gate failed":
+    # a failed gate fails the task where it runs, so it never reaches a review
+    # verdict of pass, never gets a scope statement, and never parks here. The
+    # third arm this replaced could not fire, and an unreachable branch reads
+    # as a live feature at the one surface a human trusts before merging.
+    verify = "verify passed" if "verify gate passed" in review_scope else "no gate"
+    return f"{checkout}, {verify}"
+
+
 @app.command()
 def pending() -> None:
     """List tasks and completed plans parked at the human merge gate."""
@@ -935,11 +1097,17 @@ def pending() -> None:
         table.add_column("Age")
         table.add_column("Task", max_width=40)
         table.add_column("Branch", overflow="fold")
+        # Short glance only: what the review actually covered (checkout vs
+        # diff text, verify passed/failed/not run), so a human deciding
+        # whether to click approve does not have to open `praxis task` first
+        # to learn whether the green in front of them means anything.
+        table.add_column("Scope")
         for task in tasks:
             table.add_row(
                 f"{int(task['age_hours'])}h",
                 task["title"] or task["task_id"],
                 task["branch"] or "",
+                _scope_glance(task.get("review_scope")),
             )
         console.print(table)
 
@@ -1003,6 +1171,13 @@ def pending() -> None:
         _copyable(f"praxis reject-merge {task['task_id']}   # send it back")
         if task["pr_url"]:
             _copyable(f"  PR: {task['pr_url']}")
+        # The review's own full account, not just the table's short glance.
+        # It is prose, not a command, so it is printed rather than made
+        # copyable, and it is skipped entirely for a row with none (a
+        # pre-feature task, or a PASS that recorded no scope statement) rather
+        # than printing a fabricated "None".
+        if task.get("review_scope"):
+            console.print(f"  {task['review_scope']}")
     for plan in plans_awaiting:
         # The plan line names the same verb the per-task line does, because
         # `merge-plan` is one command that covers both stages: it drains

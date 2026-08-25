@@ -12,10 +12,35 @@ from orchestrator.core.approvals import (
     should_publish_digest,
     summarize_pending,
 )
+from orchestrator.core.blast_radius import BlastRadius
 from orchestrator.core.event_bus import EventBus
 from orchestrator.core.orchestrator import Orchestrator
+from orchestrator.core.orchestrator_review import (
+    _GATE_PASSED,
+    _SKIP_NO_VERIFY_CMD,
+    _review_scope_statement,
+)
 from orchestrator.core.task_queue import TaskQueue
 from orchestrator.database import Database
+
+
+# Built by the PRODUCER rather than pasted, for the same reason
+# `tests/test_cli_pending.py` builds its own: a hand-written copy of a sentence
+# the product assembles cannot notice the product changing its wording, and the
+# copy this replaced rendered the diff-only clause as "(no checkout
+# available)", which `_review_scope_statement` has never emitted.
+SCOPE_CHECKOUT_PASS = _review_scope_statement(
+    checkout_available=True,
+    verify_state=_GATE_PASSED,
+    verify_cmd="pytest -q",
+    radius=BlastRadius((), True, 0, 0),
+)
+SCOPE_DIFF_ONLY_NO_GATE = _review_scope_statement(
+    checkout_available=False,
+    verify_state=_SKIP_NO_VERIFY_CMD,
+    verify_cmd=None,
+    radius=None,
+)
 
 
 def _task(hours_old: float, **overrides) -> dict:
@@ -49,6 +74,94 @@ def test_summarize_lists_each_parked_task_with_its_pr():
     summary = summarize_pending([_task(1)])
     assert summary["tasks"][0]["pr_url"] == "https://github.com/o/r/pull/7"
     assert summary["tasks"][0]["branch"] == "agent/add-widget"
+
+
+@pytest.mark.unit
+def test_summarize_selects_the_review_scope_statement():
+    """The merge gate's own table must carry what the green covers.
+
+    `core/orchestrator_review.py` stores the review's scope statement in
+    `tasks.review_feedback`; `fetch_pending_approvals` selects `SELECT *` so
+    the column already reaches `summarize_pending`'s input, but the per-task
+    dict `summarize_pending` builds never selected it back out. This is the
+    QUERY layer, not the renderer: delete the new key from the dict builder
+    and only this test (and its siblings below) goes red, never
+    `test_cli_pending.py`.
+    """
+    row = _task(1, review_feedback=SCOPE_CHECKOUT_PASS)
+    summary = summarize_pending([row])
+    assert summary["tasks"][0]["review_scope"] == row["review_feedback"]
+
+
+@pytest.mark.unit
+def test_summarize_extracts_the_scope_statement_from_prefixed_feedback():
+    """A diff-guard warning can precede the scope statement in the same column.
+
+    Only the review's own account of what it looked at should travel into the
+    merge-gate summary; the warning prefix is noise for this purpose (it is
+    already rendered in full by `praxis task`/MCP `poll_task`).
+    """
+    row = _task(
+        1,
+        review_feedback=(
+            "[diff-guard] Warning: large net deletions in x.py.\n\n"
+            f"{SCOPE_DIFF_ONLY_NO_GATE}"
+        ),
+    )
+    summary = summarize_pending([row])
+    scope = summary["tasks"][0]["review_scope"]
+    assert scope is not None
+    assert scope.startswith("Review scope:")
+    assert "diff-guard" not in scope
+
+
+@pytest.mark.unit
+def test_reviewer_prose_naming_the_marker_cannot_poison_the_scope_statement():
+    """The producer APPENDS its statement, so the LAST marker is the real one.
+
+    Slicing from the FIRST marker made the docstring's premise ("emitted by
+    exactly one producer and always starts its own paragraph") load-bearing,
+    and nothing enforces it: `orchestrator_review` appends the statement to the
+    MODEL's own feedback, and a reviewer reading a diff that touches this very
+    feature writes the marker in prose as a matter of course.
+
+    The consequence is not cosmetic. The recovered text is what the merge gate
+    shows, and what `praxis pending` reduces to its Scope glance, so a
+    diff-only review whose prose happened to say "read a clean checkout" would
+    have told the approver a checkout backed a review that never had one.
+    """
+    row = _task(
+        1,
+        review_feedback=(
+            "The diff adds a Review scope: line to the parked-PR event so the "
+            "approver can tell it read a clean checkout of the PR head from a "
+            "diff-only pass. Looks right.\n\n"
+            f"{SCOPE_DIFF_ONLY_NO_GATE}"
+        ),
+    )
+    summary = summarize_pending([row])
+    assert summary["tasks"][0]["review_scope"] == SCOPE_DIFF_ONLY_NO_GATE
+
+
+@pytest.mark.unit
+def test_a_task_with_no_review_feedback_carries_no_scope_statement():
+    """A row with nothing to say must not gain a fabricated statement."""
+    row = _task(1, review_feedback=None)
+    summary = summarize_pending([row])
+    assert summary["tasks"][0]["review_scope"] is None
+
+
+@pytest.mark.unit
+def test_a_pre_feature_row_with_feedback_but_no_marker_carries_no_statement():
+    """A task parked before this feature shipped has feedback with no marker.
+
+    Returning that raw text as `review_scope` would fabricate a scope
+    statement the review never made; the marker's absence must read as
+    `None`, not as "here is the whole feedback column".
+    """
+    row = _task(1, review_feedback="Looks good, minor nit about naming.")
+    summary = summarize_pending([row])
+    assert summary["tasks"][0]["review_scope"] is None
 
 
 @pytest.mark.unit

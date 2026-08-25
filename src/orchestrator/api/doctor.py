@@ -22,6 +22,7 @@ import os
 import re
 import socket
 import subprocess
+import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -34,6 +35,7 @@ from fastapi import APIRouter, Depends, Request
 import docker
 from orchestrator.api.auth import verify_token
 from orchestrator.api.system import (
+    _CLAUDE_PROBE_TTL,
     PlannerTarget,
     RoundTripResult,
     _probe_provider,
@@ -49,8 +51,9 @@ from orchestrator.core.doctor import (
     overall_status,
     run_checks,
 )
+from orchestrator.core.doctor_probes import LocalRepoFact
 from orchestrator.core.entrypoint_hash import LABEL_KEY, hash_entrypoint
-from orchestrator.core.git_backend import is_local_repo_url
+from orchestrator.core.git_backend import is_local_repo_url, local_repo_path
 from orchestrator.core.harnesses import REGISTRY, default_harness_id
 from orchestrator.core.settings_file import config_file_path
 
@@ -148,6 +151,33 @@ def _gathering_failed_probes(error: str) -> dict[str, Any]:
     return {check_id: (lambda r=result: r) for check_id, result in results.items()}
 
 
+#: What ``docker-compose.yml`` names the orchestrator when
+#: ``PRAXIS_CONTAINER_NAME`` is unset, which is almost everywhere.
+_DEFAULT_CONTAINER_NAME = "orchestrator"
+
+#: Compose labels this module reads off a container.
+_LABEL_PROJECT = "com.docker.compose.project"
+_LABEL_WORKING_DIR = "com.docker.compose.project.working_dir"
+
+
+@dataclass(frozen=True)
+class _ContainerIdentity:
+    """Who this process is, and who currently owns the configured name.
+
+    ``named_id is None`` is an ANSWER ("nothing holds that name"), not a
+    failure to look; ``error`` is the failure to look, and the two must not
+    collapse or a daemon that would not answer reads as a clean install.
+    """
+
+    self_id: str | None = None
+    self_name: str | None = None
+    self_project: str | None = None
+    named_id: str | None = None
+    named_project: str | None = None
+    named_working_dir: str | None = None
+    error: str = ""
+
+
 @dataclass
 class _DockerFacts:
     """Everything the Docker-dependent checks need, gathered in one pass."""
@@ -164,6 +194,9 @@ class _DockerFacts:
     #: from, read off this container's own compose labels. None when it could
     #: not be read (not started by compose, no docker socket, older daemon).
     compose_working_dir: str | None = None
+    #: Who owns the configured container name.  Gathered on the same client as
+    #: everything above, so it costs one extra inspect per doctor run.
+    identity: _ContainerIdentity = field(default_factory=_ContainerIdentity)
 
 
 def _in_container() -> bool:
@@ -180,14 +213,16 @@ def _resolve_self(client: Any) -> tuple[int | None, str | None]:
     recover the host-side value from inside the container.
 
     The compose working dir comes off the same inspect, and it answers a
-    question nothing else can. ``docker-compose.yml`` hardcodes
-    ``container_name: orchestrator``, and a container name is GLOBAL to the
-    daemon, so two checkouts of Praxis on one machine (which this project's own
-    dogfooding workflow creates: the repo, plus a fresh clone to walk through)
-    fight over it. Whichever ``docker compose`` command ran last owns the name
-    AND points it at its own data volume, so the other install's database
-    appears to have vanished: a fresh migration log, a re-seeded admin user, and
-    every task 404. Measured live on 2026-08-25, twice.
+    question nothing else can. ``docker-compose.yml``'s ``container_name``
+    defaults to ``orchestrator`` (overridable per checkout via
+    ``PRAXIS_CONTAINER_NAME``, which is unset almost everywhere), and a
+    container name is GLOBAL to the daemon, so two checkouts of Praxis on one
+    machine that have not set it (which this project's own dogfooding workflow
+    creates: the repo, plus a fresh clone to walk through) fight over it.
+    Whichever ``docker compose`` command ran last owns the name AND points it
+    at its own data volume, so the other install's database appears to have
+    vanished: a fresh migration log, a re-seeded admin user, and every task
+    404. Measured live on 2026-08-25, twice.
 
     The build-stamp row cannot catch that on its own, because a container
     mounts no working tree and has no commit to compare against. It can say
@@ -211,7 +246,71 @@ def _resolve_self(client: Any) -> tuple[int | None, str | None]:
     return port, working_dir
 
 
-def _gather_docker_facts(resolve_port: bool) -> _DockerFacts:
+def _labels_of(container: Any) -> dict[str, Any]:
+    """Compose labels off an inspected container, or {} when it carries none."""
+    return container.attrs.get("Config", {}).get("Labels") or {}
+
+
+def _resolve_identity(client: Any, container_name: str) -> _ContainerIdentity:
+    """Return who this process is and who owns ``container_name``.
+
+    Two lookups, kept apart on purpose.  Failing to identify THIS container is
+    ordinary (a bare ``uv run uvicorn`` has no container at all, and
+    ``socket.gethostname()`` then resolves to nothing), so it degrades the
+    self half to None and leaves the rest usable.  Failing to ask about the
+    NAME is different: it means the row has no basis for any verdict, so it
+    travels as ``error`` and the probe reports "not probed".
+
+    ``NotFound`` on the name is neither: nothing holds it, which is a fact
+    this row is built to report.
+    """
+    self_id: str | None = None
+    self_name: str | None = None
+    self_project: str | None = None
+    try:
+        me = client.containers.get(socket.gethostname())
+        self_id = str(me.id)
+        self_name = str(me.name)
+        project = _labels_of(me).get(_LABEL_PROJECT)
+        self_project = project if isinstance(project, str) and project else None
+    except Exception as exc:  # noqa: BLE001 - not being a container is normal
+        logger.debug("could not identify this container: %s", exc)
+
+    try:
+        named = client.containers.get(container_name)
+    except docker.errors.NotFound:
+        # Nobody holds the name. An ANSWER, and the one the amber branch of
+        # probe_container_identity is written for.
+        return _ContainerIdentity(
+            self_id=self_id, self_name=self_name, self_project=self_project
+        )
+    except Exception as exc:  # noqa: BLE001 - an unaskable daemon is not a verdict
+        logger.debug("could not ask who owns %s: %s", container_name, exc)
+        return _ContainerIdentity(
+            self_id=self_id,
+            self_name=self_name,
+            self_project=self_project,
+            error=f"{type(exc).__name__}: {exc}",
+        )
+
+    labels = _labels_of(named)
+    project = labels.get(_LABEL_PROJECT)
+    working_dir = labels.get(_LABEL_WORKING_DIR)
+    return _ContainerIdentity(
+        self_id=self_id,
+        self_name=self_name,
+        self_project=self_project,
+        named_id=str(named.id),
+        named_project=project if isinstance(project, str) and project else None,
+        named_working_dir=(
+            working_dir if isinstance(working_dir, str) and working_dir else None
+        ),
+    )
+
+
+def _gather_docker_facts(
+    resolve_port: bool, container_name: str = _DEFAULT_CONTAINER_NAME
+) -> _DockerFacts:
     """Synchronous Docker SDK gathering, run off the event loop via a thread."""
     try:
         client = docker.from_env()  # type: ignore[attr-defined]
@@ -244,6 +343,12 @@ def _gather_docker_facts(resolve_port: bool) -> _DockerFacts:
     published_port, compose_working_dir = (
         _resolve_self(client) if resolve_port else (None, None)
     )
+    # Unconditional, unlike _resolve_self: the case where this process is NOT
+    # a container but a container named `container_name` exists anyway is one
+    # of the states this answers, so gating it on being containerised would
+    # blind the row exactly where a bare uvicorn and a stale container are
+    # both competing for the same operator's attention.
+    identity = _resolve_identity(client, container_name)
     return _DockerFacts(
         reachable=True,
         image_present=image_present,
@@ -251,6 +356,7 @@ def _gather_docker_facts(resolve_port: bool) -> _DockerFacts:
         image_errors=image_errors,
         published_port=published_port,
         compose_working_dir=compose_working_dir,
+        identity=identity,
     )
 
 
@@ -369,15 +475,45 @@ def _parse_env_text(text: str) -> dict[str, str]:
 _HOST_ONLY_ENV_KEYS = frozenset({"PORT"})
 
 
-def _env_drift_facts() -> tuple[dict[str, str], dict[str, str]]:
+def _dotenv_on_disk() -> dict[str, str]:
+    """Parse the mounted ``.env``, or {} when it cannot be read.
+
+    ``.env`` sits at the repo root next to the compose files;
+    ``_ENTRYPOINT_ROOT`` (``docker/``) is one level under that root, so its
+    parent resolves the same way in both a container (``./docker`` bind
+    mounted at ``/app/docker``, with ``./.env`` mounted beside it) and a bare
+    ``uv run uvicorn`` from the repo root.
+
+    This file is the ONLY way three of the variables below reach this process
+    at all.  ``PRAXIS_CONTAINER_NAME``, ``LOCAL_REPOS_PATH`` and
+    ``LOCAL_REPOS_HOST_PATH`` are compose SUBSTITUTION variables: compose
+    reads them on the host to build a container name and a volume mapping and
+    forwards none of them into the container's environment.  A check that
+    consulted ``os.environ`` alone would report every install as having none
+    of them set.
+    """
+    env_path = _ENTRYPOINT_ROOT.parent / ".env"
+    try:
+        return _parse_env_text(env_path.read_text(encoding="utf-8"))
+    except OSError:
+        return {}
+
+
+def _configured(key: str, on_disk: dict[str, str], default: str = "") -> str:
+    """Resolve a compose-substitution variable the way compose itself would.
+
+    Environment first, then ``.env``, then the compose default: the same
+    precedence ``${VAR:-default}`` gives, so this cannot report a value
+    compose would not have used.
+    """
+    return (os.environ.get(key) or on_disk.get(key) or default).strip() or default
+
+
+def _env_drift_facts(on_disk: dict[str, str]) -> tuple[dict[str, str], dict[str, str]]:
     """Return (running container env, .env on disk) for the drift check.
 
     The orchestrator process IS the container, so ``os.environ`` is the
-    running env.  ``.env`` sits at the repo root next to the compose files;
-    ``_ENTRYPOINT_ROOT`` (``docker/``) is one level under that root, so its
-    parent resolves the same way in both a container (``./docker`` bind
-    mounted at ``/app/docker``) and a bare ``uv run uvicorn`` from the repo
-    root.
+    running env.
 
     Only keys ``.env`` actually sets are compared: a key present in
     ``os.environ`` but absent from ``.env`` came from compose or the image,
@@ -386,11 +522,6 @@ def _env_drift_facts() -> tuple[dict[str, str], dict[str, str]]:
     Keys in :data:`_HOST_ONLY_ENV_KEYS` are compared by nobody, because they
     deliberately mean different things on the two sides.
     """
-    env_path = _ENTRYPOINT_ROOT.parent / ".env"
-    try:
-        on_disk = _parse_env_text(env_path.read_text(encoding="utf-8"))
-    except OSError:
-        return dict(os.environ), {}
     watched = {
         k: v
         for k, v in on_disk.items()
@@ -500,6 +631,197 @@ async def _is_local_mode(db: Any) -> bool:
     return all(is_local_repo_url(row["repo_url"] or "") for row in rows or [])
 
 
+async def _local_repo_facts(db: Any) -> list[LocalRepoFact]:
+    """One fact per project whose ``repo_url`` names a local filesystem path.
+
+    ``is_local_repo_url`` and ``local_repo_path`` are the SAME two functions
+    the preflight and the bind-mount decision use, so this row cannot disagree
+    with either about which projects are local or where they point.
+    """
+    rows = await db.fetch_all("SELECT name, repo_url FROM projects")
+    facts: list[LocalRepoFact] = []
+    for row in rows or []:
+        repo_url = row["repo_url"] or ""
+        if not is_local_repo_url(repo_url):
+            continue
+        path = local_repo_path(repo_url)
+        facts.append(
+            LocalRepoFact(
+                project=str(row["name"] or "(unnamed)"),
+                repo_url=repo_url,
+                path=path,
+                # Path.exists() INSIDE the orchestrator, which is exactly what
+                # `preflight._preflight_local` does, so a green here means the
+                # same thing preflight will decide.
+                exists=Path(path).exists(),
+            )
+        )
+    return facts
+
+
+#: The harness whose credentials the agy row is about.
+_AGY_HARNESS = "agy"
+
+
+async def _agy_in_play(db: Any, default_worker_harness: str) -> tuple[bool, str]:
+    """Whether any agy harness is configured, and why.
+
+    The reason travels with the answer because it is printed in both branches.
+    "not probed" with no reason is indistinguishable from a check that is
+    quietly broken, and this row declines to probe far more often than it
+    probes: spawning a container is seconds, and doctor is documented as fast.
+    """
+    if default_worker_harness == _AGY_HARNESS:
+        return True, "the default worker harness is agy"
+    rows = await db.fetch_all("SELECT DISTINCT harness FROM projects")
+    configured = {str(row["harness"] or "") for row in rows or []}
+    if _AGY_HARNESS in configured:
+        return True, "at least one project is configured with the agy harness"
+    return False, (
+        f"no project uses the agy harness and the default worker harness is "
+        f"{default_worker_harness or 'unset'}"
+    )
+
+
+@dataclass(frozen=True)
+class _AgyProbeResult:
+    """What one ``agy models`` container run established."""
+
+    ran: bool = False
+    output: str = ""
+    error: str = ""
+
+
+#: Where every agy container mounts the credentials volume, mirroring
+#: ``agent_manager.spawn_agent``.
+_AGY_CREDS_MOUNT = "/home/agent/.gemini"
+#: Where the REAL volume is mounted for the probe: a side path, READ-ONLY.
+#: See :func:`_run_agy_models` for why the probe never mounts it at
+#: ``_AGY_CREDS_MOUNT`` the way a worker does.
+_AGY_CREDS_SOURCE = "/praxis-creds-src"
+#: tmpfs options for the throwaway copy.  uid/gid 1000 is the `agent` user the
+#: image runs as; without them the tmpfs is root-owned and agy cannot write.
+_AGY_TMPFS_OPTIONS = "rw,uid=1000,gid=1000,mode=0700"
+
+#: A cold container plus one Gemini API call, MEASURED at 4.5-4.9s against
+#: agy-agent:latest on 2026-08-25 (three runs, warm image).  15s is ~3x that.
+#:
+#: The bound is not arbitrary, and it is shared. ``api/system`` cut
+#: ``_ROUNDTRIP_TIMEOUT`` 25s -> 20s precisely because ``_build_probes``
+#: gathers sequentially and the CLI abandons the whole request at 60s, so an
+#: over-long probe anywhere renders a FALSE red on ``orchestrator_health``
+#: instead of an honest amber on the row that was slow. Adding a second
+#: spending probe means redoing that arithmetic, not citing it:
+#:
+#:     _probe_provider (claude, no auth cmd)   10s
+#:     probe_provider_roundtrip                20s
+#:     _probe_lm_studio                         5s
+#:     _live_commit                             5s
+#:     this probe                              15s
+#:     ----------------------------------------------
+#:     worst case                              55s   (CLI abandons at 60s)
+#:
+#: 25s put that sum at 65s and over the edge on a cold cache, which is the one
+#: run where every probe is cold at once. 15s keeps the margin AND stays 3x
+#: over what the probe actually costs; anything larger buys nothing, since a
+#: probe that has not answered in 3x its measured time is not about to.
+_AGY_PROBE_TIMEOUT = 15.0
+
+#: Same shape and same TTL as ``api/system``'s two probe caches, deliberately:
+#: one number governs how often doctor is allowed to spend anything.  Keyed by
+#: (image, volume) because the answer is only about the credentials that were
+#: actually mounted.
+#:
+#: This lives here and NOT in ``api/system`` for the same reason
+#: ``probe_provider_roundtrip`` may only be called from this module: a
+#: container spawn on the 5s-polled ``/api/status`` would be catastrophic, and
+#: the surest way to keep it off that surface is for the code not to be there.
+_agy_probe_cache: dict[tuple[str, str], tuple[float, _AgyProbeResult]] = {}
+
+
+def _run_agy_models(image: str, volume: str) -> _AgyProbeResult:
+    """Run ``agy models`` against a THROWAWAY COPY of the credentials volume.
+
+    The copy is the whole point, and it was not the first design.  Mounting
+    the real volume read-write at ``~/.gemini`` the way a worker does made
+    this diagnostic CORRUPT the thing it diagnoses: measured 2026-08-25, one
+    ``agy models`` run against an EMPTY volume creates
+    ``antigravity-cli/`` containing ``conversation_summaries.db-wal``,
+    ``cli.log`` and ``installation_id``, with no authentication whatsoever.
+    ``docker/agy-agent/entrypoint.sh`` gates its "no credentials" warning on
+    exactly that directory being non-empty -- deliberately, because the test
+    before it keyed on a directory agy creates for itself. So a single
+    ``praxis doctor`` run on an unauthenticated install permanently silenced
+    the worker's own credential warning and restored the failure mode
+    (an unexplained Go stack trace deep inside agy) that the warning exists to
+    prevent. A read-only diagnostic that breaks the machine it is diagnosing
+    is worse than no diagnostic.
+
+    So: the real volume is mounted READ-ONLY at a side path, a tmpfs stands in
+    at ``~/.gemini``, and the credentials are copied into it. The kernel, not
+    a convention, is what guarantees the volume is unchanged; the tmpfs dies
+    with the container. Verified against an empty volume: the entrypoint's
+    warning still fires afterwards.
+
+    The cost of the copy is that a token refresh agy performs lands in the
+    tmpfs and is discarded. That is correct for a diagnostic and costs the
+    operator nothing: the next real worker refreshes it again.
+
+    Detached rather than blocking, because ``containers.run`` has no timeout
+    and a hung CLI would otherwise hold the whole endpoint until the CLI's own
+    caller gave up.
+    """
+    client = docker.from_env()  # type: ignore[attr-defined]
+    container = client.containers.run(
+        image,
+        # `cp -R <src>/. <dst>/` copies dotfiles too. Errors are swallowed
+        # because an EMPTY volume is a normal, diagnosable state and `cp` must
+        # not turn it into a probe failure: `agy models` still has to run, so
+        # that its own sign-in prompt is what this row reports.
+        command=[
+            "-c",
+            f"cp -R {_AGY_CREDS_SOURCE}/. {_AGY_CREDS_MOUNT}/ 2>/dev/null; agy models",
+        ],
+        entrypoint="bash",
+        volumes={volume: {"bind": _AGY_CREDS_SOURCE, "mode": "ro"}},
+        tmpfs={_AGY_CREDS_MOUNT: _AGY_TMPFS_OPTIONS},
+        detach=True,
+    )
+    try:
+        container.wait(timeout=_AGY_PROBE_TIMEOUT)
+        raw = container.logs(stdout=True, stderr=True)
+        return _AgyProbeResult(ran=True, output=raw.decode(errors="replace"))
+    except Exception as exc:  # noqa: BLE001 - a probe that broke is not a verdict
+        logger.debug("agy models probe failed: %s", exc)
+        return _AgyProbeResult(ran=False, error=f"{type(exc).__name__}: {exc}")
+    finally:
+        # `remove=True` on run() cannot be combined with reading the logs
+        # afterwards, so the cleanup is explicit and unconditional: a probe
+        # that leaked one container per doctor call would accumulate exactly
+        # on the machines being diagnosed.
+        try:
+            container.remove(force=True)
+        except Exception as exc:  # noqa: BLE001 - best effort cleanup
+            logger.debug("could not remove the agy probe container: %s", exc)
+
+
+async def probe_agy_models(image: str, volume: str) -> _AgyProbeResult:
+    """Cached ``agy models`` probe. Only ``/api/doctor`` may call this.
+
+    Costs a container spawn, so it is cached for the same 60s as every other
+    spending probe and is reached only after ``_agy_in_play`` and the image
+    check have both said yes.
+    """
+    key = (image, volume)
+    now = time.monotonic()
+    cached = _agy_probe_cache.get(key)
+    if cached is not None and now - cached[0] < _CLAUDE_PROBE_TTL:
+        return cached[1]
+    result = await asyncio.to_thread(_run_agy_models, image, volume)
+    _agy_probe_cache[key] = (now, result)
+    return result
+
+
 def _unreachable_docker_result(
     check_id: str, docker_facts: _DockerFacts
 ) -> CheckResult:
@@ -545,9 +867,21 @@ async def _build_probes(request: Request) -> dict[str, Any]:
     db = request.app.state.db
 
     in_container, _ = await _safe("in_container", _in_container, False)
+    # Parsed BEFORE the Docker pass, because compose's substitution variables
+    # decide what that pass has to look for. They reach this process only
+    # through the mounted `.env`: compose reads them on the host and forwards
+    # none of them into the container.
+    no_dotenv: dict[str, str] = {}
+    dotenv, dotenv_error = await _safe("dotenv", _dotenv_on_disk, no_dotenv)
+    container_name = _configured(
+        "PRAXIS_CONTAINER_NAME", dotenv, _DEFAULT_CONTAINER_NAME
+    )
+    local_repos_path = _configured("LOCAL_REPOS_PATH", dotenv)
+    local_repos_host_path = _configured("LOCAL_REPOS_HOST_PATH", dotenv)
+
     docker_facts, docker_error = await _safe(
         "docker",
-        lambda: asyncio.to_thread(_gather_docker_facts, in_container),
+        lambda: asyncio.to_thread(_gather_docker_facts, in_container, container_name),
         _DockerFacts(reachable=False),
     )
     if docker_error:
@@ -636,8 +970,59 @@ async def _build_probes(request: Request) -> dict[str, Any]:
 
     no_env_drift_facts: tuple[dict[str, str], dict[str, str]] = ({}, {})
     (running_env, disk_env), env_drift_error = await _safe(
-        "env_drift", _env_drift_facts, no_env_drift_facts
+        "env_drift", lambda: _env_drift_facts(dotenv), no_env_drift_facts
     )
+
+    no_local_repos: list[LocalRepoFact] = []
+    local_repos, local_repos_error = await _safe(
+        "local_repo_paths", lambda: _local_repo_facts(db), no_local_repos
+    )
+
+    # The agy row's cost gate, in two independent halves. Either one saying no
+    # means no container is spawned, and the reason it said no is what the row
+    # prints instead of a verdict.
+    agy_image = REGISTRY[_AGY_HARNESS].image
+    (agy_configured, agy_reason), agy_in_play_error = await _safe(
+        "agy_in_play", lambda: _agy_in_play(db, worker_harness_id), (False, "")
+    )
+    agy_not_probed = ""
+    if agy_in_play_error:
+        agy_configured = False
+        agy_reason = f"could not read the configured harnesses ({agy_in_play_error})"
+    if agy_configured and not docker_facts.reachable:
+        agy_not_probed = (
+            "the Docker daemon did not answer, so no probe container could be "
+            f"started; see the docker_daemon row ({docker_facts.error})"
+        )
+    elif agy_configured and agy_image in docker_facts.image_errors:
+        # UNKNOWN, not absent. `_DockerFacts.image_errors` exists to keep
+        # those apart (a daemon that answered the ping then failed the image
+        # query tells us nothing), and reporting "not built" here would send
+        # the operator to rebuild an image that may be perfectly current.
+        agy_not_probed = (
+            f"the daemon could not describe the {agy_image} image, so whether "
+            "a probe container could start is unknown "
+            f"({docker_facts.image_errors[agy_image]})"
+        )
+    elif agy_configured and not docker_facts.image_present.get(agy_image):
+        agy_not_probed = (
+            f"the {agy_image} image is not built on this daemon, so no probe "
+            "container could be started"
+        )
+    agy_probe = _AgyProbeResult()
+    if agy_configured and not agy_not_probed:
+        agy_probe, agy_probe_error = await _safe(
+            "agy_credentials",
+            lambda: probe_agy_models(agy_image, settings.gemini_creds_volume),
+            _AgyProbeResult(),
+        )
+        if agy_probe_error:
+            agy_probe = _AgyProbeResult(error=agy_probe_error)
+        if not agy_probe.ran:
+            agy_not_probed = (
+                f"`agy models` could not be run in a throwaway container "
+                f"({agy_probe.error or 'no reason was recorded'})"
+            )
 
     result_map: dict[str, CheckResult] = {}
 
@@ -669,6 +1054,24 @@ async def _build_probes(request: Request) -> dict[str, Any]:
 
     result_map["orchestrator_health"] = probes.probe_orchestrator_health(healthy=True)
 
+    if not docker_facts.reachable:
+        result_map["container_identity"] = _unreachable_docker_result(
+            "container_identity", docker_facts
+        )
+    else:
+        identity = docker_facts.identity
+        result_map["container_identity"] = probes.probe_container_identity(
+            container_name=container_name,
+            in_container=in_container,
+            self_id=identity.self_id,
+            self_name=identity.self_name,
+            self_project=identity.self_project,
+            named_id=identity.named_id,
+            named_project=identity.named_project,
+            named_working_dir=identity.named_working_dir,
+            error=identity.error,
+        )
+
     stamp_error = baked_commit_error or live_commit_error
     if stamp_error:
         result_map["build_stamp"] = _degraded(
@@ -695,6 +1098,22 @@ async def _build_probes(request: Request) -> dict[str, Any]:
     else:
         result_map["git_credential"] = probes.probe_git_credential(
             configured=has_git_creds, local_mode=local_mode
+        )
+
+    # The dotenv read is degraded separately from the project rows: with the
+    # file unreadable, "LOCAL_REPOS_PATH is unset" is a guess, and the amber
+    # branch this row exists for is decided entirely by that value.
+    if local_repos_error or dotenv_error:
+        result_map["local_repo_paths"] = _degraded(
+            "local_repo_paths",
+            "the local projects and the configured repos mount",
+            local_repos_error or dotenv_error,
+        )
+    else:
+        result_map["local_repo_paths"] = probes.probe_local_repo_paths(
+            projects=local_repos,
+            repos_path=local_repos_path,
+            host_path=local_repos_host_path,
         )
 
     if planner_error:
@@ -749,6 +1168,23 @@ async def _build_probes(request: Request) -> dict[str, Any]:
             endpoint_required=endpoint_required,
             endpoint=lm_studio_url,
         )
+
+    result_map["agy_credentials"] = probes.probe_agy_credentials(
+        in_play=agy_configured,
+        reason=agy_reason,
+        probed=bool(agy_probe.ran),
+        not_probed_reason=agy_not_probed,
+        output=agy_probe.output,
+        # Only the agy worker's OWN model is comparable against agy's list.
+        # `configured_worker_model` above is deliberately blanked for a
+        # non-local-LLM harness, so it cannot be reused here.
+        configured_model=(
+            str(default_worker.get("model") or "")
+            if worker_harness_id == _AGY_HARNESS
+            else ""
+        ),
+        volume=settings.gemini_creds_volume,
+    )
 
     callback_url = settings.agent_callback_url
     if not callback_url:

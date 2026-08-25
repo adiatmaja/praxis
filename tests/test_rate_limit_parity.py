@@ -107,16 +107,51 @@ async def test_the_brain_parks_opus_state_on_every_wording(
 
 
 @pytest.mark.unit
-async def test_a_clean_exit_zero_is_never_a_rate_limit(
+async def test_the_exit_code_clause_does_not_fire_on_a_clean_exit_zero(
     mocker: pytest.MonkeyPatch, db: Database
 ) -> None:
-    """The exit-code clause must not fire on a healthy answer that says "limit".
+    """The bare word "limit" is only evidence when the call FAILED.
 
     ``claude`` answering a prompt that happens to discuss limits exits 0, and
     reading that as a throttle would park the brain and amber the doctor row
     over nothing.
+
+    Named for the clause it actually guards. It used to be called "a clean exit
+    zero is never a rate limit", which is a claim this fixture cannot support:
+    the wording here trips ONLY the exit-code clause, so it says nothing about
+    the signature clause. That broader claim is the test directly below, on a
+    wording that carries a real signature.
     """
     chatty = "your context limit is 200k tokens"
+    doctor_rate_limited, _ = await _doctor_verdict(mocker, 0, chatty)
+    brain_rate_limited = await OpusBridge(db)._check_and_handle_rate_limit(
+        0, "", chatty
+    )
+
+    assert doctor_rate_limited == brain_rate_limited is False
+
+
+@pytest.mark.unit
+async def test_a_successful_answer_carrying_a_signature_is_not_a_rate_limit(
+    mocker: pytest.MonkeyPatch, db: Database
+) -> None:
+    """What "a clean exit zero is never a rate limit" actually requires.
+
+    The wording matters: "your context limit is 200k tokens" trips only the
+    exit-code clause, which is exactly why the test above could never have
+    caught this. A phrase containing a real SIGNATURE used to be classified as
+    a throttle on a SUCCESSFUL call, and the router path escaped it only
+    because it asks the predicate about failed calls alone -- a hand-gate one
+    careless new consumer would have lost.
+
+    Now that ``is_rate_limited`` gates BOTH clauses on a non-zero exit, this is
+    a live guard rather than a known trap. It arrived here as a strict xfail
+    written before the fix so the fix could not land silently; ungate the first
+    clause and it goes red on both consumers at once. Planning a spec ABOUT
+    rate limiting is the case it protects, and Praxis plans specs about its own
+    subsystems routinely.
+    """
+    chatty = "your rate limit is 200 requests per minute"
     doctor_rate_limited, _ = await _doctor_verdict(mocker, 0, chatty)
     brain_rate_limited = await OpusBridge(db)._check_and_handle_rate_limit(
         0, "", chatty

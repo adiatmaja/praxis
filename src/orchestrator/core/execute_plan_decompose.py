@@ -25,7 +25,7 @@ from orchestrator.core.capability_history import (
     fetch_recent_outcomes,
     summarize_outcomes,
 )
-from orchestrator.core.context_scrub import scrub_context
+from orchestrator.core.context_scrub import INTAKE_ABUSE_CEILING_CHARS, scrub_context
 from orchestrator.core.difficulty import (
     DEFAULT_BIAS,
     DEFAULT_WEIGHTS,
@@ -48,7 +48,7 @@ from orchestrator.core.plan_review import (
     build_review_prompt,
     parse_review_response,
 )
-from orchestrator.core.token_budget import WORKER_RESERVE_FRACTION
+from orchestrator.core.token_budget import worker_budget
 from orchestrator.models.schemas import LeafTask
 
 
@@ -353,6 +353,8 @@ async def decompose_plan(
     plan_id: str | None = None,
     emitter: Any = None,
     db: Any = None,
+    harness: str | None = None,
+    project_context_window: int | None = None,
 ) -> dict[str, Any]:
     """Capability-review a plan into a normalized opus_plan task graph.
 
@@ -360,7 +362,12 @@ async def decompose_plan(
         plan: The externally-authored plan text to decompose.
         model: Local worker model name (used for capability profiling).
         context: Optional caller-supplied context to thread onto each leaf.
-        router: LLMRouter-compatible object with ``run(call_site, prompt, project_id)``
+        router: LLMRouter-compatible object with ``run(call_site, prompt,
+            project_id)``. Pass the ``OpusBridge`` (see
+            ``opus_bridge.parking_brain_runner``), not the bare ``LLMRouter``:
+            only the bridge parks ``opus_state`` on a subscription throttle,
+            and without that the caller re-attempts this decomposition on every
+            orchestration tick for the whole five-hour window.
         effective_settings: Object with ``capability_profile(project_id, model)``
             returning a profile with a ``context_window`` attribute.
         project_id: Project id for router routing context; may be None.
@@ -368,6 +375,13 @@ async def decompose_plan(
         plan_id: Plan identifier (reserved for capability event wiring).
         emitter: Capability event emitter (reserved for capability event wiring).
         db: Optional Database to fetch recent outcomes for history.
+        harness: The harness that will run ``model``, so a per-harness declared
+            context window applies. None skips that tier only.
+        project_context_window: The project's declared window, which outranks
+            every other source. Both exist so the per-leaf budget below is the
+            SAME number the dispatch gate will use; without them a plan was
+            decomposed for an 8 K worker and then dispatched against a
+            million-token window, and only the second half looked right.
 
     Returns:
         A normalized ``{"tasks": [...]}`` dict where each task has a ``slug``,
@@ -380,8 +394,13 @@ async def decompose_plan(
             validation violations remain after the informed re-decompose round,
             or if a leaf still scores below ``reject_below`` after it.
     """
-    profile = await effective_settings.capability_profile(project_id=None, model=model)
-    per_leaf_budget = int(profile.context_window * (1 - WORKER_RESERVE_FRACTION))
+    profile = await effective_settings.capability_profile(
+        project_id=project_id,
+        model=model,
+        harness=harness,
+        project_context_window=project_context_window,
+    )
+    per_leaf_budget = worker_budget(profile.context_window)
     if db is not None:
         runs = await fetch_recent_outcomes(
             db, model_name=model, project_id=project_id, limit=100
@@ -588,11 +607,34 @@ async def decompose_plan(
             "leaf_count": leaf_count,
         }
 
-    scrubbed_context = scrub_context(context)
+    # This is intake, not the worker-bible assembly: ``profile.context_window``
+    # above is a coarse, model-only capability lookup, not the authoritative,
+    # harness-and-probe-aware resolution (``core/context_window.
+    # resolve_context_window``) that actually sizes a worker's budget. Capping
+    # by it here would cut ``context_text``/``repo_memory`` before
+    # ``core/worker_bible.build_bible`` - the seam that resolves the TRUE
+    # window - ever re-scrubs this same text as ``caller_context``/
+    # ``repo_memory``; a re-scrub cannot lengthen a string intake already
+    # shortened. So the only cap here is a fixed abuse guard, not a context
+    # budget: it exists to stop a pathological multi-megabyte payload from
+    # being written into the DB, nothing more.
+    scrubbed_context = scrub_context(
+        context,
+        INTAKE_ABUSE_CEILING_CHARS,
+        cap_reason="Praxis's intake abuse guard (not sized to any worker's "
+        "context window - the real budget is enforced later, once the "
+        "worker's window is resolved)",
+    )
     if scrubbed_context is not None:
         for task in opus_plan["tasks"]:
             task.setdefault("context_text", scrubbed_context)
-    scrubbed_local = scrub_context(local_context)
+    scrubbed_local = scrub_context(
+        local_context,
+        INTAKE_ABUSE_CEILING_CHARS,
+        cap_reason="Praxis's intake abuse guard (not sized to any worker's "
+        "context window - the real budget is enforced later, once the "
+        "worker's window is resolved)",
+    )
     if scrubbed_local is not None:
         for task in opus_plan["tasks"]:
             task.setdefault("repo_memory", scrubbed_local)

@@ -70,6 +70,41 @@ def no_live_planner_round_trip(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(sys_mod, "probe_provider_roundtrip", _forbidden)
 
 
+@pytest.fixture(autouse=True)
+def no_live_agy_container(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep doctor's ``agy models`` probe from spawning a real container.
+
+    Sibling of ``no_live_planner_round_trip`` above and for the same reason.
+    ``config/praxis.yaml`` ships ``default_worker_harness: agy``, so on a
+    stock install the agy row is IN PLAY in every ``/api/doctor`` test; on a
+    machine that has built ``agy-agent:latest`` the unstubbed gathering layer
+    would start a container, wait up to 25s for a Gemini call, and do it again
+    each time the 60s cache expired.  Autouse rather than opt-in because
+    whether the row is in play depends on settings precedence (a developer's
+    ``.env`` outranks that YAML), so no individual test can be trusted to know
+    whether it is the one that spends.
+
+    ``ran=False`` is the value that keeps every pre-existing test behaving as
+    it did: it means "not probed", so ``probe_agy_credentials`` reports an
+    honest amber naming the reason rather than a verdict this suite never
+    measured.  ``tests/test_api_doctor.py`` pins that choice AND pins the cost
+    gate that decides whether the real probe is reached at all, in both
+    directions: a gate stuck closed would make the whole row inert.
+
+    Patched on ``api.doctor``, which is both the only caller and the only
+    place the function is defined; a second call site would have to import it
+    from there and would be caught by the same patch.
+    """
+    from orchestrator.api import doctor as doctor_api
+
+    async def _not_probed(image: str, volume: str) -> doctor_api._AgyProbeResult:
+        return doctor_api._AgyProbeResult(
+            ran=False, error="the test suite never spawns a probe container"
+        )
+
+    monkeypatch.setattr(doctor_api, "probe_agy_models", _not_probed)
+
+
 @pytest.fixture
 def test_settings(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Settings:
     db_path = tmp_path / "test.db"

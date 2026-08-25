@@ -1,6 +1,13 @@
 import pytest
 
-from orchestrator.core.context_scrub import scrub_context
+from orchestrator.core.context_scrub import (
+    _DEFAULT_MAX_CHARS,
+    _TYPICAL_LOCAL_MODEL_WINDOW_TOKENS,
+    INTAKE_ABUSE_CEILING_CHARS,
+    resolve_scrub_cap,
+    scrub_context,
+)
+from orchestrator.core.token_budget import worker_budget
 
 
 @pytest.mark.unit
@@ -32,8 +39,94 @@ def test_redacts_private_key_block():
 def test_caps_size():
     raw = "x" * 50_000
     out = scrub_context(raw, max_chars=10_000)
-    assert len(out) <= 10_100  # cap + truncation notice
+    assert out.startswith("x" * 10_000)
+    assert "x" * 10_001 not in out  # nothing beyond the cap survives
     assert "truncated" in out.lower()
+
+
+@pytest.mark.unit
+def test_intake_abuse_ceiling_is_a_fixed_constant_unrelated_to_any_window():
+    """The intake abuse guard must be a plain, fixed number - never derived
+    from ``resolve_scrub_cap`` or any resolved window - and comfortably
+    larger than any legitimate spec (the reported case was 14 409 chars)."""
+    assert INTAKE_ABUSE_CEILING_CHARS > 100_000
+    # Not equal to a window-derived cap for any plausible window: proves it
+    # is a plain constant, not silently re-computed from resolve_scrub_cap.
+    assert resolve_scrub_cap(1_000_000).max_chars != INTAKE_ABUSE_CEILING_CHARS
+
+
+@pytest.mark.unit
+def test_intake_abuse_ceiling_still_truncates_a_pathological_payload():
+    raw = "q" * (INTAKE_ABUSE_CEILING_CHARS + 1_000)
+    out = scrub_context(
+        raw, INTAKE_ABUSE_CEILING_CHARS, cap_reason="Praxis's intake abuse guard"
+    )
+    assert out.startswith("q" * INTAKE_ABUSE_CEILING_CHARS)
+    assert "q" * (INTAKE_ABUSE_CEILING_CHARS + 1) not in out
+    assert "abuse guard" in out
+
+
+@pytest.mark.unit
+def test_resolve_scrub_cap_unknown_window_uses_conservative_default():
+    """None means nobody could establish a window (core/context_window.py);
+    this must still cap, not go unlimited, and must say WHY out loud."""
+    cap = resolve_scrub_cap(None)
+    assert cap.max_chars == _DEFAULT_MAX_CHARS
+    assert "unknown" in cap.reason
+
+
+@pytest.mark.unit
+def test_resolve_scrub_cap_typical_local_window_matches_todays_flat_cap():
+    """Pin the current number: an 8K LM Studio project (the shipped
+    ``capability.default.context_window``) must land on the exact cap this
+    module has always used, or a future ratio change silently resizes every
+    existing install without a single test noticing."""
+    cap = resolve_scrub_cap(_TYPICAL_LOCAL_MODEL_WINDOW_TOKENS)
+    assert cap.max_chars == _DEFAULT_MAX_CHARS == 12_000
+
+
+@pytest.mark.unit
+def test_resolve_scrub_cap_large_window_grows_well_past_the_default():
+    """The reporter's case: a declared million-token window must not leave
+    the worker sized like an 8K local model. Pin the exact figure so a
+    ratio change is caught, not just "some number bigger than 12000"."""
+    cap = resolve_scrub_cap(1_000_000)
+    assert cap.max_chars == worker_budget(1_000_000) * 4
+    assert cap.max_chars == 3_868_928
+    assert cap.max_chars > _DEFAULT_MAX_CHARS
+
+
+@pytest.mark.unit
+def test_a_14kb_spec_survives_intact_on_a_million_token_window():
+    """The reporter's exact shape: a legitimately-sized spec must pass through
+    a large-window cap untouched, not truncated to what an 8K floor model
+    would need. 14 409 chars mirrors the reported instructions body."""
+    raw = "y" * 14_409
+    cap = resolve_scrub_cap(1_000_000)
+    out = scrub_context(raw, cap.max_chars, cap_reason=cap.reason)
+    assert out == raw
+    assert "truncated" not in out.lower()
+
+
+@pytest.mark.unit
+def test_the_same_14kb_spec_is_truncated_on_a_typical_local_window():
+    """Same input, an 8K window: today's flat cap still bites, unchanged."""
+    raw = "y" * 14_409
+    cap = resolve_scrub_cap(_TYPICAL_LOCAL_MODEL_WINDOW_TOKENS)
+    out = scrub_context(raw, cap.max_chars, cap_reason=cap.reason)
+    assert out.startswith("y" * 12_000)
+    assert "y" * 12_001 not in out
+    assert "truncated" in out.lower()
+
+
+@pytest.mark.unit
+def test_truncation_notice_names_the_cap_and_the_reason():
+    """A doctor-style diagnostic: the notice must name the cause AND the cap,
+    not just announce that something was cut."""
+    raw = "z" * 100
+    out = scrub_context(raw, max_chars=10, cap_reason="a 512-token context window")
+    assert "10" in out
+    assert "a 512-token context window" in out
 
 
 @pytest.mark.unit

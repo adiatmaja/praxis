@@ -7,7 +7,15 @@ services:
         # Set by the operator: `PRAXIS_BUILD_SHA=$(git rev-parse --short HEAD)`.
         # Stamps /health + /api/status so a stale image is visible.
         PRAXIS_BUILD_SHA: ${PRAXIS_BUILD_SHA:-dev}
-    container_name: orchestrator
+    # Two checkouts of this repo on one machine share a single Docker daemon,
+    # and container_name is GLOBAL to it, unlike every other per-project
+    # setting here: whichever checkout starts second silently steals the
+    # running container AND its data volume from the first. The default
+    # stays "orchestrator" on purpose -- every doc and debugging recipe in
+    # this repo says `docker logs orchestrator` -- so set
+    # PRAXIS_CONTAINER_NAME in .env only on a machine running more than one
+    # checkout.
+    container_name: ${PRAXIS_CONTAINER_NAME:-orchestrator}
     ports:
       - "${PORT:-12323}:8080"
     volumes:
@@ -63,6 +71,37 @@ services:
       # enters the container on its own, so without this mount the check can
       # only ever answer "could not read .env" and the whole feature is inert.
       - ./.env:/app/.env:ro
+      # Local git backend (evaluate Praxis with no GitHub credential): the
+      # SAME repos directory must be visible under an IDENTICAL path to the
+      # orchestrator (this mount; `preflight._preflight_local` checks the
+      # path HERE) and to the Docker daemon (the bind-mount SOURCE
+      # `agent_manager.local_repo_volume` passes when a worker is spawned,
+      # which the daemon resolves in the HOST namespace, not this
+      # container's). An identity mount is enough on BOTH Linux and Docker
+      # Desktop for Windows: on Docker Desktop, `/run/desktop/mnt/host/
+      # <drive>/...` is valid simultaneously as a daemon bind source and as
+      # a path inside this container (verified against Docker 29.6.1 /
+      # Compose v5.3.0). So set ONE variable, LOCAL_REPOS_PATH, to a path
+      # valid in both places; the nested default below makes
+      # LOCAL_REPOS_HOST_PATH mirror it automatically. Only set
+      # LOCAL_REPOS_HOST_PATH separately when the daemon's bind source must
+      # literally be a different string (e.g. a Windows path you would
+      # rather not resolve through the VM share prefix).
+      #
+      # Unset, this is an EMPTY NAMED VOLUME (praxis_local_repos_unused),
+      # never a bind mount: a bind default here would expose some host
+      # directory read-write for every operator who never heard of this
+      # variable, which is exactly the defect this comment used to describe
+      # as harmless and was not (the default source picked, `./docker`,
+      # collided with the READ-ONLY `./docker:/app/docker` mount above and
+      # made both writable). A named volume has no host directory to leak.
+      # Read-write when a real path is given: LocalGitBackend runs `git
+      # merge`/`git push` against this repo directly from inside the
+      # orchestrator, not only from a worker. Applying an edit to either
+      # variable needs `docker compose up -d` (a mount change is baked at
+      # container CREATE), never `restart`. See docs/configurations.md
+      # "Evaluate with no GitHub credential".
+      - ${LOCAL_REPOS_HOST_PATH:-${LOCAL_REPOS_PATH:-praxis_local_repos_unused}}:${LOCAL_REPOS_PATH:-/app/.local-repos-unused}
     # Container-only variables, from a file git never sees.
     #
     # This exists for one job the `environment:` block below cannot do without
@@ -150,9 +189,12 @@ services:
       # track ${PORT} (not the in-container 8080). Derived here so the two can
       # never drift apart and silently 404 every agent callback.
       - AGENT_CALLBACK_URL=${AGENT_CALLBACK_URL:-http://host.docker.internal:${PORT:-12323}/api/internal/agent-done}
-      # Name of the Docker volume holding agy (Gemini) OAuth credentials.  Populate
-      # it once with an interactive `agy login` (see docs/deployment.md); the
-      # orchestrator mounts it RW into agy-agent containers at /home/agent/.gemini.
+      # Name of the Docker volume holding agy (Gemini) OAuth credentials.
+      # Populate it once by chown-ing the volume to the agent user and then
+      # starting an interactive `agy` session against it: there is NO `agy
+      # login` subcommand, and naming one sends the operator to a usage error
+      # (see docs/deployment.md for both commands). The orchestrator mounts it
+      # RW into agy-agent containers at /home/agent/.gemini.
       - GEMINI_CREDS_VOLUME=${GEMINI_CREDS_VOLUME:-praxis-gemini-creds}
       - OPENCODE_SESSIONS_VOLUME=${OPENCODE_SESSIONS_VOLUME:-praxis-opencode-sessions}
       # Points core/settings_file.config_file_path() at the ./config mount above
@@ -214,5 +256,9 @@ services:
 
 volumes:
   praxis_data:
+  # Empty by design: the default target of the local-repos mount above, so an
+  # operator who never set LOCAL_REPOS_PATH/LOCAL_REPOS_HOST_PATH gets a
+  # volume with nothing in it rather than any host directory bound in.
+  praxis_local_repos_unused:
   caddy_data:
   caddy_config:
