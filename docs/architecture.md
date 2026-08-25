@@ -191,17 +191,42 @@ and any DB run:
 
 ## Rate Limit Handling
 
-Opus Bridge tracks Claude subscription limits:
+`opus_state` is a singleton row gating every brain call. It turns a subscription
+throttle into a wait that ends by itself instead of a plan failure:
 
 ```
-available ──► rate_limited (5h cooldown detected)
-                   │
+available ──► rate_limited (a provider's own output says it is throttled)
+                   │        written by OpusBridge._park_rate_limited, the only
+                   │        writer of this transition, reached from BOTH the
+                   │        router path (_run_routed) and the legacy _run_claude
                    ▼
-              queued_actions (stored in opus_state.queued_actions JSON)
-                   │
-                   ▼ (after resume_at)
-              resuming ──► available (drain queued actions)
+              queued_actions (a LEDGER of what was deferred, in
+                   │          opus_state.queued_actions JSON; de-duplicated,
+                   │          because the callers run once per loop pass)
+                   ▼ (the pass after resume_at)
+            available (is_available flips the row and EMPTIES the ledger)
 ```
+
+Two things this deliberately does **not** do, both of which earlier revisions of
+this document claimed:
+
+- **Nothing drains the queue, and nothing replays a queued action.**
+  `get_queued_actions` has no production caller. The resume is the orchestration
+  loop finding the plan still `PENDING` (or the task still `REVIEWING`) on the
+  next pass and re-entering the same code that deferred it. The ledger exists so
+  `GET /api/status` can report how much work is waiting; treat it as telemetry,
+  never as a work list.
+- **`OpusStatus.RESUMING` is never written by anything.** The enum value exists
+  in `models/schemas.py` and no code path sets it. The transition is
+  `rate_limited ──► available` directly.
+
+Two limits worth knowing before relying on the gate:
+
+- The row is **global**, with no provider column, so a throttled `codex` parks a
+  healthy `claude`. In the reference configuration every routed seat points at
+  one provider, so in practice one throttle really does mean all of them.
+- Only calls made **through `OpusBridge`** park. The seats that call
+  `LLMRouter.run` directly (`execute_plan_decompose`, `leaf_triage`) do not.
 
 ## Git Branching Strategy
 

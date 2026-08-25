@@ -376,6 +376,14 @@ async def test_a_rate_limit_does_not_consume_an_attempt(
     # tick reaches a provider, and the other two return without spending a
     # planner call or a clone. Revert the parking and this goes red on the
     # spawn count long before it goes red on the status.
+    #
+    # ONE spawn because this chain has ONE entry. That is not the shipped
+    # shape: `config/praxis.yaml` gives `plan` the chain [sonnet, opus], and
+    # `is_unavailability` now answers True for the new type, so the router
+    # falls through and a throttle costs one spawn PER ENTRY on the first
+    # tick. Covered in
+    # tests/test_router_rate_limit_parks_opus_state.py::
+    # test_the_shipped_two_entry_role_chain_parks_after_exhausting_it.
     state = await db.fetch_one("SELECT status FROM opus_state WHERE id = 1")
     assert state is not None
     assert state["status"] == "rate_limited"

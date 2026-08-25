@@ -107,16 +107,57 @@ async def test_the_brain_parks_opus_state_on_every_wording(
 
 
 @pytest.mark.unit
-async def test_a_clean_exit_zero_is_never_a_rate_limit(
+async def test_the_exit_code_clause_does_not_fire_on_a_clean_exit_zero(
     mocker: pytest.MonkeyPatch, db: Database
 ) -> None:
-    """The exit-code clause must not fire on a healthy answer that says "limit".
+    """The bare word "limit" is only evidence when the call FAILED.
 
     ``claude`` answering a prompt that happens to discuss limits exits 0, and
     reading that as a throttle would park the brain and amber the doctor row
     over nothing.
+
+    Named for the clause it actually guards. It used to be called "a clean exit
+    zero is never a rate limit", which is a claim this fixture cannot support
+    and which is FALSE of the code: ``is_rate_limited``'s first clause is not
+    gated on the exit code at all, so an exit-0 response carrying a full
+    signature is read as a throttle. That gap is pinned directly below rather
+    than hidden behind a name.
     """
     chatty = "your context limit is 200k tokens"
+    doctor_rate_limited, _ = await _doctor_verdict(mocker, 0, chatty)
+    brain_rate_limited = await OpusBridge(db)._check_and_handle_rate_limit(
+        0, "", chatty
+    )
+
+    assert doctor_rate_limited == brain_rate_limited is False
+
+
+@pytest.mark.unit
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "KNOWN TRAP, assigned as separate work: is_rate_limited's signature "
+        "clause is not gated on the exit code, so a SUCCESSFUL response "
+        "carrying a signature is read as a throttle. Latent rather than live "
+        "-- main.py always passes router=, so the legacy _run_claude arm this "
+        "reaches is unused on every install, and the only other consumer is "
+        "the doctor round trip, whose prompt can only answer 'PONG'. Gate the "
+        "clause and this XPASSes: delete the marker then, do not delete the "
+        "test."
+    ),
+)
+async def test_a_successful_answer_carrying_a_signature_is_not_a_rate_limit(
+    mocker: pytest.MonkeyPatch, db: Database
+) -> None:
+    """What "a clean exit zero is never a rate limit" would actually require.
+
+    The wording matters: "your context limit is 200k tokens" trips only the
+    exit-code clause and so passes today, which is exactly why the test above
+    could never have caught this. A phrase containing a real SIGNATURE is
+    classified as a throttle on a successful call, and the router path avoids
+    it only because it asks the predicate about failed calls alone.
+    """
+    chatty = "your rate limit is 200 requests per minute"
     doctor_rate_limited, _ = await _doctor_verdict(mocker, 0, chatty)
     brain_rate_limited = await OpusBridge(db)._check_and_handle_rate_limit(
         0, "", chatty

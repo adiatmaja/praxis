@@ -16,10 +16,16 @@ would have hidden it -- an earlier version of the canary in
 ``test_planner_failure_is_terminal.py`` replaced ``_execute_one`` wholesale and
 proved nothing about the code that actually runs.
 
-Every state assertion is a TRANSITION: 'available' before, 'rate_limited'
-after, in the same body.  Asserting the end state alone cannot tell parking
-that worked from parking that never happened, since 'available' is also where
-the row starts.
+Every state assertion is a TRANSITION observed in one body, never a steady
+state, because 'available' is also where the row starts: a test that ends on
+'available' cannot on its own tell "correctly declined to park" from "parking
+is dead everywhere".  Tests that assert a throttle DID park show 'available'
+before and 'rate_limited' after; tests that assert something did NOT park end
+with ``_assert_parking_still_works``, which drives a known throttle through the
+same machinery and would go red if the arm under test had simply been deleted.
+That control is not decoration -- an adversarial review of the first version
+found four negative tests here still passing with the parking arm of
+``_run_routed`` removed outright.
 """
 
 # ruff: noqa: S101
@@ -127,6 +133,36 @@ async def _queued(db: Database) -> list[dict[str, Any]]:
     return list(json.loads(row["queued_actions"]))
 
 
+async def _assert_parking_still_works(db: Database, mocker: Any) -> None:
+    """Positive control: prove, in THIS body, that parking is not simply broken.
+
+    Mandatory in every test whose verdict is "the state stayed 'available'".
+    That assertion cannot on its own tell "correctly declined to park" from
+    "parking is dead everywhere", because 'available' is also where the row
+    starts -- and an adversarial review found four tests here passing with the
+    parking arm of ``_run_routed`` deleted outright.  Running a known throttle
+    through the same machinery afterwards makes the difference observable.
+
+    Deliberately the LAST step of a test rather than the first: it leaves the
+    row on 'rate_limited', so a negative assertion accidentally ordered after
+    it would fail loudly instead of reading a stale green.
+
+    Args:
+        db: The same database the negative half asserted against.
+        mocker: The test's mocker, used to re-point the subprocess fake.
+    """
+    proc = _cli_proc(mocker, stdout=_THROTTLE_TEXT.encode(), stderr=b"", returncode=1)
+    bridge = OpusBridge(db, router=_router_over(mocker, proc))
+
+    with pytest.raises(ProviderRateLimitError):
+        await bridge.plan_spec("spec", "https://r")
+
+    assert await _status(db) == "rate_limited", (
+        "the positive control did not park: this test's negative assertion "
+        "proves nothing, because parking is broken for every provider"
+    )
+
+
 async def _project_and_plan(db: Database) -> tuple[TaskQueue, str, dict[str, Any]]:
     await db.execute(
         "INSERT INTO users (id, name, token_hash) VALUES (?, ?, ?)",
@@ -203,6 +239,34 @@ async def test_a_throttle_through_the_real_router_parks_opus_state(
 
 
 @pytest.mark.integration
+async def test_the_operator_facing_message_quotes_the_stream_that_carries_it(
+    db: Database, mocker: Any
+) -> None:
+    """A commit whose thesis is "the evidence was unquotable" must not drop it.
+
+    This message reaches ``plans.error`` verbatim through
+    ``_unavailable_reason``, and it is the only place a human learns WHY the
+    plan is waiting.  On a host with a ``~/.claude`` hook, stderr carries an
+    unrelated warning while the throttle is on stdout, so "stderr, else stdout"
+    -- which reads perfectly plausible -- names the warning and discards the
+    evidence.  Detection is by TYPE and is unaffected either way, so nothing
+    but this assertion would notice.
+    """
+    proc = _cli_proc(
+        mocker,
+        stdout=_THROTTLE_TEXT.encode(),
+        stderr=b"warning: VPN killswitch bypassed for this session",
+        returncode=1,
+    )
+    bridge = OpusBridge(db, router=_router_over(mocker, proc))
+
+    with pytest.raises(ProviderRateLimitError) as caught:
+        await bridge.plan_spec("spec", "https://r")
+
+    assert _THROTTLE_TEXT in str(caught.value)
+
+
+@pytest.mark.integration
 @pytest.mark.parametrize(
     "call",
     [
@@ -258,6 +322,8 @@ async def test_an_ordinary_provider_failure_does_not_park(
     assert not isinstance(caught.value, ProviderRateLimitError)
     assert await _status(db) == "available"
 
+    await _assert_parking_still_works(db, mocker)
+
 
 @pytest.mark.integration
 async def test_a_successful_answer_that_discusses_limits_is_not_a_throttle(
@@ -291,6 +357,8 @@ async def test_a_successful_answer_that_discusses_limits_is_not_a_throttle(
 
     assert graph["plan_slug"] == "rate-limit"
     assert await _status(db) == "available"
+
+    await _assert_parking_still_works(db, mocker)
 
 
 @pytest.mark.integration
@@ -336,12 +404,7 @@ async def test_a_local_endpoint_failure_never_parks_the_global_state(
         await local_bridge.plan_spec("spec", "https://r")
     assert await _status(db) == "available"
 
-    # Positive control: the SAME bridge machinery over a CLI throttle does park.
-    proc = _cli_proc(mocker, stdout=_THROTTLE_TEXT.encode(), stderr=b"", returncode=1)
-    cli_bridge = OpusBridge(db, router=_router_over(mocker, proc))
-    with pytest.raises(ProviderRateLimitError):
-        await cli_bridge.plan_spec("spec", "https://r")
-    assert await _status(db) == "rate_limited"
+    await _assert_parking_still_works(db, mocker)
 
 
 @pytest.mark.integration
@@ -360,6 +423,8 @@ async def test_an_auth_failure_does_not_park(db: Database, mocker: Any) -> None:
 
     assert await _status(db) == "available"
 
+    await _assert_parking_still_works(db, mocker)
+
 
 @pytest.mark.integration
 async def test_an_empty_answer_does_not_park(db: Database, mocker: Any) -> None:
@@ -371,6 +436,56 @@ async def test_an_empty_answer_does_not_park(db: Database, mocker: Any) -> None:
         await bridge.plan_spec("spec", "https://r")
 
     assert await _status(db) == "available"
+
+    await _assert_parking_still_works(db, mocker)
+
+
+@pytest.mark.integration
+async def test_the_shipped_two_entry_role_chain_parks_after_exhausting_it(
+    db: Database, mocker: Any
+) -> None:
+    """The shape a stock install actually resolves, which one entry does not test.
+
+    ``config/praxis.yaml`` ships ``plan: [sonnet, opus]`` and a YAML role chain
+    SHADOWS ``CALL_SITE_DEFAULTS`` entirely, so the planner resolves to TWO
+    claude entries. One subscription throttles both.
+
+    The chain interacts with this fix in a way a single-entry test cannot see:
+    ``is_unavailability`` now answers True for ``ProviderRateLimitError``, so
+    ``LLMRouter.run`` FALLS THROUGH to the next entry instead of raising at the
+    first. A throttle therefore costs two CLI invocations on the first tick,
+    and the state must be parked by the time the last one gives up -- and then
+    the queue branch must stop the second tick spending any at all.
+    """
+    proc = _cli_proc(mocker, stdout=_THROTTLE_TEXT.encode(), stderr=b"", returncode=1)
+    spawn = mocker.patch(
+        "asyncio.create_subprocess_exec", new=mocker.AsyncMock(return_value=proc)
+    )
+
+    async def _shipped_plan_chain(call_site: str, project_id: str | None) -> list[dict]:  # noqa: ARG001
+        return [
+            {"provider": "claude", "model": "claude-sonnet-4-6", "effort": None},
+            {"provider": "claude", "model": "claude-opus-4-8", "effort": "high"},
+        ]
+
+    task_queue, plan_id, project = await _project_and_plan(db)
+    bridge = OpusBridge(db, router=LLMRouter(_shipped_plan_chain))
+    orchestrator = _orchestrator(task_queue, bridge)
+
+    assert await _status(db) == "available"
+    await orchestrator.plan_and_activate(plan_id, project)
+
+    assert spawn.await_count == 2, "the whole chain must be tried before giving up"
+    assert await _status(db) == "rate_limited"
+
+    await orchestrator.plan_and_activate(plan_id, project)
+
+    # Tick two spends nothing: the queue branch fired.
+    assert spawn.await_count == 2
+    plan = await task_queue.get_plan(plan_id)
+    assert plan is not None
+    assert plan["status"] == PlanStatus.PENDING
+    assert plan["plan_attempts"] == 0
 
 
 @pytest.mark.integration
@@ -562,23 +677,36 @@ async def test_nothing_replays_a_queued_action_the_pending_plan_row_does(
 ) -> None:
     """The honest shape of "resume", pinned so nobody trusts the queue.
 
-    ``get_queued_actions``/``clear_queued_actions`` have no production caller:
-    the queue is a LEDGER, and the replay is the loop finding the plan still
-    PENDING on the next pass.  It is pinned here because a queue that looks
-    like a work list and is not one is how somebody comes to route real work
-    through it.
+    ``get_queued_actions`` has no production caller: the queue is a LEDGER, and
+    the replay is the loop finding the plan still PENDING on the next pass.  It
+    is pinned here because a queue that looks like a work list and is not one
+    is how somebody comes to route real work through it.
 
     Delete the queue-clearing in ``is_available`` and the second half goes red:
     ``/api/status`` would report a queued action forever after the limit
     cleared.
     """
+    # The premise guard, over the WHOLE of `src/` -- not just
+    # `src/orchestrator/`, because `src/cli/` and `src/mcp_server/` are equally
+    # able to build a drainer, and a pin that cannot see them is the same
+    # can't-fail guard this file has already been caught shipping once.
     from orchestrator.core import opus_bridge as bridge_module
 
-    assert not any(
-        "get_queued_actions" in Path(p).read_text(encoding="utf-8")
-        for p in Path(bridge_module.__file__).parent.parent.rglob("*.py")
-        if "opus_bridge.py" not in p.name
-    ), "something now consumes the queue; this test's premise needs revisiting"
+    src_root = Path(bridge_module.__file__).parents[2]
+    assert src_root.name == "src", src_root
+    consumers = sorted(
+        str(path.relative_to(src_root))
+        for path in src_root.rglob("*.py")
+        if path.name != "opus_bridge.py"
+        and any(
+            name in path.read_text(encoding="utf-8")
+            for name in ("get_queued_actions", "clear_queued_actions")
+        )
+    )
+    assert consumers == [], (
+        f"something now consumes the queue ({consumers}); this test's premise, "
+        "and the ledger-not-a-work-list design it pins, need revisiting"
+    )
 
     task_queue, plan_id, project = await _project_and_plan(db)
     await db.execute(

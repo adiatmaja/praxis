@@ -311,7 +311,13 @@ class OpusBridge:
         )
 
     async def _park_rate_limited(self, provider: str = "claude") -> None:
-        """Write the throttle to ``opus_state``. THE only writer of that state.
+        """Write the throttle to ``opus_state``.
+
+        THE only writer of the ``available -> rate_limited`` TRANSITION, which
+        is the narrow claim and the accurate one: ``is_available`` writes
+        ``status`` in the other direction when the limit expires, and
+        ``queue_action`` writes ``queued_actions``. Nothing else moves the row
+        INTO the parked state.
 
         Both routes to a rate limit end here: the legacy ``_run_claude`` path
         via :meth:`_check_and_handle_rate_limit`, and the router path via
@@ -641,13 +647,17 @@ class OpusBridge:
         )
 
     async def get_queued_actions(self) -> list[dict[str, Any]]:
+        """Read the ledger of deferred brain calls.
+
+        No production caller: this is a read for tests and diagnosis. The
+        ledger is not a work list and nothing replays what it holds; see
+        :meth:`queue_action`.
+
+        Returns:
+            The deferred actions, oldest first.
+        """
         state = await self.get_opus_state()
         return cast(list[dict[str, Any]], json.loads(state["queued_actions"]))
-
-    async def clear_queued_actions(self) -> None:
-        await self._db.execute(
-            "UPDATE opus_state SET queued_actions = '[]' WHERE id = 1"
-        )
 
     CLASSIFY_PROMPT = (
         "Classify this markdown document as exactly one word: 'spec', 'plan', or 'other'. "

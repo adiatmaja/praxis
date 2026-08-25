@@ -307,7 +307,22 @@ class LLMRouter:
             # below carries stderr, which is how a throttle came to surface as
             # "claude failed (exit 1):" with no evidence attached at all.
             if is_rate_limited(proc.returncode, raw_out, err):
-                evidence = err.strip() or raw_out.strip()
+                # Quote whichever stream actually CARRIES the throttle, and
+                # both when both do. "stderr, else stdout" reads plausible and
+                # is wrong here: on a host with a `~/.claude` hook, stderr is
+                # "warning: VPN killswitch bypassed ..." while the real message
+                # is on stdout, so the operator-facing string would name the
+                # warning and drop the evidence -- the exact silence this whole
+                # change exists to remove, one layer up. Classification is by
+                # TYPE, so this only ever affects what a human reads.
+                carriers = [
+                    text.strip()
+                    for text in (raw_out, err)
+                    if text.strip() and is_rate_limited(proc.returncode, text, "")
+                ]
+                evidence = " / ".join(carriers) or " / ".join(
+                    text.strip() for text in (raw_out, err) if text.strip()
+                )
                 message = (
                     f"{provider} reports its subscription is rate limited "
                     f"(exit {proc.returncode}): {evidence}"

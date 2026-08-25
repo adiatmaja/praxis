@@ -661,14 +661,21 @@ class Orchestrator(DispatchMixin, ReviewMixin, ReconcileMixin, ImprovementMixin)
                 # healthy plan fifteen seconds into a five-hour wait: an
                 # inertness converted into data loss.
                 #
-                # The router now parks it too (`OpusBridge._run_routed`), so
-                # the state check has teeth on THIS pass's successor. Both
-                # halves stay: `is_unavailability` reads the EXCEPTION and is
-                # what saves the FIRST tick, on which the state is still
-                # 'available' because the throttle has only just been
-                # discovered; the state check is what makes every later tick
-                # cheap, and it also covers the seats that call the router
-                # directly rather than through the bridge.
+                # The router now parks it too (`OpusBridge._run_routed`), and
+                # it parks BEFORE re-raising, so on the bridge path the state
+                # check below is already False by the time this line runs --
+                # even on the very first tick. `is_unavailability` is NOT what
+                # saves that tick.
+                #
+                # It is still load-bearing, for the cases parking does not
+                # cover. Most of what reaches here is an unavailability that
+                # deliberately never parks at all (`ProviderAuthError`, a
+                # gateway 403/429/5xx), and neither does a throttle raised by
+                # a seat that calls `router.run` directly rather than through
+                # `OpusBridge`, nor one lost when a fallback chain's LAST
+                # entry fails differently. Reading the EXCEPTION covers all of
+                # those; reading the state covers nothing but a throttle that
+                # already parked.
                 reason = _with_checkout_note(_unavailable_reason(exc), degraded)
                 logger.warning(
                     "Planning for plan %s is waiting on the provider (%s). "
@@ -811,6 +818,12 @@ class Orchestrator(DispatchMixin, ReviewMixin, ReconcileMixin, ImprovementMixin)
                 plan_id=plan_id,
                 emitter=self._emitter,
                 db=self._tq._db,
+                # The window this plan's leaves will actually be dispatched
+                # against. The pending_input payload carries the model but not
+                # the harness, and without both the decomposer sized leaves for
+                # an 8 K worker while the gate resolved the real window.
+                harness=project.get("harness"),
+                project_context_window=project.get("context_window"),
             )
         except PlanReviewError as exc:
             await self._tq.set_plan_error(plan_id, str(exc))
