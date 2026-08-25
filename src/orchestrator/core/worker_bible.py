@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from orchestrator.core.context_scrub import scrub_context
+from orchestrator.core.context_scrub import resolve_scrub_cap, scrub_context
 from orchestrator.core.leaf_validator import is_runnable_verification
 from orchestrator.core.token_budget import (
     WORKER_RESERVE_FRACTION,
@@ -258,8 +258,15 @@ def build_bible(src: BibleSources) -> str:
     # see the comment on the _P_* constants above.
     raw_sections.sort(key=lambda s: s.priority)
 
+    # Sized to THIS worker's resolved window, not a flat constant: a
+    # legitimately large leaf contract or caller context on a million-token
+    # cloud model must not be truncated to what a floor model would need
+    # (see ``core/context_scrub.resolve_scrub_cap``). ``fit_sections`` below
+    # is still what enforces the real, whole-Bible budget across every
+    # section; this cap only bounds a single section before that happens.
+    cap = resolve_scrub_cap(src.context_window)
     for s in raw_sections:
-        s.text = scrub_context(s.text) or s.text
+        s.text = scrub_context(s.text, cap.max_chars, cap_reason=cap.reason) or s.text
 
     kept = fit_sections(raw_sections, src.context_window, src.reserve_fraction)
     return "\n\n".join(s.text for s in kept)

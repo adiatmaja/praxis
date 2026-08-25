@@ -16,7 +16,8 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 
 from orchestrator.api.auth import verify_token
-from orchestrator.core.context_scrub import scrub_context
+from orchestrator.core.context_scrub import resolve_scrub_cap, scrub_context
+from orchestrator.core.context_window import resolve_context_window
 from orchestrator.core.git_ops import GitOps
 from orchestrator.core.github_credentials import (
     GitHubCredentialProvider,
@@ -251,6 +252,11 @@ async def dispatch_task(request: Request, body: DispatchRequest) -> dict[str, An
     )
     if project is None:
         project_id = str(uuid.uuid4())
+        effective_harness = body.harness or default_harness_id()
+        # A brand-new project has no context_window column value yet (the
+        # INSERT below does not set one): None, same as an existing project
+        # that has never had one declared.
+        project_context_window: int | None = None
         await db.execute(
             """INSERT INTO projects
                (id, user_id, name, repo_url, default_branch, approval_gate,
@@ -281,7 +287,7 @@ async def dispatch_task(request: Request, body: DispatchRequest) -> dict[str, An
                 # improvement plans nobody has approved to RUN".
                 True,
                 body.model,
-                body.harness or default_harness_id(),
+                effective_harness,
             ),
         )
     else:
@@ -290,10 +296,33 @@ async def dispatch_task(request: Request, body: DispatchRequest) -> dict[str, An
         # the registry default (see execute_plan._create_or_reuse_project).
         project_id = project["id"]
         effective_harness = body.harness or project["harness"] or default_harness_id()
+        project_context_window = project.get("context_window")
         await db.execute(
             "UPDATE projects SET model_name = ?, harness = ? WHERE id = ?",
             (body.model, effective_harness, project_id),
         )
+
+    # Sized to this project's worker, not a flat constant (see
+    # ``core/context_scrub.resolve_scrub_cap``). Deliberately NO LM Studio
+    # probe here (``lm_studio_url`` omitted): this is the intake seam, well
+    # before the actual dispatch tick that owns the authoritative resolution
+    # (``orchestrator_dispatch._build_worker_bible``, probe included) and
+    # re-scrubs this same text with it. Adding a second network round trip to
+    # every dispatch request for a number the later, real resolution already
+    # supersedes would only add latency and flakiness for no gain; the
+    # no-network layers (project override, declared model/harness windows)
+    # already resolve the reporter's case, since a cloud harness's window is
+    # always DECLARED, never probed.
+    declared = None
+    if es is not None:
+        declared = await es.declared_context_windows()
+    resolved_window = await resolve_context_window(
+        harness_id=effective_harness,
+        model_name=body.model,
+        project_override=project_context_window,
+        declared=declared,
+    )
+    scrub_cap = resolve_scrub_cap(resolved_window.tokens)
 
     plan_id = await queue.create_plan(project_id, source="mcp")
     slug = _slugify(body.instructions)
@@ -307,10 +336,14 @@ async def dispatch_task(request: Request, body: DispatchRequest) -> dict[str, An
         task_dict["plan_path"] = body.plan_path
     if body.plan_text is not None:
         task_dict["plan_text"] = body.plan_text
-    scrubbed_context = scrub_context(body.context)
+    scrubbed_context = scrub_context(
+        body.context, scrub_cap.max_chars, cap_reason=scrub_cap.reason
+    )
     if scrubbed_context is not None:
         task_dict["context_text"] = scrubbed_context
-    scrubbed_local = scrub_context(body.local_context)
+    scrubbed_local = scrub_context(
+        body.local_context, scrub_cap.max_chars, cap_reason=scrub_cap.reason
+    )
     if scrubbed_local is not None:
         task_dict["repo_memory"] = scrubbed_local
     if body.files is not None:

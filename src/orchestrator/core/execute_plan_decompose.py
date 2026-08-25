@@ -25,7 +25,7 @@ from orchestrator.core.capability_history import (
     fetch_recent_outcomes,
     summarize_outcomes,
 )
-from orchestrator.core.context_scrub import scrub_context
+from orchestrator.core.context_scrub import resolve_scrub_cap, scrub_context
 from orchestrator.core.difficulty import (
     DEFAULT_BIAS,
     DEFAULT_WEIGHTS,
@@ -588,11 +588,16 @@ async def decompose_plan(
             "leaf_count": leaf_count,
         }
 
-    scrubbed_context = scrub_context(context)
+    # Reuses ``profile.context_window`` - already resolved above for the
+    # per-leaf budget - rather than a second, divergent resolution: it is
+    # this function's existing answer to "how big is this model's window",
+    # not a new one.
+    cap = resolve_scrub_cap(profile.context_window)
+    scrubbed_context = scrub_context(context, cap.max_chars, cap_reason=cap.reason)
     if scrubbed_context is not None:
         for task in opus_plan["tasks"]:
             task.setdefault("context_text", scrubbed_context)
-    scrubbed_local = scrub_context(local_context)
+    scrubbed_local = scrub_context(local_context, cap.max_chars, cap_reason=cap.reason)
     if scrubbed_local is not None:
         for task in opus_plan["tasks"]:
             task.setdefault("repo_memory", scrubbed_local)

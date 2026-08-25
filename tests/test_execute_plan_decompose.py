@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any
 from unittest.mock import patch
 
@@ -895,3 +896,77 @@ async def test_decompose_uses_fetched_outcome_history_when_db_provided(db):
     history_arg = mock_prompt.call_args[0][2]
     assert "no prior run history" not in history_arg
     assert "feature" in history_arg
+
+
+# ---------------------------------------------------------------------------
+# Residual defect: the context/local_context scrub cap must follow the
+# resolved context window (profile.context_window), not a flat 12 000 chars.
+# ---------------------------------------------------------------------------
+
+
+class _FakeLargeWindowProfile(_FakeProfile):
+    """Same shape as ``_FakeProfile``, but a declared million-token window."""
+
+    context_window = 1_000_000
+
+
+class _FakeLargeWindowEffective:
+    async def capability_profile(
+        self, project_id: Any, model: str
+    ) -> _FakeLargeWindowProfile:
+        return _FakeLargeWindowProfile()
+
+
+_OVERSIZED_CONTEXT = ("c" * 14_000) + "TAILMARK"
+
+
+def _single_task_raw() -> str:
+    return (
+        '{"tasks":[{"id":"t1","title":"X","description":"d","depends_on":[],'
+        '"files":["src/x.py"],"task_type":"feature","estimated_loc":40,'
+        '"verification":"Run pytest and confirm all tests pass",'
+        '"plan_text":"## Goal\\nAdd X.\\n## Files\\nsrc/x.py\\n## Steps\\n'
+        '1. Implement it.\\n## Acceptance\\nRun `pytest` and confirm it passes"'
+        "}]}"
+    )
+
+
+async def test_decompose_plan_large_window_preserves_oversized_context():
+    """The reporter's case at this seam: a declared million-token window must
+    not truncate caller context to what an 8K floor model would need."""
+    router = _FakeRouter(_single_task_raw())
+    opus_plan = await decompose_plan(
+        plan="do something",
+        model="qwen3.6-27b",
+        context=_OVERSIZED_CONTEXT,
+        local_context=_OVERSIZED_CONTEXT,
+        router=router,
+        effective_settings=_FakeLargeWindowEffective(),
+        project_id=None,
+    )
+    task = opus_plan["tasks"][0]
+    assert task["context_text"] == _OVERSIZED_CONTEXT
+    assert task["repo_memory"] == _OVERSIZED_CONTEXT
+    assert "truncated by Praxis" not in task["context_text"]
+
+
+async def test_decompose_plan_typical_window_still_truncates_as_before():
+    """Pin today's behavior: ``_FakeProfile.context_window == 8192`` (the
+    shipped local-model default) must still cap at the legacy 12 000 chars,
+    unchanged, or an existing LM Studio install is silently resized."""
+    router = _FakeRouter(_single_task_raw())
+    opus_plan = await decompose_plan(
+        plan="do something",
+        model="qwen3.6-27b",
+        context=_OVERSIZED_CONTEXT,
+        local_context=_OVERSIZED_CONTEXT,
+        router=router,
+        effective_settings=_FakeEffective(),  # context_window == 8192
+        project_id=None,
+    )
+    task = opus_plan["tasks"][0]
+    assert "TAILMARK" not in task["context_text"]
+    assert "truncated by Praxis" in task["context_text"]
+    run = re.search(r"c{100,}", task["context_text"])
+    assert run is not None
+    assert len(run.group(0)) == 12_000  # unchanged from the legacy flat cap

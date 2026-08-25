@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -857,3 +858,89 @@ async def test_dispatch_threads_local_context_as_repo_memory(
     task = opus_plan["tasks"][0]
     assert "Use ruff." in task["repo_memory"]
     assert "ghp_abcdef" not in task["repo_memory"]
+
+
+# ---------------------------------------------------------------------------
+# Residual defect: the scrub cap on `context`/`local_context` must follow the
+# worker's resolved context window, not a flat 12 000 characters.
+# ---------------------------------------------------------------------------
+
+_OVERSIZED_CONTEXT = ("d" * 14_000) + "TAILMARK"
+
+
+@pytest.mark.integration
+async def test_dispatch_declared_window_preserves_oversized_context(
+    client: AsyncClient,
+    auth_headers: dict[str, str],
+    seeded_user: str,
+    db: Database,
+) -> None:
+    """The reporter's case at this seam: harness "agy" + "Gemini 3.7 Flash
+    (High)" resolve to the shipped 1,000,000-token DECLARED window (see
+    ``core/context_window.DEFAULT_DECLARED_HARNESS_WINDOWS`` /
+    ``DEFAULT_DECLARED_MODEL_WINDOWS`` - shipped defaults, so this does not
+    depend on the mutable settings file), so a 14 KB context field must
+    survive intact rather than being cut to what an 8K local model needs."""
+    with patch("orchestrator.api.dispatch.GitOps") as mock_git:
+        mock_git.return_value.remote_head_sha = AsyncMock(return_value="abcdef")
+        resp = await client.post(
+            "/api/dispatch",
+            headers=auth_headers,
+            json={
+                "repo_url": "https://github.com/o/agy-large-window",
+                "instructions": "do x",
+                "model": "Gemini 3.7 Flash (High)",
+                "harness": "agy",
+                "context": _OVERSIZED_CONTEXT,
+            },
+        )
+    assert resp.status_code == 201, resp.text
+    plan_id = resp.json()["plan_id"]
+
+    plan_row = await db.fetch_one(
+        "SELECT opus_plan FROM plans WHERE id = ?", (plan_id,)
+    )
+    opus_plan = json.loads(plan_row["opus_plan"])
+    context_text = opus_plan["tasks"][0]["context_text"]
+    assert context_text == _OVERSIZED_CONTEXT
+    assert "truncated by Praxis" not in context_text
+
+
+@pytest.mark.integration
+async def test_dispatch_unresolved_window_still_truncates_like_today(
+    client: AsyncClient,
+    auth_headers: dict[str, str],
+    seeded_user: str,
+    db: Database,
+) -> None:
+    """A model/harness combo nobody declared a window for (and the LM Studio
+    probe is deliberately never attempted at this intake seam - see the
+    comment in api/dispatch.py) resolves to UNKNOWN, which must still cap
+    conservatively, at the same 12 000 characters as before this change, and
+    the notice must say the window was unknown."""
+    with patch("orchestrator.api.dispatch.GitOps") as mock_git:
+        mock_git.return_value.remote_head_sha = AsyncMock(return_value="abcdef")
+        resp = await client.post(
+            "/api/dispatch",
+            headers=auth_headers,
+            json={
+                "repo_url": "https://github.com/o/unresolved-window",
+                "instructions": "do x",
+                "model": "some-undeclared-model-xyz",
+                "context": _OVERSIZED_CONTEXT,
+            },
+        )
+    assert resp.status_code == 201, resp.text
+    plan_id = resp.json()["plan_id"]
+
+    plan_row = await db.fetch_one(
+        "SELECT opus_plan FROM plans WHERE id = ?", (plan_id,)
+    )
+    opus_plan = json.loads(plan_row["opus_plan"])
+    context_text = opus_plan["tasks"][0]["context_text"]
+    assert "TAILMARK" not in context_text
+    assert "truncated by Praxis" in context_text
+    assert "unknown" in context_text
+    run = re.search(r"d{100,}", context_text)
+    assert run is not None
+    assert len(run.group(0)) == 12_000  # unchanged from the legacy flat cap
