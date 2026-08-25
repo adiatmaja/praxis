@@ -45,9 +45,22 @@ Three consequences of that identity, in priority order:
    #13 verified it end to end on a live repository, driven by a brain calling
    MCP `dispatch_task` one task at a time. The label did not drop, because the
    same walk found five defects on the mode's own path, three of them fixed
-   hours before the run that verified it. **The criterion is now a walkthrough
-   that drives the mode end to end and finds NO new defect in it**: verifying
-   what you just fixed is weaker evidence than a run that finds nothing. Both are unified by the
+   hours before the run that verified it. The criterion for dropping it is a
+   walkthrough that drives the mode end to end and finds NO new defect in it;
+   walkthrough #14 applied that criterion on 2026-08-26 and found one, so the
+   label stayed again.
+
+   **WHERE ENGINEERING EFFORT GOES (2026-08-26, owner's direction).** Dropping
+   auto-delegate's beta label is NOT a goal to chase, and a session must not
+   organise itself around it. Effort goes to **maturing the execution phase of
+   spec-driven development**: `execute_plan`, the path from a plan document a
+   user authored elsewhere, through capability-aware decomposition, dependency
+   ordering, per-leaf review and the merge gate, to the integration pull
+   request. That is the flagship feature and the slot the product claims, so
+   that is the surface that has to be excellent. Auto-delegate is maintained,
+   not advanced: fix what a walk happens to find in it, record it, and move on.
+   Its label drops when the criterion is met incidentally, not as the target of
+   a run. Both are unified by the
    theme (single session, other harnesses do the work, everything gated), the
    shared engine is a closing note, never the pitch, and delegation alone is
    commodity, so the governed loop is always the second beat of the pitch.

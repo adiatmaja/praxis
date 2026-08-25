@@ -18,10 +18,8 @@ Praxis takes the plan from there (same identity, stated by workflow position). P
 wording is "govern/governed", never "predictable" (unbenchmarked claim); avoid
 "meta-harness" and "control plane" (claimed by larger projects). **Implement-a-plan is
 the flagship FEATURE** (a single dispatched task is its smallest case); auto-delegate
-mode is the companion feature (still beta: run #13 live-verified the review-scope
-fix through MCP `dispatch_task` AND found five defects on the mode's own path, so
-the criterion is now a walkthrough that finds NO new defect in it), presented
-after the flagship, never beside it.
+mode is the companion feature (still beta), presented after the flagship, never
+beside it.
 Capability-aware task decomposition is the flagship MECHANISM (unique in the landscape);
 role separation is the supporting architecture; cost is a consequence. **The exact public
 copy - README headline ("Govern any coding harness from inside the one you already
@@ -29,6 +27,20 @@ use."), GitHub About, README opener - is frozen in `docs/positioning.md` ("Canon
 copy (2026-08-24)"): copy it verbatim, never re-derive it.** SSoT: `docs/positioning.md`
 ("The framing"). Flagship mechanism under development: the **Capability Calibration
 Loop** - `docs/superpowers/specs/2026-07-11-capability-engine-roadmap.md` (F1-F15, S1-S11).
+
+**WHERE ENGINEERING EFFORT GOES (2026-08-26, owner's direction). Read this before
+planning a session.** The work is **maturing the EXECUTION PHASE of spec-driven
+development**: `execute_plan`, the path from a plan document the user authored
+elsewhere, through capability-aware decomposition, dependency ordering, per-leaf
+review and the merge gate, to the integration PR. That is the flagship feature and
+the slot the product claims, so that is the surface that must be excellent.
+**Dropping auto-delegate's beta label is NOT a goal, and a session must not organise
+itself around it.** Auto-delegate is MAINTAINED, not advanced: fix what a walk
+happens to find in it, record it, move on. Its label drops incidentally when the
+criterion is met, never as the target of a run. A walkthrough should therefore drive
+`execute_plan` end to end on a real repository; `dispatch_task` is its smallest case,
+not a separate exercise. Rationale and the same directive in the SSoT:
+`docs/positioning.md` (consequence 1, "Where engineering effort goes").
 
 The reference configuration pairs a subscription reasoning model (e.g. Claude via `claude -p`)
 for planning/review with an open-weight model (e.g. via LM Studio) driving a pluggable coding
@@ -284,7 +296,11 @@ Tables: `users`, `projects`, `plans`, `tasks`, `agent_runs`, `opus_state`,
   `praxis://guide/orchestration` ("Designing the worker prompt") and in the decompose
   prompt (`core/plan_review.py`), so `execute_plan` leaves follow them automatically.
 
-## Auto-Delegate Mode (daily-dev)
+## Auto-Delegate Mode (daily-dev) - COMPANION, maintained not advanced
+
+> Reference for the companion feature. Per the engineering-focus note above, do not
+> organise a session around this section: the flagship is `execute_plan`, documented
+> in `docs/workflow.md` and exercised through MCP `execute_plan`.
 
 When auto-delegate is ON (`GET /api/settings/auto-delegate` → `enabled:true`), the brain
 does NOT edit code directly: per task it designs the worker prompt (see the guide named
