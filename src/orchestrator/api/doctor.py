@@ -692,15 +692,40 @@ class _AgyProbeResult:
     error: str = ""
 
 
-#: Where every agy container (real worker and this probe alike) mounts the
-#: credentials volume.  Mirrors ``agent_manager.spawn_agent``; a probe under
-#: different mount semantics than the real spawn answers about a
-#: configuration nobody runs.
+#: Where every agy container mounts the credentials volume, mirroring
+#: ``agent_manager.spawn_agent``.
 _AGY_CREDS_MOUNT = "/home/agent/.gemini"
-#: A cold container plus one Gemini API call.  Bounded because doctor's own
-#: caller abandons the request at 60s, and a probe that outlives that renders
-#: a FALSE red on orchestrator_health rather than an honest amber here.
-_AGY_PROBE_TIMEOUT = 25.0
+#: Where the REAL volume is mounted for the probe: a side path, READ-ONLY.
+#: See :func:`_run_agy_models` for why the probe never mounts it at
+#: ``_AGY_CREDS_MOUNT`` the way a worker does.
+_AGY_CREDS_SOURCE = "/praxis-creds-src"
+#: tmpfs options for the throwaway copy.  uid/gid 1000 is the `agent` user the
+#: image runs as; without them the tmpfs is root-owned and agy cannot write.
+_AGY_TMPFS_OPTIONS = "rw,uid=1000,gid=1000,mode=0700"
+
+#: A cold container plus one Gemini API call, MEASURED at 4.5-4.9s against
+#: agy-agent:latest on 2026-08-25 (three runs, warm image).  15s is ~3x that.
+#:
+#: The bound is not arbitrary, and it is shared. ``api/system`` cut
+#: ``_ROUNDTRIP_TIMEOUT`` 25s -> 20s precisely because ``_build_probes``
+#: gathers sequentially and the CLI abandons the whole request at 60s, so an
+#: over-long probe anywhere renders a FALSE red on ``orchestrator_health``
+#: instead of an honest amber on the row that was slow. Adding a second
+#: spending probe means redoing that arithmetic, not citing it:
+#:
+#:     _probe_provider (claude, no auth cmd)   10s
+#:     probe_provider_roundtrip                20s
+#:     _probe_lm_studio                         5s
+#:     _live_commit                             5s
+#:     this probe                              15s
+#:     ----------------------------------------------
+#:     worst case                              55s   (CLI abandons at 60s)
+#:
+#: 25s put that sum at 65s and over the edge on a cold cache, which is the one
+#: run where every probe is cold at once. 15s keeps the margin AND stays 3x
+#: over what the probe actually costs; anything larger buys nothing, since a
+#: probe that has not answered in 3x its measured time is not about to.
+_AGY_PROBE_TIMEOUT = 15.0
 
 #: Same shape and same TTL as ``api/system``'s two probe caches, deliberately:
 #: one number governs how often doctor is allowed to spend anything.  Keyed by
@@ -715,18 +740,32 @@ _agy_probe_cache: dict[tuple[str, str], tuple[float, _AgyProbeResult]] = {}
 
 
 def _run_agy_models(image: str, volume: str) -> _AgyProbeResult:
-    """Run ``agy models`` in a throwaway container and return what it said.
+    """Run ``agy models`` against a THROWAWAY COPY of the credentials volume.
 
-    The Docker equivalent of the command ``docs/deployment.md`` documents, so
-    an operator can reproduce this row by hand exactly.
+    The copy is the whole point, and it was not the first design.  Mounting
+    the real volume read-write at ``~/.gemini`` the way a worker does made
+    this diagnostic CORRUPT the thing it diagnoses: measured 2026-08-25, one
+    ``agy models`` run against an EMPTY volume creates
+    ``antigravity-cli/`` containing ``conversation_summaries.db-wal``,
+    ``cli.log`` and ``installation_id``, with no authentication whatsoever.
+    ``docker/agy-agent/entrypoint.sh`` gates its "no credentials" warning on
+    exactly that directory being non-empty -- deliberately, because the test
+    before it keyed on a directory agy creates for itself. So a single
+    ``praxis doctor`` run on an unauthenticated install permanently silenced
+    the worker's own credential warning and restored the failure mode
+    (an unexplained Go stack trace deep inside agy) that the warning exists to
+    prevent. A read-only diagnostic that breaks the machine it is diagnosing
+    is worse than no diagnostic.
 
-    The credentials volume is mounted READ-WRITE, matching
-    ``agent_manager.spawn_agent``.  Doctor's read-only contract is about
-    Praxis's own state (the repo and the database), and the only write agy
-    makes here is the ~hourly refresh of its own access token, which every
-    real worker also makes.  A read-only mount would make a healthy install
-    report a sign-in prompt: a false amber produced by the probe's own
-    difference from production.
+    So: the real volume is mounted READ-ONLY at a side path, a tmpfs stands in
+    at ``~/.gemini``, and the credentials are copied into it. The kernel, not
+    a convention, is what guarantees the volume is unchanged; the tmpfs dies
+    with the container. Verified against an empty volume: the entrypoint's
+    warning still fires afterwards.
+
+    The cost of the copy is that a token refresh agy performs lands in the
+    tmpfs and is discarded. That is correct for a diagnostic and costs the
+    operator nothing: the next real worker refreshes it again.
 
     Detached rather than blocking, because ``containers.run`` has no timeout
     and a hung CLI would otherwise hold the whole endpoint until the CLI's own
@@ -735,9 +774,17 @@ def _run_agy_models(image: str, volume: str) -> _AgyProbeResult:
     client = docker.from_env()  # type: ignore[attr-defined]
     container = client.containers.run(
         image,
-        command=["-c", "agy models"],
+        # `cp -R <src>/. <dst>/` copies dotfiles too. Errors are swallowed
+        # because an EMPTY volume is a normal, diagnosable state and `cp` must
+        # not turn it into a probe failure: `agy models` still has to run, so
+        # that its own sign-in prompt is what this row reports.
+        command=[
+            "-c",
+            f"cp -R {_AGY_CREDS_SOURCE}/. {_AGY_CREDS_MOUNT}/ 2>/dev/null; agy models",
+        ],
         entrypoint="bash",
-        volumes={volume: {"bind": _AGY_CREDS_MOUNT, "mode": "rw"}},
+        volumes={volume: {"bind": _AGY_CREDS_SOURCE, "mode": "ro"}},
+        tmpfs={_AGY_CREDS_MOUNT: _AGY_TMPFS_OPTIONS},
         detach=True,
     )
     try:
@@ -946,6 +993,16 @@ async def _build_probes(request: Request) -> dict[str, Any]:
         agy_not_probed = (
             "the Docker daemon did not answer, so no probe container could be "
             f"started; see the docker_daemon row ({docker_facts.error})"
+        )
+    elif agy_configured and agy_image in docker_facts.image_errors:
+        # UNKNOWN, not absent. `_DockerFacts.image_errors` exists to keep
+        # those apart (a daemon that answered the ping then failed the image
+        # query tells us nothing), and reporting "not built" here would send
+        # the operator to rebuild an image that may be perfectly current.
+        agy_not_probed = (
+            f"the daemon could not describe the {agy_image} image, so whether "
+            "a probe container could start is unknown "
+            f"({docker_facts.image_errors[agy_image]})"
         )
     elif agy_configured and not docker_facts.image_present.get(agy_image):
         agy_not_probed = (

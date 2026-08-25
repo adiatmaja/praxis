@@ -175,12 +175,17 @@ CHECKS: tuple[Check, ...] = (
     Check(
         "agy_credentials",
         "agy worker credentials answer `agy models`",
+        # Deliberately short and doc-pointing, unlike every live branch of
+        # probe_agy_credentials, which builds the full two-step commands
+        # around the CONFIGURED volume name. This registry entry cannot know
+        # that name, so spelling the commands out here would be a second copy
+        # that is wrong on any install overriding GEMINI_CREDS_VOLUME.
         # NOT `agy login`: no such subcommand exists, and an operator who runs
         # it gets a usage error that reads as "the remedy is broken".
-        "seed the credentials volume with ONE interactive session -- `docker "
-        "run --rm -it -v praxis-gemini-creds:/home/agent/.gemini --entrypoint "
-        "bash agy-agent:latest -c 'agy'` -- which is what starts the OAuth "
-        "flow; there is no `agy login` subcommand. See docs/deployment.md",
+        "seed the GEMINI_CREDS_VOLUME once: chown it to the agent user, then "
+        "start an interactive `agy` session against it (with NO arguments -- "
+        "there is no `agy login` subcommand). Both commands are in "
+        "docs/deployment.md",
     ),
     Check(
         "callback_url",

@@ -189,9 +189,12 @@ services:
       # track ${PORT} (not the in-container 8080). Derived here so the two can
       # never drift apart and silently 404 every agent callback.
       - AGENT_CALLBACK_URL=${AGENT_CALLBACK_URL:-http://host.docker.internal:${PORT:-12323}/api/internal/agent-done}
-      # Name of the Docker volume holding agy (Gemini) OAuth credentials.  Populate
-      # it once with an interactive `agy login` (see docs/deployment.md); the
-      # orchestrator mounts it RW into agy-agent containers at /home/agent/.gemini.
+      # Name of the Docker volume holding agy (Gemini) OAuth credentials.
+      # Populate it once by chown-ing the volume to the agent user and then
+      # starting an interactive `agy` session against it: there is NO `agy
+      # login` subcommand, and naming one sends the operator to a usage error
+      # (see docs/deployment.md for both commands). The orchestrator mounts it
+      # RW into agy-agent containers at /home/agent/.gemini.
       - GEMINI_CREDS_VOLUME=${GEMINI_CREDS_VOLUME:-praxis-gemini-creds}
       - OPENCODE_SESSIONS_VOLUME=${OPENCODE_SESSIONS_VOLUME:-praxis-opencode-sessions}
       # Points core/settings_file.config_file_path() at the ./config mount above

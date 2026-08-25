@@ -106,11 +106,34 @@ above does neither. Either way, step 3 is the check that matters: it
 authenticates in a fresh process exactly the way a spawned worker does.
 
 `praxis doctor`'s **agy worker credentials** row answers the same question
-without a browser: it runs `agy models` in a throwaway container against this
-volume and reports what came back. A sign-in prompt is amber with the command
-above; a model list is green with the count; anything else is printed verbatim
-rather than graded. It runs only when an agy harness is actually configured and
-the image is built, and otherwise says which of those was false.
+without a browser: it runs `agy models` in a throwaway container and reports
+what came back. A sign-in prompt is amber with the commands above; a model list
+is green with the count; anything else is printed verbatim rather than graded.
+It runs only when an agy harness is actually configured and the image is built,
+and otherwise says which of those was false.
+
+**The probe never writes to your credentials volume, and that is not a
+nicety.** It mounts the volume read-only at a side path, stands a tmpfs up at
+`~/.gemini`, and copies the credentials into it. Mounting the volume the way a
+worker does would corrupt the thing being diagnosed: measured 2026-08-25, one
+`agy models` run against an *empty* volume creates
+`antigravity-cli/conversation_summaries.db-wal`, `cli.log` and
+`installation_id` with no authentication at all, and `docker/agy-agent/
+entrypoint.sh` keys its "no credentials" warning on exactly that directory
+being non-empty. One diagnostic run would have silenced the worker's own
+warning permanently. If you reproduce the probe by hand, use the read-only form:
+
+```bash
+docker run --rm -v praxis-gemini-creds:/praxis-creds-src:ro \
+  --tmpfs /home/agent/.gemini:rw,uid=1000,gid=1000,mode=0700 \
+  --entrypoint bash agy-agent:latest \
+  -c 'cp -R /praxis-creds-src/. /home/agent/.gemini/ 2>/dev/null; agy models'
+```
+
+Authenticated, that prints two tab-separated columns, `id` then display name
+(`gemini-3.7-flash-high` / `Gemini 3.7 Flash (High)`). **Either column is a
+valid name to configure**, and the doctor row compares `DEFAULT_WORKER_MODEL`
+against both.
 
 No host `~/.gemini` path is
 ever mounted — that approach does not work across operating systems.
@@ -252,7 +275,7 @@ Two `praxis doctor` rows answer this together, and neither repeats the other:
   currently holds `PRAXIS_CONTAINER_NAME` and compares it to the process
   answering the request. It is red when the name belongs to a different
   container, amber when the answer came from a bare uvicorn while a container
-  holds the name anyway, and amber when nothing holds the name at all — which
+  holds the name anyway, and amber when nothing holds the name at all, which
   means the variable was edited and applied with `restart`. A container's name,
   like a mount, is baked in at container CREATE, so only `docker compose up -d`
   applies it.

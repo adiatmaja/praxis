@@ -987,31 +987,88 @@ _AGY_SIGN_IN_MARKERS = ("sign in", "sign-in", "signin")
 #: Words that mean the line is prose about a failure, not a model name.  A
 #: short error ("Error: quota exceeded") has exactly the SHAPE of a one-item
 #: list, so without this the probe reports "1 model available" for a refusal:
-#: a green built out of the failure it was meant to catch.
+#: a green built out of the failure it was meant to catch.  Every entry has
+#: its own parametrized case in ``tests/test_doctor_field_report_rows.py``;
+#: adding one without a case makes it dead weight nothing would notice.
 _AGY_FAILURE_MARKERS = (
     "error",
     "failed",
     "failure",
-    "cannot",
-    "can't",
     "unable",
     "denied",
     "quota",
     "unauthorized",
-    "unauthenticated",
     "expired",
     "invalid",
-    "timeout",
     "timed out",
     "refused",
 )
 
 #: The longest a line may be and still be read as a model name.  Model ids are
-#: short; sentences are not.
+#: short; sentences are not.  Measured: the longest real entry is 51 bytes.
 _AGY_MODEL_LINE_MAX = 80
 
+#: What a progress line ends with.  ``agy models`` opens with "Fetching
+#: available models..." on BOTH the authenticated and the signed-out path
+#: (measured 2026-08-25 against agy-agent:latest), and it is not an entry.
+#: Skipping it is load-bearing: it ends in "." and the terminal-punctuation
+#: rule below therefore rejected the entire authenticated answer, so the
+#: WORKING install was the one told to consider wiping its credentials.
+_AGY_PROGRESS_SUFFIX = "..."
 
-def classify_agy_models(text: str) -> tuple[str, list[str]]:
+
+@dataclass(frozen=True)
+class AgyModel:
+    """One entry from ``agy models``: an id and a display name.
+
+    Real output is two tab-separated columns (measured 2026-08-25)::
+
+        gemini-3.7-flash-high\tGemini 3.7 Flash (High)
+
+    Both halves are real names an operator may have configured.  Praxis's own
+    shipped default is the DISPLAY form (the settings YAML carries ``Gemini
+    3.7 Flash (High)``) while the id is what an API-shaped config would use,
+    so a comparison against either alone is wrong half the time.
+
+    The path of that YAML is deliberately not spelled out here.
+    ``core/settings_file.config_file_path()`` is the only place it may be
+    decided, and ``tests/test_config_path.py`` greps every module under
+    ``src/`` for the literal to keep it that way -- comments included, on
+    purpose, since that gate must not be weakened to let prose through.
+    ``core/doctor.py`` words its own label the same way for the same reason.
+    Treating the whole line as one string was worse still: it made every
+    comparison fail, and the row printed that the configured model was "not
+    among them" directly above a list containing it.
+    """
+
+    model_id: str
+    display: str
+
+    @property
+    def label(self) -> str:
+        """The display name, which is the form an operator configures."""
+        return self.display or self.model_id
+
+    def matches(self, name: str) -> bool:
+        """Whether ``name`` names this model in either column."""
+        return name in (self.model_id, self.display)
+
+
+def _split_agy_entry(line: str) -> AgyModel:
+    """Split ``id<TAB>Display Name`` into its two columns.
+
+    A line with no tab is used for both fields, so an output shape with one
+    column still compares and prints correctly.
+    """
+    model_id, tab, display = line.partition("\t")
+    model_id = model_id.strip()
+    display = display.strip()
+    if not tab or not display:
+        return AgyModel(model_id=model_id, display=model_id)
+    return AgyModel(model_id=model_id, display=display)
+
+
+def classify_agy_models(text: str) -> tuple[str, list[AgyModel]]:
     """Classify the output of ``agy models`` without guessing.
 
     Deliberately biased to UNDER-recognise a model list.  A real list reported
@@ -1021,6 +1078,13 @@ def classify_agy_models(text: str) -> tuple[str, list[str]]:
     so every rule below is a positive signal and anything unmatched falls
     through to verbatim.
 
+    Under-recognising is only the safe direction while the row stays amber and
+    prints the answer.  It is NOT free: the first version of this function
+    rejected the real authenticated output, which told a working install to
+    consider wiping credentials only an interactive browser flow can restore.
+    Every rule here is now pinned against output measured from the real CLI
+    (``tests/test_doctor_field_report_rows.py``, ``_REAL_AGY_MODELS_OUTPUT``).
+
     Args:
         text: Combined stdout and stderr of ``agy models``.
 
@@ -1028,33 +1092,47 @@ def classify_agy_models(text: str) -> tuple[str, list[str]]:
         ``(kind, models)``.  ``models`` is non-empty only for
         :data:`AGY_MODELS`.
     """
-    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    lines = [line.rstrip() for line in text.splitlines() if line.strip()]
     if not lines:
         return AGY_EMPTY, []
 
     lowered = " ".join(lines).lower()
     if any(marker in lowered for marker in _AGY_SIGN_IN_MARKERS):
         return AGY_SIGNED_OUT, []
+
+    # The progress line is dropped BEFORE the failure words are consulted, but
+    # its text is still in `lowered` above: "Fetching available models..."
+    # contains no failure word, so nothing is lost, and the sign-in check
+    # above needs the whole answer.
+    if lines[0].strip().endswith(_AGY_PROGRESS_SUFFIX):
+        lines = lines[1:]
+        if not lines:
+            return AGY_UNRECOGNIZED, []
+
     if any(marker in lowered for marker in _AGY_FAILURE_MARKERS):
         return AGY_UNRECOGNIZED, []
 
     header = False
     bulleted = False
-    candidates: list[str] = []
-    for line in lines:
+    tabbed = False
+    candidates: list[AgyModel] = []
+    for raw in lines:
+        line = raw.strip()
         # A trailing colon is a heading ("Available models:"), not an entry.
         # Dropping it rather than disqualifying the whole answer is what keeps
         # the ordinary shape of a CLI listing recognisable, and its PRESENCE
-        # is one of the three structural signals below.
+        # is one of the four structural signals below.
         if line.endswith(":"):
             header = True
             continue
-        entry = line.lstrip("-*• \t").strip()
+        entry = line.lstrip("-*• ").strip()
         if entry != line:
             bulleted = True
+        if "\t" in entry:
+            tabbed = True
         if not entry or len(entry) > _AGY_MODEL_LINE_MAX or entry[-1] in ".!?":
             return AGY_UNRECOGNIZED, []
-        candidates.append(entry)
+        candidates.append(_split_agy_entry(entry))
 
     if not candidates:
         return AGY_UNRECOGNIZED, []
@@ -1063,10 +1141,12 @@ def classify_agy_models(text: str) -> tuple[str, list[str]]:
     # answer -- "GOAWAY received; upstream closed the stream" -- is short, has
     # no terminal punctuation and matches no failure word, so every shape rule
     # above passed it and the row reported "1 model(s)" for a dropped
-    # connection. A header, a bullet, or a second entry is evidence of a
-    # listing; a lone bare line is evidence of nothing, and gets reported
-    # verbatim so the operator reads it instead of a verdict about it.
-    if not (header or bulleted or len(candidates) > 1):
+    # connection.  Four independent signals, because the shapes a CLI actually
+    # lists in differ: real agy output is TABBED with no heading and no
+    # bullets, so `tabbed` is the one that carries the case this probe was
+    # written for. Each has its own isolating test; a signal that shares every
+    # scenario with another is not a second signal.
+    if not (tabbed or header or bulleted or len(candidates) > 1):
         return AGY_UNRECOGNIZED, []
     return AGY_MODELS, candidates
 
@@ -1084,16 +1164,66 @@ def _agy_one_line(text: str, limit: int = 300) -> str:
     return f"{collapsed[:limit]} [truncated at {limit} characters]"
 
 
-_AGY_SIGN_IN_REMEDY = (
-    "seed the credentials volume with ONE interactive session: `docker run "
-    "--rm -it -v praxis-gemini-creds:/home/agent/.gemini --entrypoint bash "
-    "agy-agent:latest -c 'agy'`. There is no `agy login` subcommand -- "
-    "launching the CLI with no arguments is what starts the OAuth flow, and "
-    "running the command you expected instead prints a usage error that reads "
-    "as a broken remedy. To sign in as a DIFFERENT Google account you must "
-    "WIPE the volume first, or the session already in it is silently reused "
-    "and the old account's quota stays in play. See docs/deployment.md"
-)
+#: Where every agy container mounts the credentials volume.
+_AGY_CREDS_HOME = "/home/agent/.gemini"
+
+#: The image the remedy commands run.  A literal, because the remedy is a
+#: shell command an operator pastes, not a lookup.
+_AGY_IMAGE = "agy-agent:latest"
+
+
+def _agy_sign_in_remedy(volume: str) -> str:
+    """The two-step interactive sign-in, for a SPECIFIC credentials volume.
+
+    Both halves of that sentence were defects.
+
+    TWO steps, not one.  A fresh Docker volume is created ``root``-owned and
+    the image has no ``/home/agent/.gemini`` to seed the ownership from, while
+    the container runs as uid 1000; without the chown, agy cannot write and
+    the sign-in fails with a permission error (measured 2026-08-25). The
+    version of this hint that jumped straight to the login therefore failed on
+    the exact two situations it is printed for: an empty volume, and the wipe
+    it recommends. ``docs/deployment.md`` and ``core/harnesses.py`` both had
+    it right; this was a regression against its own twins.
+
+    SPECIFIC, because ``GEMINI_CREDS_VOLUME`` is configurable.  Hardcoding the
+    default made the row name one volume in its detail and operate on another
+    in its remedy on any install that had overridden it, which is unfollowable
+    in precisely the deployment that is already unusual.
+    """
+    name = volume or "praxis-gemini-creds"
+    return (
+        f"seed {name} in two steps. First give the non-root agent user "
+        f"ownership (a fresh volume is root-owned and agy runs as uid 1000, so "
+        f"skipping this fails with a permission error): `docker run --rm "
+        f"--user root -v {name}:{_AGY_CREDS_HOME} --entrypoint bash "
+        f"{_AGY_IMAGE} -c 'chown -R agent:agent {_AGY_CREDS_HOME}'`. Then sign "
+        f"in once, interactively: `docker run --rm -it -v "
+        f"{name}:{_AGY_CREDS_HOME} --entrypoint bash {_AGY_IMAGE} -c 'agy'`. "
+        "There is no `agy login` subcommand -- launching the CLI with no "
+        "arguments is what starts the OAuth flow, and running the command you "
+        "expected instead prints a usage error that reads as a broken remedy. "
+        "To sign in as a DIFFERENT Google account, wipe the volume first or "
+        "the session already in it is silently reused and the old account's "
+        "quota stays in play. See docs/deployment.md"
+    )
+
+
+def _agy_reproduce(volume: str) -> str:
+    """The one command that shows an operator the whole answer themselves.
+
+    The row can only print a truncated single line, so this is where the full
+    output lives: reproducible on demand rather than stored anywhere.  It
+    mirrors the probe exactly, read-only source included, so running it cannot
+    seed the credentials directory the way a naive `-v vol:~/.gemini` would.
+    """
+    name = volume or "praxis-gemini-creds"
+    return (
+        f"`docker run --rm -v {name}:/praxis-creds-src:ro --tmpfs "
+        f"{_AGY_CREDS_HOME}:rw,uid=1000,gid=1000,mode=0700 --entrypoint bash "
+        f"{_AGY_IMAGE} -c 'cp -R /praxis-creds-src/. {_AGY_CREDS_HOME}/ "
+        "2>/dev/null; agy models'`"
+    )
 
 
 def probe_agy_credentials(
@@ -1160,8 +1290,9 @@ def probe_agy_credentials(
             ),
         )
 
-    where = f" in a container mounting {volume}" if volume else ""
+    where = f" against a read-only copy of {volume}" if volume else ""
     kind, models = classify_agy_models(output)
+    remedy = _agy_sign_in_remedy(volume)
 
     if kind == AGY_EMPTY:
         return CheckResult(
@@ -1172,7 +1303,7 @@ def probe_agy_credentials(
                 "an agy that prints nothing is not the same as an agy that "
                 "refused: check the image is current (`docker compose "
                 "--profile agents build`) before assuming a credential "
-                "problem. " + _AGY_SIGN_IN_REMEDY
+                "problem. " + remedy
             ),
         )
     if kind == AGY_SIGNED_OUT:
@@ -1183,7 +1314,7 @@ def probe_agy_credentials(
                 f"`agy models`{where} asked for a sign-in, so no agy worker "
                 f"can run: {_agy_one_line(output)}"
             ),
-            hint=_AGY_SIGN_IN_REMEDY,
+            hint=remedy,
         )
     if kind == AGY_UNRECOGNIZED:
         return CheckResult(
@@ -1196,27 +1327,31 @@ def probe_agy_credentials(
             ),
             hint=(
                 "read the answer above and judge it yourself; this row will "
-                "not turn an output it does not recognise into a verdict. If "
+                "not turn an output it does not recognise into a verdict. The "
+                "row can only print one truncated line, so to see the whole "
+                f"answer run the probe yourself: {_agy_reproduce(volume)}. If "
                 "the credentials volume is simply empty, this is what fixes "
-                "it -- " + _AGY_SIGN_IN_REMEDY
+                "it -- " + remedy
             ),
         )
 
     count = f"{len(models)} model(s)"
-    if configured_model and configured_model not in models:
+    if configured_model and not any(m.matches(configured_model) for m in models):
         return CheckResult(
             check_id="agy_credentials",
             status=CheckStatus.AMBER,
             detail=(
                 f"agy answered with {count}{where}, but the configured worker "
-                f"model {configured_model!r} is not among them: "
-                f"{', '.join(models)}"
+                f"model {configured_model!r} matches neither the id nor the "
+                "display name of any of them: "
+                f"{', '.join(m.label for m in models)}"
             ),
             hint=(
-                "compared as an EXACT string, and agy encodes the effort level "
-                "in the model name (`Gemini 3.7 Flash (High)`), so check the "
-                "spelling before changing anything. A wrong worker model is "
-                "rejected nowhere until a worker actually runs: set "
+                "compared as an EXACT string against BOTH columns `agy models` "
+                "prints (`gemini-3.7-flash-high` and `Gemini 3.7 Flash "
+                "(High)`), and agy encodes the effort level in the name, so "
+                "check the spelling before changing anything. A wrong worker "
+                "model is rejected nowhere until a worker actually runs: set "
                 "DEFAULT_WORKER_MODEL in .env, or the project's model, to one "
                 "of the names above"
             ),
@@ -1339,6 +1474,39 @@ def probe_container_identity(
                 "database: the container's lives in a named volume and this "
                 "process's in ./data. Stop whichever one you did not mean to "
                 "be talking to. See docs/deployment.md"
+            ),
+        )
+
+    if self_id is None:
+        # The daemon would not say which container this process IS, which is
+        # ordinary: `socket.gethostname()` stops resolving to a container id
+        # under a compose `hostname:`, `network_mode: host`, `--hostname`,
+        # Podman or Kubernetes. Without this branch the identity comparison
+        # below reads `None != "<id>"` and returns a confident RED accusing
+        # another checkout, in a sentence that says "this container" and "a
+        # different container" about the same process. The pre-existing
+        # `_resolve_self` treats the identical failure as degraded; this row
+        # must not upgrade it to a verdict.
+        return CheckResult(
+            check_id="container_identity",
+            status=CheckStatus.AMBER,
+            detail=(
+                "not probed: this process is in a container, but the Docker "
+                "daemon could not say WHICH one, so it cannot be compared "
+                f"against the holder of the name {container_name!r}"
+                + (
+                    f" ({_named_container_label(container_name, named_project, named_working_dir)} exists)"
+                    if named_id
+                    else ""
+                )
+            ),
+            hint=(
+                "usually a hostname this daemon does not recognise as a "
+                "container id: a compose `hostname:`, `network_mode: host`, a "
+                "`--hostname` flag, or a non-Docker runtime. Nothing is known "
+                "to be broken. If two checkouts share this machine, check by "
+                f"hand: `docker inspect -f '{{{{.Id}}}}' {container_name}` and "
+                "compare it with this container's own id"
             ),
         )
 

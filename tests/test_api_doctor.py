@@ -626,6 +626,47 @@ async def test_no_container_is_spawned_when_the_agy_image_is_not_built(
 
 
 @pytest.mark.integration
+async def test_an_undescribable_agy_image_is_unknown_not_absent(
+    client, auth_headers, monkeypatch
+):
+    """A daemon that pings then fails the image query tells us NOTHING.
+
+    `_DockerFacts.image_errors` exists to keep "unknown" apart from "absent",
+    and reporting unknown as "not built" sends the operator to rebuild an
+    image that may be perfectly current. `image_present` has no entry for a
+    tag that errored, so a bare `.get()` silently reads it as missing.
+    """
+    from orchestrator.api import doctor as doctor_api
+
+    async def _tripwire(image: str, volume: str):
+        message = "the agy probe ran against an image nobody could describe"
+        raise AssertionError(message)
+
+    def _undescribable(tag: str):
+        if tag == "agy-agent:latest":
+            message = "500 Server Error: Internal Server Error"
+            raise docker.errors.APIError(message)
+        return _FakeImage()
+
+    _install_fake_docker(monkeypatch, _undescribable)
+    _install_fake_worker_endpoint(monkeypatch, ["qwen3.6-27b"])
+    monkeypatch.setattr(doctor_api, "probe_agy_models", _tripwire)
+    monkeypatch.setattr(
+        client.app.state.effective_settings,
+        "auto_delegate_worker",
+        lambda: {"harness": "agy", "model": "Gemini 3.7 Flash (High)"},
+    )
+
+    body = (await client.get("/api/doctor", headers=auth_headers)).json()
+
+    row = _rows(body)["agy_credentials"]
+    assert row["status"] == "amber"
+    assert "could not describe" in row["detail"]
+    assert "APIError" in row["detail"]
+    assert "not built" not in row["detail"]
+
+
+@pytest.mark.integration
 async def test_the_agy_probe_is_reached_when_agy_is_configured_and_built(
     client, auth_headers, monkeypatch
 ):
@@ -640,9 +681,15 @@ async def test_the_agy_probe_is_reached_when_agy_is_configured_and_built(
     async def _answered(image: str, volume: str):
         assert image == "agy-agent:latest"
         assert volume == "praxis-gemini-creds"
+        # The REAL two-column output, not an invented one: the invented
+        # fixtures are what hid a classifier that rejected the real thing.
         return doctor_api._AgyProbeResult(
             ran=True,
-            output="Available models:\n  Gemini 3.7 Flash (High)\n  Gemini 3.7 Pro\n",
+            output=(
+                "Fetching available models...\n"
+                "gemini-3.7-flash-high\tGemini 3.7 Flash (High)\n"
+                "gemini-3.7-pro-high\tGemini 3.7 Pro (High)\n"
+            ),
         )
 
     _install_fake_docker(monkeypatch, lambda _tag: _FakeImage())
@@ -651,7 +698,7 @@ async def test_the_agy_probe_is_reached_when_agy_is_configured_and_built(
     monkeypatch.setattr(
         client.app.state.effective_settings,
         "auto_delegate_worker",
-        lambda: {"harness": "agy", "model": "Gemini 3.7 Pro"},
+        lambda: {"harness": "agy", "model": "Gemini 3.7 Pro (High)"},
     )
 
     body = (await client.get("/api/doctor", headers=auth_headers)).json()
@@ -660,6 +707,66 @@ async def test_the_agy_probe_is_reached_when_agy_is_configured_and_built(
     assert row["status"] == "green"
     assert "2 model(s)" in row["detail"]
     assert "praxis-gemini-creds" in row["detail"]
+
+
+def test_the_agy_probe_never_mounts_the_creds_volume_writable(monkeypatch):
+    """The probe must not be able to corrupt the thing it diagnoses.
+
+    Measured 2026-08-25: one `agy models` run with the volume mounted
+    read-write at ~/.gemini (the way a real worker mounts it) creates
+    `antigravity-cli/` containing conversation_summaries.db-wal, cli.log and
+    installation_id -- on an EMPTY volume, with no authentication at all.
+    `docker/agy-agent/entrypoint.sh` gates its "no credentials" warning on
+    exactly that directory being non-empty, deliberately, so one doctor run
+    silenced the worker's own warning permanently and restored the Go
+    stack-trace failure mode that warning exists to prevent.
+
+    So the real volume is mounted READ-ONLY at a side path and a tmpfs stands
+    in at ~/.gemini. This asserts the mount SHAPE rather than the outcome,
+    because the outcome needs a real daemon: mode "rw" on the volume, or a
+    missing tmpfs, is the regression, and either is one keyword away.
+    """
+    from orchestrator.api import doctor as doctor_api
+
+    captured: dict = {}
+
+    class _Container:
+        id = "probe123"
+
+        def wait(self, timeout=None):
+            return {"StatusCode": 0}
+
+        def logs(self, **kwargs):
+            return b"Fetching available models...\ngemini-x\tGemini X\n"
+
+        def remove(self, force=False):
+            captured["removed"] = True
+
+    class _Containers:
+        def run(self, image, **kwargs):
+            captured["image"] = image
+            captured.update(kwargs)
+            return _Container()
+
+    class _Client:
+        containers = _Containers()
+
+    monkeypatch.setattr(doctor_api.docker, "from_env", lambda: _Client())
+
+    result = doctor_api._run_agy_models("agy-agent:latest", "praxis-gemini-creds")
+
+    assert result.ran
+    volumes = captured["volumes"]
+    # The creds volume is mounted READ-ONLY, and NOT at the worker's path.
+    assert volumes["praxis-gemini-creds"]["mode"] == "ro"
+    assert volumes["praxis-gemini-creds"]["bind"] != "/home/agent/.gemini"
+    # ~/.gemini is a throwaway tmpfs, so every write agy makes dies with the
+    # container instead of landing in the operator's volume.
+    assert "/home/agent/.gemini" in captured["tmpfs"]
+    # And the copy actually happens, or the probe would answer about an empty
+    # home directory and report every authenticated install as signed out.
+    assert "cp -R" in captured["command"][1]
+    assert captured["removed"] is True
 
 
 @pytest.mark.integration
