@@ -84,7 +84,10 @@
    a Docker container running the project's selected harness (OpenCode by default,
    or agy). The container:
    - Clones the repo
-   - Creates an `agent/{task-slug}` branch from the plan branch
+   - Creates an `agent/{task-slug}` branch from the plan branch, in the DEFAULT
+     mode only. In auto-delegate (single-branch) mode it commits directly onto
+     the caller-named work branch instead, cutting no branch and opening no new
+     PR per task, so a second dispatch onto the same branch stacks on the first
    - Runs the selected harness with the task description as the prompt
    - Commits, pushes, and creates a PR targeting the plan branch
    - Calls back to `/api/internal/agent-done` when finished
@@ -101,6 +104,26 @@
    Haiku for `review_diff_rereview`, and that default is shadowed by the role chain
    exactly as `docs/configurations.md` describes. Returns a JSON verdict: `pass` or
    `fail` with feedback.
+
+   The prompt also carries a BLAST RADIUS section (`core/blast_radius.py`): how
+   many times each identifier the diff defines or redefines occurs across the
+   checkout. It exists because a review can be entirely correct and still miss
+   the defect, when the defect is not in the diff at all. The case that prompted
+   it: a CSS rule correctly stopped being a flex container, and a
+   `justify-content` three hundred lines away in a different selector went
+   silently inert. Every statement the review made was true. Measurement fails
+   OPEN, so a review never wedges on a repo walk, and a walk that hit a cap says
+   "at least N" rather than stating a lower bound as exact.
+
+   On a PASS the verdict carries a SCOPE STATEMENT to the merge gate, naming
+   what the review did and did not observe: whether it read a checkout or only
+   the diff text, whether `verify_cmd` ran, passed, was skipped or is not
+   configured, and whether blast radius was measured. A green that reads as
+   verification when it is only a diff summary is worse than no check, so the
+   review states its own reach rather than leaving the approver to assume it.
+   It is PASS-only on purpose: `review_feedback` on a FAIL is injected verbatim
+   into the next worker's prompt by `core/worker_bible.py`, which is written for
+   the floor model.
 
 6. **Pass** — PR is squash-merged into the plan branch. Agent branch is deleted.
 
