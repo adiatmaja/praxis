@@ -20,6 +20,27 @@ approvals_digest_interval_h: 6
 # `docker compose restart orchestrator`, never an image rebuild.
 allow_local_repo_paths: false
 
+# Declared worker context windows, in tokens. The gate and the decomposer both
+# read this, so a model declared here is sized the same in both places.
+# Precedence: the project's context_window column > models > harnesses > probe.
+# A model declared nowhere resolves to UNKNOWN: the budget gate is SKIPPED and
+# says so (naming this key and this file's path) rather than inventing a number.
+# That third state is the whole point. Before it existed, an undeclared cloud
+# model fell back to 8192 and a correctly-sized task was failed in two seconds
+# with a message blaming the task.
+context_windows:
+  models:
+    "Gemini 3.7 Flash (High)": 1000000
+    # glm-4.7 ships as a worker preset AND as an escalation rung, and its real
+    # window is not declared anywhere in this repo. Left commented DELIBERATELY:
+    # a guessed number here is the exact defect this key exists to remove.
+    # Set it to your provider's published figure and both seams pick it up.
+    # "glm-4.7": 200000
+  harnesses:
+    # Catches model-string variants nobody enumerated: Gemini 3.7 Pro, the agy
+    # id spelling gemini-3.7-flash-high, and future tiers.
+    agy: 1000000
+
 capability:
   default:
     parameter_count_b: 30
