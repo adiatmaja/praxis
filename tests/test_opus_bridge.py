@@ -10,7 +10,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from orchestrator.core.opus_bridge import OpusBridge
+from orchestrator.core.opus_bridge import (
+    BrainMalformedJsonError,
+    BrainProseResponseError,
+    BrainResponseError,
+    OpusBridge,
+)
 from orchestrator.models.schemas import OpusStatus
 
 
@@ -157,6 +162,94 @@ def test_raises_on_invalid_json() -> None:
 
     with pytest.raises(ValueError, match="Could not extract JSON"):
         bridge._extract_json("This is not JSON at all")
+
+
+@pytest.mark.unit
+def test_a_response_with_no_json_is_classified_permanent() -> None:
+    """The prompt says "Respond with ONLY valid JSON", so no JSON is a refusal.
+
+    A refusal, a question, or a permission request never becomes JSON on
+    retry.  Collapse the two subclasses back into one and the caller loses the
+    only signal that tells a permanent failure from a transient one.
+    """
+    bridge = OpusBridge.__new__(OpusBridge)
+
+    with pytest.raises(BrainProseResponseError) as caught:
+        bridge._extract_json("I need permission to read that folder first.")
+
+    assert not isinstance(caught.value, BrainMalformedJsonError)
+    assert caught.value.raw == "I need permission to read that folder first."
+
+
+@pytest.mark.unit
+def test_a_malformed_fenced_block_is_classified_transient() -> None:
+    """A JSON span was found; the parser rejected it. Worth another try."""
+    bridge = OpusBridge.__new__(OpusBridge)
+    raw = '```json\n{"verdict": "pass",,}\n```'
+
+    with pytest.raises(BrainMalformedJsonError) as caught:
+        bridge._extract_json(raw)
+
+    assert not isinstance(caught.value, BrainProseResponseError)
+    assert caught.value.raw == raw
+    # The decoder error is preserved rather than swallowed.
+    assert isinstance(caught.value.__cause__, json.JSONDecodeError)
+
+
+@pytest.mark.unit
+def test_a_malformed_bare_span_is_classified_transient() -> None:
+    bridge = OpusBridge.__new__(OpusBridge)
+    raw = 'Here you go: {"verdict": "pass",,} -- hope that helps.'
+
+    with pytest.raises(BrainMalformedJsonError) as caught:
+        bridge._extract_json(raw)
+
+    assert isinstance(caught.value.__cause__, json.JSONDecodeError)
+
+
+@pytest.mark.unit
+def test_both_brain_response_errors_stay_value_errors() -> None:
+    """Existing ``except ValueError`` callers must keep working unchanged."""
+    assert issubclass(BrainResponseError, ValueError)
+    assert issubclass(BrainProseResponseError, BrainResponseError)
+    assert issubclass(BrainMalformedJsonError, BrainResponseError)
+
+
+@pytest.mark.unit
+def test_the_excerpt_is_capped_but_the_raw_response_is_kept() -> None:
+    """The excerpt goes in an operator-facing message; the raw stays whole."""
+    error = BrainProseResponseError("no JSON", "x" * 2000)
+
+    assert len(error.excerpt) == 500
+    assert len(error.raw) == 2000
+
+
+@pytest.mark.unit
+async def test_plan_spec_forwards_cwd_to_the_router(mocker) -> None:
+    """Without this the planner reasons about a repository it cannot open."""
+    router = mocker.Mock()
+    router.run = AsyncMock(
+        return_value='{"plan_summary":"s","plan_slug":"s","tasks":[]}'
+    )
+    bridge = OpusBridge(db=mocker.MagicMock(), router=router)
+
+    await bridge.plan_spec("spec", "https://r", cwd="/app/data/planner/abc")
+
+    assert router.run.await_args.kwargs["cwd"] == "/app/data/planner/abc"
+
+
+@pytest.mark.unit
+async def test_plan_spec_forwards_cwd_to_the_legacy_cli(mocker) -> None:
+    bridge = OpusBridge(db=mocker.MagicMock())
+    run = mocker.patch.object(
+        bridge,
+        "_run_claude",
+        new=AsyncMock(return_value='{"plan_summary":"x","plan_slug":"x","tasks":[]}'),
+    )
+
+    await bridge.plan_spec("spec", "https://r", cwd="/app/data/planner/abc")
+
+    assert run.await_args.kwargs["cwd"] == "/app/data/planner/abc"
 
 
 @pytest.mark.unit

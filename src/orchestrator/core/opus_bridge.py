@@ -28,6 +28,64 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+#: How much of a rejected response an operator-facing message may quote. Long
+#: enough to carry a refusal, a question or a permission request whole; short
+#: enough that a rambling answer does not become the whole ``plans.error``.
+_EXCERPT_LIMIT = 500
+
+
+class BrainResponseError(ValueError):
+    """The brain answered, but not with the JSON the call-site asked for.
+
+    Subclasses ``ValueError`` deliberately: ``_extract_json`` has always raised
+    ``ValueError`` (its own, plus ``json.JSONDecodeError``, which is one too),
+    and several callers guard with a bare ``except ValueError``. Widening the
+    type would have silently un-caught them.
+
+    The two subclasses split that single failure by whether a retry can change
+    the answer. Nothing about them inspects the ENGLISH of the response: the
+    rule is "was there any JSON in it at all", which is a property of the
+    format the prompt demanded and so cannot rot the way a keyword list does.
+
+    Attributes:
+        raw: The full response, kept whole for logs and diagnosis.
+    """
+
+    def __init__(self, message: str, raw: str) -> None:
+        """Record the failure and the response that caused it.
+
+        Args:
+            message: What went wrong, for the exception's own ``str()``.
+            raw: The complete raw response from the provider.
+        """
+        super().__init__(message)
+        self.raw = raw
+
+    @property
+    def excerpt(self) -> str:
+        """The first ``_EXCERPT_LIMIT`` characters of the raw response."""
+        return self.raw[:_EXCERPT_LIMIT]
+
+
+class BrainProseResponseError(BrainResponseError):
+    """The response contained no JSON at all. PERMANENT.
+
+    Every prompt on this class says "Respond with ONLY valid JSON". A response
+    carrying neither a fenced block nor a ``{...}`` span is therefore not a
+    formatting slip: it is a refusal, a question, or a permission request. None
+    of those become JSON because the same prompt was sent again, so a caller
+    that retries one is a caller that retries forever.
+    """
+
+
+class BrainMalformedJsonError(BrainResponseError):
+    """A JSON span was found and the parser rejected it. TRANSIENT.
+
+    The model was answering in the requested shape and truncated, over-quoted,
+    or trailed a comma. Sampling alone can fix that, so this is worth a retry.
+    """
+
+
 #: Substrings that identify a subscription rate limit in a CLI's own output.
 #: Read only by ``is_rate_limited`` below, which is what consumers must call:
 #: the strings alone are half the rule, and a consumer that reimplements the
@@ -273,16 +331,36 @@ class OpusBridge:
         return stdout
 
     def _extract_json(self, raw: str) -> dict[str, Any]:
+        """Parse the brain's answer, classifying failure by whether JSON exists.
+
+        Args:
+            raw: The provider's complete response.
+
+        Returns:
+            The decoded JSON object.
+
+        Raises:
+            BrainMalformedJsonError: A JSON span was present and unparseable.
+            BrainProseResponseError: No JSON span was present at all.
+        """
         code_block = re.search(r"```(?:json)?\s*\n(.*?)\n```", raw, re.DOTALL)
         if code_block is not None:
-            return cast(dict[str, Any], json.loads(code_block.group(1)))
+            try:
+                return cast(dict[str, Any], json.loads(code_block.group(1)))
+            except json.JSONDecodeError as exc:
+                message = f"Fenced JSON block did not parse: {exc}"
+                raise BrainMalformedJsonError(message, raw) from exc
 
         json_object = re.search(r"\{.*\}", raw, re.DOTALL)
         if json_object is not None:
-            return cast(dict[str, Any], json.loads(json_object.group(0)))
+            try:
+                return cast(dict[str, Any], json.loads(json_object.group(0)))
+            except json.JSONDecodeError as exc:
+                message = f"JSON span did not parse: {exc}"
+                raise BrainMalformedJsonError(message, raw) from exc
 
         message = f"Could not extract JSON from response: {raw[:200]}"
-        raise ValueError(message)
+        raise BrainProseResponseError(message, raw)
 
     async def plan_spec(
         self,
@@ -291,13 +369,29 @@ class OpusBridge:
         model: str | None = None,
         effort: str | None = None,
         project_id: str | None = None,
+        cwd: str | None = None,
     ) -> dict[str, Any]:
+        """Decompose a specification into a task graph.
+
+        Args:
+            spec: The specification text.
+            repo_url: The repository the work targets, named in the prompt.
+            model: Explicit model override for the legacy CLI path.
+            effort: Explicit effort override for the legacy CLI path.
+            project_id: Project whose per-call-site overrides apply.
+            cwd: A readable checkout of ``repo_url`` to run the provider in.
+                Without one the model is asked to reason about a path it cannot
+                open, which is how a planner comes to answer in prose.
+
+        Returns:
+            The decoded plan graph.
+        """
         prompt = PLAN_PROMPT_TEMPLATE.format(spec=spec, repo_url=repo_url)
         router: LLMRouter | None = getattr(self, "_router", None)
         if router is not None:
-            raw = await router.run("plan_spec", prompt, project_id)
+            raw = await router.run("plan_spec", prompt, project_id, cwd=cwd)
         else:
-            raw = await self._run_claude(prompt, model, effort)
+            raw = await self._run_claude(prompt, model, effort, cwd=cwd)
         return self._extract_json(raw)
 
     async def review_diff(

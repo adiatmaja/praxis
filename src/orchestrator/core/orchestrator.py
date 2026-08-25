@@ -3,16 +3,28 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
+import shutil
+import stat
+import uuid
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 from orchestrator.core.agent_prompt import build_implementer_prompt
 from orchestrator.core.capability_events import CapabilityEventEmitter
 from orchestrator.core.clarification_states import RESUMABLE_CLARIFICATION_STATES
 from orchestrator.core.event_bus import EventBus
-from orchestrator.core.git_backend import GitBackend, resolve_backend
+from orchestrator.core.git_backend import (
+    GitBackend,
+    PullRequestRef,
+    is_local_repo_url,
+    resolve_backend,
+)
+from orchestrator.core.git_ops import clone_with_token
 from orchestrator.core.llm_router import ProviderAuthError
+from orchestrator.core.opus_bridge import BrainProseResponseError
 from orchestrator.core.orchestrator_dispatch import DispatchMixin
 from orchestrator.core.orchestrator_improve import ImprovementMixin
 from orchestrator.core.orchestrator_reconcile import ReconcileMixin
@@ -49,6 +61,89 @@ _MIN_LOOP_INTERVAL_SECONDS = 1.0
 _ACTIVATABLE_PLAN_STATUSES: frozenset[str] = frozenset(
     {PlanStatus.PENDING.value, PlanStatus.ACTIVE.value}
 )
+
+# How many times planning may fail transiently before the plan goes terminal.
+# The number is small on purpose: a planner that has produced unparseable JSON
+# three passes running is not warming up, and every extra attempt is another
+# tick in which a stuck plan is indistinguishable from a healthy one.
+#
+# The PERMANENT class of failure does not consume this budget at all; it goes
+# terminal on the first occurrence. Neither does a rate limit, which is the one
+# failure this system already knows how to wait out.
+_MAX_PLANNING_ATTEMPTS = 3
+
+# Where the planner's throwaway repository clones are made. Relative, so it
+# resolves under the process's working directory: ``/app`` in the shipped
+# container (and ``/app/data`` is a named volume, not a host bind mount, so a
+# clone here does not cross the Docker Desktop filesystem boundary). ``data/``
+# is already this project's CWD-relative state directory and is gitignored, so
+# a bare checkout does not gain an untracked directory either.
+_PLANNER_WORKSPACE_DIR = "data/planner-workspaces"
+
+
+def _planner_workspace_base() -> Path:
+    """Return the absolute directory planner clones are made under."""
+    return Path(_PLANNER_WORKSPACE_DIR).resolve()
+
+
+def _remove_planner_workspace(workspace: Path) -> None:
+    """Delete a planner clone, including the files git marks read-only.
+
+    A bare ``shutil.rmtree(..., ignore_errors=True)`` LEAKS on Windows: git
+    write-protects the files under ``.git/objects``, ``os.unlink`` raises
+    PermissionError, and ``ignore_errors`` swallows it, so every planned plan
+    leaves a whole clone behind and nothing says so. The fast path is tried
+    first because on the container's Linux filesystem it always succeeds.
+
+    Args:
+        workspace: The clone directory to remove.
+    """
+    try:
+        shutil.rmtree(workspace)
+    except FileNotFoundError:
+        return
+    except OSError:
+        # Grant owner-write and retry. Deliberately additive: forcing a fixed
+        # mode would strip the execute bit off directories on POSIX and make
+        # the tree untraversable, so the retry would fail where the first
+        # attempt had merely stumbled.
+        for path in workspace.rglob("*"):
+            with contextlib.suppress(OSError):
+                path.chmod(path.stat().st_mode | stat.S_IWUSR)
+        shutil.rmtree(workspace, ignore_errors=True)
+        if workspace.exists():
+            logger.warning(
+                "Planner workspace %s could not be removed; it will accumulate "
+                "until an operator clears it",
+                workspace,
+            )
+
+
+def _prose_failure_reason(exc: BrainProseResponseError) -> str:
+    """Explain a planner that answered in prose, to ``praxis doctor`` standard.
+
+    Names what happened, the likeliest cause, the remedy, and the evidence.
+    The evidence matters most: the planner's own words are the only thing that
+    distinguishes a refusal from a question from a permission request, and they
+    exist nowhere else once the exception is swallowed.
+
+    Args:
+        exc: The classification error, carrying the raw response.
+
+    Returns:
+        The message to write to ``plans.error``.
+    """
+    return (
+        "the planner answered in prose instead of JSON, which means it "
+        "refused, asked a question, or requested permission rather than "
+        "failing. Retrying cannot change that, so this plan is terminal after "
+        "one attempt. The known cause is a planner that could not read the "
+        "repository: check that the project's repo_url is reachable from the "
+        "orchestrator (a local path outside the orchestrator's own working "
+        "directory is the usual culprit) and that the planner provider is "
+        "authenticated, with `praxis doctor`. The planner said:\n\n"
+        f"{exc.excerpt}"
+    )
 
 
 def _is_awaiting_an_answer(task: dict[str, Any]) -> bool:
@@ -241,6 +336,62 @@ class Orchestrator(DispatchMixin, ReviewMixin, ReconcileMixin, ImprovementMixin)
         )
         return False
 
+    async def _fail_plan(self, plan_id: str, reason: str) -> None:
+        """Take a plan terminal with a reason an operator can act on.
+
+        The three writes belong together: a FAILED plan with no ``error`` is
+        the same silence as no verdict at all, and an ``error`` on a plan still
+        reported PENDING is a note nobody reads.
+
+        Args:
+            plan_id: The plan to fail.
+            reason: What happened, why, and what to do about it.
+        """
+        logger.error("Planning failed for plan %s: %s", plan_id, reason)
+        await self._tq.set_plan_error(plan_id, reason)
+        await self._tq.update_plan_status(plan_id, PlanStatus.FAILED)
+        self._bus.publish({"type": "plan_failed", "plan_id": plan_id, "reason": reason})
+
+    async def _clone_for_planning(self, project: dict[str, Any], dest: str) -> None:
+        """Check the project repository out into ``dest`` for the planner to read.
+
+        ``plan_spec`` interpolates ``repo_url`` into its prompt and used to run
+        in the orchestrator's own working directory, so the model was asked to
+        reason about a path it could not open. In the field that produced a
+        prose permission request instead of a plan.
+
+        Provider-agnostic on purpose: a real checkout works for ``claude``,
+        ``codex``, ``agy`` and ``local`` alike, whereas ``claude --add-dir``
+        would only work for one of the four.
+
+        Args:
+            project: The project row, read for ``repo_url`` and ``default_branch``.
+            dest: An existing empty directory to clone into.
+
+        Raises:
+            Exception: Any clone failure; the caller degrades rather than wedge.
+        """
+        repo_url = str(project["repo_url"])
+        if is_local_repo_url(repo_url):
+            # The local backend's own checkout, so bare-repo handling stays in
+            # one place. It reads only ``branch``; ``base`` is set to the same
+            # value rather than left empty so a future checkout that did
+            # consult it would still resolve the branch being planned against.
+            branch = str(project.get("default_branch") or "main")
+            ref = PullRequestRef(backend="local", branch=branch, base=branch)
+            await self._resolve_backend(repo_url).checkout(ref, dest)
+            return
+
+        provider = getattr(self._git, "_provider", None)
+        if provider is None:
+            message = "no git credential provider is configured"
+            raise RuntimeError(message)
+        token = await provider.token_for_repo(repo_url)
+        if not token:
+            message = f"no credential is available for {repo_url}"
+            raise RuntimeError(message)
+        clone_with_token(repo_url, dest, token)
+
     async def plan_and_activate(self, plan_id: str, project: dict[str, Any]) -> None:
         """Ask Opus to plan a pending spec and activate the resulting task graph."""
 
@@ -258,26 +409,95 @@ class Orchestrator(DispatchMixin, ReviewMixin, ReconcileMixin, ImprovementMixin)
         try:
             spec_text = await self._load_spec_text(plan, project["repo_url"])
         except Exception as exc:  # noqa: BLE001 - terminal, reported on the plan
-            reason = f"could not load the plan's specification: {exc}"
-            logger.error("Planning aborted for plan %s: %s", plan_id, reason)
-            await self._tq.set_plan_error(plan_id, reason)
-            await self._tq.update_plan_status(plan_id, PlanStatus.FAILED)
-            self._bus.publish(
-                {"type": "plan_failed", "plan_id": plan_id, "reason": reason}
+            await self._fail_plan(
+                plan_id, f"could not load the plan's specification: {exc}"
             )
             return
 
-        opus_plan = await self._opus.plan_spec(
-            spec_text,
-            project["repo_url"],
-            model=project.get("agent_model"),
-            effort=project.get("agent_model_effort"),
-        )
+        workspace = _planner_workspace_base() / uuid.uuid4().hex
+        cwd: str | None = None
+        try:
+            workspace.mkdir(parents=True, exist_ok=True)
+            await self._clone_for_planning(project, str(workspace))
+            cwd = str(workspace)
+        except Exception as exc:  # noqa: BLE001 - degrade, never wedge planning
+            # Exactly how review degrades to a diff-only pass when the PR head
+            # cannot be cloned: worse planning beats no planning, and the
+            # planner still has the spec text. WARNING, because a repository
+            # the orchestrator cannot reach is a broken deployment rather than
+            # an operator choice.
+            logger.warning(
+                "Planner checkout failed for plan %s (%s); planning without a "
+                "readable repository",
+                plan_id,
+                exc,
+            )
+
+        try:
+            opus_plan = await self._opus.plan_spec(
+                spec_text,
+                project["repo_url"],
+                model=project.get("agent_model"),
+                effort=project.get("agent_model_effort"),
+                cwd=cwd,
+            )
+        except BrainProseResponseError as exc:
+            # PERMANENT, and terminal on the first occurrence. The response
+            # carried no JSON at all, so it is a refusal, a question, or a
+            # permission request; the same prompt will produce the same answer
+            # on every tick from now until somebody looks.
+            await self._fail_plan(plan_id, _prose_failure_reason(exc))
+            return
+        except Exception as exc:  # noqa: BLE001 - bounded retry, reported either way
+            if not await self._opus.is_available():
+                # A rate limit is the one failure this system already knows how
+                # to wait out: `_check_and_handle_rate_limit` parks `opus_state`
+                # before raising, and the top of this method queues and resumes
+                # off that same state. Charging it an attempt would spend the
+                # whole budget in three ticks of a five-hour wait and fail a
+                # plan that had nothing wrong with it. Read from the state
+                # rather than the exception text: the message wording is the
+                # provider's to change, the parked state is ours.
+                logger.warning(
+                    "Planning for plan %s deferred: the brain became "
+                    "unavailable mid-call (%s). No attempt was consumed.",
+                    plan_id,
+                    exc,
+                )
+                return
+            attempts = await self._tq.bump_plan_attempts(plan_id)
+            if attempts >= _MAX_PLANNING_ATTEMPTS:
+                await self._fail_plan(
+                    plan_id,
+                    f"planning failed on {attempts} of {_MAX_PLANNING_ATTEMPTS} "
+                    "permitted attempts and will not be retried, because a plan "
+                    "that keeps retrying is indistinguishable from one that is "
+                    "still being decomposed. Check the planner with `praxis "
+                    f"doctor`, then resubmit the specification. Last error: {exc}",
+                )
+                return
+            # Left PENDING deliberately: the next tick retries. The reason is
+            # recorded now rather than only at the end, because a plan quietly
+            # burning attempts is the same invisible state as one wedged.
+            reason = (
+                f"planning attempt {attempts} of {_MAX_PLANNING_ATTEMPTS} failed "
+                f"and will be retried on the next pass: {exc}"
+            )
+            logger.warning("Plan %s: %s", plan_id, reason)
+            await self._tq.set_plan_error(plan_id, reason)
+            return
+        finally:
+            _remove_planner_workspace(workspace)
+
         today = datetime.now(UTC).date().isoformat()
         branch = f"plan/{today}-{opus_plan['plan_slug']}"
         if not await self._still_activatable(plan_id, "plan_spec"):
             return
         await self._tq.activate_plan(plan_id, opus_plan, branch)
+        # A plan that recovered must not carry the count of the attempts it
+        # recovered from, or the next transient failure lands on a budget that
+        # is already partly spent.
+        await self._tq.reset_plan_attempts(plan_id)
         self._bus.publish(
             {
                 "type": "plan_activated",

@@ -184,6 +184,45 @@ class TaskQueue:
             "UPDATE plans SET error = ? WHERE id = ?", (error, plan_id)
         )
 
+    async def bump_plan_attempts(self, plan_id: str) -> int:
+        """Count one more planning attempt against a plan.
+
+        Args:
+            plan_id: The plan whose planning was just attempted.
+
+        Returns:
+            The NEW count, which is what the caller compares against its
+            maximum. Returning the pre-increment value would grant one extra
+            attempt forever, in the direction nobody notices. Zero when the
+            plan row has vanished, which cannot advance a bound that is only
+            ever reached upward.
+        """
+        await self._db.execute(
+            "UPDATE plans SET plan_attempts = plan_attempts + 1 WHERE id = ?",
+            (plan_id,),
+        )
+        row = await self._db.fetch_one(
+            "SELECT plan_attempts FROM plans WHERE id = ?", (plan_id,)
+        )
+        if row is None:
+            logger.warning(
+                "Plan %s vanished while counting a planning attempt", plan_id
+            )
+            return 0
+        return int(row["plan_attempts"])
+
+    async def reset_plan_attempts(self, plan_id: str) -> None:
+        """Clear a plan's planning-attempt count after a successful activation.
+
+        A plan that failed once and then planned cleanly must not carry the
+        old count: leaving it means the NEXT transient failure lands on a
+        budget that is already partly spent, and the plan goes terminal for a
+        fault it has recovered from before.
+        """
+        await self._db.execute(
+            "UPDATE plans SET plan_attempts = 0 WHERE id = ?", (plan_id,)
+        )
+
     async def get_task(self, task_id: str) -> dict[str, Any] | None:
         return await self._db.fetch_one("SELECT * FROM tasks WHERE id = ?", (task_id,))
 

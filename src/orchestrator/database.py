@@ -332,6 +332,32 @@ async def _migration_0010_review_base_sha(connection: aiosqlite.Connection) -> N
         await connection.execute("ALTER TABLE tasks ADD COLUMN review_base_sha TEXT")
 
 
+async def _migration_0011_plan_attempts(connection: aiosqlite.Connection) -> None:
+    """Add plans.plan_attempts: how many times planning has been tried.
+
+    A planner failure used to be unbounded. The exception escaped
+    ``plan_and_activate``, ``run_once``'s per-plan guard logged it, and the plan
+    stayed PENDING to be retried on the next tick, forever. Nothing external
+    could tell that apart from a healthy decomposition in progress, because a
+    plan mid-decomposition is also ACTIVE with no tasks.
+
+    A count on the row is what makes the retry bounded AND visible: the loop
+    stops at ``_MAX_PLANNING_ATTEMPTS`` and every read-only surface can say how
+    many tries a plan has burned.
+
+    NOT NULL DEFAULT 0 rather than nullable: the bound is a comparison on the
+    new count, and a NULL there is a TypeError on exactly the tick that is
+    supposed to stop the loop. Every pre-existing plan has made zero attempts
+    under this counter, which is the honest value as well as the safe one.
+    """
+    cursor = await connection.execute("PRAGMA table_info(plans)")
+    cols = {row[1] for row in await cursor.fetchall()}
+    if "plan_attempts" not in cols:
+        await connection.execute(
+            "ALTER TABLE plans ADD COLUMN plan_attempts INTEGER NOT NULL DEFAULT 0"
+        )
+
+
 MIGRATIONS: list[Migration] = [
     Migration(1, "baseline: schema as of 2026-07-02", _migration_0001_baseline),
     Migration(
@@ -378,6 +404,11 @@ MIGRATIONS: list[Migration] = [
         10,
         "add tasks.review_base_sha so a review can be scoped to one task",
         _migration_0010_review_base_sha,
+    ),
+    Migration(
+        11,
+        "add plans.plan_attempts so a failing planner cannot retry forever",
+        _migration_0011_plan_attempts,
     ),
 ]
 

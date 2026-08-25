@@ -442,6 +442,12 @@ class PlanResponse(BaseModel):
     confidence_reason: str | None = None
     status: PlanStatus
     error: str | None = None
+    #: How many times planning has been attempted and failed. Exposed because
+    #: a plan that is retrying looks exactly like a plan that is decomposing
+    #: from the outside: both are pending with no tasks. The count is the only
+    #: thing that tells them apart, and it is what says how close the plan is
+    #: to the bound that stops the retry.
+    plan_attempts: int = 0
     spec_path: str | None = None
     plan_path: str | None = None
     #: The PR that carries this plan from its plan branch onto the project's

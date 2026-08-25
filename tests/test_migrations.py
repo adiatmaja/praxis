@@ -116,8 +116,57 @@ async def test_escalation_index_defaults_to_zero(tmp_path):
 
 
 @pytest.mark.unit
-def test_current_schema_version_is_ten():
-    assert CURRENT_SCHEMA_VERSION == 10
+def test_current_schema_version_is_eleven():
+    assert CURRENT_SCHEMA_VERSION == 11
+
+
+@pytest.mark.unit
+async def test_migration_adds_plan_attempts_defaulting_to_zero(tmp_path):
+    """A plan counts its own planning attempts, starting at none.
+
+    NOT NULL DEFAULT 0 is load-bearing: the bound is ``new count reaches the
+    maximum``, so a NULL would make the comparison a TypeError on the very tick
+    that is supposed to stop the forever-retry.
+    """
+    db = Database(f"sqlite+aiosqlite:///{tmp_path / 'attempts.db'}")
+    await db.initialize()
+    await db.execute("INSERT INTO users (id, name, token_hash) VALUES ('u1', 'U', 'h')")
+    await db.execute(
+        "INSERT INTO projects (id, user_id, name, repo_url) "
+        "VALUES ('proj1', 'u1', 'P', 'https://example.com/repo')"
+    )
+    await db.execute(
+        "INSERT INTO plans (id, project_id, status) VALUES ('p1', 'proj1', 'pending')"
+    )
+    row = await db.fetch_one("SELECT plan_attempts FROM plans WHERE id = 'p1'")
+    assert row is not None
+    assert row["plan_attempts"] == 0
+    await db.close()
+
+
+@pytest.mark.unit
+async def test_migration_11_is_idempotent(tmp_path):
+    """Re-applying the step against a table that already has the column.
+
+    A crash between ``apply`` and the version bump replays the step, so the
+    ``PRAGMA table_info`` guard has to hold. Rewinding user_version is the only
+    way to make it actually run twice: ``initialize()`` skips migrations whose
+    version is already current.
+    """
+    path = tmp_path / "m11-idem.db"
+    db = Database(f"sqlite+aiosqlite:///{path}")
+    await db.initialize()
+    await db.execute(f"PRAGMA user_version = {CURRENT_SCHEMA_VERSION - 1}")
+    await db.close()
+
+    db2 = Database(f"sqlite+aiosqlite:///{path}")
+    await db2.initialize()
+    row = await db2.fetch_one("PRAGMA user_version")
+    assert row is not None
+    assert row["user_version"] == CURRENT_SCHEMA_VERSION
+    names = [r["name"] for r in await db2.fetch_all("PRAGMA table_info(plans)")]
+    assert names.count("plan_attempts") == 1
+    await db2.close()
 
 
 @pytest.mark.unit
