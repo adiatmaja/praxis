@@ -11,6 +11,17 @@
     let selectedTaskId = null;
     let showingForm = false;
     let dashboardTasks = {};       // map: planId -> tasks[]
+    // Whether each plan's task fetch actually ANSWERED. A failing GET used to
+    // write an empty array, which every reader downstream took as a measured
+    // zero: the lane promised task cards, the needs-attention badge lost its
+    // failed-task term, and the completed tally rendered "0/0". `/api/status`
+    // already draws exactly this line for the agent manager
+    // (`agents_reachable`), and this is the same rule applied here: a zero
+    // nobody could measure is not a zero.
+    let dashboardTasksReachable = {};  // map: planId -> boolean
+    // Spec documents read back from the repo for the "View Spec" toggle.
+    // undefined = not fetched yet, null = the read failed, string = the doc.
+    let dashboardSpecCache = {};   // map: planId -> markdown | null
     let dashboardTaskLogs = {};    // map: taskId -> last log line
     let dashboardTaskRawLog = {};  // map: taskId -> accumulated raw log text
     let selectedDashboardTaskId = null;
@@ -26,6 +37,23 @@
     let HARNESSES = [];
     let lifecycleItems = [];
     let effectiveLmStudioUrl = null;  // global effective LM Studio URL (from /api/status)
+    // The last numbers /api/status actually MEASURED, kept as values rather
+    // than read back out of the rendered DOM. `pollStatus` writes "?" into
+    // #stat-agents when the agent manager could not be reached; parsing that
+    // text back gave `Number("?")` = NaN and the health bar printed the
+    // literal string "Agents: NaN", undoing the unknown-state handling one
+    // function away. Before the first poll resolves, reading the DOM instead
+    // returned the index.html default 0 and asserted a zero nobody measured.
+    // `null` means "not measured", which is a third state, not zero.
+    let measuredAgentCount = null;
+    let measuredQueueCount = null;
+    // What counts as "landed" for a task, mirroring the engine's
+    // SATISFIED_STATUSES (src/orchestrator/core/status_vocab.py). All three
+    // are terminal and satisfied: MERGED did the work itself, SUPERSEDED
+    // handed it to split children, NO_CHANGES found it already done, and they
+    // are what LETS a plan complete. `failed` is deliberately absent, so
+    // widening the numerator never hides a task that did not land.
+    const SATISFIED_TASK_STATUSES = ["merged", "no_changes", "superseded"];
     let selectedLifecycle = null;
     let lifecycleSegment = "spec";
     // Work parked at the human merge gate, across all projects, PLUS the
@@ -657,7 +685,7 @@
       const masterRows = visible.map(plan =>
         '<button class="master-row' + (selectedPlanId === plan.id ? ' selected' : '') +
         '" type="button" onclick="selectPlan(\'' + esc(plan.id) + '\')">' +
-          '<div class="row-main"><div class="row-name">' + esc(plan.spec).slice(0, 100) + '</div>' +
+          '<div class="row-main"><div class="row-name">' + esc(planLabel(plan)).slice(0, 100) + '</div>' +
           '<div class="row-meta">' + esc(plan.projectName) + '</div></div>' + badge(plan.status) +
         '</button>'
       ).join("") || '<div class="empty-list">No plans</div>';
@@ -689,8 +717,21 @@
         (plan.confidence != null ? ' &middot; Confidence: ' + Math.round(plan.confidence * 100) + '%' : ' &middot; Confidence: n/a (pending review)') +
         '</div></div>' +
         '<div class="detail-content">' +
-          '<div class="detail-section"><div class="detail-section-title">Specification</div>' +
-          '<div class="detail-card" style="white-space:pre-wrap;font-size:13px;line-height:1.6;">' + esc(plan.spec) + '</div></div>' +
+          // `plans.spec` was dropped in Spec 2: the markdown documents in the
+          // repository are the source of truth and the DB is a thin execution
+          // ledger holding only their paths. A "Specification" heading over
+          // `plan.spec` therefore promised text this row cannot have and
+          // rendered an empty card under the promise. Name what the row DOES
+          // know, and say where the text lives.
+          '<div class="detail-section"><div class="detail-section-title">Documents</div>' +
+          '<div class="detail-card">' +
+          '<div class="detail-field"><span class="field-label">Spec</span><span class="field-value">' +
+          (plan.spec_path ? mono(plan.spec_path) : esc("not recorded")) + '</span></div>' +
+          '<div class="detail-field"><span class="field-label">Plan</span><span class="field-value">' +
+          (plan.plan_path ? mono(plan.plan_path) : esc("not recorded")) + '</span></div>' +
+          '<div class="detail-field"><span class="field-label">Where</span><span class="field-value">' +
+          esc("in the project repository; the Spec and Plan tabs render them") + '</span></div>' +
+          '</div></div>' +
           (plan.opus_plan ? renderOpusPlan(plan.opus_plan, plan.id) : "") +
           '<div class="detail-section"><div class="detail-section-title">Status</div><div class="detail-card">' +
           '<div class="detail-field"><span class="field-label">Status</span><span class="field-value">' + badge(plan.status) + '</span></div>' +
@@ -779,7 +820,7 @@
       if (!visible.some(plan => plan.id === selectedPlanId)) selectedPlanId = visible[0]?.id || null;
       const planOpts = visible.map(plan =>
         '<option value="' + esc(plan.id) + '"' + (selectedPlanId === plan.id ? " selected" : "") + '>' +
-        esc(plan.projectName) + ": " + esc(plan.spec).slice(0, 56) + '</option>'
+        esc(plan.projectName) + ": " + esc(planLabel(plan)).slice(0, 56) + '</option>'
       ).join("");
 
       container.innerHTML =
@@ -1139,14 +1180,23 @@
       const plansToLoad = [...activePlans, ...pendingPlans, ...stoppedPlans, ...completedPlans];
       const currentPlanIds = new Set(plansToLoad.map(plan => String(plan.id)));
       for (const planId of Object.keys(dashboardTasks)) {
-        if (!currentPlanIds.has(String(planId))) delete dashboardTasks[planId];
+        if (!currentPlanIds.has(String(planId))) {
+          delete dashboardTasks[planId];
+          delete dashboardTasksReachable[planId];
+        }
       }
 
       for (const plan of plansToLoad) {
         try {
           dashboardTasks[plan.id] = await api("GET", "/api/plans/" + plan.id + "/tasks");
+          // Cleared on every success, or one transient failure would leave
+          // the plan flagged unknown for the rest of the session.
+          dashboardTasksReachable[plan.id] = true;
         } catch (error) {
+          // The empty array is kept so every reader below can still iterate,
+          // but it is NOT a measurement, and this flag is what says so.
           dashboardTasks[plan.id] = [];
+          dashboardTasksReachable[plan.id] = false;
         }
       }
 
@@ -1179,6 +1229,11 @@
       const attentionCount = scoped.filter(plan => plan.status === "pending").length +
         scoped.filter(plan => plan.status === "failed").length +
         Object.values(dashboardTasks).flat().filter(task => task.status === "failed").length;
+      // The failed-task term is a SUM OVER FETCHES, so one fetch that never
+      // answered silently subtracts from it. The count then reads as a
+      // complete tally when it is a lower bound, and in the worst case the
+      // badge disappears entirely from a failure rather than from calm.
+      const attentionUnknown = Object.keys(dashboardTasks).some(planId => !tasksReachable(planId));
       const liveLanes = [...activePendingPlans, ...stoppedPlans];
       const lanesHtml = liveLanes.map(renderSwimLane).join("");
       const completedHtml = completedPlans.length ? completedPlans.map(renderCompletedLane).join("") : "";
@@ -1195,7 +1250,7 @@
       const container = document.getElementById("view-container");
       container.innerHTML =
         '<div class="dashboard-shell">' +
-          renderHealthBar(attentionCount) +
+          renderHealthBar(attentionCount, attentionUnknown) +
           '<div class="dashboard-body">' +
             '<div class="dashboard-lanes">' + bodyHtml + '</div>' +
             '<div class="side-panel" id="dashboard-side-panel"></div>' +
@@ -1211,30 +1266,61 @@
       }
     }
 
-    function renderHealthBar(attentionCount) {
-      const agentDot = document.getElementById("agent-dot");
-      const agentCount = Number(document.getElementById("stat-agents")?.textContent || 0);
-      const queueCount = Number(document.getElementById("stat-queue")?.textContent || 0);
+    function renderHealthBar(attentionCount, attentionUnknown) {
+      // These numbers come from the values pollStatus MEASURED, never from
+      // the rendered text in the sidebar. Reading #stat-agents back out gave
+      // Number("?") = NaN whenever the agent manager was unreachable, and the
+      // index.html default 0 before the first poll had even run.
       const opusStatus = window.__opusStatus || "unknown";
-      const attentionBadge = attentionCount > 0 ? '<span class="health-attention">' + attentionCount + ' needs attention</span>' : "";
+      const agentText = measuredAgentCount == null ? "?" : String(measuredAgentCount);
+      const queueText = measuredQueueCount == null ? "?" : String(measuredQueueCount);
+      const agentTitle = measuredAgentCount == null ?
+        ' title="not measured yet, or the agent manager could not be reached"' : "";
+      // An unknown term makes the count a LOWER BOUND, so the badge says so
+      // and is shown even at zero: "no failures found" and "we could not
+      // finish looking" must not render identically.
+      const attentionLabel = attentionUnknown ?
+        attentionCount + "+? needs attention" : attentionCount + " needs attention";
+      const attentionTitle = attentionUnknown ?
+        ' title="at least this many; one or more plans\' tasks could not be loaded"' : "";
+      const attentionBadge = (attentionCount > 0 || attentionUnknown) ?
+        '<span class="health-attention"' + attentionTitle + '>' + esc(attentionLabel) + '</span>' : "";
       return '<div class="health-bar">' +
         '<div class="health-item"><span class="health-dot ' + esc(opusStatus) + '"></span><span>Opus ' + esc(opusStatus.replace("_", " ")) + '</span></div>' +
-        '<div class="health-item"><span>Agents: ' + esc(agentCount) + '</span></div>' +
-        '<div class="health-item"><span>Queue: ' + esc(queueCount) + '</span></div>' +
+        '<div class="health-item"><span' + agentTitle + '>Agents: ' + esc(agentText) + '</span></div>' +
+        '<div class="health-item"><span>Queue: ' + esc(queueText) + '</span></div>' +
         '<span class="health-spacer"></span>' + attentionBadge +
       '</div>';
     }
 
+    // The one honest label for a plan row. `plans.spec` was DROPPED in Spec 2
+    // and PlanResponse never carries it, so leading this chain with it was
+    // dead code that read as the intended source; the branch and the document
+    // paths are what the row actually knows.
     function planLabel(plan) {
-      const raw = plan.spec || plan.plan_branch_name || plan.plan_path || plan.spec_path || "";
+      const raw = plan.plan_branch_name || plan.plan_path || plan.spec_path || "";
       const name = String(raw).replace(/^plan\//, "").replace(/\.md$/, "");
       return name || ("Plan " + String(plan.id || "").slice(0, 8));
+    }
+
+    // Did this plan's task fetch answer at all? A plan nobody has tried to
+    // fetch reads as reachable, because the only thing that sets `false` is a
+    // failed request; the comparison is `!== false` for the same reason
+    // `setConnection` compares `connected_measured !== false`.
+    function tasksReachable(planId) {
+      return dashboardTasksReachable[planId] !== false;
     }
 
     // What an empty lane means depends on WHY it is empty, and the default
     // ("task cards will appear shortly") is a promise the loop only keeps for
     // a plan it is actually working on.
     function emptyLaneMessage(plan) {
+      // "No tasks yet" and "we could not ask" are different facts, and every
+      // branch below would read the empty array a failed fetch left behind as
+      // a real, measured zero.
+      if (!tasksReachable(plan.id)) {
+        return "Could not load this plan's tasks. This lane is empty because the request failed, not because there is no work: the count is unknown.";
+      }
       // An autonomous proposal has no tasks because nobody has approved it,
       // and none will ever appear until somebody does. Telling the operator
       // to wait points them away from the only thing that unblocks it.
@@ -1269,9 +1355,54 @@
           '<button class="btn btn-compact" type="button" onclick="toggleSpec(\'' + esc(plan.id) + '\')">' + (isSpecExpanded ? "Hide Spec" : "View Spec") + '</button>' +
           approvalActions +
         '</div>' +
-        (isSpecExpanded ? '<div class="lane-spec-full">' + esc(plan.spec) + '</div>' : "") +
+        (isSpecExpanded ? '<div class="lane-spec-full"><div class="detail-card">' + renderPlanSpecBody(plan) + '</div></div>' : "") +
         '<div class="lane-cards">' + taskCards + '</div>' +
       '</section>';
+    }
+
+    // What belongs in the expanded "View Spec" box. `plans.spec` was dropped
+    // in Spec 2, so there is no spec text on the row and the button used to
+    // open a box containing `esc(undefined)`, which is "". The spec is a
+    // DOCUMENT IN THE REPO; there are four honest states and a blank box is
+    // none of them.
+    function renderPlanSpecBody(plan) {
+      if (!plan.spec_path) {
+        return '<div class="detail-empty">No spec document is recorded for this plan.</div>';
+      }
+      const doc = dashboardSpecCache[plan.id];
+      if (doc === undefined) {
+        return '<div class="detail-empty">Reading ' + esc(plan.spec_path) + '&hellip;</div>';
+      }
+      if (doc === null) {
+        return '<div class="detail-empty">Could not read ' + esc(plan.spec_path) +
+          ' from the repository.</div>';
+      }
+      if (!doc.trim()) {
+        return '<div class="detail-empty">' + esc(plan.spec_path) + ' is empty in the repository.</div>';
+      }
+      return renderMarkdown(doc);
+    }
+
+    // Fetch one plan's spec document through the SAME endpoint the lifecycle
+    // view already uses to read a repo document, so this adds no new server
+    // surface. A failure caches `null` rather than retrying on every render.
+    async function loadPlanSpecDoc(planId) {
+      if (dashboardSpecCache[planId] !== undefined) return;
+      const plan = plans.find(item => item.id === planId);
+      // No path means there is nothing to fetch, and renderPlanSpecBody says
+      // so from `spec_path` alone; caching a null here would blame the read.
+      if (!plan || !plan.spec_path) return;
+      try {
+        const doc = await api("GET", "/api/projects/" + plan.project_id +
+          "/doc-raw?path=" + encodeURIComponent(plan.spec_path));
+        dashboardSpecCache[planId] = String(doc.content ?? "");
+      } catch (error) {
+        dashboardSpecCache[planId] = null;
+      }
+      // The read can land after the reader has navigated away, and
+      // renderDashboard writes the shared #view-container unconditionally.
+      // Every other late-arriving handler in this file takes the same guard.
+      if (currentView === "dashboard") renderDashboard();
     }
 
     function renderTaskCard(task) {
@@ -1307,17 +1438,35 @@
     function renderCompletedLane(plan) {
       const isExpanded = expandedCompletedPlans.has(plan.id);
       const tasks = dashboardTasks[plan.id] || [];
-      const mergedCount = tasks.filter(task => task.status === "merged").length;
+      // Counting only `merged` against every task renders "1/3 merged" under
+      // a COMPLETED badge for a plan whose other two leaves were `no_changes`
+      // and `superseded`, which reads as two tasks that did not land. Both are
+      // in the engine's SATISFIED_STATUSES and are what LET the plan complete;
+      // `no_changes` is not rare here, because task 1 routinely writes task 2's
+      // file. The word changes with the numerator: a no_changes leaf never
+      // produced a commit, so "merged" would be wrong for it either way.
+      const landedCount = tasks.filter(task => SATISFIED_TASK_STATUSES.includes(task.status)).length;
+      // Widening the numerator must not swallow a real failure, so failures
+      // are named separately rather than left as the arithmetic remainder.
+      const failedCount = tasks.filter(task => task.status === "failed").length;
+      const tallyText = tasksReachable(plan.id) ?
+        landedCount + "/" + tasks.length + " landed" + (failedCount ? " &middot; " + failedCount + " failed" : "") :
+        "tasks unavailable";
+      const tallyTitle = tasksReachable(plan.id) ?
+        ' title="landed = merged, no_changes or superseded: the work is in the tree"' :
+        ' title="this plan\'s tasks could not be loaded, so the tally is unknown, not zero"';
       const specPreview = esc(planLabel(plan)).slice(0, 80);
       return '<section class="swim-lane completed-lane' + (isExpanded ? " expanded" : "") + '">' +
         '<div class="completed-header" onclick="toggleCompletedPlan(\'' + esc(plan.id) + '\')">' +
           '<span class="disclosure' + (isExpanded ? " open" : "") + '">></span>' +
           '<span class="badge completed">completed</span>' +
           '<span class="lane-spec">' + specPreview + '</span>' +
-          '<span class="completed-meta">' + mergedCount + "/" + tasks.length + ' merged</span>' +
+          '<span class="completed-meta"' + tallyTitle + '>' + tallyText + '</span>' +
           '<span class="completed-meta">' + esc(timeAgo(plan.created_at)) + '</span>' +
         '</div>' +
-        (isExpanded ? '<div class="lane-cards">' + (tasks.length ? tasks.map(renderTaskCard).join("") : '<div class="card-meta">No tasks</div>') + '</div>' : "") +
+        (isExpanded ? '<div class="lane-cards">' + (tasks.length ? tasks.map(renderTaskCard).join("") :
+          '<div class="card-meta">' + (tasksReachable(plan.id) ? "No tasks" :
+            "Could not load this plan's tasks.") + '</div>') + '</div>' : "") +
       '</section>';
     }
 
@@ -1675,6 +1824,9 @@
         }
         if (data?.queued_count != null) {
           document.getElementById("stat-queue").textContent = String(data.queued_count);
+          // Keep the value in step with the DOM, or the health bar shows the
+          // older polled number until the next 5s tick.
+          measuredQueueCount = data.queued_count;
         }
       });
 
@@ -1763,8 +1915,16 @@
     }
 
     function toggleSpec(planId) {
-      if (expandedSpecs.has(planId)) expandedSpecs.delete(planId); else expandedSpecs.add(planId);
+      if (expandedSpecs.has(planId)) {
+        expandedSpecs.delete(planId);
+        renderDashboard();
+        return;
+      }
+      expandedSpecs.add(planId);
+      // Paint the box first so the reader sees "Reading <path>..." rather
+      // than nothing while the repo read is in flight, then fetch.
       renderDashboard();
+      void loadPlanSpecDoc(planId);
     }
 
     function toggleCompletedPlan(planId) {
@@ -1795,6 +1955,21 @@
     }
 
     async function approveMerge(taskId) {
+      // The most irreversible action in the product, on a small button inside
+      // a card whose own onclick opens the side panel, and both of its LESS
+      // consequential neighbours already guard (rejectTask prompts,
+      // deleteProject confirms). The text names the PR and the branch the
+      // work lands on so the dialog is a fact check rather than a speed bump:
+      // a task PR is opened against its plan branch, falling back to the
+      // project's base branch when there is none.
+      const task = Object.values(dashboardTasks).flat().find(item => item.id === taskId);
+      const plan = task ? plans.find(item => item.id === task.plan_id) : null;
+      const what = (task && task.pr_url) || (task && task.branch_name) || taskId;
+      const into = (plan && plan.plan_branch_name) || "its base branch";
+      if (!confirm(
+        "Merge " + what + "\ninto " + into + "?\n\n" +
+        "Praxis merges the pull request immediately. This cannot be undone from the dashboard."
+      )) return;
       try {
         const res = await fetch("/api/tasks/" + taskId + "/approve-merge", {
           method: "POST",
@@ -1986,10 +2161,17 @@
       ).join("");
       const mergeGateHtml = (taskRows + planRows) ?
         '<div class="master-group-title">Merge gate</div>' + taskRows + planRows : "";
+      // The id goes out in FULL, on its own line, beside the verb that takes
+      // it. Truncating it to eight characters made the row look like it named
+      // the plan while `praxis approve <8 chars>` 404s: the buttons here carry
+      // the whole id and work, so only the human copying it was misled. The
+      // clarification rows below already print the full form, and this matches
+      // them rather than inventing a second convention.
       const proposalRows = proposals.map(proposal =>
         '<div class="master-row">' +
-          '<div class="row-main"><div class="row-name">Improvement proposal ' + esc(String(proposal.plan_id || "").slice(0, 8)) + '</div>' +
-          '<div class="row-meta">no branch yet &middot; proposed ' + Math.floor(Number(proposal.age_hours) || 0) + 'h ago</div></div>' +
+          '<div class="row-main"><div class="row-name">Improvement proposal</div>' +
+          '<div class="row-meta">no branch yet &middot; proposed ' + Math.floor(Number(proposal.age_hours) || 0) + 'h ago</div>' +
+          '<div class="row-meta">praxis approve ' + esc(proposal.plan_id) + '</div></div>' +
           badge("pending") +
           '<div class="row-actions">' +
             '<button class="btn btn-compact btn-primary" type="button" onclick="approveProposal(' + jsArg(proposal.plan_id) + ')">Approve</button>' +
@@ -2048,11 +2230,16 @@
         if (status.agents_reachable) {
           agentsStat.textContent = status.active_agents;
           agentsStat.title = "";
+          measuredAgentCount = status.active_agents;
         } else {
           agentsStat.textContent = "?";
           agentsStat.title = "could not reach the agent manager; Docker may be unavailable";
+          // null, not the last good number: a stale count reprinted as fresh
+          // is the same lie in slower motion.
+          measuredAgentCount = null;
         }
         document.getElementById("stat-queue").textContent = status.opus_state.queued_count;
+        measuredQueueCount = status.opus_state.queued_count;
         window.__opusStatus = status.opus_state ? status.opus_state.status : "unknown";
         // Re-render the opus pill in-place so it reflects the fresh status without
         // waiting for the next full dashboard reload.

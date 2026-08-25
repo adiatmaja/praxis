@@ -314,6 +314,18 @@
     .badge.reviewing { background: var(--badge-reviewing-bg); color: var(--badge-reviewing-text); }
     .badge.failed, .badge.rejected { background: var(--badge-failed-bg); color: var(--badge-failed-text); }
     .badge.stopped { background: var(--badge-failed-bg); color: var(--badge-failed-text); }
+    /* Blocked on a person, indefinitely: nothing in the loop advances this
+       status. Left unstyled it fell through to the neutral default and read
+       as LIGHTER than `pending`, which is backwards: pending moves on its
+       own. Amber is the same "waiting on a decision" palette the review
+       state and the clarification banner already use. */
+    .badge.needs_clarification { background: var(--badge-reviewing-bg); color: var(--badge-reviewing-text); }
+    /* Split into children that carry the work: terminal and satisfied, but
+       nothing landed under this row's own name. Grey rather than green (it
+       claims no success of its own) and dimmed to read as spent, on the same
+       reasoning as the no_changes rule above: unstyled reads as "something
+       went sideways here". */
+    .badge.superseded { background: var(--badge-pending-bg); color: var(--badge-pending-text); opacity: 0.75; }
 
     .detail-panel { min-width: 0; flex: 1; display: flex; flex-direction: column; overflow: hidden; background: var(--bg); }
     .detail-header { flex-shrink: 0; padding: 16px 24px; background: var(--panel); border-bottom: 1px solid var(--border-subtle); }
@@ -460,7 +472,12 @@
     }
     .lane-spec { font-size: 13px; font-weight: 700; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
     .lane-meta { color: var(--text-faint); font-size: 11px; font-family: "Cascadia Mono", "SF Mono", Consolas, monospace; white-space: nowrap; }
-    .lane-spec-full { padding: 0 20px 12px; font-size: 13px; line-height: 1.6; color: var(--text-muted); white-space: pre-wrap; }
+    /* The expanded "View Spec" box now holds a MARKDOWN DOCUMENT read back
+       from the repository (plans.spec was dropped in Spec 2), wrapped in a
+       .detail-card so it inherits the rendered-markdown rules above rather
+       than duplicating them. pre-wrap would double every break the renderer
+       has already turned into a <p>. */
+    .lane-spec-full { padding: 0 20px 12px; font-size: 13px; line-height: 1.6; color: var(--text-muted); white-space: normal; }
 
     .lane-cards { display: flex; flex-wrap: wrap; gap: 10px; padding: 0 20px 14px; }
     .task-card {
@@ -483,6 +500,12 @@
     .task-card.status-failed { border-left: 3px solid var(--badge-failed-text); background: var(--badge-failed-bg); background: color-mix(in srgb, var(--badge-failed-bg) 20%, var(--panel)); }
     .task-card.status-pending { border-left: 3px solid var(--text-faint); }
     .task-card.status-superseded { border-left: 3px solid var(--text-faint); opacity: 0.55; }
+    /* Satisfied without a commit, so it carries merged's border and merged's
+       dimming: the leaf is done and its work is in the tree. */
+    .task-card.status-no_changes { border-left: 3px solid var(--badge-passed-text); opacity: 0.75; }
+    /* NOT dimmed: this one is waiting on a human and is the only card here
+       that will never move without one. */
+    .task-card.status-needs_clarification { border-left: 3px solid var(--badge-reviewing-text); background: color-mix(in srgb, var(--badge-reviewing-bg) 20%, var(--panel)); }
     .card-title { font-size: 12px; font-weight: 700; margin-top: 6px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .card-meta { font-size: 10px; color: var(--text-faint); margin-top: 4px; }
     .card-log-line { font-size: 10px; color: var(--badge-active-text); margin-top: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: "Cascadia Mono", "SF Mono", Consolas, monospace; }
