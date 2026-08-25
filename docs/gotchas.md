@@ -578,7 +578,8 @@ belongs among the everyday traps.
   DESCRIPTIONS also truncate, at 2 KB each, but Praxis was measured on
   2026-08-06 and its largest is 942 B, so there is nothing to fix there.
 - **`praxis doctor` is the front door to every problem**: `core/doctor.py`
-  registers twelve read-only checks, each with a fix hint;
+  registers the checks, each with a fix hint (the count is deliberately not
+  quoted here; it grew and this sentence did not);
   `core/doctor_probes.py` holds the pure decision logic (facts in, verdict out)
   so every check is testable with no Docker, network, or filesystem. Two checks
   exist specifically to convert this project's oldest silent failures into red

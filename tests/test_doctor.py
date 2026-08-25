@@ -24,12 +24,19 @@ def test_the_expected_checks_are_registered_in_order():
         "docker_daemon",
         "orchestrator_health",
         "build_stamp",
+        # Adjacent to build_stamp on purpose: that row names the host
+        # directory this orchestrator was started from, and this one names
+        # who currently owns the container name. The pair only reads as one
+        # answer when they are printed together.
+        "container_identity",
         "agent_images",
         "agent_image_freshness",
         "auth_token",
         "git_credential",
+        "local_repo_paths",
         "planner_cli",
         "worker_endpoint",
+        "agy_credentials",
         "callback_url",
         "config_mount",
         "env_drift",

@@ -346,9 +346,11 @@ story. New gotchas go in `docs/gotchas.md` first. (No count is quoted on purpose
 - **Worker preset env vars are BARE compose pass-throughs** (`- DEFAULT_WORKER_HARNESS`),
   never `${VAR:-default}`: any expansion form sets the var even when unset and silently
   suppresses the mounted YAML.
-- **`praxis doctor` is the front door**: twelve checks, read-only against repo and DB but
-  spends one planner call per run (cached 60s); a rate limit is AMBER. Decision logic in
-  `core/doctor_probes.py`, fact gathering in `api/doctor.py`.
+- **`praxis doctor` is the front door**: read-only against repo and DB, but it does SPEND
+  (one planner call per run, and one `agy models` container when an agy harness is in
+  play), each cached 60s; a rate limit is AMBER. Decision logic in
+  `core/doctor_probes.py`, fact gathering in `api/doctor.py`. (No check count is quoted
+  on purpose: the last one was stale.)
 - **The planner check probes the CONFIGURED planner** (via `call_site_chain` +
   `build_argv`, same objects the loop uses) and names what it probed. A `local` planner
   is AMBER; `codex`/`agy` stay "not probed". `GET /api/status` and `praxis status`

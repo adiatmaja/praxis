@@ -80,12 +80,37 @@ container (read-write so it can persist the ~1-hourly refreshed access token). T
 name is configurable with `GEMINI_CREDS_VOLUME` (default `praxis-gemini-creds`). Tokens are
 long-lived once seeded; re-run step 2 only if login is revoked.
 
-**To switch to a DIFFERENT Google account, delete the volume FIRST**
-(`docker volume rm praxis-gemini-creds`), then run steps 1 and 2 again. Running
-step 2 against a volume that still holds credentials can reuse the session
-already in it, which leaves the old account's quota in play while looking like a
-successful re-login. Step 3 is the check that matters: it authenticates in a
-fresh process exactly the way a spawned worker does.
+**To switch to a DIFFERENT Google account you must WIPE the credentials first.**
+Re-running step 2 is not enough: against a volume that still holds credentials,
+agy can reuse the session already in it, which leaves the *old* account's quota in
+play while looking exactly like a successful re-login.
+
+The reason this comes up is almost never "I changed accounts" in the abstract. It
+is a **weekly Gemini quota running out mid-session**: the worker starts failing,
+you have a second Google account, and you try to sign in with it. That is the
+moment this bites, and it bites while something is already broken.
+
+Wipe the volume's contents in place, which also restores the ownership step 1
+sets up, so you can go straight back to step 2:
+
+```bash
+docker run --rm --user root -v praxis-gemini-creds:/home/agent/.gemini \
+  --entrypoint bash agy-agent:latest \
+  -c 'rm -rf /home/agent/.gemini/* /home/agent/.gemini/.[!.]*; chown -R agent:agent /home/agent/.gemini'
+```
+
+`docker volume rm praxis-gemini-creds` works too and is the bigger hammer: it
+fails while any container still has the volume mounted, and it drops the
+ownership fix with the data, so you must re-run step 1 afterwards. The command
+above does neither. Either way, step 3 is the check that matters: it
+authenticates in a fresh process exactly the way a spawned worker does.
+
+`praxis doctor`'s **agy worker credentials** row answers the same question
+without a browser: it runs `agy models` in a throwaway container against this
+volume and reports what came back. A sign-in prompt is amber with the command
+above; a model list is green with the count; anything else is printed verbatim
+rather than graded. It runs only when an agy harness is actually configured and
+the image is built, and otherwise says which of those was false.
 
 No host `~/.gemini` path is
 ever mounted — that approach does not work across operating systems.
@@ -209,6 +234,38 @@ where no agents will actually be dispatched (e.g. running a single API test agai
 live DB), but it should not be used for any session where real agent tasks may be
 in-flight.
 
+#### One container name, one machine, two checkouts
+
+`container_name` is **global to the Docker daemon**, unlike every other per-project
+setting in the compose file. Two checkouts of Praxis on one machine that both leave
+`PRAXIS_CONTAINER_NAME` unset are therefore competing for the name `orchestrator`
+*and* for the data volume behind it, and the symptom is not an error: the losing
+install's database appears to have been **wiped**. A fresh migration log, a
+re-seeded admin user, every task 404.
+
+Two `praxis doctor` rows answer this together, and neither repeats the other:
+
+- **Running commit matches the working tree** names the host directory the
+  orchestrator answering you was started from. If that is not the directory you
+  are standing in, every other row in the table is true of the wrong install.
+- **The container name points at this orchestrator** asks the daemon who
+  currently holds `PRAXIS_CONTAINER_NAME` and compares it to the process
+  answering the request. It is red when the name belongs to a different
+  container, amber when the answer came from a bare uvicorn while a container
+  holds the name anyway, and amber when nothing holds the name at all — which
+  means the variable was edited and applied with `restart`. A container's name,
+  like a mount, is baked in at container CREATE, so only `docker compose up -d`
+  applies it.
+
+The fix is one line per checkout in `.env`, then `docker compose up -d`:
+
+```
+PRAXIS_CONTAINER_NAME=praxis-second-checkout
+```
+
+The default stays `orchestrator` on purpose: every debugging recipe in this repo
+says `docker logs orchestrator`.
+
 ### Hosted (with Caddy)
 
 ```bash
@@ -290,6 +347,25 @@ LOCAL_REPOS_PATH=/run/desktop/mnt/host/c/Users/you/repos
 This configuration is exercised on Linux; Docker Desktop for Windows is a
 less-travelled path for it, so treat a fresh Windows report against this area as
 plausible even after this fix ships.
+
+**Two ways to get this wrong that nothing in the loop refuses, and one row that
+reports both.** `praxis doctor`'s **Local repository paths** row reads every
+project whose `repo_url` is local and checks it against both facts above.
+
+- A path that does not resolve inside the orchestrator is **red**. That is the
+  preflight `MISSING_REPO` 422, arriving before you spend a dispatch on it.
+- A path that resolves but sits **outside** `LOCAL_REPOS_PATH` is **amber**, and
+  this is the configuration worth understanding: preflight passes, because it
+  only looks in this container. At spawn the daemon is asked to bind that same
+  string from the host, where it need not exist, and **Docker creates a missing
+  bind source as an empty directory instead of failing**. The worker clones
+  nothing and the task fails for a reason no log names.
+- Setting `LOCAL_REPOS_HOST_PATH` **without** `LOCAL_REPOS_PATH` is **red**. The
+  nested compose default makes the bind source your repos directory while the
+  target falls back to `/app/.local-repos-unused`, so the repos are mounted where
+  nothing reads them and preflight fails naming a path that plainly does exist on
+  your machine. The other direction is not a trap: `LOCAL_REPOS_PATH` alone is
+  the documented one-variable case.
 
 **The database volume is a NAMED volume, and a host bind mount is the configuration that
 breaks.** On Docker Desktop the host bind-mount filesystem (9p/virtiofs) does not support
@@ -411,7 +487,7 @@ env vars); secrets (`AUTH_TOKEN`, GitHub App private key or `GITHUB_TOKEN`) stay
 | `PRAXIS_CONFIG_PATH` | No | `config/praxis.yaml` | Path to the global settings YAML. Compose sets it to `/app/config/praxis.yaml`, inside the read-only `./config` bind mount. Unlike every other `PRAXIS_*` var it is a pointer to the file, not a setting inside it, so it is never folded into the loaded settings |
 | `LOCAL_REPOS_HOST_PATH` | No | none (mount is a no-op) | Local git backend only. The Docker daemon's bind-mount SOURCE, in the HOST namespace (see "Volumes" above and `docs/configurations.md`) |
 | `LOCAL_REPOS_PATH` | No | none (mount is a no-op) | Local git backend only. The mount TARGET inside the orchestrator, and the required prefix for every local project's `repo_url` |
-| `PRAXIS_CONTAINER_NAME` | No | `orchestrator` | Compose `container_name`. Two checkouts on one machine otherwise steal the container and its data volume from each other, since `container_name` is global to the Docker daemon; set only when running more than one checkout |
+| `PRAXIS_CONTAINER_NAME` | No | `orchestrator` | Compose `container_name`. Two checkouts on one machine otherwise steal the container and its data volume from each other, since `container_name` is global to the Docker daemon; set only when running more than one checkout. `praxis doctor`'s **container name** row asks the daemon who currently owns this name and says so when it is somebody else (see [one container name, two checkouts](#one-container-name-one-machine-two-checkouts)) |
 
 Global orchestrator defaults also live in `config/praxis.yaml` (env-overridable via `PRAXIS_*`),
 including the auto-delegate global default worker:
