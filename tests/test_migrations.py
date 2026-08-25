@@ -71,25 +71,28 @@ async def test_migration_7_adds_the_triage_columns(tmp_path):
 
 @pytest.mark.unit
 async def test_migration_7_is_idempotent(tmp_path):
-    # A real re-application of migration 7, not a no-op second `initialize()`:
-    # `initialize()` skips migrations whose version is already <= current, so
-    # rewinding user_version below 7 forces the ALTER TABLE guard to actually
-    # run twice against a table that already has the columns.
-    path = tmp_path / "m7-idem.db"
-    db = Database(f"sqlite+aiosqlite:///{path}")
-    await db.initialize()
-    await db.execute(f"PRAGMA user_version = {CURRENT_SCHEMA_VERSION - 1}")
-    await db.close()
+    # A real re-application of migration 7. `initialize()` skips migrations at
+    # or below the stored version, and the rewind this used to do
+    # (`CURRENT_SCHEMA_VERSION - 1`) has not reached migration 7 since migration
+    # 8 landed - so the step never re-ran and the surviving assertion passed
+    # either way. Invoking the step directly is what makes the guard testable:
+    # delete the `PRAGMA table_info` check and the second call raises
+    # `duplicate column name`.
+    from orchestrator.database import _migration_0007_leaf_triage
 
-    db2 = Database(f"sqlite+aiosqlite:///{path}")
-    await db2.initialize()
-    row = await db2.fetch_one("PRAGMA user_version")
-    assert row is not None
-    assert row["user_version"] == CURRENT_SCHEMA_VERSION
-    rows = await db2.fetch_all("PRAGMA table_info(tasks)")
-    names = [r["name"] for r in rows]
-    assert names.count("parent_task_id") == 1
-    await db2.close()
+    db = Database(f"sqlite+aiosqlite:///{tmp_path / 'm7-idem.db'}")
+    await db.initialize()
+    # try/finally for the reason given in ``test_migration_12_is_idempotent``:
+    # without it the regression case hangs rather than failing.
+    try:
+        connection = db._connection
+        assert connection is not None
+        await _migration_0007_leaf_triage(connection)
+        await _migration_0007_leaf_triage(connection)
+        names = [r["name"] for r in await db.fetch_all("PRAGMA table_info(tasks)")]
+        assert names.count("parent_task_id") == 1
+    finally:
+        await db.close()
 
 
 @pytest.mark.unit
@@ -149,24 +152,29 @@ async def test_migration_11_is_idempotent(tmp_path):
     """Re-applying the step against a table that already has the column.
 
     A crash between ``apply`` and the version bump replays the step, so the
-    ``PRAGMA table_info`` guard has to hold. Rewinding user_version is the only
-    way to make it actually run twice: ``initialize()`` skips migrations whose
-    version is already current.
-    """
-    path = tmp_path / "m11-idem.db"
-    db = Database(f"sqlite+aiosqlite:///{path}")
-    await db.initialize()
-    await db.execute(f"PRAGMA user_version = {CURRENT_SCHEMA_VERSION - 1}")
-    await db.close()
+    ``PRAGMA table_info`` guard has to hold.
 
-    db2 = Database(f"sqlite+aiosqlite:///{path}")
-    await db2.initialize()
-    row = await db2.fetch_one("PRAGMA user_version")
-    assert row is not None
-    assert row["user_version"] == CURRENT_SCHEMA_VERSION
-    names = [r["name"] for r in await db2.fetch_all("PRAGMA table_info(plans)")]
-    assert names.count("plan_attempts") == 1
-    await db2.close()
+    Invoked directly, for the reason spelled out in
+    ``test_migration_12_is_idempotent``: rewinding ``user_version`` by
+    ``CURRENT_SCHEMA_VERSION - 1`` stopped reaching this migration when 12
+    landed, and the assertion left behind passes whether the step re-ran or
+    never ran.
+    """
+    from orchestrator.database import _migration_0011_plan_attempts
+
+    db = Database(f"sqlite+aiosqlite:///{tmp_path / 'm11-idem.db'}")
+    await db.initialize()
+    # try/finally for the reason given in ``test_migration_12_is_idempotent``:
+    # without it the regression case hangs rather than failing.
+    try:
+        connection = db._connection
+        assert connection is not None
+        await _migration_0011_plan_attempts(connection)
+        await _migration_0011_plan_attempts(connection)
+        names = [r["name"] for r in await db.fetch_all("PRAGMA table_info(plans)")]
+        assert names.count("plan_attempts") == 1
+    finally:
+        await db.close()
 
 
 @pytest.mark.unit
@@ -196,23 +204,36 @@ async def test_migration_12_is_idempotent(tmp_path):
     """Re-applying the step against a table that already has the column.
 
     A crash between ``apply`` and the version bump replays the step, so the
-    ``PRAGMA table_info`` guard has to hold. Rewinding user_version is the only
-    way to make it actually run twice.
-    """
-    path = tmp_path / "m12-idem.db"
-    db = Database(f"sqlite+aiosqlite:///{path}")
-    await db.initialize()
-    await db.execute(f"PRAGMA user_version = {CURRENT_SCHEMA_VERSION - 1}")
-    await db.close()
+    ``PRAGMA table_info`` guard has to hold.
 
-    db2 = Database(f"sqlite+aiosqlite:///{path}")
-    await db2.initialize()
-    row = await db2.fetch_one("PRAGMA user_version")
-    assert row is not None
-    assert row["user_version"] == CURRENT_SCHEMA_VERSION
-    names = [r["name"] for r in await db2.fetch_all("PRAGMA table_info(projects)")]
-    assert names.count("context_window") == 1
-    await db2.close()
+    The step is invoked DIRECTLY, twice, rather than by rewinding
+    ``user_version``. The rewind is only a proxy for "the step ran again", and
+    it is a proxy that breaks silently: ``CURRENT_SCHEMA_VERSION - 1`` stopped
+    rewinding past this migration the moment a later one was added, and the
+    surviving assertion (``count(...) == 1``) cannot tell a re-applied guard
+    from a migration that never ran at all. Both forms of this test were
+    therefore green whether the guard existed or not. Calling the function is
+    the only version of this that fails when the guard is deleted: without it
+    the second call raises ``duplicate column name``.
+    """
+    from orchestrator.database import _migration_0012_project_context_window
+
+    db = Database(f"sqlite+aiosqlite:///{tmp_path / 'm12-idem.db'}")
+    await db.initialize()
+    # try/finally, because without it a FAILING version of this test HANGS
+    # instead of failing: the second call raises, `close()` never runs, and the
+    # aiosqlite worker thread keeps the loop alive until the suite times out.
+    # A test that wedges on regression is barely better than one that cannot
+    # fail - CI reports a timeout, not the guard that went missing.
+    try:
+        connection = db._connection
+        assert connection is not None
+        await _migration_0012_project_context_window(connection)
+        await _migration_0012_project_context_window(connection)
+        names = [r["name"] for r in await db.fetch_all("PRAGMA table_info(projects)")]
+        assert names.count("context_window") == 1
+    finally:
+        await db.close()
 
 
 @pytest.mark.unit

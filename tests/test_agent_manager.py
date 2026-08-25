@@ -772,6 +772,43 @@ async def test_agy_skips_context_limit_detection(
 @pytest.mark.unit
 @patch("orchestrator.core.agent_manager.detect_context_limit", new_callable=AsyncMock)
 @patch("orchestrator.core.agent_manager.docker")
+async def test_a_caller_resolved_window_wins_and_skips_the_probe(
+    mock_docker: MagicMock,
+    mock_detect: AsyncMock,
+) -> None:
+    """One resolution per dispatch, used by the pack AND the container.
+
+    The orchestrator resolves the window (project column -> declared -> probe ->
+    unknown) to budget the Bible. Re-resolving here answered differently: a
+    declared 128 000 budgeted the pack while this method probed LM Studio,
+    missed, and passed no MODEL_CONTEXT_LIMIT at all.
+    """
+    mock_client = MagicMock()
+    mock_docker.from_env.return_value = mock_client
+    mock_client.containers.run.return_value = _mock_container()
+    mock_detect.return_value = 8192
+
+    manager = AgentManager(lm_studio_url="http://localhost:1234", github_token="ghp_x")
+    await manager.spawn_agent(
+        task_id="declared",
+        repo_url="https://github.com/u/r.git",
+        branch="agent/t",
+        base_branch="main",
+        task_prompt="do it",
+        model_name="glm-4.7",
+        callback_url="http://cb/",
+        harness="opencode",
+        context_limit=128_000,
+    )
+
+    mock_detect.assert_not_called()
+    env = mock_client.containers.run.call_args.kwargs["environment"]
+    assert env["MODEL_CONTEXT_LIMIT"] == "128000"
+
+
+@pytest.mark.unit
+@patch("orchestrator.core.agent_manager.detect_context_limit", new_callable=AsyncMock)
+@patch("orchestrator.core.agent_manager.docker")
 async def test_no_worker_endpoint_means_no_context_probe(
     mock_docker: MagicMock,
     mock_detect: AsyncMock,

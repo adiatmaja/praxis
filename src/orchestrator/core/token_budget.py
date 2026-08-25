@@ -57,8 +57,19 @@ def worker_budget(
         # ``context_window - int(fractional_reserve)``: the two differ by one
         # token on most inputs (int() truncates each side separately), and this
         # branch exists to leave every already-exercised window untouched.
-        return int(context_window * (1.0 - reserve_fraction))
-    return max(context_window - WORKER_RESERVE_CAP_TOKENS, 0)
+        budget = int(context_window * (1.0 - reserve_fraction))
+    else:
+        budget = context_window - WORKER_RESERVE_CAP_TOKENS
+    # Clamped on the RESULT, not inside the cap branch where it first sat and
+    # could never fire: reaching that branch needs
+    # ``context_window * reserve_fraction > 32768``, which for any fraction at
+    # or below 1 forces ``context_window > 32768``, so the subtraction is always
+    # positive there. The reachable negative is on the OTHER branch - a
+    # ``reserve_fraction`` above 1.0 (a caller or config error) makes
+    # ``1 - reserve_fraction`` negative and the budget with it, and a negative
+    # budget makes ``fit_sections`` raise ContextBudgetExceeded for every task
+    # on the install. One guard, on the path that can actually take it.
+    return max(budget, 0)
 
 
 @dataclass

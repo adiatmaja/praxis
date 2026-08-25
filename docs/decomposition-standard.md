@@ -14,7 +14,7 @@ A leaf is valid when all six rules hold.
 
 | # | Rule | Source |
 |---|------|--------|
-| 1 | Its full context pack fits the worker's reliable context window with headroom (Praxis reserves 60 percent of the window for the worker's own reasoning and edits) | MinionS, arXiv 2502.15964 |
+| 1 | Its full context pack fits the worker's reliable context window with headroom (Praxis reserves the SMALLER of 60 percent of the window and an absolute 32 768 tokens, so headroom stops scaling once a window is large enough not to need it; see `core/token_budget.worker_budget`) | MinionS, arXiv 2502.15964 |
 | 2 | Its instruction sequence is linear: no branching decision is left to the worker | MinionS; GPT-5-Nano regression finding |
 | 3 | It has a machine-checkable acceptance signal: a test, a type-check, a build, or a subset of the project `verify_cmd` | arXiv 2605.14163; MAKER, arXiv 2511.09030 |
 | 4 | It is scoped by dependency locality: the target location plus its direct callers and callees, not an arbitrary file count alone | CodePlan, arXiv 2309.12499 |

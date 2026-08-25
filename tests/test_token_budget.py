@@ -107,7 +107,23 @@ def test_the_crossover_is_where_the_two_rules_agree():
 
 @pytest.mark.unit
 def test_the_budget_is_never_negative():
-    """A window smaller than the cap must not produce a negative budget."""
+    """A reserve fraction above 1.0 must clamp to zero, not go negative.
+
+    This test used to name a branch it could not enter. It called
+    ``worker_budget(10, reserve_fraction=1.0)``, which takes the SMALL branch
+    and returns 0 from ``int(10 * 0.0)`` with no clamp involved, while its
+    docstring claimed to be exercising the cap branch's ``max(..., 0)``. That
+    guard was unreachable for any fraction at or below 1.0, so deleting it left
+    the whole suite green.
+
+    The reachable negative is a fraction ABOVE 1.0: ``1 - 1.5`` is negative, the
+    budget goes with it, and ``fit_sections`` then raises for every task on the
+    install. ``2.0`` and ``1.5`` both take the small branch and both go negative
+    unclamped, so deleting ``max(budget, 0)`` now turns this red.
+    """
+    assert worker_budget(10, reserve_fraction=2.0) == 0
+    assert worker_budget(1000, reserve_fraction=1.5) == 0
+    # Still exactly 0 by arithmetic, not by clamping, at the boundary.
     assert worker_budget(10, reserve_fraction=1.0) == 0
 
 

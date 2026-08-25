@@ -11,6 +11,7 @@ from orchestrator.core.context_window import (
 from orchestrator.core.context_window import (
     DeclaredWindows,
     parse_declared_windows,
+    positive_window,
 )
 from orchestrator.database import Database
 from orchestrator.models.schemas import CapabilityProfile
@@ -227,24 +228,45 @@ class EffectiveSettings:
         return parse_declared_windows(yaml_data.get(CONTEXT_WINDOWS_KEY))
 
     async def capability_profile(
-        self, project_id: str | None, model: str | None = None
+        self,
+        project_id: str | None,
+        model: str | None = None,
+        harness: str | None = None,
+        project_context_window: int | None = None,
     ) -> CapabilityProfile:
-        """Resolve the capability profile: project override -> declared -> YAML.
+        """Resolve the capability profile: project window -> declared -> YAML.
 
-        The ``context_window`` field takes one extra layer that the rest of the
-        profile does not: a window DECLARED for this model name beats the
-        ``capability.default`` block. That default is one number for every
+        The ``context_window`` field takes layers the rest of the profile does
+        not, and they are the SAME layers the dispatch gate uses (steps 1 to 3
+        of ``core/context_window``), so the two seams cannot answer differently
+        about one model. The probe is deliberately absent: this is a config
+        read on the planning path, not a dispatch, and it must not make a
+        network call per decomposition.
+
+        The ``capability.default`` block underneath is one number for every
         model on the install (8192 as shipped, sized for a local open-weight
         worker), and it feeds the difficulty scorer's ``context_ratio``
         denominator, the decomposer's per-leaf budget, leaf triage, and the
-        capability plan review. A cloud-harness project inherited it and was
-        therefore split more aggressively than its model ever needed - the
-        quieter half of the same defect that failed 14 KB agy dispatches at
-        dispatch time. A per-project capability override still wins over both.
+        capability plan review. Every project inherited it, so a cloud-model
+        plan was split as aggressively as an 8 K worker would need - the
+        quieter half of the defect that failed 14 KB agy dispatches.
+
+        ``harness`` is what makes the third tier reachable here. Without it a
+        model-string variant nobody enumerated (``Gemini 3.7 Pro``, or the agy
+        id spelling ``gemini-3.7-flash-high``) resolved at the dispatch gate and
+        was still decomposed at 8192 - the same defect one seam over.
 
         Args:
             project_id: Optional project scope for per-project overrides.
             model: Model name key; defaults to ``"default"``.
+            harness: The harness that will run this model, enabling the
+                per-harness declaration tier. None skips that tier only.
+            project_context_window: The project row's ``context_window``
+                column. Wins over everything here exactly as it does at the
+                gate, INCLUDING over a per-project capability override: an
+                operator who states a window means it, and a seam where it
+                won in one place and lost in the other is the disagreement
+                this whole change exists to remove.
 
         Returns:
             A populated CapabilityProfile instance.
@@ -264,16 +286,20 @@ class EffectiveSettings:
                 override_data = json.loads(raw)
 
         data = {**defaults}
-        # Keyed by MODEL only: this seam has no harness in scope (its callers
-        # pass a model name and nothing else), so the per-harness fallback is
-        # applied at dispatch, where the harness is known. A model that is
-        # declared nowhere leaves the YAML default exactly as it was.
-        declared = parse_declared_windows(yaml_data.get(CONTEXT_WINDOWS_KEY)).for_model(
-            model_name
-        )
-        if declared is not None:
-            data["context_window"] = declared
+        declared = parse_declared_windows(yaml_data.get(CONTEXT_WINDOWS_KEY))
+        by_model = declared.for_model(model_name)
+        by_harness = declared.for_harness(harness)
+        if by_model is not None:
+            data["context_window"] = by_model
+        elif by_harness is not None:
+            data["context_window"] = by_harness
         data.update(override_data)
+        # Applied AFTER the override merge, because it outranks it. Validated
+        # through the same coercion the gate uses, so a NULL column, a zero, or
+        # a mock all read as "not stated" rather than as a one-token window.
+        column = positive_window(project_context_window)
+        if column is not None:
+            data["context_window"] = column
         return CapabilityProfile(model_name=model_name, **data)
 
     async def escalation_policy(self, project_id: str | None) -> str:

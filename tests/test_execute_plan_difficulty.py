@@ -299,7 +299,27 @@ async def test_settings_without_a_difficulty_config_falls_back_to_defaults():
     """
 
     class _NoDifficultyConfig:
-        async def capability_profile(self, project_id: Any, model: str) -> Any:
+        async def capability_profile(
+            self,
+            project_id: Any,
+            model: str,
+            harness: Any = None,
+            project_context_window: Any = None,
+        ) -> Any:
+            # ASSERTED, not accepted into oblivion. A fake that swallows a new
+            # argument cannot notice production has stopped passing it, and
+            # ``project_id`` is exactly such an argument: ``decompose_plan``
+            # hardcoded ``project_id=None`` here until the context-window work,
+            # so the per-project capability override could never apply. This
+            # stub is now the thing that would catch a regression to that.
+            assert project_id == "p1"
+            assert model == "m"
+            # ``harness`` and ``project_context_window`` are legitimately None:
+            # this test's caller supplies neither, and the subject is the
+            # difficulty gate's fallback, not window resolution. Stated so the
+            # next reader knows the omission is the caller's, not the fake's.
+            assert harness is None
+            assert project_context_window is None
             return CapabilityProfile(
                 model_name="m", parameter_count_b=30, context_window=8192
             )

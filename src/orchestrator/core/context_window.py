@@ -37,10 +37,16 @@ at a hosted OpenAI-compatible provider is a supported configuration whose model
 LM Studio has never heard of either. Gating on the harness would fix agy and
 silently re-break that. ``should_attempt_lm_studio_probe`` is therefore an
 OPTIMIZATION - it skips a round trip that cannot succeed - and what makes every
-case safe is step 5: the probe answering with anything other than a number for
-this model means unknown, whatever the harness, whatever the endpoint. Declared
-windows (steps 1 to 3) are the primary mechanism for every API-served model on
-every harness, not a cloud-only special case.
+case safe is step 5: the probe failing to come back with a number for this model
+means unknown, whatever the harness, whatever the endpoint. Declared windows
+(steps 1 to 3) are the primary mechanism for every API-served model on every
+harness, not a cloud-only special case.
+
+**"Failing to come back with a number" includes RAISING.** The probe parses a
+payload from an endpoint this module has deliberately declined to classify, so
+its exceptions are this module's to own: an unrecognized shape raises out of
+``detect_context_limit`` rather than returning None, and left uncaught that is
+not one failed dispatch but a plan that never dispatches again.
 """
 
 from __future__ import annotations
@@ -94,14 +100,17 @@ DEFAULT_DECLARED_HARNESS_WINDOWS: dict[str, int] = {
 YAML_KEY = "context_windows"
 
 
-def _positive_int(value: Any) -> int | None:
+def positive_window(value: Any) -> int | None:
     """Return ``value`` as a positive int, or None for anything else.
 
-    Every candidate window passes through here, and the None it returns for a
-    non-number is load-bearing rather than defensive: a YAML typo, a mocked
-    settings object, or a NULL column must all read as "not declared" and fall
-    through to the next source. Silently coercing them would put an invented
-    number back in the one place this module exists to keep it out of.
+    Every candidate window passes through here, on BOTH seams that resolve one
+    (``resolve_context_window`` at the gate and
+    ``EffectiveSettings.capability_profile`` on the planning path), and the
+    None it returns for a non-number is load-bearing rather than defensive: a
+    YAML typo, a mocked settings object, or a NULL column must all read as "not
+    declared" and fall through to the next source. Silently coercing them would
+    put an invented number back in the one place this module exists to keep it
+    out of.
     """
     if isinstance(value, bool) or not isinstance(value, int):
         return None
@@ -119,13 +128,13 @@ class DeclaredWindows:
         """Return the window declared for this model name, if any."""
         if not model_name:
             return None
-        return _positive_int(self.models.get(model_name))
+        return positive_window(self.models.get(model_name))
 
     def for_harness(self, harness_id: str | None) -> int | None:
         """Return the window declared for this harness, if any."""
         if not harness_id:
             return None
-        return _positive_int(self.harnesses.get(harness_id))
+        return positive_window(self.harnesses.get(harness_id))
 
 
 def parse_declared_windows(raw: Any) -> DeclaredWindows:
@@ -147,7 +156,7 @@ def parse_declared_windows(raw: Any) -> DeclaredWindows:
             if not isinstance(block, Mapping):
                 continue
             for name, value in block.items():
-                parsed = _positive_int(value)
+                parsed = positive_window(value)
                 if parsed is None:
                     logger.warning(
                         "Ignoring declared context window %s.%s.%r = %r: "
@@ -215,7 +224,7 @@ async def resolve_context_window(
         A :class:`ResolvedWindow`. ``tokens`` is None only when no source could
         answer; it is never a substituted default.
     """
-    override = _positive_int(project_override)
+    override = positive_window(project_override)
     if override is not None:
         return ResolvedWindow(override, "project override")
 
@@ -228,14 +237,39 @@ async def resolve_context_window(
             return ResolvedWindow(by_harness, f"declared for harness {harness_id!r}")
 
     # Worth-a-try, not is-local: see ``should_attempt_lm_studio_probe``. The
-    # line below this one is what carries the correctness, and it treats every
+    # block below is what carries the correctness, and it treats every
     # non-answer alike - LM Studio down, model not loaded, a hosted provider
     # that returned something unrecognizable at a URL that is not LM Studio at
     # all. All of them are "nobody knows", and none of them is 8192.
     if should_attempt_lm_studio_probe(harness_id, lm_studio_url):
-        probed = _positive_int(
-            await detect_context_limit(lm_studio_url or "", model_name or "")
-        )
+        try:
+            probed = positive_window(
+                await detect_context_limit(lm_studio_url or "", model_name or "")
+            )
+        # BLE001 suppressed deliberately: an enumerated list is exactly how this
+        # bug happened. ``detect_context_limit`` catches
+        # ``(httpx.HTTPError, ValueError)`` and then calls ``payload.get(...)``,
+        # so a foreign endpoint answering this path with a bare JSON array, a
+        # string or ``null`` raises AttributeError straight through here, past
+        # ``_build_worker_bible`` (which catches only ContextBudgetExceeded),
+        # into ``run_once``'s per-plan guard - and the plan is then skipped on
+        # THAT tick and every tick after it. A permanently non-dispatching plan,
+        # logged as an AttributeError rather than as a failed probe.
+        #
+        # This module deliberately points that function at endpoints nobody has
+        # classified (see ``should_attempt_lm_studio_probe``: guessing from a
+        # hostname is the defect class being removed), so owning whatever they
+        # return is this function's job, not the probe's. There is no exception
+        # a probe can raise that means anything other than "nobody knows".
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "Context-window probe against %s raised %s: %s. Treating the "
+                "window as unknown.",
+                lm_studio_url,
+                type(exc).__name__,
+                exc,
+            )
+            return ResolvedWindow(None, UNKNOWN_SOURCE)
         if probed is not None:
             return ResolvedWindow(probed, f"probed from {lm_studio_url}")
 

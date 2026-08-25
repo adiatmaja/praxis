@@ -18,6 +18,7 @@ from orchestrator.core.context_window import (
 )
 from orchestrator.core.context_window import (
     DeclaredWindows,
+    ResolvedWindow,
     resolve_context_window,
 )
 from orchestrator.core.harnesses import default_harness_id
@@ -374,7 +375,7 @@ class DispatchMixin:
             # conventions), scrubbed and trimmed to the model's window, so the
             # goal/progress survive compaction and cross-run re-dispatch.
             try:
-                bible = await self._build_worker_bible(
+                bible, resolved_window = await self._build_worker_bible(
                     task,
                     plan_task,
                     project,
@@ -415,6 +416,14 @@ class DispatchMixin:
                     task_summary=f"{task['title']}\n\n{task['description']}",
                     single_branch=single_branch,
                     worker_session_id=resume_session,
+                    # The window the pack was ACTUALLY budgeted against, not a
+                    # second resolution. ``spawn_agent`` used to re-probe on its
+                    # own, so a declared window budgeted the orchestrator side at
+                    # (say) 128 000 and then handed the container no
+                    # MODEL_CONTEXT_LIMIT at all, leaving OpenCode to compact
+                    # against its own built-in default. Two probes per dispatch,
+                    # two different answers, and the disagreement was invisible.
+                    context_limit=resolved_window.tokens,
                 )
             except RuntimeError as exc:
                 # Disk-headroom or concurrency-cap preflight failed. Leave the
@@ -460,6 +469,12 @@ class DispatchMixin:
                     "container_id": container_id,
                     "difficulty_score": score,
                     "difficulty_flagged": flagged,
+                    # Every dispatch says which window it was budgeted against
+                    # and where that number came from. Null here means the gate
+                    # did not run; a `context_budget_skipped` event was
+                    # published at resolution time saying so.
+                    "context_window": resolved_window.tokens,
+                    "context_window_source": resolved_window.source,
                 }
             )
 
@@ -816,7 +831,7 @@ class DispatchMixin:
         branch: str,
         *,
         difficulty_flagged: bool = False,
-    ) -> str:
+    ) -> tuple[str, ResolvedWindow]:
         """Assemble the Static Bible for a task: goal + handover + context.
 
         Reconstructs the progress handover deterministically from the task
@@ -832,6 +847,12 @@ class DispatchMixin:
             difficulty_flagged: True when the pre-dispatch score fell between
                 ``reject_below`` and ``flag_below``. Makes the acceptance slot
                 mandatory instead of optional.
+
+        Returns:
+            The assembled Bible, and the window it was budgeted against. The
+            window is returned rather than recomputed by the caller because
+            ``spawn_agent`` needs the SAME number: resolving twice gave the
+            orchestrator a declared window and the container none at all.
 
         Raises:
             ContextBudgetExceeded: If the floor context exceeds the model window.
@@ -905,11 +926,31 @@ class DispatchMixin:
                 resolved.source,
             )
         else:
-            # SAID, not silently permissive. The gate is the only thing that can
-            # refuse an oversized pack, so a tick where it did not run has to be
-            # distinguishable in the log from a tick where it ran and approved -
-            # otherwise "no failure" means both "the pack fits" and "nobody
-            # checked", which is the shape that shipped 8192 for a year.
+            # SAID on a SURFACE, not only in the orchestrator log. A log line is
+            # not a product surface here: `praxis logs <task-id>` reads the AGENT
+            # CONTAINER log, and nothing else in the product reads this one. So
+            # the skip is published, and it is published HERE rather than folded
+            # into `agent_dispatched` alone, because that event fires only after
+            # a successful spawn: a task deferred by the disk or concurrency
+            # preflight would otherwise have its skipped gate disappear.
+            #
+            # The gate is the only thing that can refuse an oversized pack, so a
+            # tick where it did not run must be distinguishable from a tick where
+            # it ran and approved - otherwise "no failure" means both "the pack
+            # fits" and "nobody checked", which is the shape that shipped 8192.
+            self._bus.publish(
+                {
+                    "type": "context_budget_skipped",
+                    "plan_id": task.get("plan_id"),
+                    "task_id": task["id"],
+                    "harness": harness_id,
+                    "model": worker_model,
+                    "reason": (
+                        "no context window could be established, so the "
+                        "pre-dispatch context budget gate did not run"
+                    ),
+                }
+            )
             log.warning(
                 "No context window is known for %s/%s: neither the project's "
                 "context_window column, nor a declared window in the settings "
@@ -974,7 +1015,7 @@ class DispatchMixin:
         if difficulty_flagged and not is_runnable_verification(acceptance):
             acceptance = MANDATORY_ACCEPTANCE
 
-        return build_bible(
+        bible = build_bible(
             BibleSources(
                 goal=goal,
                 handover=handover,
@@ -1000,3 +1041,4 @@ class DispatchMixin:
                 ),
             )
         )
+        return bible, resolved

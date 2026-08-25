@@ -997,8 +997,18 @@ class ReviewMixin:
         )
         plan_task: dict[str, Any] = slug_to_graph_task(graph_tasks).get(task_slug, {})
 
+        # Every scoping argument this seam has, passed. ``project_id=None``
+        # here meant the per-project capability override could never apply and
+        # the new ``projects.context_window`` column never reached triage, so an
+        # operator who set the window fixed the dispatch gate and left triage
+        # sizing leaves for an 8 K worker, with nothing saying so. ``harness``
+        # is what makes the per-harness declaration tier reachable for a model
+        # string nobody enumerated.
         profile = await settings.capability_profile(
-            project_id=None, model=project.get("model_name")
+            project_id=project.get("id"),
+            model=project.get("model_name"),
+            harness=project.get("harness"),
+            project_context_window=project.get("context_window"),
         )
         ladder = await settings.implement_escalation()
         ceiling = await settings.max_leaves_per_plan()

@@ -353,6 +353,8 @@ async def decompose_plan(
     plan_id: str | None = None,
     emitter: Any = None,
     db: Any = None,
+    harness: str | None = None,
+    project_context_window: int | None = None,
 ) -> dict[str, Any]:
     """Capability-review a plan into a normalized opus_plan task graph.
 
@@ -368,6 +370,13 @@ async def decompose_plan(
         plan_id: Plan identifier (reserved for capability event wiring).
         emitter: Capability event emitter (reserved for capability event wiring).
         db: Optional Database to fetch recent outcomes for history.
+        harness: The harness that will run ``model``, so a per-harness declared
+            context window applies. None skips that tier only.
+        project_context_window: The project's declared window, which outranks
+            every other source. Both exist so the per-leaf budget below is the
+            SAME number the dispatch gate will use; without them a plan was
+            decomposed for an 8 K worker and then dispatched against a
+            million-token window, and only the second half looked right.
 
     Returns:
         A normalized ``{"tasks": [...]}`` dict where each task has a ``slug``,
@@ -380,7 +389,12 @@ async def decompose_plan(
             validation violations remain after the informed re-decompose round,
             or if a leaf still scores below ``reject_below`` after it.
     """
-    profile = await effective_settings.capability_profile(project_id=None, model=model)
+    profile = await effective_settings.capability_profile(
+        project_id=project_id,
+        model=model,
+        harness=harness,
+        project_context_window=project_context_window,
+    )
     per_leaf_budget = worker_budget(profile.context_window)
     if db is not None:
         runs = await fetch_recent_outcomes(

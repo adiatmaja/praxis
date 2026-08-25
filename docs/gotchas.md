@@ -300,9 +300,12 @@ belongs among the everyday traps.
   injected into the decompose prompt as a `HARD CONSTRAINTS` block, one line per limit,
   stating that violating leaves will be rejected automatically. The brain is expected
   to comply; prose guidance alone is not enforcement — F3 enforces it. Budget
-  consistency uses the same `WORKER_RESERVE_FRACTION = 0.6` (`core/token_budget.py`) as
+  consistency goes through the same `token_budget.worker_budget()` as
   `worker_bible`/`fit_sections`, replacing the independent `_LEAF_BUDGET_FRACTION = 0.4`
-  that existed before and no longer exists anywhere under `src/`.
+  that existed before and no longer exists anywhere under `src/`. That helper reserves
+  the SMALLER of `WORKER_RESERVE_FRACTION` (0.6) and `WORKER_RESERVE_CAP_TOKENS`
+  (32 768), so every window at or below 54 613 tokens is budgeted exactly as it always
+  was and only genuinely large windows stop reserving a proportion they cannot use.
 - **F3 leaf validator is deterministic and fail-closed** — `core/leaf_validator.py`
   runs after `_normalize_slugs` in `decompose_plan`. It checks: DAG + depth limits,
   no dangling `depends_on` slugs, file/LOC limits, verbatim `plan_text` (≥70% fuzzy

@@ -318,6 +318,7 @@ class AgentManager:
         task_summary: str | None = None,
         single_branch: bool = False,
         worker_session_id: str | None = None,
+        context_limit: int | None = None,
     ) -> str:
         harness_id = harness or default_harness_id()
         spec = REGISTRY[harness_id]
@@ -366,17 +367,25 @@ class AgentManager:
             else await self._provider.token_for_repo(repo_url)
         )
 
-        # One shared predicate with the budgeting path (``core/context_window``)
-        # rather than two rules that can be wrong in different directions. This
-        # used to read ``harness_id != "agy"``, which is wrong twice over: it
-        # was the ONLY place that knew agy should not be probed, so the
-        # budgeting path probed it, missed, and fabricated an 8192-token
-        # window; and it happily probed LM Studio for an OpenCode project the
-        # operator had pointed at a hosted provider. A missing endpoint now
-        # means no probe, and a probe that comes back with nothing means the
-        # limit stays absent - never a substituted number.
-        context_limit: int | None = None
-        if should_attempt_lm_studio_probe(harness_id, lm_studio_url):
+        # A caller-resolved window WINS and skips the probe entirely. The
+        # orchestrator has already run the full resolution (project column ->
+        # declared -> probe -> unknown) to budget the pack it is handing us, and
+        # resolving a second time here answered differently: a declared window
+        # budgeted the Bible at, say, 128 000 while this method probed LM Studio,
+        # missed, and gave the container no MODEL_CONTEXT_LIMIT at all, so
+        # OpenCode compacted against its own built-in default instead.
+        #
+        # The fallback below keeps every other caller working. Its predicate is
+        # shared with the budgeting path rather than duplicated: it used to read
+        # ``harness_id != "agy"``, wrong twice over - it was the ONLY place that
+        # knew agy should not be probed, so the budgeting path probed it, missed,
+        # and fabricated 8192; and it happily probed LM Studio for an OpenCode
+        # project the operator had pointed at a hosted provider. A missing
+        # endpoint means no probe, and a probe that comes back with nothing
+        # leaves the limit absent - never a substituted number.
+        if context_limit is None and should_attempt_lm_studio_probe(
+            harness_id, lm_studio_url
+        ):
             context_limit = await detect_context_limit(lm_studio_url, model_name)
 
         environment = build_spawn_env(

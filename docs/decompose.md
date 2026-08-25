@@ -128,13 +128,24 @@ again at dispatch (defense in depth).
 
 ## Where the profile comes from
 
-`effective_settings.capability_profile(project_id, model)` returns the `CapabilityProfile`
-(parameter count, context window, strengths, weaknesses, max task complexity). The per-leaf
-budget is `int(context_window * (1 - WORKER_RESERVE_FRACTION))`, which is 0.4 of the window
-today. `WORKER_RESERVE_FRACTION` lives in `core/token_budget.py` and is imported by
-`execute_plan_decompose.py`, `difficulty.py` and `worker_bible.py`, so the decomposer's idea
-of the leaf budget and the bible's idea of the worker's headroom are the same number by
-construction and cannot drift into disagreeing.
+`effective_settings.capability_profile(project_id, model, harness, project_context_window)`
+returns the `CapabilityProfile` (parameter count, context window, strengths, weaknesses,
+max task complexity). The per-leaf budget is `worker_budget(context_window)` from
+`core/token_budget.py`, imported by `execute_plan_decompose.py`, `difficulty.py` and
+`worker_bible.py`, so the decomposer's idea of the leaf budget and the bible's idea of the
+worker's headroom are the same number by construction and cannot drift into disagreeing.
+
+The reserve is the SMALLER of `WORKER_RESERVE_FRACTION` (0.6) and an absolute
+`WORKER_RESERVE_CAP_TOKENS` (32 768). Below a 54 613-token window the fraction governs and
+the budget is exactly what it always was; above it the reserve stops growing, because what
+the reserve holds (the agent's reasoning, tool output, and the diffs it writes) does not
+scale with the window.
+
+The `context_window` on that profile is resolved through the same first three tiers as the
+dispatch gate: the project's `context_window` column, then a window declared for the model,
+then one declared for the harness, then the settings file's `capability.default`. Passing
+`harness` and `project_context_window` is what keeps the two seams agreeing; omit them and a
+plan is decomposed for an 8 K worker and then dispatched against the real window.
 
 ## Verified behavior (2026-07-08 dogfood)
 

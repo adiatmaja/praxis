@@ -437,9 +437,16 @@ class ProjectResponse(BaseModel):
     agent_model: str | None = None
     agent_model_effort: str | None = None
     harness: str = Field(default_factory=default_harness_id)
-    #: The operator's declared worker context window, or None when undeclared.
-    #: Exposed because "the budget gate was skipped" is otherwise invisible to
-    #: every read-only surface.
+    #: The window this PROJECT declares, or None when it declares none.
+    #:
+    #: None does NOT mean the budget gate was skipped, and an earlier version of
+    #: this comment said it did. Every agy project resolves through a declared
+    #: window with this column NULL, so the field cannot answer that question and
+    #: must not be read as if it could. What answers it is the
+    #: ``context_budget_skipped`` event and the ``context_window`` /
+    #: ``context_window_source`` fields on ``agent_dispatched``, both per
+    #: DISPATCH, which is the only scope at which the question is meaningful:
+    #: an escalated leaf can run on a different harness than its project names.
     context_window: int | None = None
     created_at: str
 
