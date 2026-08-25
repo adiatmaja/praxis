@@ -196,13 +196,15 @@ call it from the failure path so a correct path never sees the message.
 One line early in the README's setup section stating that after `praxis init` the
 command is invoked as `uv run praxis ...` from the praxis directory.
 
-### 2e. `add-project`'s branch field doc disagrees with behaviour (§11)
+### 2e. MOVED to Task 6d. The location in this plan was wrong.
 
-The `add-project` field help says the worker "always cuts a NEW `agent/<slug>`
-branch". In the field run the worker committed onto the named plan branch, and
-that was correct and better. Find the string (grep `agent/` in `src/cli/`) and
-correct it to describe what actually happens, including that a named branch is
-committed onto rather than forked from.
+This sub-task originally said the string lived in `src/cli/` and was reachable by
+grepping `agent/` there. It is not, and `add-project` has no `branch` argument at
+all. Both the implementer and the reviewer independently established that the
+string is the docstring on `DispatchRequest.branch` at
+`src/orchestrator/models/schemas.py:650-653`, outside this task's declared file
+list, and the implementer correctly declined to edit a file its task did not
+name. Retargeted as Task 6d rather than silently dropped.
 
 ### Files
 
@@ -518,10 +520,28 @@ below.
   a field report from another user, so it does not belong there. Do not add a
   section to it.
 
+### 6d. The dispatch branch docstring disagrees with the code (report §11)
+
+Retargeted from Task 2e, whose file location this plan got wrong.
+
+`DispatchRequest.branch` in `src/orchestrator/models/schemas.py:650-653` says the
+worker "always cuts a NEW `agent/<slug>` branch from this and opens a NEW PR".
+That is false for the path MCP `dispatch_task` actually takes. In single-branch
+(auto-delegate) mode, `core/orchestrator_dispatch.py:285-316` sets
+`branch = plan.get("plan_branch_name") or project["default_branch"]` and the
+worker commits ONTO the named branch; only the non-single-branch else-arm cuts
+`agent/{task_slug}`.
+
+The field report hit exactly this: a second dispatch onto the first task's plan
+branch stacked correctly, both commits present, nothing lost, and the doc said it
+would not. Correct the docstring to describe both arms and which mode selects
+which. Verify against the code, not against this description.
+
 ### Files
 
 `docs/superpowers/specs/2026-08-25-rendered-artifacts-in-review.md`,
-`.gitignore`, `docs/gotchas.md`, `CLAUDE.md`.
+`.gitignore`, `docs/gotchas.md`, `CLAUDE.md`,
+`src/orchestrator/models/schemas.py`.
 
 ---
 
