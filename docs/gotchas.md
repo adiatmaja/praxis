@@ -314,7 +314,7 @@ belongs among the everyday traps.
   was and only genuinely large windows stop reserving a proportion they cannot use.
 - **F3 leaf validator is deterministic and fail-closed** — `core/leaf_validator.py`
   runs after `_normalize_slugs` in `decompose_plan`. It checks: **duplicate ids**
-  (HARD, FIRST, and ALONE — it returns immediately, because every rule below it is
+  (HARD, FIRST, and ALONE - it returns immediately, because every rule below it is
   keyed on `leaf.id` and on a repeated id `_detect_cycles` turns a sibling edge into
   a self edge and reports a cycle nobody wrote; one real finding beats a list of
   invented ones, and the informed re-ask carries this result), then DAG + depth limits,
@@ -845,7 +845,7 @@ belongs among the everyday traps.
   is what let a whole failure class die untriaged.** The gate is the helper
   `_triage_then_fail`, and what may reach it is a WORKER-ATTRIBUTABLE failure:
   the review verdict, and a worker-attributable no-change decline wherever it is
-  decided — the review path's empty diff, the worker callback in
+  decided - the review path's empty diff, the worker callback in
   `api/internal.py`, and the micro-edit lane. The reviewer-error path and the
   unparseable-`pr_url` path still call `_fail_and_maybe_retry` directly. It
   matters in both directions: an un-triaged worker failure is invisible until the
@@ -867,7 +867,7 @@ belongs among the everyday traps.
   found it in seconds is "what else can fail a task", not "what calls this
   function".
 
-  The gate is now SHARED rather than copied — the router supplies facts and the
+  The gate is now SHARED rather than copied - the router supplies facts and the
   mixin decides, so `attempt >= 2 and not already_triaged` exists exactly once.
   That is provable and must stay provable: widening that single bound turns EVERY
   route's tests red from one edit. Two green test files over two copies look
@@ -875,7 +875,7 @@ belongs among the everyday traps.
 
   One hazard the delegation had to handle, and the reason the disposition is
   verified against the DATABASE rather than assumed: triage's rate-limit branch
-  DEFERS by leaving the task where it is. From `review_task` that is REVIEWING —
+  DEFERS by leaving the task where it is. From `review_task` that is REVIEWING -
   active, re-entered next tick, free. From the callback the task is IN_PROGRESS
   and its agent run was completed a few lines earlier, and `reconcile_runs` walks
   running runs only, so nothing would ever look at it again while IN_PROGRESS
@@ -1365,13 +1365,13 @@ belongs among the everyday traps.
   worker question containing `[/dim]` raised `MarkupError` out of `praxis
   pending`, and the SHARED `_check` error line, which is what every 422 and 502
   reaches the operator through, printed a detail of `harness [agy] is unknown;
-  allowed: [opencode]` as `harness is unknown; allowed:` — an error stripped of
+  allowed: [opencode]` as `harness is unknown; allowed:` - an error stripped of
   every identifier it exists to name.
 
   **Two tools, not interchangeable.** `rich.text.Text` for a value printed as
   its own console argument or put in a table cell: it renders literally and
   cannot be re-parsed. `rich.markup.escape` for a value INTERPOLATED into a line
-  that carries markup of ours, and for anything handed to `_copyable` — because
+  that carries markup of ours, and for anything handed to `_copyable` - because
   `_copyable` must keep markup ON, since `plans` feeds it `_status_cell` output
   that `_truncate_error` has already escaped. Titles, review feedback and worker
   questions are all model or server output, so brackets in them are routine, not
@@ -1516,7 +1516,7 @@ belongs among the everyday traps.
   the sentence `Repository contents: no files found in the checkout.` satisfies
   every condition above: a survey EXISTS, it is not blank, and everything it says
   is true. It is still no evidence about what to build, and the brain was asked to
-  propose work for a repository it had just been told was empty — the walkthrough-#7
+  propose work for a repository it had just been told was empty - the walkthrough-#7
   failure exactly, wearing a fact's clothes, and reachable with no clone failure at
   all whenever a repo's sources sit under an excluded directory name. It is now the
   named constant `repo_survey.EMPTY_REPO_SURVEY` with an exact-equality predicate
@@ -1540,7 +1540,7 @@ belongs among the everyday traps.
   `opus_plan` and hands it to `activate_plan`, and the only one that never checked
   task SHAPE. `_refuse_empty_graph` checks emptiness alone, while `activate_plan`
   commits the PLAN row FIRST (active + graph + branch) and only then inserts rows
-  in a loop that subscripts `title`, `slug` and `description` — with no rollback
+  in a loop that subscripts `title`, `slug` and `description` - with no rollback
   and a commit per statement. So a proposal missing one field left a plan
   `all_tasks_done` can never satisfy, since that predicate is `bool(tasks) and ...`.
   With two tasks and the SECOND malformed it is worse, not better: one row is
@@ -1568,7 +1568,7 @@ belongs among the everyday traps.
   slug; this fourth producer did not, and now shares the same helper rather than
   carrying a fourth copy of the rule.
 
-- **`survey_repo` cloned on the event loop, bare, with no deadline** — blocking not
+- **`survey_repo` cloned on the event loop, bare, with no deadline** - blocking not
   just the orchestration pass but FastAPI, SSE and every agent callback. The
   identical hazard had already been recognised and fixed one seat over in
   `_clone_for_planning`. The fix belongs in `brainstorm._clone_repo`, where the
@@ -1576,7 +1576,7 @@ belongs among the everyday traps.
   `list_lifecycle_docs` and `write_and_commit` are fixed with it. **The deadline is
   the half that is easy to omit and it has a second-order cost**: a clone that HANGS
   never raises, so `_repo_survey`'s fail-closed `except Exception` can never fire,
-  and the loop does not degrade to a bad proposal — it stops answering.
+  and the loop does not degrade to a bad proposal - it stops answering.
 
 - **A throttled improvement check is SKIPPED, not deferred, and now says so.** On a
   brain throttle this seat queued `{"action": "improve"}`, and the queue is a ledger
@@ -1655,8 +1655,8 @@ as a newcomer, not by reading it.
   return leaf 2 and no tick will ever move the plan. `poll_plan` reported
   `status: "active"`, `terminal_incomplete: false`, `merge_gate.action_required:
   null`, `error: null`. Nothing anywhere said the plan could not progress, so a
-  caller polls it forever. The engine already knew — `process_plan_once`
-  publishes `plan_stalled` for exactly this shape — but that is an SSE publish:
+  caller polls it forever. The engine already knew - `process_plan_once`
+  publishes `plan_stalled` for exactly this shape - but that is an SSE publish:
   ephemeral, unlogged, unpersisted, so anyone not listening at that instant never
   learns.
 
@@ -1676,12 +1676,12 @@ as a newcomer, not by reading it.
   `git push --delete`, carrying every leaf that already merged onto it.
   **`plans.error` is deliberately not written either**: it is a one-way signal
   (`reset_plan_attempts` clears the count but not the error), and this plan is
-  recoverable — `POST /api/tasks/{id}/retry` resets the failed leaf to `pending`
+  recoverable - `POST /api/tasks/{id}/retry` resets the failed leaf to `pending`
   with `attempt + 1`, and the retry cap is enforced only on the review path, so
   the reset leaf really is re-dispatched and its dependent really does unblock.
 
   **The DETECTION was MCP-only for one commit and every other surface went on
-  rendering the plan as ACTIVE with a null error** — this repository's own rule
+  rendering the plan as ACTIVE with a null error** - this repository's own rule
   (every surface answering the same question answers it the same way, and the
   twin is fixed in the same commit) broken hours after it was quoted. The ACTION
   already had parity (`praxis retry`, MCP `retry_task`, the dashboard button,
@@ -1700,7 +1700,7 @@ as a newcomer, not by reading it.
   fills its array from the list endpoint and `renderPlanDetail` reads that array,
   so detail-only would have left both real surfaces blind while looking fixed.
   The CLI reads the fields with `.get` defaulting to ABSENT, so an older server
-  renders exactly as before — a mutation supplying a non-empty default made the
+  renders exactly as before - a mutation supplying a non-empty default made the
   CLI fabricate a stall against a server that never reported one.
 
 - **A guard can be perfect and the fix still inert, because something upstream
@@ -1755,7 +1755,7 @@ as a newcomer, not by reading it.
   fail.** The rewritten `praxis tasks` guard asserted the 48-character prefix
   `praxis task <uuid>` at 80 columns. rich's fold breaks on whitespace, and at
   that width it lands AFTER the prefix, so the assertion held with `_copyable`
-  replaced by a bare `console.print` — the exact defect it was written for.
+  replaced by a bare `console.print` - the exact defect it was written for.
   Measured by mutation, not reasoned about. Assert the WHOLE line, under an
   explicit precondition that the line is wider than the console the test pins,
   so the guard goes red the day the line gets shorter instead of going quiet.
@@ -2308,13 +2308,13 @@ reason. The gate lived only on the review-verdict path; this branch called
 could not be triaged at all.
 
 Not every decline is worker-attributable, so `no_change_outcome` now returns a frozen
-`NoChangeDecision(closed, why, worker_attributable)` — still iterable as `(closed, why)`
+`NoChangeDecision(closed, why, worker_attributable)` - still iterable as `(closed, why)`
 for its two out-of-module callers, the worker callback in `api/internal.py` and the
 micro-edit lane in `orchestrator_dispatch.py`, both of which reach it through an untyped
 object where mypy could not have caught a widening. The line is "did the gate produce an
 answer ABOUT THIS LEAF": a missing declared edit location and the leaf's OWN declared
 verification refuting the no-op are attributable; an unresolvable base branch, a gate that
-errored, a gate that could not reach the repository, and — since the correction below — the
+errored, a gate that could not reach the repository, and - since the correction below - the
 PROJECT verify command going red are not. The distinction is settled where the verify
 verdict, the path check and the leaf check are all in hand, never recovered afterwards by
 substring-matching `why`, which would start answering differently the day a sentence is
@@ -2325,7 +2325,7 @@ including the failed case, "because the review path already triages `VERIFY_FAIL
 identical evidence") and both halves of that argument were wrong; see the correction at the
 end of the section below.
 
-**And no `task_outcomes` row was written on this path at all** — verified with a throwaway
+**And no `task_outcomes` row was written on this path at all** - verified with a throwaway
 probe rather than by reading: an empty-diff failure produced `[]`, a review-verdict failure
 on the same fixture produced a `fail` row. `task_outcomes` is the capability engine's
 calibration data, so a worker that produces NOTHING, arguably the most informative failure
@@ -2350,7 +2350,7 @@ verify command RAN AND PASSED, so `verify_fail` would state a verification failu
 demonstrably did not happen, and `fixable_in_place` means "retry with feedback will
 probably work", which is the inverse of the signal. Overloading either leaves the table
 unable to separate a model that writes code that breaks the build from a model that writes
-no code at all — two failures demanding opposite responses. `NO_OUTPUT` counts against the
+no code at all - two failures demanding opposite responses. `NO_OUTPUT` counts against the
 worker, on the same line `NoChangeDecision` already draws.
 
 ## The project verify command is the bar for a REGRESSION, and it was used as the bar for a LEAF
@@ -2363,7 +2363,7 @@ doing its most valuable work.
 Measured live, twice, on `adiatmaja/playground`. A two-leaf Hindley-Milner plan was
 decomposed into a DEPENDENT chain. Leaf 1 wrote 322 lines of exactly its declared scope and
 FAILED, because `python -m pytest src/playground -q` collects an acceptance file importing
-`infer_type` — leaf 2's contract. **The base branch fails the same command identically**, so
+`infer_type` - leaf 2's contract. **The base branch fails the same command identically**, so
 the gate charged a leaf with a failure that pre-existed on the branch it was cut from. Every
 non-final leaf of every dependent chain is failed by a bar only the COMPLETE feature can
 satisfy, so capability-aware decomposition defeated itself exactly when it mattered. It is
@@ -2376,7 +2376,7 @@ Three parts now decide it, and the order is the argument.
 on the branch the work was cut from, through the same `_verify_plan_branch` the no-op gate
 uses. `passed` there means the failure is NEW and the old behaviour stands unaltered.
 `failed` means it pre-dates this task. `error`, and every skip, mean the comparison could
-not be MADE, and that **fails closed** with the missing comparison named in the feedback —
+not be MADE, and that **fails closed** with the missing comparison named in the feedback:
 an unanswered question must never buy a task a pass. Which branch is compared is the way
 this goes silently wrong, so `_review_base_branch` derives it from three sources that are
 each already the base somewhere else: `ref.base` (only a `praxis-local://` ref carries one),
@@ -2384,7 +2384,7 @@ then `plans.plan_branch_name` (the auto-merge gate's own fallback, carrying its 
 single-branch-mode limit), then `projects.default_branch` (what `no_change_outcome` uses).
 
 **The leaf's own declared verification is the positive signal.** The decomposer emits one,
-the standard HARD-requires it, F3 (`core/leaf_validator.py`) validates that it is runnable —
+the standard HARD-requires it, F3 (`core/leaf_validator.py`) validates that it is runnable -
 and nothing ever ran it; it was a worker-prompt element only. It now runs on the SAME
 checkout the project command ran in, never a second fetch, because two fetches can observe
 two states of the branch. Failing it fails the task with the DECLARED command's output as
@@ -2395,22 +2395,30 @@ reusing it would have replaced one false accusation with another.** It asks "is 
 enough to block a leaf", so it accepts any five-character string carrying no manual verb:
 `"the module imports cleanly"` passes it. Shelling that yields `the: command not found`,
 exit 127, and a task FAILED on evidence Praxis fabricated. So
-`leaf_validator.shell_command_for_verification` is deliberately narrower — after an optional
-`VAR=value` prefix the first token must be a path or a known runner — on the same ground
+`leaf_validator.shell_command_for_verification` is deliberately narrower, on the same ground
 `difficulty` already keeps a stricter private signal and says the two "must not be merged".
+Its rule, as `b49cd62` left it and NOT as the first version of this entry described it:
+a string carrying EXACTLY ONE balanced backticked span IS that span, unwrapped wherever it
+sits in the sentence, because that is the shape the decompose prompt itself teaches; two
+spans and an unbalanced backtick both stay refused, since choosing between them is a guess.
+The extracted span then faces every gate below unchanged, so unwrapping never widens what
+may be shelled. Below it, after an optional `VAR=value` prefix, the head token must be a
+known runner or a path that is being INVOKED - a bare single-token path is now REFUSED
+(`src/client.py` is a file a leaf is talking about), and only a leading `./` or the presence
+of an argument makes it a command.
 The strict direction is safe BY CONSTRUCTION: the "no runnable check" arm never fails a
 task, so an unrecognised runner costs a signal while a recognised sentence costs an
 accusation. It is NOT a security boundary and does not pretend to be one: `pytest -q; curl …`
 starts with an accepted token. A leaf's verification is trusted on exactly the ground the
-plan document is — the operator asked Praxis to execute this plan, and the worker container
+plan document is - the operator asked Praxis to execute this plan, and the worker container
 is already told to run this same string.
 
 **Not attributing is NOT passing, and the human is told so.** The brain still reviews the
 diff and the merge gate still needs a person. `_GATE_UNATTRIBUTED` is a sixth `verify_state`
 and the ONLY failing one that reaches `_review_scope_statement`, where it has its own arm:
 letting it inherit the `else` would report a gate that ran and went RED as one that never
-ran, to the one person who could act on it. The sentence lands in `tasks.review_feedback` —
-what `praxis task`, MCP `poll_task` and the dashboard render — and rides the
+ran, to the one person who could act on it. The sentence lands in `tasks.review_feedback` -
+what `praxis task`, MCP `poll_task` and the dashboard render - and rides the
 `task_awaiting_merge` event's existing `review_scope` field. `verify_gate_skipped` stays
 None on purpose: that field means "a configured gate could not run", and this gate ran.
 
@@ -2429,7 +2437,7 @@ so charged a `FailureClass.NO_OUTPUT` row and bought a triage call whose worst a
   work, but it terminally failed PRESENT work and wrote a row `failure_taxonomy` counts
   against the worker, so it corrupted calibration rather than merely being cautious.
 - "The declared-edit-location check already outranks it" is true only for `paths.missing`.
-  When every declared path is PRESENT — exactly the case where the work IS done — that
+  When every declared path is PRESENT - exactly the case where the work IS done - that
   positive answer was discarded, because only the verdict and the branch reached
   `_no_op_evidence`.
 
@@ -2437,7 +2445,7 @@ And the inference itself was unsound in a way the review path had already been c
 for. On this path the worker changed NOTHING, so the branch verified IS the tree it was
 handed: a red verdict is red identically on head and base by construction, which is exactly
 the shape `_attribute_head_verify_failure` calls `_GATE_UNATTRIBUTED` and refuses to charge.
-It never discriminated what it was read as discriminating, either — on a healthy repository
+It never discriminated what it was read as discriminating, either - on a healthy repository
 the identical worker behaviour is CLOSED as a no-op ("verify passed on <branch>"), so every
 empty diff this route ever charged was one sitting on a red repository, and repository
 health was being written into the column the capability loop reads as worker capability.
@@ -2459,17 +2467,82 @@ result": the previous structural claim on this path was hand-derived and wrong w
 **A related half of the same seam, fixed at the same time: `_verify_failure_stands` said the
 attribution could not be established and then recorded it as established.** Every arm
 reaching it is "the base branch could not be ASKED" (an unresolvable base, a clone that
-raised, `_SKIP_NO_TOKEN`), and its own feedback says so in words — yet the `fail` row beside
+raised, `_SKIP_NO_TOKEN`), and its own feedback says so in words - yet the `fail` row beside
 it read `VERIFY_FAIL`, which counts against the worker, so an unanswered question was handed
 to the capability gate as an answer. `handle_declined_no_change` applies the opposite rule to
 the same uncertainty one seat over. Failing the task is unchanged and still right; the row
 now carries a NULL `failure_class` via a distinct `verify_state` (`_GATE_UNCOMPARED`), keyed
 on the STATE rather than on `_VERIFY_FAIL_MARKER`, which is still in that feedback and must
-be. The row is still WRITTEN — `fetch_recent_outcomes` requires `failure_class IN (...)` for
+be. The row is still WRITTEN - `fetch_recent_outcomes` requires `failure_class IN (...)` for
 a `fail` row, so it stays auditable and countable while voting neither way, the same
 "withdraw the claim rather than state a false one" move the supply-chain gate makes with its
 `blocked` outcome. Substituting one of the three non-voting classes would have traded a false
 row in the calibration set for a false CAUSE in the audit trail.
+
+**And then three fixes that are each correct alone composed into a hole: the leaf's "own"
+check can BE the project command.** `cd0c127`/`0939a5e` made a red project `verify_cmd` stop
+being a fact about a leaf, and appointed the leaf's own declared `verification` as the
+discriminating signal. `b49cd62` then widened `shell_command_for_verification` so a string
+carrying exactly one backticked span IS that span. Nothing compared the two. Measured on a
+real decomposition the same afternoon:
+
+```
+project verify_cmd             : python -m pytest src/playground -q
+leaf 2's declared verification : Run `python -m pytest src/playground -q` and confirm all
+                                 tests in both test_hm_core.py and test_hm.py pass ...
+shell_command_for_verification -> 'python -m pytest src/playground -q'   # IDENTICAL
+```
+
+So the base is red, the project command is red, we decline to attribute, and then we run
+"the leaf's own check" - the same string, on the same checkout, red for the same pre-existing
+reason - and charge the task anyway. Before `b49cd62` that string reduced to `None` and fell
+into the do-not-charge arm, so the widening silently RE-OPENED the exact defect `0939a5e`
+had just closed. **A fix whose correctness depends on two values differing has to compare
+them; neither commit was wrong on its own, and neither author could see the pair.**
+
+This is not a leaf writing a bad check. The decomposition standard WANTS the final leaf of a
+dependent chain to declare the whole-repo suite, because for that leaf the whole suite really
+is the acceptance. What is wrong is reusing it as EVIDENCE after the identical command has
+already been shown red on the tree the worker was handed.
+
+`leaf_validator.discriminating_leaf_command` is the SSoT and both seats call it, so the rule
+cannot drift between them: deleting the comparison turns BOTH seats' tests red, which is the
+only proof the derivation is shared rather than copied. Equality is judged on the two
+commands' whitespace-insensitive forms and NOTHING else. No case folding (the gate runs in a
+Linux container). Backticks are stripped from the LEAF side only, by
+`shell_command_for_verification` before this is reached; the project side is never unwrapped,
+because a backtick in a shell command is command SUBSTITUTION.
+
+**Containment is deliberately NOT refused, against the safe-direction intuition**, because
+containment is not a safety rule but a second guess. Refusing `<project> --tb=short` would be
+right; refusing `<project> -k test_infer` would be wrong, since `-k`, `-x`, `-m`, `--deselect`
+and `--ignore` all NARROW the run and a narrowed command genuinely can pass while the whole
+suite is red. Telling those apart needs a model of every runner's flags. A prefix-shaped rule
+would simply be wrong in the other direction and wrong SILENTLY: a leaf that CAN discriminate
+would stop being charged forever and the calibration column would quietly stop learning. The
+narrowed shape is also the one the decompose prompt actually teaches, so it is the common
+case, while exact equality is the case that was MEASURED - provable rather than probable,
+since it is the identical execution.
+
+The seats were enumerated with `grep -rn "shell_command_for_verification" src/`, giving two
+in `orchestrator_review.py`: `no_change_outcome` (reached from BOTH `review_task`'s empty
+diff and the worker callback, which calls it directly from `api/internal.py`) and
+`_attribute_verify_failure`. `orchestrator_dispatch.py`'s third read is deliberately NOT
+guarded: it builds the WORKER'S acceptance floor, runs nothing and attributes nothing, and
+telling a worker to run the whole suite is correct - that really is the leaf's acceptance.
+Only using the result as evidence afterwards is not.
+
+**`_GATE_UNCOMPARED` still reaches `_triage_then_fail`, and that was re-examined and KEPT.**
+It looks like the same defect one step on, and it is not. The two paths deliberately excluded
+from triage are excluded because neither "says anything about the leaf"; `_GATE_UNCOMPARED`
+does - the project gate is red on THIS leaf's PR head and the leaf produced a real diff. What
+is unestablished is only whether the leaf CAUSED it. `0939a5e`'s argument was about the
+calibration ROW, and that row is already written with a NULL `failure_class` before triage is
+called, so the vote is withheld either way. The empty-diff seat is genuinely different: there
+the worker changed NOTHING, so head IS base by construction and the red is PROVABLY not the
+worker's. "Proved innocent" and "not proved guilty" are different facts. And `human` is the
+RIGHT answer for a base branch nobody can ask - that is a configuration or repository fault a
+person must fix, where three blind retries burn three worker runs and land in the same place.
 
 ## A row parked at the merge gate is reconciled against the pull request's real state
 
@@ -2548,9 +2621,9 @@ a safety check. Scoring fails open.
 the triage prompt tells the brain to point a child's `depends_on` at the ids of its
 SIBLINGS without ever saying the ids must differ. A brain that labels both children with
 the parent's id, or with a generic `"child"`, is not exotic. The edge is not DROPPED
-either — dropping an unresolvable dep is separate and deliberate; a duplicated id IS in
+either - dropping an unresolvable dep is separate and deliberate; a duplicated id IS in
 the map, so the edge is REDIRECTED to whichever child appeared last. And it is not one
-map: the same input collapses four, all keyed on `child.id` —
+map: the same input collapses four, all keyed on `child.id` -
 `leaf_split.rewire_plan_for_split` (a sibling dep points at the wrong child),
 `leaf_validator._detect_cycles` (the HARD `dep_cycle` rule goes partly inert, and that is
 the one graph rule `validate_split_children` deliberately keeps), `orchestrator_review`'s
@@ -2559,7 +2632,7 @@ the one graph rule `validate_split_children` deliberately keeps), `orchestrator_
 score).
 
 What an operator sees is nothing. The plan reads healthy, the misordered child fails on
-its own verification, and `task_outcomes` records a WORKER failure — so the miswiring is
+its own verification, and `task_outcomes` records a WORKER failure - so the miswiring is
 laundered into the capability calibration data as evidence the model is weaker than it is.
 Same observability profile as the `get_dispatchable_tasks` positional-map bug.
 
@@ -2573,7 +2646,7 @@ The DECOMPOSE path does not collapse the same way, and the correction is worth r
 before assuming it does: `normalize_slugs` re-keys every task id to its own uniquified
 slug before validation, so ids are unique there by construction and the new rule cannot
 fire. The live collapse is INSIDE `normalize_slugs`, and a mis-resolved dep does not fall
-through as a raw id either — the collapsed entry exists, so the dep resolves to the WRONG
+through as a raw id either - the collapsed entry exists, so the dep resolves to the WRONG
 SLUG, where `dangling_dep` cannot see it. Fixed there instead: an id carried by two tasks
 is DELETED from the map, so a dep naming it stays raw and `dangling_dep` rejects it into
 the informed re-ask.
@@ -2638,8 +2711,8 @@ locally. Both are cheap to avoid and expensive to discover one CI round trip at 
 `Failed to spawn: bandit - program not found`: bandit is not a dev dependency here, and
 `security.yml` runs it through `uvx`. Grepping that error message for `Issue:` finds
 nothing, which is indistinguishable from a clean scan, and "bandit clean locally" was
-reported off exactly that. Run it the way CI does — `uvx bandit -r src/ -c pyproject.toml`
-— and read the `Total issues (by severity)` block rather than grepping for a pattern that
+reported off exactly that. Run it the way CI does - `uvx bandit -r src/ -c pyproject.toml`
+- and read the `Total issues (by severity)` block rather than grepping for a pattern that
 is absent from BOTH a pass and a crash.
 
 Relatedly: `# noqa: S608` is RUFF's code for the flake8-bandit rule. Bandit never reads
@@ -2661,7 +2734,7 @@ The project's harness is not a constant: it resolves from the worker preset mark
 `default: true` in the committed `config/praxis.yaml`, which is `gemini-agy` → `agy`. A
 developer whose `.env` sets `DEFAULT_WORKER_HARNESS=opencode` gets a meaningful assertion;
 CI has no `.env` and both operands collapse onto the same value. Nothing was missing and
-nothing raised — an ambient value simply made a negative assertion vacuous.
+nothing raised - an ambient value simply made a negative assertion vacuous.
 
 **A test that asserts two things DIFFER must CREATE the difference**, e.g. derive one
 operand from the other:
@@ -2674,7 +2747,7 @@ And verify a suspected environment dependence by FORCING the CI value
 (`DEFAULT_WORKER_HARNESS=agy uv run pytest ...`), confirming the old form FAILS under it,
 then sweeping the whole suite under it for siblings. (That sweep reddens
 `tests/test_config_default_worker.py`, which asserts the pydantic FIELD default and is
-broken BY the forced variable rather than by anything CI does — an artifact of the
+broken BY the forced variable rather than by anything CI does - an artifact of the
 simulation, not a finding.)
 
 ## The dev container serves the working tree, not the image
@@ -2702,19 +2775,19 @@ committed to a branch), in HEAD's source, or in the target repository are unaffe
 
 Note the sibling asymmetry, because all three refresh differently: the CLI reads the
 working tree on every invocation, the orchestrator reloads continuously from the mount,
-and the MCP server is a stdio SUBPROCESS frozen at session start — a change to
+and the MCP server is a stdio SUBPROCESS frozen at session start - a change to
 `src/mcp_server/` cannot be verified in the session that makes it, and must be checked
 through the REST route and the CLI twin instead.
 
 ## One `set-role` pinned every role and made the mounted YAML inert
 
 `GET /api/settings/roles` returns the EFFECTIVE map, which falls back to the settings file
-when no override exists. Every writer of the companion PUT — `praxis config set-role`, the
-dashboard's Settings → Models panel, and plain curl — reads that map, changes ONE key, and
+when no override exists. Every writer of the companion PUT - `praxis config set-role`, the
+dashboard's Settings → Models panel, and plain curl - reads that map, changes ONE key, and
 PUTs the whole thing back. Storing the body wholesale under a single `models.roles` row
 therefore pinned EVERY role in the database after one `set-role`, and editing the mounted
-YAML plus `docker compose restart` — the documented way to change a chain, and the whole
-reason that file is mounted rather than baked — then silently did nothing for ANY role.
+YAML plus `docker compose restart` - the documented way to change a chain, and the whole
+reason that file is mounted rather than baked - then silently did nothing for ANY role.
 
 This lands on a surface that already had one silently-inert write: a YAML role chain
 shadows `CALL_SITE_DEFAULTS` entirely, so a Settings → Models override for a role'd
@@ -2730,9 +2803,9 @@ drops only the comparison fails on its own.
 A legacy wholesale row is CONSUMED on the next write rather than ignored, so an install
 that already ran `set-role` is not stranded; while it exists `role_chains()` still honours
 it and resolves byte-identically to before. `models.registry` keeps wholesale storage for a
-reason in the data rather than the effort — a list has no per-entry key for "absent means
+reason in the data rather than the effort - a list has no per-entry key for "absent means
 use the settings file", and a per-entry merge could no longer express REMOVING a model the
-file declares — but adopts the same equality rule.
+file declares - but adopts the same equality rule.
 
 Two behaviour changes follow, both deliberate: a chain identical to the file's is not
 pinned at all, and a partial curl PUT can no longer disable file-declared chains outright
@@ -2741,7 +2814,7 @@ pinned at all, and a partial curl PUT can no longer disable file-declared chains
 The fix belongs in the RESPONSE-side seam, not in a warning printed by the CLI: the CLI is
 one of three callers, so a CLI-printed caveat is the "a doctor fix is not a product fix"
 mistake in its exact form. The `stored_but_shadowed` shape that `PUT /api/settings/models`
-uses for this class is NOT available here — `praxis config add-model` wraps the registry
+uses for this class is NOT available here - `praxis config add-model` wraps the registry
 response in `_check_list`, which exits non-zero on a non-list body, and `config show`
 iterates the roles response AS the chains map, so an added status key renders as a bogus
 role row. Either would need the CLI changed in the same commit.

@@ -15,6 +15,7 @@ from difflib import SequenceMatcher
 from typing import Any
 
 from orchestrator.core.leaf_templates import missing_sections
+from orchestrator.core.verify_gate import normalize_verify_cmd
 from orchestrator.models.schemas import CapabilityProfile, LeafTask, LeafType
 
 
@@ -624,6 +625,116 @@ def shell_command_for_verification(value: Any) -> str | None:
     if head.lower().rstrip(_VERSION_SUFFIX) in _VERIFICATION_RUNNERS:
         return command
     return None
+
+
+def _shell_words(command: str) -> str:
+    """Collapse a command onto its whitespace-insensitive form, for COMPARISON only.
+
+    Never returned to a caller and never shelled. ``normalize_verify_cmd``
+    deliberately hands back the operator's column UNCHANGED rather than
+    stripped, because it is echoed verbatim into logs and the worker Bible and
+    "a silently rewritten command is its own small lie" -- so the padding really
+    does survive to the comparison, and only the comparison may ignore it.
+    """
+    return " ".join(command.split())
+
+
+def discriminating_leaf_command(
+    verification: Any, project_verify_cmd: str | None
+) -> str | None:
+    """The leaf's own check, but only when it can say something new. Else None.
+
+    Three fixes that are each correct alone composed into a hole on
+    2026-08-26. ``cd0c127``/``0939a5e`` made a red project ``verify_cmd`` stop
+    being a fact about a leaf: the same command is re-run on the branch the work
+    was cut from, and when it fails identically the failure is NOT attributed --
+    the leaf's OWN declared ``verification`` is run instead, as the
+    discriminating signal, and a failure there IS charged. ``b49cd62`` then
+    widened :func:`shell_command_for_verification` so a string carrying exactly
+    one backticked span is that span, because the decompose prompt teaches that
+    shape.
+
+    Nothing compared the two. Measured on a real decomposition the same
+    afternoon: the project column was ``python -m pytest src/playground -q`` and
+    leaf 2 declared "Run `python -m pytest src/playground -q` and confirm all
+    tests in both test_hm_core.py and test_hm.py pass with 0 failures", which
+    after the widening reduces to the project command BYTE FOR BYTE. So the
+    "second opinion" was the first one restated: red on the same checkout for
+    the same pre-existing reason, and the leaf was charged anyway. Before
+    ``b49cd62`` that string reduced to None and fell into the do-not-charge arm,
+    so the widening silently re-opened the very defect ``0939a5e`` closed.
+
+    This is not a leaf writing a bad check. The decomposition standard WANTS the
+    final leaf of a dependent chain to declare the whole-repo suite, because for
+    that leaf the whole suite really is the acceptance. What is wrong is using
+    it as EVIDENCE after the identical command has already been shown to be red
+    on the tree the worker was handed.
+
+    STRICTNESS, and why it is exactly here. Equality is judged on the two
+    commands' whitespace-insensitive forms and nothing else -- no case folding
+    (the gate runs in a Linux container, where ``PYTEST`` is not ``pytest``), no
+    argument reordering, no containment. Backticks are stripped from the LEAF
+    side only, and by :func:`shell_command_for_verification` before this is
+    reached; the project side is never unwrapped, because a backtick in a shell
+    command is command SUBSTITUTION and rewriting it would change what the
+    operator configured.
+
+    CONTAINMENT IS DELIBERATELY NOT REFUSED, against the safe-direction
+    intuition, and the argument is that containment is not a safety rule but a
+    second guess. Refusing ``<project> --tb=short`` would be right, since extra
+    formatting flags cannot change a verdict; refusing ``<project> -k
+    test_infer`` would be wrong, since ``-k``, ``-x``, ``-m``, ``--deselect``
+    and ``--ignore`` all NARROW the run, and a narrowed command genuinely can
+    pass while the whole suite is red. Telling those apart needs a model of each
+    runner's flags, which is the fuzzy matcher this must not become; a
+    prefix-shaped rule would simply be wrong in the other direction, and wrong
+    SILENTLY -- a leaf that could discriminate would stop being charged forever
+    and the calibration column would quietly stop learning. The narrowed shape
+    is also the one the decompose prompt actually teaches ("Run `pytest
+    tests/test_client.py::test_retry` and confirm it passes"), so it is the
+    common case, while exact equality is the case that was MEASURED. Exact
+    equality is provable rather than probable: same string, same checkout,
+    therefore the identical execution and the identical red.
+
+    Refusing costs a signal; the caller's "no runnable check" arm still FAILS
+    the leaf closed and still retries it. It simply does not charge a
+    ``task_outcomes`` row that ``failure_taxonomy`` counts against the worker,
+    and does not buy a triage call whose worst answer (``human``) is terminal.
+
+    Args:
+        verification: The leaf's raw ``verification``, untrusted brain output of
+            any shape.
+        project_verify_cmd: The raw ``projects.verify_cmd`` column, read through
+            ``normalize_verify_cmd`` because that is the SSoT for "does this
+            project have a verify command". Stated honestly: that call is
+            DOCUMENTARY here, not load-bearing. Replacing it with the raw column
+            changes no answer, and a mutation proving otherwise could not be
+            written -- ``None`` is caught by the explicit guard below, and an
+            all-whitespace column collapses to ``""`` under
+            :func:`_shell_words` while
+            :func:`shell_command_for_verification` never returns a blank, so the
+            two can never compare equal. It is kept because that equivalence is
+            an accident of two other functions' current behaviour, and a
+            comparison that silently depends on one of them changing is the
+            shape of defect this module keeps being bitten by.
+
+    Returns:
+        The command Praxis may run as evidence about THIS leaf, or None when
+        there is none -- whether because the leaf declared nothing runnable, or
+        because what it declared is the project command that was already asked.
+    """
+    command = shell_command_for_verification(verification)
+    if command is None:
+        return None
+    project = normalize_verify_cmd(project_verify_cmd)
+    if project is None:
+        # No project command was configured, so nothing has been asked yet and
+        # the leaf's check is the only opinion there is. It cannot be a restated
+        # one.
+        return command
+    if _shell_words(command) == _shell_words(project):
+        return None
+    return command
 
 
 def _check_verification(

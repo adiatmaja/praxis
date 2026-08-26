@@ -905,7 +905,7 @@ class DispatchMixin:
         proceed (gate passed, skipped, already-verified for this wave, or red
         for a reason this plan did not cause), False when a cross-leaf
         regression is PROVED or the comparison that would prove it could not be
-        made — in which case a ``plan_wave_verify_failed`` event is published
+        made -- in which case a ``plan_wave_verify_failed`` event is published
         and the wave is parked.
 
         A red plan branch is only evidence when the same command is GREEN on the

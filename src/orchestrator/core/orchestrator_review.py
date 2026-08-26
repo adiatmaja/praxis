@@ -58,7 +58,7 @@ from orchestrator.core.leaf_split import child_slugs
 from orchestrator.core.leaf_triage import TriageEvidence, triage_leaf
 from orchestrator.core.leaf_validator import (
     Violation,
-    shell_command_for_verification,
+    discriminating_leaf_command,
     validate_split_children,
 )
 from orchestrator.core.llm_router import ProviderRateLimitError
@@ -2902,14 +2902,22 @@ class ReviewMixin:
         # so a fault here must not be able to fail one.
         entry = await self._graph_entry_for_task(task_id, plan)
         declared = declared_paths((entry or {}).get("files"))
+        bench_disabled = verify_gate_disabled()
+        verify_cmd = None if bench_disabled else project.get("verify_cmd")
         # Prose is never shelled: ``shell_command_for_verification`` accepts far
         # less than ``is_runnable_verification`` does, and errs toward "absent",
         # which never decides anything. Handing "the module imports cleanly" to a
         # shell yields ``the: command not found`` and would CHARGE a worker on
         # evidence Praxis fabricated -- a new false accusation for an old one.
-        leaf_check = shell_command_for_verification((entry or {}).get("verification"))
-        bench_disabled = verify_gate_disabled()
-        verify_cmd = None if bench_disabled else project.get("verify_cmd")
+        #
+        # And a check that IS the project command is absent for the same reason
+        # one step on: it is the bar this very call is about to show is red on
+        # the branch the worker was handed, so re-running it can only restate
+        # that. ``discriminating_leaf_command`` is the SSoT for both questions
+        # and both seats ask it, so the rule cannot drift between them.
+        leaf_check = discriminating_leaf_command(
+            (entry or {}).get("verification"), verify_cmd
+        )
         verdict = await self._verify_plan_branch(
             repo_url,
             base_branch,
@@ -3488,7 +3496,12 @@ class ReviewMixin:
                 f"(status={base.status}, reason={base.reason or '-'})",
             )
 
-        leaf_check = shell_command_for_verification(leaf_verification)
+        # Absent covers TWO shapes and the second is the one that composed into
+        # a hole: a leaf declaring nothing runnable, and a leaf whose declared
+        # check IS ``verify_cmd`` -- the command the two branches above have
+        # just shown to be red on both trees. Running it again cannot
+        # discriminate, so it must not license an attribution.
+        leaf_check = discriminating_leaf_command(leaf_verification, verify_cmd)
         if leaf_check is None:
             log.warning(
                 "verify gate failed for task %s (`%s`) but fails identically on "
