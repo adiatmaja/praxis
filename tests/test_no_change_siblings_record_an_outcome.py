@@ -239,7 +239,14 @@ async def test_the_callback_row_names_the_model_that_implemented_the_attempt(
     queue: TaskQueue = client.app.state.task_queue  # type: ignore[attr-defined]
     plan = await queue.get_plan((await queue.get_task(task_id))["plan_id"])
     project = await queue.get_project(plan["project_id"])
-    await queue.set_task_implementer(task_id, "agy", "gemini-3-pro", 1)
+    # DERIVED from the project rather than hardcoded, because the project's own
+    # harness comes from the ambient default worker preset: a developer with
+    # DEFAULT_WORKER_HARNESS=opencode in .env gets "opencode" and CI, which has
+    # no .env, gets the shipped preset default "agy". Hardcoding the escalated
+    # harness made the negative assertion below read 'agy' != 'agy' on CI while
+    # passing locally -- the test asserted a difference it did not create.
+    escalated_harness = "opencode" if project["harness"] == "agy" else "agy"
+    await queue.set_task_implementer(task_id, escalated_harness, "gemini-3-pro", 1)
     _gate(client.app.state.orchestrator, "failed")  # type: ignore[attr-defined]
 
     await _post_no_changes(client, task_id, run_id)
@@ -247,7 +254,7 @@ async def test_the_callback_row_names_the_model_that_implemented_the_attempt(
     rows = await _outcome_rows(db, task_id)
     assert len(rows) == 1
     assert rows[0]["model_name"] == "gemini-3-pro"
-    assert rows[0]["harness"] == "agy"
+    assert rows[0]["harness"] == escalated_harness
     assert rows[0]["model_name"] != project["model_name"]
     assert rows[0]["harness"] != project["harness"]
 
