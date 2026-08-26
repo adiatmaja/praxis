@@ -144,9 +144,9 @@ Four policies follow from the standard. They are implemented in
    collapse the sibling rewiring, the cycle adjacency, the capability-event slug
    and the per-child score at once, onto whichever child came last, and
    `_detect_cycles` in particular turns a sibling edge into a self edge and
-   reports a cycle nobody wrote. Nothing upstream enforces uniqueness — the
+   reports a cycle nobody wrote. Nothing upstream enforces uniqueness: the
    schema is a bare `id: str` and the triage prompt asks only that a child's
-   `depends_on` name its SIBLINGS — so a repeated id is a shape the brain can
+   `depends_on` name its SIBLINGS, so a repeated id is a shape the brain can
    legitimately return. Three rules are deliberately NOT run on children,
    because there they would measure the wrong thing rather than merely repeat
    themselves:
@@ -224,7 +224,7 @@ row. That join is the calibration loop's training set.
 written where `tasks.triage_decision` is stamped, for all four decisions
 (`retry`, `split`, `escalate`, `human`). `task_split` and `task_escalated` record
 only APPLIED decisions, and `task_split` in particular is emitted only after
-`validate_split_children` AND `insert_split_children` both succeed — both of
+`validate_split_children` AND `insert_split_children` both succeed, both of
 which have documented degradation paths that return after the decision is
 already stamped. Until 2026-08-26 those two were the only triage events, so a
 split the brain decided and the graph refused emitted NOTHING, and the trail
@@ -242,4 +242,4 @@ in the declared-path decline the verify command ran and PASSED) or
 `fixable_in_place` (which means "retry with feedback will probably work", the
 inverse of the signal). Overloading either leaves the table unable to separate a
 model that writes code that breaks the build from a model that writes no code at
-all — two failures demanding opposite responses. It counts against the worker.
+all: two failures demanding opposite responses. It counts against the worker.

@@ -31,7 +31,7 @@ model can't.
 That is the whole tool surface. Approving or rejecting a parked merge is deliberately not in
 it: those go through the CLI (`praxis merge` / `praxis reject-merge`), the dashboard, or the
 REST endpoints, so the decision to land code stays with a person rather than with the brain
-driving the session. `retry_task` is not an exception to that rule — it re-runs work and lands
+driving the session. `retry_task` is not an exception to that rule: it re-runs work and lands
 none, so it is the one recovery action a driving brain can take on its own.
 
 Praxis also exposes a static MCP **resource**, `praxis://guide/orchestration` — the

@@ -128,7 +128,7 @@ MCP transport cannot surface.
 | `worker_effort.py` | Resolve the thinking-effort signal for a spawn from the harness's declared channel |
 | `branch_sweeper.py` | `dead_branches` — pick reclaimable work branches (no open PR / live run, never protected) for the reconcile-loop sweeper (auto-delegate mode) |
 | `git_ops.py` | git/gh CLI wrappers: branch, push, PR, merge, diff |
-| `git_backend.py` | The git seam the review loop talks to: `GitBackend` protocol (`get_diff`, `head_sha`, `get_diff_since`, `checkout`, `comment`, `merge`, `base_contains`, `open_integration_pr`) over `GitHubBackend` and `LocalGitBackend`. **`base_contains(base, head) -> bool \| None`** answers what `head_sha` cannot — whether `base` already carries every commit on `head`, which is how a plan branch that merely TRAILS base is told apart from one with work to integrate. `None` means "could not ask", never False, and only `True` changes the caller's flow. It belongs on the seam because neither shortcut can answer it: `git ls-remote` reads refs and knows nothing about ancestry, and a bare repo has no `gh` at all |
+| `git_backend.py` | The git seam the review loop talks to: `GitBackend` protocol (`get_diff`, `head_sha`, `get_diff_since`, `checkout`, `comment`, `merge`, `base_contains`, `open_integration_pr`) over `GitHubBackend` and `LocalGitBackend`. **`base_contains(base, head) -> bool \| None`** answers what `head_sha` cannot: whether `base` already carries every commit on `head`, which is how a plan branch that merely TRAILS base is told apart from one with work to integrate. `None` means "could not ask", never False, and only `True` changes the caller's flow. It belongs on the seam because neither shortcut can answer it: `git ls-remote` reads refs and knows nothing about ancestry, and a bare repo has no `gh` at all |
 | `plan_reachability.py` | Pure derivation over `(plans.opus_plan, task rows)`, no DB: which PENDING leaves can never be dispatched because a dependency is terminally `failed`, to a transitive fixpoint. ONE implementation for the four surfaces that ask (MCP `poll_plan`, `GET /api/plans/...`, `praxis plans`, the dashboard), reproducing `get_dispatchable_tasks`'s positional pairing rather than re-deriving it |
 | `event_bus.py` | In-memory async pub/sub for SSE streaming |
 
@@ -163,7 +163,7 @@ PENDING ──► IN_PROGRESS ──► REVIEWING ──► PASSED ──► MER
 ```
 
 `failed` is not in `SATISFIED_STATUSES`, so once a leaf is terminally failed every
-PENDING leaf behind it is unreachable and the plan is stalled — while still reading
+PENDING leaf behind it is unreachable and the plan is stalled, while still reading
 `active` with a null `error`, deliberately (see `core/plan_reachability.py` and the
 narrative in `docs/gotchas.md`). `POST /api/tasks/{id}/retry` is the recovery.
 The full `TaskStatus` vocabulary, including `no_changes`, `needs_clarification` and
