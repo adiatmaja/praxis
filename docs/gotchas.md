@@ -2348,6 +2348,81 @@ unable to separate a model that writes code that breaks the build from a model t
 no code at all — two failures demanding opposite responses. `NO_OUTPUT` counts against the
 worker, on the same line `NoChangeDecision` already draws.
 
+## The project verify command is the bar for a REGRESSION, and it was used as the bar for a LEAF
+
+`review_task` runs the project's `verify_cmd` against the PR head, and until 2026-08-26 a
+non-zero exit failed the task outright, before the brain review. That is right for a
+regression and wrong for a leaf, and the difference only shows up where the product is
+doing its most valuable work.
+
+Measured live, twice, on `adiatmaja/playground`. A two-leaf Hindley-Milner plan was
+decomposed into a DEPENDENT chain. Leaf 1 wrote 322 lines of exactly its declared scope and
+FAILED, because `python -m pytest src/playground -q` collects an acceptance file importing
+`infer_type` — leaf 2's contract. **The base branch fails the same command identically**, so
+the gate charged a leaf with a failure that pre-existed on the branch it was cut from. Every
+non-final leaf of every dependent chain is failed by a bar only the COMPLETE feature can
+satisfy, so capability-aware decomposition defeated itself exactly when it mattered. It is
+invisible for INDEPENDENT leaves, which is why earlier probes missed it. Second-order: the
+leaf reached adaptive triage carrying a stack trace about a SIBLING's contract.
+
+Three parts now decide it, and the order is the argument.
+
+**The base branch settles attribution.** When the head command fails, the same command runs
+on the branch the work was cut from, through the same `_verify_plan_branch` the no-op gate
+uses. `passed` there means the failure is NEW and the old behaviour stands unaltered.
+`failed` means it pre-dates this task. `error`, and every skip, mean the comparison could
+not be MADE, and that **fails closed** with the missing comparison named in the feedback —
+an unanswered question must never buy a task a pass. Which branch is compared is the way
+this goes silently wrong, so `_review_base_branch` derives it from three sources that are
+each already the base somewhere else: `ref.base` (only a `praxis-local://` ref carries one),
+then `plans.plan_branch_name` (the auto-merge gate's own fallback, carrying its known
+single-branch-mode limit), then `projects.default_branch` (what `no_change_outcome` uses).
+
+**The leaf's own declared verification is the positive signal.** The decomposer emits one,
+the standard HARD-requires it, F3 (`core/leaf_validator.py`) validates that it is runnable —
+and nothing ever ran it; it was a worker-prompt element only. It now runs on the SAME
+checkout the project command ran in, never a second fetch, because two fetches can observe
+two states of the branch. Failing it fails the task with the DECLARED command's output as
+the evidence, which is the first thing on this path that is evidence about this leaf.
+
+**`is_runnable_verification` is the wrong predicate for deciding what to SHELL, and
+reusing it would have replaced one false accusation with another.** It asks "is this bad
+enough to block a leaf", so it accepts any five-character string carrying no manual verb:
+`"the module imports cleanly"` passes it. Shelling that yields `the: command not found`,
+exit 127, and a task FAILED on evidence Praxis fabricated. So
+`leaf_validator.shell_command_for_verification` is deliberately narrower — after an optional
+`VAR=value` prefix the first token must be a path or a known runner — on the same ground
+`difficulty` already keeps a stricter private signal and says the two "must not be merged".
+The strict direction is safe BY CONSTRUCTION: the "no runnable check" arm never fails a
+task, so an unrecognised runner costs a signal while a recognised sentence costs an
+accusation. It is NOT a security boundary and does not pretend to be one: `pytest -q; curl …`
+starts with an accepted token. A leaf's verification is trusted on exactly the ground the
+plan document is — the operator asked Praxis to execute this plan, and the worker container
+is already told to run this same string.
+
+**Not attributing is NOT passing, and the human is told so.** The brain still reviews the
+diff and the merge gate still needs a person. `_GATE_UNATTRIBUTED` is a sixth `verify_state`
+and the ONLY failing one that reaches `_review_scope_statement`, where it has its own arm:
+letting it inherit the `else` would report a gate that ran and went RED as one that never
+ran, to the one person who could act on it. The sentence lands in `tasks.review_feedback` —
+what `praxis task`, MCP `poll_task` and the dashboard render — and rides the
+`task_awaiting_merge` event's existing `review_scope` field. `verify_gate_skipped` stays
+None on purpose: that field means "a configured gate could not run", and this gate ran.
+
+Cost: one extra clone-and-verify, only when the head gate has already failed, at most once
+per review. No memo, because the only path that re-enters a REVIEWING task is the bounded
+reviewer-error streak (`REVIEW_ERROR_ATTEMPT_CAP`), and the brain-availability check returns
+above the gate, so a throttle spends nothing.
+
+**Still open, and deliberately not changed here: `no_change_outcome` makes the same
+inference in the opposite direction.** For an EMPTY diff it reads a failing base-branch
+verify as "the work is genuinely missing", which on a dependent chain is false for the
+identical reason. It is left alone because it fails in the SAFE direction — declining to
+close a leaf as terminally satisfied — and because the declared-edit-location check already
+outranks it. The enumeration that found it is the query `grep -rn "run_verify(\|_verify_plan_branch("
+src/`, which is the only honest way to ask "what else fails a task on a project verify
+result": the previous structural claim on this path was hand-derived and wrong within a day.
+
 ## A row parked at the merge gate is reconciled against the pull request's real state
 
 Praxis hands a human a `pr_url` and asks them to approve it. The obvious way to do that

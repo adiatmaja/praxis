@@ -56,7 +56,11 @@ from orchestrator.core.git_ops import (
 )
 from orchestrator.core.leaf_split import child_slugs
 from orchestrator.core.leaf_triage import TriageEvidence, triage_leaf
-from orchestrator.core.leaf_validator import Violation, validate_split_children
+from orchestrator.core.leaf_validator import (
+    Violation,
+    shell_command_for_verification,
+    validate_split_children,
+)
 from orchestrator.core.llm_router import ProviderRateLimitError
 from orchestrator.core.log_context import task_logger
 from orchestrator.core.merge_policy import auto_merge_eligible
@@ -111,6 +115,21 @@ _SKIP_CHECKOUT_UNAVAILABLE = "PR checkout unavailable"
 # ``_review_scope_statement``.
 _GATE_PASSED = "passed"
 _GATE_FAILED = "failed"
+
+# The sixth outcome, and the only one where a FAILING project gate does NOT
+# fail the task: the same command fails identically on the branch the pull
+# request targets, so the failure pre-dates this task's work and attributing it
+# here would be a false accusation. Unlike ``_GATE_FAILED`` this one DOES reach
+# ``_review_scope_statement``, and it must: the human at the merge gate is being
+# handed a PASS on a repository whose verify command is red.
+_GATE_UNATTRIBUTED = "failed on the PR head and identically on the base branch"
+
+# The marker ``review_task`` classifies a failure by. Shared between the two
+# places that write it and the one that reads it, because a feedback string
+# that stopped containing it would silently reclassify every mechanical failure
+# as ``fixable_in_place`` -- "retry with feedback will probably work" -- with
+# nothing raised and nothing to grep.
+_VERIFY_FAIL_MARKER = "Automated verification failed"
 
 # How much of a failed/errored verify command's output rides in the log line
 # itself.  The full output already reaches the operator via the PR review
@@ -233,12 +252,56 @@ async def _blast_radius_for_review(
         return None, None
 
 
+@dataclass(frozen=True)
+class _UnattributedVerify:
+    """A project verify failure that was NOT charged to the task under review.
+
+    Carries the two facts a human needs to act on it, rather than encoding them
+    into ``verify_state``: which branch the same command already fails on, and
+    what the leaf's OWN verification did in its place. A state string that
+    embedded a branch name could not be compared, logged or grepped as a state.
+    """
+
+    base_branch: str
+    leaf_check: str | None
+
+
+def _unattributed_clause(
+    unattributed: _UnattributedVerify, verify_cmd: str | None
+) -> str:
+    """State a project gate that failed on both branches, in plain words.
+
+    Written for the person at the merge gate, so it says what happened, on
+    which branch, and what was checked INSTEAD. Silence here would be the exact
+    overclaim the whole scope statement exists to end: a PASS parked for
+    approval on a repository whose configured verification is red.
+
+    Args:
+        unattributed: The base branch and the leaf's own check, if any.
+        verify_cmd: The project command, named because it is the thing failing.
+
+    Returns:
+        One clause for ``_review_scope_statement``.
+    """
+    instead = (
+        f"this task's own verification passed instead (`{unattributed.leaf_check}`)"
+        if unattributed.leaf_check
+        else "this task declared no runnable verification of its own"
+    )
+    return (
+        f"verify gate FAILED (`{verify_cmd}`) but fails identically on "
+        f"{unattributed.base_branch}, so it was not attributed to this task; "
+        f"{instead}"
+    )
+
+
 def _review_scope_statement(
     *,
     checkout_available: bool,
     verify_state: str,
     verify_cmd: str | None,
     radius: BlastRadius | None,
+    unattributed: _UnattributedVerify | None = None,
 ) -> str:
     """State what this review actually observed, for the human at the gate.
 
@@ -253,10 +316,14 @@ def _review_scope_statement(
 
     Args:
         checkout_available: Whether a clean PR-head checkout backed the review.
-        verify_state: One of ``_GATE_PASSED``, ``_GATE_FAILED`` or a ``_SKIP_*``
-            reason.
+        verify_state: One of ``_GATE_PASSED``, ``_GATE_FAILED``,
+            ``_GATE_UNATTRIBUTED`` or a ``_SKIP_*`` reason.
         verify_cmd: The project's command, named only when it actually ran.
         radius: The blast-radius measurement, or None when none was made.
+        unattributed: Set with ``verify_state == _GATE_UNATTRIBUTED``, and
+            required there: without it the clause could not name the branch the
+            comparison was made against, which is the only part of the sentence
+            a human can act on.
 
     Returns:
         One sentence, always non-empty. An empty scope statement would be
@@ -269,25 +336,27 @@ def _review_scope_statement(
     else:
         clauses.append(f"read the diff text only ({_SKIP_CHECKOUT_UNAVAILABLE})")
 
-    # Two arms, not three, and there is deliberately no ``_GATE_FAILED`` one.
-    # A failing gate writes ``verdict: fail`` where it runs, before any brain
-    # call, and this function is reached only under ``verdict == "pass"``, so
-    # ``_GATE_FAILED`` cannot arrive here. The arm that rendered it (and its
-    # twin in the CLI's ``_scope_glance``) was unreachable while reading as a
-    # live feature: someone reasoning about the merge gate would conclude a
-    # failed gate is surfaced there. It is not, and it should not be -- a
-    # failed gate does not park at the merge gate at all. It takes the failure
-    # path, which comments on the PR and re-dispatches, and whose feedback
-    # ``core/worker_bible`` injects verbatim into the next worker's prompt,
-    # where a sentence about what the REVIEW covered is noise to a floor model
-    # at best.
+    # Three arms, and still deliberately no ``_GATE_FAILED`` one. A gate that
+    # failed AND was charged to this task writes ``verdict: fail`` where it
+    # runs, before any brain call, and this function is reached only under
+    # ``verdict == "pass"``, so ``_GATE_FAILED`` cannot arrive here. The arm
+    # that rendered it (and its twin in the CLI's ``_scope_glance``) was
+    # unreachable while reading as a live feature: someone reasoning about the
+    # merge gate would conclude a failed gate is surfaced there. It is not for
+    # THAT state, and it should not be -- an attributed failure does not park at
+    # the merge gate at all. It takes the failure path, which comments on the PR
+    # and re-dispatches, and whose feedback ``core/worker_bible`` injects
+    # verbatim into the next worker's prompt, where a sentence about what the
+    # REVIEW covered is noise to a floor model at best.
     #
-    # If that structure ever changes, route the fail path here DELIBERATELY.
-    # Letting it inherit this ``else`` would report a gate that ran and failed
-    # as one that never ran; ``test_a_failed_verify_gate_stores_no_scope_
-    # statement`` goes red the moment the premise stops holding.
+    # ``_GATE_UNATTRIBUTED`` is the state that DOES arrive here, and it is
+    # routed deliberately rather than left to inherit the ``else``: that arm
+    # would report a gate which ran and went red as one that never ran, to the
+    # one person who could act on it.
     if verify_state == _GATE_PASSED:
         clauses.append(f"verify gate passed (`{verify_cmd}`)")
+    elif verify_state == _GATE_UNATTRIBUTED and unattributed is not None:
+        clauses.append(_unattributed_clause(unattributed, verify_cmd))
     else:
         clauses.append(f"verify gate did not run ({verify_state})")
 
@@ -469,6 +538,24 @@ class _PlanVerifyResult:
     output: str = ""
     reason: str = ""
     paths: _DeclaredPathCheck | None = None
+
+
+@dataclass(frozen=True)
+class _VerifyAttribution:
+    """What a FAILING project verify command on the PR head turned out to mean.
+
+    Three fields because the answer is three facts, and the caller needs all
+    three in the same breath: whether the review is over (``review``), what to
+    tell the human (``verify_state`` plus ``unattributed``), and nothing else.
+
+    ``review`` is the verdict dict ``review_task`` already builds at the gate,
+    or None to mean "carry on to the brain review". None is NOT "it passed":
+    the project command DID fail, and ``verify_state`` is what says so.
+    """
+
+    review: dict[str, Any] | None
+    verify_state: str
+    unattributed: _UnattributedVerify | None = None
 
 
 @dataclass(frozen=True)
@@ -1214,6 +1301,12 @@ class ReviewMixin:
         # Resolve plan_text for this task from the plan's opus_plan task list.
         plan_text_for_review: str | None = None
         task_type_for_outcome: str | None = None
+        # The leaf's OWN acceptance check, raw. The decomposer emits one, the
+        # standard hard-requires it and F3 validates that it is runnable -- and
+        # until 2026-08-26 nothing ever ran it. It is resolved here, with the
+        # other two, off the same graph entry: a second resolution could pair a
+        # row with a different leaf and judge this task by a sibling's contract.
+        leaf_verification: Any = None
         plan = await self._tq.get_plan(task["plan_id"])
         if plan is not None:
             graph_tasks = parse_graph_tasks(plan)
@@ -1230,6 +1323,7 @@ class ReviewMixin:
             plan_task = slug_to_graph_task(graph_tasks).get(task_slug, {})
             plan_text_for_review = plan_task.get("plan_text")
             task_type_for_outcome = plan_task.get("task_type")
+            leaf_verification = plan_task.get("verification")
 
         checkout: str | None
         with tempfile.TemporaryDirectory() as _checkout_dir:
@@ -1267,6 +1361,9 @@ class ReviewMixin:
             # because that is what the final ``else`` arm below means, and an
             # unset default would be a sixth state nothing produces.
             verify_state: str = _SKIP_NO_VERIFY_CMD
+            # Set only when the project gate went RED and the failure was shown
+            # to pre-date this task. Not a pass, and never rendered as one.
+            unattributed: _UnattributedVerify | None = None
             radius: BlastRadius | None = None
             if verify_cmd and checkout is not None:
                 passed, gate_output = await run_verify(checkout, verify_cmd)
@@ -1279,13 +1376,24 @@ class ReviewMixin:
                         verify_cmd,
                         _log_excerpt(gate_output),
                     )
-                    review = {
-                        "verdict": "fail",
-                        "feedback": (
-                            "Automated verification failed before review "
-                            f"(`{verify_cmd}`):\n\n{gate_output}"
-                        ),
-                    }
+                    # A red project command is not yet a verdict about THIS
+                    # task: on a dependent chain it is routinely the bar only
+                    # the complete feature can clear. Who it belongs to is
+                    # decided next, against the branch this work was cut from.
+                    attribution = await self._attribute_head_verify_failure(
+                        task=task,
+                        project=project,
+                        plan=plan,
+                        ref=ref,
+                        checkout=checkout,
+                        verify_cmd=verify_cmd,
+                        gate_output=gate_output,
+                        leaf_verification=leaf_verification,
+                        log=log,
+                    )
+                    review = attribution.review
+                    verify_state = attribution.verify_state
+                    unattributed = attribution.unattributed
             elif verify_cmd and checkout is None:
                 # WARNING, and carried onto the merge gate below. This is the
                 # same class of fault _verify_plan_branch already logs at
@@ -1478,6 +1586,7 @@ class ReviewMixin:
                 verify_state=verify_state,
                 verify_cmd=verify_cmd,
                 radius=radius,
+                unattributed=unattributed,
             )
             # Into the STORED feedback, not only onto the event. The event
             # reaches whoever happened to be watching the stream;
@@ -1566,6 +1675,18 @@ class ReviewMixin:
                     task["pr_url"],
                     gate_skipped,
                 )
+            elif unattributed is not None:
+                # A separate arm, not folded into ``gate_skipped``: that
+                # variable means "a configured gate could not run", and this
+                # gate ran and went RED. Logging one as the other would be the
+                # same overclaim in the opposite direction.
+                log.warning(
+                    "parked at merge gate awaiting approval (pr=%s), but the "
+                    "project verify command is RED on this PR head; it fails "
+                    "identically on %s, so it was not attributed to this task",
+                    task["pr_url"],
+                    unattributed.base_branch,
+                )
             else:
                 log.info(
                     "parked at merge gate awaiting approval (pr=%s)", task["pr_url"]
@@ -1592,7 +1713,7 @@ class ReviewMixin:
 
         fail_class = (
             FailureClass.VERIFY_FAIL.value
-            if "Automated verification failed" in feedback
+            if _VERIFY_FAIL_MARKER in feedback
             else FailureClass.FIXABLE_IN_PLACE.value
         )
         await _record("fail", fail_class)
@@ -3051,6 +3172,254 @@ class ReviewMixin:
             logger.warning(
                 "_sync_plan_checkbox failed for task %s: %s", task.get("id"), exc
             )
+
+    @staticmethod
+    def _review_base_branch(
+        ref: PullRequestRef,
+        plan: dict[str, Any] | None,
+        project: dict[str, Any],
+    ) -> str | None:
+        """Name the branch this pull request's work is being ADDED TO.
+
+        Three sources, most specific first, and each one is already the answer
+        somewhere else in this file:
+
+        - ``ref.base``. Authoritative when it is there, because it is what
+          ``backend.merge(ref)`` actually writes to. Only a ``praxis-local://``
+          ref carries one; ``PullRequestRef.from_url`` sets ``base=""`` for a
+          GitHub PR URL, which encodes no base at all.
+        - ``plans.plan_branch_name``. What a two-tier task branch was cut from,
+          and the fallback the auto-merge gate twenty lines up already uses for
+          exactly the GitHub case above. It carries that gate's known limit
+          with it: in single-branch mode dispatch bases the shared work branch
+          on the project default, so the two diverge.
+        - ``projects.default_branch``. What ``no_change_outcome`` falls back to
+          for the same question, so the two seats cannot disagree about a plan
+          that has no branch recorded.
+
+        Returning the WRONG branch is the way this whole comparison goes
+        silently wrong: "the same command fails there too" is only evidence when
+        "there" is the tree this work was cut from. Every arm is therefore a
+        branch something else in the system already treats as the base, never a
+        guess.
+
+        Args:
+            ref: The parsed pull-request reference under review.
+            plan: The task's plan row, or None.
+            project: The project row.
+
+        Returns:
+            The branch name, or None when none of the three is recorded and
+            nothing can be compared.
+        """
+        return (
+            ref.base
+            or (plan or {}).get("plan_branch_name")
+            or project.get("default_branch")
+            or None
+        )
+
+    async def _attribute_head_verify_failure(
+        self,
+        *,
+        task: dict[str, Any],
+        project: dict[str, Any],
+        plan: dict[str, Any] | None,
+        ref: PullRequestRef,
+        checkout: str,
+        verify_cmd: str,
+        gate_output: str,
+        leaf_verification: Any,
+        log: Any,
+    ) -> _VerifyAttribution:
+        """Decide whether a red project verify command is THIS task's fault.
+
+        The project ``verify_cmd`` is the right bar for a REGRESSION and the
+        wrong bar for a leaf, and until 2026-08-26 it was used as both. It was
+        measured twice on a dependent chain: leaf 1 of a Hindley-Milner plan
+        wrote 322 lines of exactly its declared scope and FAILED, because the
+        project's ``pytest`` collects an acceptance file importing a symbol that
+        is LEAF 2's contract. The base branch failed the same command
+        identically. So the gate charged a leaf with a failure that pre-existed
+        on the branch it was cut from -- and capability-aware decomposition
+        produces dependent chains precisely when it is doing its most valuable
+        work, so the mechanism defeated itself exactly where it mattered. It
+        poisoned the triage evidence too: the leaf arrived at triage carrying a
+        stack trace about a sibling's contract.
+
+        Three questions, in this order, and the order is the argument:
+
+        1. **Does the same command fail on the base branch?** If it PASSES
+           there, the failure is NEW and this task is the only thing that
+           changed, so the old behaviour stands unaltered. If the comparison
+           could not be MADE (``error``, or a configured gate that could not
+           reach the repository), this FAILS CLOSED and says why: an unanswered
+           question must never buy a task a pass.
+        2. **What did the leaf's OWN declared verification do?** The
+           decomposer emits one, the standard hard-requires it and F3 validates
+           that it is runnable -- and nothing ever ran it; it was a
+           worker-prompt element only. It runs on the checkout the head command
+           already ran in, never a second fetch, because two fetches can observe
+           two states of the branch. A failure here IS evidence about this leaf
+           and fails the task with the DECLARED command's output as the reason.
+        3. **Was there a runnable one at all?** If not, attribution is settled
+           by step 1 alone. The ABSENCE of a leaf check must not reinstate an
+           attribution that was just shown to be false, and declaring nothing is
+           the norm on every path but decomposition.
+
+        Not failing is NOT the same as passing, and nothing here treats it as
+        such: the brain still reviews the diff, the human still gates the merge,
+        and the returned ``_UnattributedVerify`` puts the whole fact into the
+        stored ``review_feedback`` the merge gate renders.
+
+        Args:
+            task: The task row under review, for the log line only.
+            project: Its project row (needs ``repo_url``, ``default_branch``).
+            plan: Its plan row, or None.
+            ref: The parsed pull-request reference.
+            checkout: The PR-head checkout the head command just ran in.
+            verify_cmd: The normalized project command that just failed.
+            gate_output: What it printed, already the caller's evidence.
+            leaf_verification: The leaf's raw ``verification`` from the plan
+                graph, untrusted brain output of any shape.
+            log: The task-scoped logger.
+
+        Returns:
+            The decision, in full.
+        """
+        task_id = str(task["id"])
+        base_branch = self._review_base_branch(ref, plan, project)
+        repo_url = project.get("repo_url")
+        if not repo_url or not base_branch:
+            return self._verify_failure_stands(
+                verify_cmd,
+                gate_output,
+                "the base branch could not be resolved "
+                f"(repo_url={repo_url!r}, branch={base_branch!r})",
+            )
+
+        base = await self._verify_plan_branch(repo_url, base_branch, verify_cmd)
+        if base.status == "passed":
+            # The one arm that is byte-for-byte the old behaviour: the command
+            # is green on the base and red here, so this task broke it.
+            log.warning(
+                "verify gate failure is attributed to this task: `%s` passes on "
+                "%s and fails on the PR head",
+                verify_cmd,
+                base_branch,
+            )
+            return _VerifyAttribution(
+                review={
+                    "verdict": "fail",
+                    "feedback": (
+                        f"{_VERIFY_FAIL_MARKER} before review "
+                        f"(`{verify_cmd}`). The same command PASSES on "
+                        f"{base_branch}, so this change is what broke "
+                        f"it:\n\n{gate_output}"
+                    ),
+                },
+                verify_state=_GATE_FAILED,
+            )
+        if base.status != "failed":
+            # ``error`` and every skip: the gate did not produce an ANSWER
+            # about the base branch. Fail closed, exactly as before, and say
+            # the comparison is missing rather than implying it was made.
+            return self._verify_failure_stands(
+                verify_cmd,
+                gate_output,
+                f"the same command could not be run on {base_branch} "
+                f"(status={base.status}, reason={base.reason or '-'})",
+            )
+
+        leaf_check = shell_command_for_verification(leaf_verification)
+        if leaf_check is None:
+            log.warning(
+                "verify gate failed for task %s (`%s`) but fails identically on "
+                "%s, and the task declares no runnable verification of its own, "
+                "so the failure is NOT attributed to it; the review continues "
+                "and the merge gate is told",
+                task_id,
+                verify_cmd,
+                base_branch,
+            )
+            return _VerifyAttribution(
+                review=None,
+                verify_state=_GATE_UNATTRIBUTED,
+                unattributed=_UnattributedVerify(base_branch, None),
+            )
+
+        leaf_passed, leaf_output = await run_verify(checkout, leaf_check)
+        if not leaf_passed:
+            log.warning(
+                "verify gate failed for task %s and so did its OWN declared "
+                "verification (`%s`): %s",
+                task_id,
+                leaf_check,
+                _log_excerpt(leaf_output),
+            )
+            return _VerifyAttribution(
+                review={
+                    "verdict": "fail",
+                    "feedback": (
+                        f"{_VERIFY_FAIL_MARKER} before review. The project "
+                        f"command (`{verify_cmd}`) fails identically on "
+                        f"{base_branch}, so it was not held against this task. "
+                        "This task's OWN declared verification "
+                        f"(`{leaf_check}`) was run instead, and it "
+                        f"failed:\n\n{leaf_output}"
+                    ),
+                },
+                verify_state=_GATE_FAILED,
+            )
+        log.warning(
+            "verify gate failed for task %s (`%s`) but fails identically on %s, "
+            "and the task's own verification (`%s`) passed, so the failure is "
+            "NOT attributed to it; the review continues and the merge gate is "
+            "told",
+            task_id,
+            verify_cmd,
+            base_branch,
+            leaf_check,
+        )
+        return _VerifyAttribution(
+            review=None,
+            verify_state=_GATE_UNATTRIBUTED,
+            unattributed=_UnattributedVerify(base_branch, leaf_check),
+        )
+
+    @staticmethod
+    def _verify_failure_stands(
+        verify_cmd: str, gate_output: str, why_no_comparison: str
+    ) -> _VerifyAttribution:
+        """Keep the pre-2026-08-26 behaviour, and say the comparison is missing.
+
+        Every arm that reaches here is "the base branch could not be asked",
+        never "the base branch answered". Those are opposite facts and the
+        difference has to survive into the feedback, because this string is
+        stored on the task AND injected verbatim into the next worker's prompt
+        by ``core/worker_bible``: a worker told a comparison was made would be
+        reading a claim nobody established.
+
+        Args:
+            verify_cmd: The project command that failed on the PR head.
+            gate_output: What it printed.
+            why_no_comparison: Why the base branch could not answer.
+
+        Returns:
+            The unchanged failing verdict, with the missing comparison named.
+        """
+        return _VerifyAttribution(
+            review={
+                "verdict": "fail",
+                "feedback": (
+                    f"{_VERIFY_FAIL_MARKER} before review (`{verify_cmd}`). "
+                    "Whether this failure pre-dates this task could NOT be "
+                    f"established, because {why_no_comparison}, so it is "
+                    f"reported as-is:\n\n{gate_output}"
+                ),
+            },
+            verify_state=_GATE_FAILED,
+        )
 
     async def _verify_plan_branch(
         self,

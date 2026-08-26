@@ -12,6 +12,7 @@ import re
 from collections import Counter
 from dataclasses import dataclass, field
 from difflib import SequenceMatcher
+from typing import Any
 
 from orchestrator.core.leaf_templates import missing_sections
 from orchestrator.models.schemas import CapabilityProfile, LeafTask, LeafType
@@ -429,6 +430,171 @@ def is_runnable_verification(value: str | None) -> bool:
     return verification_defect(value) is None
 
 
+def normalize_verification(verification: Any) -> str | None:
+    """Return the leaf's acceptance check as a string, or None.
+
+    ``plan_task`` is raw brain JSON on every path but decomposition, so
+    ``verification`` can be any shape, and this must never raise: a
+    ``TypeError`` here aborts a whole loop pass. A non-string used to reach the
+    worker's acceptance floor as a Python repr, and a ``{"cmd": "pytest -q"}``
+    repr even beat a configured project ``verify_cmd``. Treating it as absent
+    falls back to that command instead.
+
+    Lives here rather than beside its first caller because THREE places now ask
+    the same question of the same column -- the dispatch path building the
+    worker's acceptance floor, :func:`shell_command_for_verification`, and
+    through it the review path -- and ``orchestrator_dispatch`` imports
+    ``orchestrator_review``, so a helper the review path could import cannot
+    live there. Two copies would let a worker be told one check and judged
+    against another, the same failure ``plan_graph.declared_paths`` exists to
+    prevent for edit locations.
+
+    Args:
+        verification: The raw ``verification`` value from the plan task.
+
+    Returns:
+        The check, or None when the value is not a non-blank string.
+    """
+    if not isinstance(verification, str) or not verification.strip():
+        return None
+    return verification
+
+
+# Program names a leaf's own ``verification`` may start with for Praxis to run
+# it ITSELF. Build and test tooling only: a network client or a container
+# runtime has no business being a leaf's acceptance check, and this list is the
+# place that stays reviewable.
+_VERIFICATION_RUNNERS = frozenset(
+    {
+        "bash",
+        "bundle",
+        "cargo",
+        "cmake",
+        "composer",
+        "ctest",
+        "dart",
+        "deno",
+        "dotnet",
+        "flutter",
+        "go",
+        "gradle",
+        "grep",
+        "hatch",
+        "java",
+        "javac",
+        "julia",
+        "make",
+        "mvn",
+        "mypy",
+        "nim",
+        "node",
+        "nox",
+        "npm",
+        "npx",
+        "phpunit",
+        "pip",
+        "pipx",
+        "pnpm",
+        "poetry",
+        "pre-commit",
+        "pyright",
+        "pytest",
+        "python",
+        "rake",
+        "rg",
+        "rscript",
+        "rspec",
+        "ruff",
+        "rustc",
+        "sh",
+        "swift",
+        "test",
+        "tox",
+        "uv",
+        "uvx",
+        "yarn",
+        "zig",
+        "zsh",
+    }
+)
+
+# ``PYTHONPATH=src pytest -q`` names the program in its SECOND token. Anything
+# that is not an assignment ends the prefix.
+_ENV_ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+
+# Trailing version digits on an interpreter name: ``python3``, ``python3.11``.
+_VERSION_SUFFIX = "0123456789."
+
+
+def shell_command_for_verification(value: Any) -> str | None:
+    """Return *value* as a command Praxis may run itself, or None for "not one".
+
+    DELIBERATELY NARROWER than :func:`is_runnable_verification`, and the
+    difference is the whole point. That predicate asks "is this bad enough to
+    block a leaf", so it accepts any string of five characters or more that
+    carries no manual verb -- ``"the module imports cleanly"`` passes it. That
+    is correct for its job (``orchestrator_dispatch`` states, in its own words,
+    that the demotion "only catches prose the HARD rule recognizes as junk, and
+    deliberately goes no further") and catastrophic for this one: handing that
+    sentence to a shell yields ``the: command not found``, exit 127, and a task
+    FAILED on evidence Praxis fabricated about a worker. The same asymmetry is
+    already recorded one module over, where ``difficulty`` keeps a stricter
+    private signal and says the two "must not be merged".
+
+    So a value is accepted only when it NAMES a program: after an optional
+    ``VAR=value`` prefix, the first token is a path (``./scripts/check.sh``) or
+    one of :data:`_VERIFICATION_RUNNERS`. Everything else is reported as absent.
+    That direction is the safe one BY CONSTRUCTION -- the caller's "no runnable
+    check" arm never fails a task -- so an unrecognised runner costs a signal,
+    while a recognised sentence costs a false accusation.
+
+    This does NOT make the string safe; nothing here is a security boundary. A
+    leaf's verification is brain output, and ``pytest -q; anything`` starts with
+    an accepted token. It is trusted on exactly the ground the plan document
+    itself is: the operator asked Praxis to execute this plan, and the worker
+    container is already told to run this same string. What this narrows is
+    ACCURACY, not privilege.
+
+    Args:
+        value: The raw ``verification`` value from the plan task.
+
+    Returns:
+        The command to run, unwrapped from a single pair of backticks and
+        stripped, or None when the value does not name a program.
+    """
+    command = normalize_verification(value)
+    if command is None:
+        return None
+    command = command.strip()
+    # A brain that wrote ```pytest -q``` meant the command, not the quoting.
+    if len(command) > 2 and command.startswith("`") and command.endswith("`"):
+        command = command[1:-1].strip()
+    # A surviving backtick means prose WRAPPED a command rather than being one
+    # ("run `pytest -q` and confirm"), and picking the command out of a sentence
+    # is a guess. A newline means several steps, same answer.
+    if not command or "\n" in command or "`" in command:
+        return None
+    # Never looser than the rule that let the leaf through in the first place.
+    if not is_runnable_verification(command):
+        return None
+    tokens = command.split()
+    while tokens and _ENV_ASSIGNMENT.match(tokens[0]):
+        tokens.pop(0)
+    if not tokens:
+        return None
+    # A program whose path contains a space is QUOTED, and the quote is part of
+    # the shell's syntax, not of the name. Found by running this against a real
+    # repository, where the leaf's own check was
+    # ``"C:\\...\\python.exe" -c "import leaf"`` and was reported as no check at
+    # all. Both separators, because the same string is written both ways.
+    head = tokens[0].strip("\"'")
+    if "/" in head or "\\" in head:
+        return command
+    if head.lower().rstrip(_VERSION_SUFFIX) in _VERIFICATION_RUNNERS:
+        return command
+    return None
+
+
 def _check_verification(
     leaves: list[LeafTask],
     result: ValidationResult,
@@ -679,8 +845,8 @@ def validate_split_children(
       until this ran nothing graded the answer.
     - ``verification``: rule 3 of the standard.  A child with no runnable
       acceptance check has the project command silently substituted at dispatch
-      (``orchestrator_dispatch._normalize_verification``), so the worker is
-      graded on a check its own contract never named.
+      (:func:`normalize_verification`), so the worker is graded on a check its
+      own contract never named.
     - ``max_files`` / ``max_loc``: the sizing rules.  A split happens BECAUSE
       the parent was mis-sized, so an oversized child repeats the one failure
       that is already known to have occurred on this leaf.

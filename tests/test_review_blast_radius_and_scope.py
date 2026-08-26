@@ -29,6 +29,7 @@ from orchestrator.core.blast_radius import Occurrence
 from orchestrator.core.orchestrator_review import (
     _SKIP_CHECKOUT_UNAVAILABLE,
     _SKIP_NO_VERIFY_CMD,
+    _PlanVerifyResult,
     _review_scope_statement,
 )
 from orchestrator.models.schemas import TaskStatus
@@ -551,15 +552,23 @@ async def test_a_failed_verify_gate_stores_no_scope_statement(
 ):
     """The structural claim that makes the "verify gate failed" arm dead code.
 
-    A failing gate writes ``verdict: fail`` at the gate itself, before any brain
-    call, and the scope statement is assembled only under ``verdict == "pass"``.
-    So ``_GATE_FAILED`` cannot reach ``_review_scope_statement``, its rendering
-    arm was unreachable, and so was the CLI's ``"verify failed"`` twin. Both
-    were deleted; this pins the premise.
+    A gate failure that is CHARGED to this task writes ``verdict: fail`` at the
+    gate itself, before any brain call, and the scope statement is assembled
+    only under ``verdict == "pass"``. So ``_GATE_FAILED`` cannot reach
+    ``_review_scope_statement``, its rendering arm was unreachable, and so was
+    the CLI's ``"verify failed"`` twin. Both were deleted; this pins the premise.
 
     Without this, restoring the fail path to the scope statement would silently
     hand the ``else`` arm a state it lies about ("verify gate did not run
     (failed)") and inject review prose into the next worker's prompt.
+
+    NARROWED 2026-08-26. ``_GATE_UNATTRIBUTED`` -- the same command failing
+    identically on the base branch -- DOES reach the scope statement, has its
+    own arm there, and parks at the merge gate. The claim above is about
+    ``_GATE_FAILED`` alone, so the base comparison is stated here rather than
+    left to the fixture: without it this test would be asserting the
+    attributed-failure behaviour through whichever arm the fixture happened to
+    reach. ``tests/test_review_verify_attribution.py`` owns the other states.
     """
     orch, task_id, project = orchestrator_fixture
     gated = dict(project)
@@ -568,6 +577,11 @@ async def test_a_failed_verify_gate_stores_no_scope_statement(
     orch._resolve_backend = lambda _repo_url: backend  # type: ignore[method-assign]
     monkeypatch.setattr(
         review_mod, "run_verify", AsyncMock(return_value=(False, "1 failed"))
+    )
+    # The command is GREEN on the base branch, so this failure is new here and
+    # belongs to this task -- the one arm that fails it outright.
+    orch._verify_plan_branch = AsyncMock(  # type: ignore[method-assign]
+        return_value=_PlanVerifyResult("passed")
     )
     events: list[dict[str, Any]] = []
     orch._bus.publish = events.append  # type: ignore[method-assign]

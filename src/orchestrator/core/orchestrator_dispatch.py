@@ -25,7 +25,10 @@ from orchestrator.core.context_window import (
 )
 from orchestrator.core.github_credentials import CredentialError
 from orchestrator.core.harnesses import default_harness_id
-from orchestrator.core.leaf_validator import is_runnable_verification
+from orchestrator.core.leaf_validator import (
+    is_runnable_verification,
+    normalize_verification,
+)
 from orchestrator.core.log_context import task_logger
 from orchestrator.core.micro_edit import BRAIN_IMPLEMENTER, apply_micro_edit
 from orchestrator.core.orchestrator_review import (
@@ -154,27 +157,6 @@ def _normalize_edit_locations(files: Any) -> str | None:
         The newline-joined paths, or None when nothing usable was found.
     """
     return "\n".join(declared_paths(files)) or None
-
-
-def _normalize_verification(verification: Any) -> str | None:
-    """Return the leaf's acceptance check as a string, or None.
-
-    Same contract and the same reason as :func:`_normalize_edit_locations`, for
-    the other undroppable floor section fed from the same raw dict: an unusable
-    value must yield nothing rather than garbage, and this must never raise.
-    A non-string used to reach the acceptance floor as a Python repr, and a
-    ``{"cmd": "pytest -q"}`` repr even beat a configured project ``verify_cmd``.
-    Treating it as absent falls back to that command instead.
-
-    Args:
-        verification: The raw ``verification`` value from the plan task.
-
-    Returns:
-        The check, or None when the value is not a non-blank string.
-    """
-    if not isinstance(verification, str) or not verification.strip():
-        return None
-    return verification
 
 
 class DispatchMixin:
@@ -1068,7 +1050,7 @@ class DispatchMixin:
         # never be demoted here. Prose it accepts is handled downstream instead,
         # by ``build_bible`` stating the project command alongside whatever wins
         # this slot, so the command is never invisible.
-        leaf_check = _normalize_verification(plan_task.get("verification"))
+        leaf_check = normalize_verification(plan_task.get("verification"))
         # Normalized for the same reason the gate is: ``acceptance = leaf_check
         # or project_check`` treats an all-whitespace command as a real one, so
         # a blank column could win the worker's acceptance slot and be handed
