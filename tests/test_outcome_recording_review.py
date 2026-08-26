@@ -11,6 +11,7 @@ import pytest
 from orchestrator.core.capability_events import CapabilityEventEmitter
 from orchestrator.core.event_bus import EventBus
 from orchestrator.core.orchestrator import Orchestrator
+from orchestrator.core.orchestrator_review import _PlanVerifyResult
 from orchestrator.core.task_queue import TaskQueue
 from orchestrator.database import Database
 from orchestrator.models.schemas import TaskStatus
@@ -243,7 +244,23 @@ async def test_review_fail_records_outcome(tmp_path):
 
 @pytest.mark.asyncio
 async def test_review_verify_fail_records_verify_fail(tmp_path):
-    """A verify-gate failure writes failure_class='verify_fail'."""
+    """An ATTRIBUTED verify-gate failure writes failure_class='verify_fail'.
+
+    The attribution is now half of what this test is about, and the fixture has
+    to CREATE it. Since cd0c127 a red project command on the PR head is not by
+    itself a fact about the worker: the same command is re-run on the base
+    branch, and only a base that is GREEN makes the head's red this task's
+    fault. A base that cannot be ASKED -- which is what this test's mocked git
+    produces, since nothing here can clone a real branch -- is the
+    ``_verify_failure_stands`` path, and 0939a5e stopped that path charging the
+    worker for a question nobody answered.
+
+    So the base answer is stubbed to ``passed``, which is the case the test
+    name has always claimed and the fixture used to get for free from a
+    one-branch gate. Without it this test asserted `verify_fail` on a scenario
+    that is no longer one, and it went red the moment the seat was corrected --
+    an assertion whose truth depended on a comparison the fixture never made.
+    """
     db_path = tmp_path / "review_vf.db"
     db = Database(f"sqlite+aiosqlite:///{db_path.as_posix()}")
     await db.initialize()
@@ -275,6 +292,12 @@ async def test_review_verify_fail_records_verify_fail(tmp_path):
         )
         orch._emitter = emitter  # type: ignore[attr-defined]
         orch._start_monitor = lambda *_: None  # type: ignore[assignment]
+        # The base branch answers PASSED, so the head's red is genuinely this
+        # task's doing. See the docstring: this is the difference the test
+        # asserts, so the test has to create it.
+        orch._verify_plan_branch = AsyncMock(  # type: ignore[method-assign]
+            return_value=_PlanVerifyResult("passed")
+        )
 
         full_project = await db.fetch_one(
             "SELECT * FROM projects WHERE id = ?", (project["id"],)
@@ -282,6 +305,11 @@ async def test_review_verify_fail_records_verify_fail(tmp_path):
         assert full_project is not None
 
         await orch.review_task(task_id, full_project)
+
+        # The comparison was actually made, not merely available. Without this
+        # the stub could go unused and the assertions below would be back to
+        # passing for the pre-cd0c127 reason.
+        orch._verify_plan_branch.assert_awaited()
 
         row = await db.fetch_one(
             "SELECT * FROM task_outcomes WHERE task_id = ?", (task_id,)
