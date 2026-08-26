@@ -19,6 +19,10 @@ from cli.doctor import doctor as _doctor
 from cli.init import _fetch_presets_or_defaults, parse_env
 from cli.init import init as _init
 from orchestrator.core.settings_file import config_file_path
+from orchestrator.core.verify_gate import (
+    SCOPE_VERIFY_PASSED,
+    SCOPE_VERIFY_UNATTRIBUTED,
+)
 
 
 def _force_utf8_stdout() -> None:
@@ -1373,12 +1377,25 @@ def _scope_glance(review_scope: str | None) -> str:
     if not review_scope:
         return ""
     checkout = "checkout" if "read a clean checkout" in review_scope else "diff only"
-    # Two outcomes, not three. The producer never writes "verify gate failed":
-    # a failed gate fails the task where it runs, so it never reaches a review
-    # verdict of pass, never gets a scope statement, and never parks here. The
-    # third arm this replaced could not fire, and an unreachable branch reads
-    # as a live feature at the one surface a human trusts before merging.
-    verify = "verify passed" if "verify gate passed" in review_scope else "no gate"
+    # THREE outcomes since 2026-08-26, and the third is the one that matters
+    # most here. A gate that failed and was CHARGED to the task still never
+    # reaches this surface: it fails the task where it runs, so it never
+    # reaches a review verdict of pass and never parks at the merge gate.
+    #
+    # But a gate that failed and was NOT charged to the task does park here,
+    # and it is the review's own way of saying "this repository's verify
+    # command is red, and it was red before this task". Rendering that as
+    # "no gate" told the one person who could act on it that nothing ran.
+    #
+    # Both phrases are imported, never spelled out: this function parses the
+    # producer's sentence on purpose, so the phrase is a cross-package
+    # contract, and a copy here is how the two silently drift apart.
+    if SCOPE_VERIFY_PASSED in review_scope:
+        verify = "verify passed"
+    elif SCOPE_VERIFY_UNATTRIBUTED in review_scope:
+        verify = "verify RED (not this task)"
+    else:
+        verify = "no gate"
     return f"{checkout}, {verify}"
 
 

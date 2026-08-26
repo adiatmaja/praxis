@@ -76,7 +76,12 @@ from orchestrator.core.plan_graph import (
     slug_to_graph_task,
 )
 from orchestrator.core.status_vocab import GATED_STATUSES
-from orchestrator.core.verify_gate import normalize_verify_cmd, run_verify
+from orchestrator.core.verify_gate import (
+    SCOPE_VERIFY_PASSED,
+    SCOPE_VERIFY_UNATTRIBUTED,
+    normalize_verify_cmd,
+    run_verify,
+)
 from orchestrator.models.schemas import TaskStatus, TriageDecision
 
 
@@ -290,7 +295,7 @@ def _unattributed_clause(
     )
     return (
         f"verify gate FAILED (`{verify_cmd}`) but fails identically on "
-        f"{unattributed.base_branch}, so it was not attributed to this task; "
+        f"{unattributed.base_branch}, so it was {SCOPE_VERIFY_UNATTRIBUTED}; "
         f"{instead}"
     )
 
@@ -354,7 +359,7 @@ def _review_scope_statement(
     # would report a gate which ran and went red as one that never ran, to the
     # one person who could act on it.
     if verify_state == _GATE_PASSED:
-        clauses.append(f"verify gate passed (`{verify_cmd}`)")
+        clauses.append(f"{SCOPE_VERIFY_PASSED} (`{verify_cmd}`)")
     elif verify_state == _GATE_UNATTRIBUTED and unattributed is not None:
         clauses.append(_unattributed_clause(unattributed, verify_cmd))
     else:

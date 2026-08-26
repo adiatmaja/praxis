@@ -15,6 +15,24 @@ import re
 
 logger = logging.getLogger(__name__)
 
+# The two phrases a review's stored scope sentence is CLASSIFIED by, shared
+# between the orchestrator that writes them and the CLI that reads them back.
+#
+# ``_scope_glance`` in the CLI deliberately parses the review's own sentence
+# rather than re-deriving the verdict from other state, so the glance in the
+# table can never disagree with the full statement printed beside it. That
+# design makes the phrase itself a contract across two packages, and the day
+# ``_GATE_UNATTRIBUTED`` was added the CLI kept matching only the passing
+# phrase and reported a gate that RAN and went RED as "no gate", at the one
+# surface a human reads before approving a merge.
+#
+# Living here, in the module that already owns "does this project have a verify
+# command", is what makes that impossible: an edit to either constant turns
+# BOTH the producer's and the CLI's tests red. This module imports nothing but
+# the standard library, so the CLI can read it without pulling in the engine.
+SCOPE_VERIFY_PASSED = "verify gate passed"
+SCOPE_VERIFY_UNATTRIBUTED = "not attributed to this task"
+
 _MAX_OUTPUT = 8000
 
 # pytest returns exit code 5 when it collected no tests. For docs-only or

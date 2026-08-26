@@ -10,8 +10,10 @@ from orchestrator.core.approvals import _review_scope_from_feedback
 from orchestrator.core.blast_radius import BlastRadius
 from orchestrator.core.orchestrator_review import (
     _GATE_PASSED,
+    _GATE_UNATTRIBUTED,
     _SKIP_NO_VERIFY_CMD,
     _review_scope_statement,
+    _UnattributedVerify,
 )
 from tests.cli_text import on_one_line, plain
 
@@ -269,6 +271,47 @@ def test_the_glance_is_composed_from_the_producer_not_from_a_copy_of_it() -> Non
     assert checked_out != diff_only
     assert checked_out == "checkout, verify passed"
     assert diff_only == "diff only, no gate"
+
+
+def test_a_red_but_unattributed_gate_is_not_glanced_at_as_no_gate() -> None:
+    """A gate that RAN and went RED must not read as a gate that never ran.
+
+    ``_GATE_UNATTRIBUTED`` is the only failing verify state that reaches the
+    merge gate: the project command failed on the PR head AND fails identically
+    on the base branch, so it was not charged to this task, the brain reviewed
+    the diff anyway, and a human is now being asked to approve a pull request
+    on a repository whose configured verification is red. That is precisely
+    what the Scope column exists to tell them.
+
+    The CLI classified it as "no gate" for as long as the state existed,
+    because it matched only the passing phrase. Both facts -- a gate ran, and
+    it is red -- were deleted from the one line a human reads before merging.
+
+    Assembled by the PRODUCER and asserted EXACTLY, for the same reasons the
+    test above states: a hand-copied sentence cannot notice the product
+    rewording itself, and a substring check against the rendered table matches
+    the full statement printed beside the glance.
+    """
+    scope = _review_scope_statement(
+        checkout_available=True,
+        verify_state=_GATE_UNATTRIBUTED,
+        verify_cmd="pytest -q",
+        radius=None,
+        unattributed=_UnattributedVerify("main", "python -c 'import hm'"),
+    )
+
+    glance = _scope_glance(_review_scope_from_feedback(f"looks fine\n\n{scope}"))
+
+    assert glance == "checkout, verify RED (not this task)"
+    # Not merely "different from the passing glance": the defect rendered it
+    # identically to a review where no gate was configured at all, and that is
+    # the specific confusion being ruled out.
+    assert glance != _scope_glance(
+        _review_scope_from_feedback(f"looks fine\n\n{SCOPE_DIFF_ONLY_NO_GATE}")
+    )
+    assert glance != _scope_glance(
+        _review_scope_from_feedback(f"looks fine\n\n{SCOPE_CHECKOUT_PASS}")
+    )
 
 
 def test_pending_prints_nothing_extra_for_a_task_with_no_scope_statement(
