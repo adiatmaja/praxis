@@ -53,7 +53,17 @@ _DIFF = "diff --git a/src/a.py b/src/a.py\n--- a/src/a.py\n+++ b/src/a.py\n+x = 
         pytest.param("the module imports cleanly", id="declarative"),
         pytest.param("all existing tests still pass", id="all-tests-pass"),
         pytest.param("TypeVar, Con and Fun are importable", id="names-symbols"),
-        pytest.param("Run `pytest -q` and confirm it passes", id="command-in-prose"),
+        # "Run `pytest -q` and confirm it passes" USED to sit here, and it was
+        # pinning the defect rather than the contract: the decompose prompt
+        # teaches that exact shape in its own worked example, so refusing it
+        # made the review path's positive signal unreachable on the decompose
+        # path. It is now accepted, and lives in
+        # tests/test_leaf_validator_verification_contract.py. What survives here
+        # is the case that is genuinely a guess: backticks around a FILE, which
+        # a leaf writes far more often than it names a script.
+        pytest.param(
+            "Confirm `src/client.py` defines retry_on_429", id="backticked-file-path"
+        ),
         pytest.param("step one: build\nstep two: test", id="two-lines"),
         pytest.param("cd subdir && pytest -q", id="unrecognised-leading-token"),
     ],

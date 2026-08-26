@@ -60,12 +60,12 @@ async def test_decompose_plan_returns_normalized_opus_plan():
     raw = (
         '{"tasks":[{"id":"t1","title":"A","description":"d",'
         '"depends_on":[],"files":["src/a.py"],"task_type":"feature",'
-        '"estimated_loc":50,"verification":"Run pytest and confirm all tests pass",'
+        '"estimated_loc":50,"verification":"Run `pytest` and confirm all tests pass",'
         '"plan_text":"## Goal\\nAdd A.\\n## Files\\nsrc/a.py\\n## Steps\\n'
         '1. Implement it.\\n## Acceptance\\nRun `pytest` and confirm it passes"},'
         '{"id":"t2","title":"B","description":"d",'
         '"depends_on":["t1"],"files":["src/b.py"],"task_type":"feature",'
-        '"estimated_loc":60,"verification":"Run pytest and confirm all tests pass",'
+        '"estimated_loc":60,"verification":"Run `pytest` and confirm all tests pass",'
         '"plan_text":"## Goal\\nAdd B.\\n## Files\\nsrc/b.py\\n## Steps\\n'
         '1. Implement it.\\n## Acceptance\\nRun `pytest` and confirm it passes"'
         "}]}"
@@ -561,7 +561,7 @@ async def test_decompose_retries_on_validation_failure_with_feedback():
     good = (
         '{"tasks":[{"id":"t1","title":"A","description":"d",'
         '"depends_on":[],"files":["src/a.py"],"task_type":"feature",'
-        '"estimated_loc":50,"verification":"Run pytest and confirm all tests pass",'
+        '"estimated_loc":50,"verification":"Run `pytest` and confirm all tests pass",'
         '"plan_text":"## Goal\\nAdd A.\\n## Files\\nsrc/a.py\\n## Steps\\n'
         '1. Implement it.\\n## Acceptance\\nRun `pytest` and confirm it passes"'
         "}]}"
@@ -629,7 +629,7 @@ async def test_decompose_attaches_validation_warnings_on_soft_only():
     raw = (
         '{"tasks":[{"id":"t1","title":"Refactor module","description":"d",'
         '"depends_on":[],"files":["src/a.py"],"task_type":"refactor",'
-        '"estimated_loc":50,"verification":"Run pytest and confirm all tests pass",'
+        '"estimated_loc":50,"verification":"Run `pytest` and confirm all tests pass",'
         '"plan_text":"## Goal\\nRefactor the module.\\n## Files\\nsrc/a.py\\n'
         "## Steps\\n1. Refactor it.\\n## Acceptance\\nRun `pytest` and confirm "
         'it passes"'
@@ -655,7 +655,7 @@ async def test_decompose_plan_id_and_emitter_params_accepted():
     raw = (
         '{"tasks":[{"id":"t1","title":"A","description":"d",'
         '"depends_on":[],"files":["src/a.py"],"task_type":"feature",'
-        '"estimated_loc":50,"verification":"Run pytest and confirm all tests pass",'
+        '"estimated_loc":50,"verification":"Run `pytest` and confirm all tests pass",'
         '"plan_text":"## Goal\\nAdd A.\\n## Files\\nsrc/a.py\\n## Steps\\n'
         '1. Implement it.\\n## Acceptance\\nRun `pytest` and confirm it passes"'
         "}]}"
@@ -695,7 +695,7 @@ async def test_decompose_emits_decompose_input_event():
     raw = (
         '{"tasks":[{"id":"t1","title":"A","description":"d",'
         '"depends_on":[],"files":["src/a.py"],"task_type":"feature",'
-        '"estimated_loc":50,"verification":"Run pytest and confirm all tests pass",'
+        '"estimated_loc":50,"verification":"Run `pytest` and confirm all tests pass",'
         '"plan_text":"## Goal\\nAdd A.\\n## Files\\nsrc/a.py\\n## Steps\\n'
         '1. Implement it.\\n## Acceptance\\nRun `pytest` and confirm it passes"'
         "}]}"
@@ -723,12 +723,12 @@ async def test_decompose_emits_leaf_validated_on_clean():
     raw = (
         '{"tasks":[{"id":"t1","title":"A","description":"d",'
         '"depends_on":[],"files":["src/a.py"],"task_type":"feature",'
-        '"estimated_loc":50,"verification":"Run pytest and confirm all tests pass",'
+        '"estimated_loc":50,"verification":"Run `pytest` and confirm all tests pass",'
         '"plan_text":"## Goal\\nAdd A.\\n## Files\\nsrc/a.py\\n## Steps\\n'
         '1. Implement it.\\n## Acceptance\\nRun `pytest` and confirm it passes"},'
         '{"id":"t2","title":"B","description":"d",'
         '"depends_on":["t1"],"files":["src/b.py"],"task_type":"feature",'
-        '"estimated_loc":60,"verification":"Run pytest and confirm all tests pass",'
+        '"estimated_loc":60,"verification":"Run `pytest` and confirm all tests pass",'
         '"plan_text":"## Goal\\nAdd B.\\n## Files\\nsrc/b.py\\n## Steps\\n'
         '1. Implement it.\\n## Acceptance\\nRun `pytest` and confirm it passes"'
         "}]}"
@@ -794,7 +794,7 @@ async def test_decompose_no_emit_when_emitter_is_none():
     raw = (
         '{"tasks":[{"id":"t1","title":"A","description":"d",'
         '"depends_on":[],"files":["src/a.py"],"task_type":"feature",'
-        '"estimated_loc":50,"verification":"Run pytest and confirm all tests pass",'
+        '"estimated_loc":50,"verification":"Run `pytest` and confirm all tests pass",'
         '"plan_text":"## Goal\\nAdd A.\\n## Files\\nsrc/a.py\\n## Steps\\n'
         '1. Implement it.\\n## Acceptance\\nRun `pytest` and confirm it passes"'
         "}]}"
@@ -818,7 +818,7 @@ async def test_decompose_no_emit_when_plan_id_is_none():
     raw = (
         '{"tasks":[{"id":"t1","title":"A","description":"d",'
         '"depends_on":[],"files":["src/a.py"],"task_type":"feature",'
-        '"estimated_loc":50,"verification":"Run pytest and confirm all tests pass",'
+        '"estimated_loc":50,"verification":"Run `pytest` and confirm all tests pass",'
         '"plan_text":"## Goal\\nAdd A.\\n## Files\\nsrc/a.py\\n## Steps\\n'
         '1. Implement it.\\n## Acceptance\\nRun `pytest` and confirm it passes"'
         "}]}"
@@ -872,7 +872,7 @@ async def test_decompose_uses_fetched_outcome_history_when_db_provided(db):
     raw = (
         '{"tasks":[{"id":"t1","title":"A","description":"d",'
         '"depends_on":[],"files":["src/a.py"],"task_type":"feature",'
-        '"estimated_loc":50,"verification":"Run pytest and confirm all tests pass",'
+        '"estimated_loc":50,"verification":"Run `pytest` and confirm all tests pass",'
         '"plan_text":"## Goal\\nAdd A.\\n## Files\\nsrc/a.py\\n## Steps\\n'
         '1. Implement it.\\n## Acceptance\\nRun `pytest` and confirm it passes"'
         "}]}"

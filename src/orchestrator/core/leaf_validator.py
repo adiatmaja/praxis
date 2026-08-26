@@ -525,6 +525,10 @@ _ENV_ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 # Trailing version digits on an interpreter name: ``python3``, ``python3.11``.
 _VERSION_SUFFIX = "0123456789."
 
+# A backtick-delimited span. Used only when the whole string carries EXACTLY
+# one of them, which is the difference between a convention and a guess.
+_BACKTICK_SPAN = re.compile(r"`([^`]+)`")
+
 
 def shell_command_for_verification(value: Any) -> str | None:
     """Return *value* as a command Praxis may run itself, or None for "not one".
@@ -548,6 +552,23 @@ def shell_command_for_verification(value: Any) -> str | None:
     check" arm never fails a task -- so an unrecognised runner costs a signal,
     while a recognised sentence costs a false accusation.
 
+    WHERE the command may be FOUND is separate from WHAT may be run, and used to
+    be conflated. A string carrying EXACTLY ONE backticked span is that span:
+    not a guess but the convention the decompose prompt itself teaches, in the
+    HARD-constraint line and again in its worked example. Measured live on a
+    real decomposition, both leaves declared ``Run `python -m pytest ...` and
+    confirm ...``; both were reported as declaring no check at all, so the
+    review path's positive signal never fired on the path it was built for.
+    Two spans stay refused -- choosing between them IS a guess -- and so does an
+    unbalanced backtick, which is not a span. The extracted span then faces
+    every gate below unchanged, so unwrapping never widens what may be shelled.
+
+    A single-token PATH is the one shape backticks make dangerous, because a
+    leaf quotes ```src/client.py``` far more often than it names a script.
+    ``./scripts/check.sh`` is an invocation and ``src/client.py`` is a
+    reference; the discriminator is the leading ``./`` or the presence of an
+    argument, never the backticks, so the same rule holds wrapped or bare.
+
     This does NOT make the string safe; nothing here is a security boundary. A
     leaf's verification is brain output, and ``pytest -q; anything`` starts with
     an accepted token. It is trusted on exactly the ground the plan document
@@ -566,13 +587,16 @@ def shell_command_for_verification(value: Any) -> str | None:
     if command is None:
         return None
     command = command.strip()
-    # A brain that wrote ```pytest -q``` meant the command, not the quoting.
-    if len(command) > 2 and command.startswith("`") and command.endswith("`"):
-        command = command[1:-1].strip()
-    # A surviving backtick means prose WRAPPED a command rather than being one
-    # ("run `pytest -q` and confirm"), and picking the command out of a sentence
-    # is a guess. A newline means several steps, same answer.
-    if not command or "\n" in command or "`" in command:
+    # Exactly one backticked span IS the command, wherever it sits in the
+    # string. Both conditions state that claim: anything but a single balanced
+    # pair leaves the command ambiguous, and an ambiguous one is refused.
+    if "`" in command:
+        spans = _BACKTICK_SPAN.findall(command)
+        if len(spans) != 1 or command.count("`") != 2:
+            return None
+        command = spans[0].strip()
+    # A newline inside what would be run means several steps, not one command.
+    if not command or "\n" in command:
         return None
     # Never looser than the rule that let the leaf through in the first place.
     if not is_runnable_verification(command):
@@ -589,7 +613,14 @@ def shell_command_for_verification(value: Any) -> str | None:
     # all. Both separators, because the same string is written both ways.
     head = tokens[0].strip("\"'")
     if "/" in head or "\\" in head:
-        return command
+        # A path alone, with no argument and no leading ``./``, is a file the
+        # leaf is TALKING ABOUT, not one it is running. Shelling ``src/hm.py``
+        # yields "Permission denied" or a shell parsing Python: a task FAILED on
+        # evidence Praxis fabricated, which is the one outcome this whole
+        # function exists to prevent.
+        if len(tokens) > 1 or head.startswith(("./", ".\\")):
+            return command
+        return None
     if head.lower().rstrip(_VERSION_SUFFIX) in _VERIFICATION_RUNNERS:
         return command
     return None
@@ -607,6 +638,51 @@ def _check_verification(
                     rule="verification",
                     task_id=leaf.id,
                     message=defect,
+                )
+            )
+
+
+def _check_verification_shellable(
+    leaves: list[LeafTask],
+    result: ValidationResult,
+) -> None:
+    """SOFT: the leaf's declared check is one Praxis can run for itself.
+
+    The HARD rule and :func:`shell_command_for_verification` answer DIFFERENT
+    questions and must keep different answers. The rule asks "is this bad enough
+    to block a leaf", and its worst outcome is a wasted brain re-ask; a worker
+    can act on ``"the module imports cleanly"``, which is why that passes. The
+    guard asks "may Praxis SHELL this", and its worst outcome is a task failed
+    on fabricated evidence, which is why that same string is refused.
+
+    What was missing is that the gap was SILENT. A leaf could clear validation
+    while its declared check was unrunnable in practice, and the only place that
+    surfaced was a review-path log line about a different task. So this reports
+    the gap where it is authored, at no cost: soft findings never block and
+    never buy a re-ask (``execute_plan_decompose`` accepts a soft-only graph and
+    attaches the warnings), so a legitimately-prose check still dispatches.
+
+    It cannot drift from the guard because it IS the guard: this calls
+    :func:`shell_command_for_verification` rather than restating its rules, so
+    one edit moves both and a mutation of either turns this rule's tests red.
+    Leaves the HARD rule already named are skipped, so one bad check is one
+    finding rather than two.
+    """
+    for leaf in leaves:
+        if verification_defect(leaf.verification) is not None:
+            continue
+        if shell_command_for_verification(leaf.verification) is None:
+            result.add(
+                Violation(
+                    rule="verification_not_shellable",
+                    task_id=leaf.id,
+                    severity="soft",
+                    message=(
+                        f"verification {leaf.verification!r} names no program "
+                        "Praxis can run, so this leaf's own acceptance check "
+                        "cannot be used as evidence at review time; put the "
+                        "command in a single pair of backticks"
+                    ),
                 )
             )
 
@@ -815,6 +891,7 @@ def validate_leaves(
     _check_file_overlap(leaves, result)
     _check_checklist_size(leaves, profile, result)
     _check_vague_phrase(leaves, result)
+    _check_verification_shellable(leaves, result)
 
     return result
 
@@ -863,6 +940,9 @@ def validate_split_children(
     - ``checklist_size`` and ``vague_phrase``: per-leaf, unchanged in meaning.
     - ``file_overlap``: siblings sharing a file with no dep edge between them
       get separate ``agent/`` branches and collide at merge.
+    - ``verification_not_shellable``: per-leaf, and the triage prompt asks a
+      child for a runnable check in the same words the decompose prompt does,
+      so a child can lose the review path's positive signal the same way.
 
     Not applied, because each would measure the wrong thing rather than merely
     repeat itself:
@@ -911,6 +991,7 @@ def validate_split_children(
     _check_checklist_size(children, profile, result)
     _check_vague_phrase(children, result)
     _check_file_overlap(children, result)
+    _check_verification_shellable(children, result)
 
     return result
 

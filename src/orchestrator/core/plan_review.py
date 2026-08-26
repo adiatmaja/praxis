@@ -43,9 +43,18 @@ HARD CONSTRAINTS (non-negotiable):
 - Each leaf has no more than {max_checklist_items} checklist items.
 - Dependency depth no deeper than {max_dep_depth}.
 - Every leaf MUST include a "verification" naming a RUNNABLE command, plus the
-  outcome that proves it passed. `pytest tests/test_client.py::test_retry`
-  qualifies. A verification that only describes looking at something
-  ("check it visually", "inspect the output", "review the diff") is REJECTED.
+  outcome that proves it passed. Put the command inside ONE pair of backticks
+  and write the outcome as plain text around it, like
+  "Run `pytest tests/test_client.py::test_retry` and confirm it passes".
+  Praxis runs that command itself, so this matters:
+  - Exactly ONE backticked span in the string. Two commands in one
+    verification cannot be run; use the single command that proves the leaf.
+  - The span must START with the program: `pytest -q`, `npm test`,
+    `python -m pytest tests/`, `./scripts/check.sh`. Backticks around a FILE
+    PATH ("confirm `src/client.py` defines it") are not a command and are
+    ignored -- name the command that checks the file instead.
+  - A verification that only describes looking at something
+    ("check it visually", "inspect the output", "review the diff") is REJECTED.
 {escalate_block}
 {leaf_type_block}
 
@@ -101,7 +110,8 @@ For every leaf you MUST also include:
 - "files": list of file paths this leaf will touch.
 - "task_type": one of "feature", "bugfix", "refactor", "test", "chore".
 - "estimated_loc": integer estimate of lines added or changed.
-- "verification": a runnable command plus the outcome that proves it passed.
+- "verification": ONE backticked runnable command plus the outcome that proves
+  it passed (see the HARD constraint above; the example below is the shape).
 - "leaf_type": one of the leaf types listed above.
 
 Set "depends_on" to the ids of any leaves whose output this leaf builds on (e.g.
