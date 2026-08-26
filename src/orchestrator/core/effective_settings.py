@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+import math
 from typing import TYPE_CHECKING, Any
 
 from orchestrator.config import Settings
@@ -16,6 +18,8 @@ from orchestrator.core.context_window import (
 from orchestrator.database import Database
 from orchestrator.models.schemas import CapabilityProfile
 
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from orchestrator.core.worker_presets import WorkerPreset
@@ -37,6 +41,40 @@ EDITABLE_KEYS: frozenset[str] = frozenset(
         "auto_delegate.enabled",
     }
 )
+
+
+def _as_threshold(value: Any, default: float) -> float:
+    """Return a difficulty threshold, or its default when the value is unusable.
+
+    Same rule as ``difficulty.resolve_weights`` and for the same reason: a bare
+    ``float()`` on operator YAML raised out of ``difficulty_config`` and wedged
+    decomposition for every plan on the install, which is exactly what
+    ``build_scorer``'s docstring promises cannot happen. A non-finite value is
+    rejected too: NaN makes every comparison False, so the gate stops flagging
+    anything while reading as though it ran.
+
+    Args:
+        value: The raw YAML value, possibly absent, of the wrong type, or NaN.
+        default: The shipped threshold to fall back to.
+
+    Returns:
+        The usable threshold.
+    """
+    if value is None:
+        return default
+    try:
+        resolved = float(value)
+    except (TypeError, ValueError):
+        logger.warning(
+            "Ignoring unusable difficulty threshold %r; keeping %s", value, default
+        )
+        return default
+    if not math.isfinite(resolved):
+        logger.warning(
+            "Ignoring non-finite difficulty threshold %r; keeping %s", value, default
+        )
+        return default
+    return resolved
 
 
 class EffectiveSettings:
@@ -345,21 +383,27 @@ class EffectiveSettings:
         Falls back to the module defaults key by key, so a partial YAML block
         (or none at all) still produces a usable scorer.
         """
-        from orchestrator.core.difficulty import DEFAULT_BIAS, DEFAULT_WEIGHTS
+        from orchestrator.core.difficulty import resolve_bias, resolve_weights
 
         yaml_data = await self._get_yaml()
         raw = yaml_data.get("difficulty") or {}
         if not isinstance(raw, dict):
             raw = {}
-        weights = {**DEFAULT_WEIGHTS}
-        for name, value in (raw.get("weights") or {}).items():
-            if name in weights:
-                weights[name] = float(value)
+        # This is the seat a YAML typo actually reaches, and a bare float() here
+        # raised BEFORE anything downstream could degrade: an operator writing
+        # `loc_ratio: high` (a natural mistake, since `agentic_coding: "high"`
+        # appears in the capability snapshot two blocks up) got a ValueError out
+        # of this method, into the per-plan quarantine, and decomposition wedged
+        # on every plan on the install. ``difficulty.build_scorer`` promises in
+        # its docstring that a typo degrades the score and never wedges
+        # decomposition; that promise is only true if the value is resolved by
+        # the SAME functions here, so an unusable weight keeps its grounded
+        # default and says so rather than raising or silently becoming zero.
         return {
-            "weights": weights,
-            "bias": float(raw.get("bias", DEFAULT_BIAS)),
-            "reject_below": float(raw.get("reject_below", 0.35)),
-            "flag_below": float(raw.get("flag_below", 0.55)),
+            "weights": resolve_weights(raw),
+            "bias": resolve_bias(raw),
+            "reject_below": _as_threshold(raw.get("reject_below"), 0.35),
+            "flag_below": _as_threshold(raw.get("flag_below"), 0.55),
         }
 
     async def approvals_digest_interval_h(self) -> float:

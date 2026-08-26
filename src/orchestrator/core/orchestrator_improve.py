@@ -31,6 +31,15 @@ class ImprovementMixin:
         _tq: TaskQueue
         _bus: EventBus
 
+        # Defined on ``Orchestrator`` itself, alongside the two planning seats
+        # that already call it. Declared here for the type checker only; at
+        # runtime the MRO resolves it, because this class is never instantiated
+        # on its own. Redefining it here would be the second copy of a rule
+        # whose whole point is that there is one.
+        async def _refuse_empty_graph(
+            self, plan_id: str, opus_plan: dict[str, Any]
+        ) -> bool: ...
+
     async def _repo_survey(self, project: dict[str, Any]) -> str | None:
         """Return a survey of the project's repository, or None if unavailable.
 
@@ -170,7 +179,19 @@ class ImprovementMixin:
         analysis: dict[str, Any],
         activate: bool = True,
     ) -> str:
-        """Create and activate an autonomous improvement plan."""
+        """Create and activate an autonomous improvement plan.
+
+        Args:
+            project_id: The project the follow-up work belongs to.
+            analysis: The brain's proposal, read for ``confidence``, ``reason``
+                and ``proposed_tasks``.
+            activate: False parks the plan PENDING for a human, for a project
+                with the approval gate on.
+
+        Returns:
+            The plan id, whether the plan was activated or refused. A refused
+            plan is a FAILED row an operator can read, not a silent None.
+        """
 
         plan_id = await self._tq.create_plan(
             project_id,
@@ -188,6 +209,17 @@ class ImprovementMixin:
             ],
         }
         branch = f"plan/{today}-improve"
+        # The third seat onto the same hole the two planning seats had, so it
+        # takes the same helper rather than a third copy of the rule.
+        # ``confidence`` is the only gate upstream and it says nothing about
+        # SIZE, so a confident analysis proposing nothing used to activate a
+        # plan with no leaves: never dispatchable, never complete
+        # (``all_tasks_done`` is False for no tasks), ACTIVE forever.
+        #
+        # Before the activate/PENDING split deliberately, so the approval gate
+        # cannot park an empty plan for a human to approve into that same state.
+        if await self._refuse_empty_graph(plan_id, opus_plan):
+            return plan_id
         await self._tq.activate_plan(plan_id, opus_plan, branch)
         if not activate:
             await self._tq.update_plan_status(plan_id, PlanStatus.PENDING)

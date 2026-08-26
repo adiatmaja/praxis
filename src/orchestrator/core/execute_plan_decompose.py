@@ -31,6 +31,7 @@ from orchestrator.core.difficulty import (
     DEFAULT_WEIGHTS,
     build_scorer,
     extract_features,
+    resolve_weights,
 )
 from orchestrator.core.leaf_validator import (
     ValidationResult,
@@ -319,9 +320,11 @@ def _score_leaves(
         ``{leaf id: _LeafScore}``, one entry per leaf.
     """
     scorer = build_scorer(config)
-    # Same merge build_scorer applies, so the contributions explaining a score
-    # are computed with the same weights that produced it.
-    weights = {**DEFAULT_WEIGHTS, **(config.get("weights") or {})}
+    # The SAME resolver build_scorer applies, not a second hand-rolled merge:
+    # the contributions explaining a score have to be computed with the weights
+    # that produced it, and a private copy of the merge drifts silently the
+    # moment one side learns to reject an unusable value and the other does not.
+    weights = resolve_weights(config)
     depths = max_dep_depth(leaves)
     scored: dict[str, _LeafScore] = {}
     for leaf in leaves:
@@ -360,6 +363,75 @@ def _format_difficulty_feedback(
         "estimate, a shorter plan_text, a runnable acceptance command, and a "
         "specific leaf_type rather than 'generic'."
     )
+
+
+@dataclass(frozen=True)
+class ScoredChildren:
+    """Difficulty scores for one adaptive split's children.
+
+    ``flag_below`` travels with the scores because the caller has to apply the
+    same threshold the plan-level gate applies, and re-reading the config at
+    the call site is how the two drift.
+    """
+
+    scores: dict[str, _LeafScore]
+    flag_below: float
+
+
+async def score_split_children(
+    children: list[LeafTask],
+    profile: Any,
+    effective_settings: Any,
+    db: Any = None,
+    model: str | None = None,
+    project_id: str | None = None,
+) -> ScoredChildren:
+    """Score adaptive-split children with the SAME scorer the plan gate uses.
+
+    Scoring a child is not gating it, and the difference is deliberate.  The
+    plan gate can reject a leaf because the alternative is asking the brain for
+    a better plan.  A split has no such alternative: the only thing a rejection
+    could do is degrade to the plain retry path, which re-dispatches the PARENT
+    leaf that already failed twice and is, by construction, larger than any
+    child.  Refusing a child for scoring 0.30 in order to re-run a parent that
+    scores lower still is a downgrade dressed as a safety check, so the score
+    NEVER blocks here.
+
+    What it does instead is what the score is for everywhere else.  A child row
+    carries ``difficulty_score`` like any other leaf, so dispatch's existing
+    flag path applies to it: below ``flag_below`` the acceptance check becomes
+    mandatory in the worker's context pack and the flag is visible on SSE and
+    the dashboard.  Until this ran, every split child had a NULL score, which
+    dispatch reads as "unscored, therefore not flagged" -- the correct reading
+    of a NULL, and the wrong outcome for the one leaf on the plan that is known
+    to have failed already.  The score also reaches the capability ledger, so
+    the calibration join covers corrections and not only hypotheses.
+
+    One honest imprecision: ``dep_depth`` is measured inside the sibling set,
+    so it understates a child's true chain by the parent's inherited depth.
+    That direction is safe (it never invents difficulty) and it matches what
+    the plan gate does for a leaf whose depth also comes from elsewhere.
+
+    Args:
+        children: The brain's replacement leaves, already past F3.
+        profile: The capability profile the triage prompt was built from.
+        effective_settings: Settings object supplying ``difficulty_config``.
+        db: Database for the historical pass rate.  None means the scorer uses
+            its neutral prior rather than a fabricated rate.
+        model: Worker model whose history is relevant, usually the project's.
+        project_id: Project scope for the history query.
+
+    Returns:
+        A :class:`ScoredChildren` keyed by each child's brain id.
+    """
+    config = await _resolve_difficulty_config(effective_settings)
+    runs: list[dict[str, Any]] = []
+    if db is not None and model:
+        runs = await fetch_recent_outcomes(
+            db, model_name=model, project_id=project_id, limit=100
+        )
+    scored = _score_leaves(children, profile, config, _pass_rate(runs))
+    return ScoredChildren(scores=scored, flag_below=float(config["flag_below"]))
 
 
 async def decompose_plan(
@@ -490,7 +562,24 @@ async def decompose_plan(
             if scored[leaf.id].p_success < difficulty_config["reject_below"]
         ]
 
-        if validation_result.clean and not too_hard:
+        # SOFT findings are warnings BY DEFINITION (this module's docstring,
+        # section 1 of the standard, and the degradation below that records
+        # them on the accepted graph). The predicate here used to be
+        # ``.clean``, which counts soft findings too, so a draft with zero HARD
+        # violations spent a SECOND brain call re-asking for output that was
+        # already dispatchable. That call could not even change the outcome:
+        # the re-ask carries no authority to reject, so whatever came back was
+        # accepted with its own soft findings attached, exactly as the first
+        # draft would have been. ``.dispatchable`` is the property that means
+        # precisely "no HARD violations", and it is what this gate has always
+        # meant. Any soft rule added in future would otherwise silently double
+        # the cost of every decomposition it fires on.
+        if validation_result.dispatchable and not too_hard:
+            if validation_result.soft:
+                opus_plan["validation_warnings"] = [
+                    {"rule": v.rule, "task_id": v.task_id, "message": v.message}
+                    for v in validation_result.soft
+                ]
             accepted = _AcceptedDecomposition(
                 opus_plan, leaves, validation_result, scored
             )
@@ -544,30 +633,28 @@ async def decompose_plan(
             )
             raise PlanReviewError(msg)
 
-        if validation_result.hard:
-            hard_msgs = "; ".join(
-                f"[{v.rule}] {v.task_id}: {v.message}" for v in validation_result.hard
-            )
-            if emitter is not None and plan_id is not None:
-                await emitter.emit(
-                    PlanRejectedEvent(
-                        plan_id=plan_id,
-                        violations=[
-                            f"[{v.rule}] {v.task_id}: {v.message}"
-                            for v in validation_result.hard
-                        ],
-                        rounds=attempt,
-                    )
+        # Only HARD violations can reach here, by elimination: the accept
+        # branch above takes every graph whose ``hard`` list is empty (that is
+        # what ``dispatchable`` means) and the difficulty raise takes the rest.
+        # There is deliberately no soft-only landing here any more; a soft-only
+        # graph is ACCEPTED above with its warnings attached, which is what
+        # "warnings only" has to mean if it is to mean anything.
+        hard_msgs = "; ".join(
+            f"[{v.rule}] {v.task_id}: {v.message}" for v in validation_result.hard
+        )
+        if emitter is not None and plan_id is not None:
+            await emitter.emit(
+                PlanRejectedEvent(
+                    plan_id=plan_id,
+                    violations=[
+                        f"[{v.rule}] {v.task_id}: {v.message}"
+                        for v in validation_result.hard
+                    ],
+                    rounds=attempt,
                 )
-            msg = f"plan_rejected: {hard_msgs}"
-            raise PlanReviewError(msg)
-
-        opus_plan["validation_warnings"] = [
-            {"rule": v.rule, "task_id": v.task_id, "message": v.message}
-            for v in validation_result.soft
-        ]
-        accepted = _AcceptedDecomposition(opus_plan, leaves, validation_result, scored)
-        break
+            )
+        msg = f"plan_rejected: {hard_msgs}"
+        raise PlanReviewError(msg)
 
     if accepted is None:
         raise (

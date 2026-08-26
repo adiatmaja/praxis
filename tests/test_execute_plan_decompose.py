@@ -79,8 +79,12 @@ async def test_decompose_plan_returns_normalized_opus_plan():
     tasks = opus_plan["tasks"]
     assert all("slug" in t for t in tasks)
     assert tasks[1]["depends_on"] == [tasks[0]["slug"]]
-    assert router.calls
+    assert len(router.calls) == 1
     assert router.calls[0][0] == "plan_review"
+    # ABSENT, not an empty list. The key is the signal that a graph carried
+    # findings, so a consumer asking ``"validation_warnings" in opus_plan``
+    # must not be told yes by a decomposition that found nothing.
+    assert "validation_warnings" not in opus_plan
 
 
 async def test_decompose_plan_threads_context_onto_tasks():
@@ -608,7 +612,16 @@ async def test_decompose_raises_plan_rejected_on_persistent_hard_violations():
 
 
 async def test_decompose_attaches_validation_warnings_on_soft_only():
-    """When only SOFT violations remain, validation_warnings is attached and proceeds."""
+    """A SOFT-only draft is accepted on the FIRST call, warnings attached.
+
+    The call COUNT is the bound, and it was the one thing this test never
+    asserted.  The accept predicate used to be ``ValidationResult.clean``,
+    which counts soft findings, so a draft with zero HARD violations bought a
+    second brain call it could not use: the re-ask has no authority to reject,
+    so the second answer was accepted with its own soft findings attached
+    exactly as the first would have been.  Assert the count, or any soft rule
+    added later silently doubles the price of every decomposition it fires on.
+    """
     # Task with a vague phrase ("refactor") triggers a SOFT violation
     raw = (
         '{"tasks":[{"id":"t1","title":"Refactor module","description":"d",'
@@ -628,6 +641,7 @@ async def test_decompose_attaches_validation_warnings_on_soft_only():
         effective_settings=_FakeEffective(),
         project_id="p1",
     )
+    assert len(router.calls) == 1
     assert "validation_warnings" in opus_plan
     warnings = opus_plan["validation_warnings"]
     assert any(w["rule"] == "vague_phrase" for w in warnings)

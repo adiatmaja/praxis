@@ -14,6 +14,7 @@ without touching a single call site.
 
 from __future__ import annotations
 
+import logging
 import math
 from dataclasses import dataclass
 from typing import Any, Protocol
@@ -25,6 +26,8 @@ from orchestrator.core.token_budget import (
 )
 from orchestrator.models.schemas import CapabilityProfile, LeafTask, LeafType
 
+
+logger = logging.getLogger(__name__)
 
 # A verification carries a machine-checkable acceptance signal when it names a
 # runnable command. Imported from the F3 validator rather than redefined here:
@@ -157,12 +160,111 @@ def extract_features(
     )
 
 
+def _as_finite_float(label: str, value: Any) -> float | None:
+    """Return ``value`` as a finite float, or None once it has said why not.
+
+    ``float()`` alone is not enough. It accepts ``"nan"`` and ``"inf"``, and a
+    non-finite weight is worse than an unusable one: every comparison against a
+    NaN score is False, so every leaf silently stops being flagged, rejected or
+    escalated, and the gate reads as if it had run.
+
+    Args:
+        label: The config key, named in the warning so the operator can find it.
+        value: Whatever the settings layer put there.
+
+    Returns:
+        The coerced value, or None when it cannot be one.
+    """
+    try:
+        coerced = float(value)
+    except (TypeError, ValueError):
+        pass
+    else:
+        if math.isfinite(coerced):
+            return coerced
+    logger.warning(
+        "difficulty config: %s=%r is not a finite number, so the built-in "
+        "default is used for it instead",
+        label,
+        value,
+    )
+    return None
+
+
+def resolve_weights(config: dict[str, Any]) -> dict[str, float]:
+    """Merge operator-supplied weights over the defaults, dropping unusable ones.
+
+    The SINGLE sanitiser for the weight table, exported rather than kept
+    private because the score and the explanation of that score are built in
+    two different places: ``build_scorer`` here, and the per-feature
+    contribution breakdown in ``execute_plan_decompose._score_leaves``, which
+    re-merges the same raw dict by hand and multiplies it by the feature vector.
+    Two merges means two places to sanitise, and one of them will be forgotten.
+
+    An unusable value keeps the DEFAULT rather than becoming 0.0. Zero silently
+    deletes a grounded sign, which is indistinguishable from deliberate tuning
+    and is exactly the corruption the sign weights exist to prevent.
+
+    Args:
+        config: The resolved difficulty config; only ``weights`` is read.
+
+    Returns:
+        Every default weight, with the usable overrides applied. Unknown names
+        are carried through as before, and ignored by ``LogisticScorer.score``,
+        which iterates the FEATURE vector rather than this dict.
+    """
+    weights = dict(DEFAULT_WEIGHTS)
+    raw = config.get("weights") or {}
+    if not isinstance(raw, dict):
+        logger.warning(
+            "difficulty config: weights=%r is not a mapping, so the built-in "
+            "weight table is used unchanged",
+            raw,
+        )
+        return weights
+    for name, value in raw.items():
+        if name not in weights:
+            # Already the documented behaviour; now it says so. An unrecognised
+            # key is inert either way, so a silent one is a typo an operator
+            # believes took effect.
+            logger.warning(
+                "difficulty config: weights.%s is not a known feature, so it "
+                "has no effect on any score",
+                name,
+            )
+        coerced = _as_finite_float(f"weights.{name}", value)
+        if coerced is not None:
+            weights[name] = coerced
+    return weights
+
+
+def resolve_bias(config: dict[str, Any]) -> float:
+    """Return the configured intercept, or the default when it is unusable.
+
+    Args:
+        config: The resolved difficulty config; only ``bias`` is read.
+
+    Returns:
+        The bias in log-odds.
+    """
+    if "bias" not in config:
+        return DEFAULT_BIAS
+    coerced = _as_finite_float("bias", config["bias"])
+    return DEFAULT_BIAS if coerced is None else coerced
+
+
 def build_scorer(config: dict[str, Any]) -> DifficultyScorer:
     """Build the configured scorer from a settings dict.
 
-    Unknown weight names in operator YAML are ignored rather than raising: a
-    typo must degrade the score, never wedge decomposition.
+    Operator YAML is untrusted input, so this is the boundary that coerces it:
+    a typo must degrade the score, never wedge decomposition. Both halves of a
+    typo are handled, because only one of them used to be. An unknown weight
+    NAME was ignored; an unusable weight VALUE was not, and ``loc_ratio: high``
+    (a natural mistake, since ``agentic_coding: "high"`` really is a string in
+    the capability snapshot) reached ``LogisticScorer.score`` and raised
+    ``TypeError`` once per leaf, wedging every plan on the install.
+
+    Whatever is dropped is named in a WARNING. A config key that silently does
+    nothing is a knob the operator believes they turned.
     """
-    weights = {**DEFAULT_WEIGHTS, **(config.get("weights") or {})}
-    bias = float(config.get("bias", DEFAULT_BIAS))
-    return LogisticScorer(weights, bias)
+    return LogisticScorer(resolve_weights(config), resolve_bias(config))

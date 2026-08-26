@@ -8,6 +8,7 @@ mixin: it is only ever mixed into ``Orchestrator`` and reads attributes set in
 from __future__ import annotations
 
 import logging
+import math
 from collections.abc import Mapping
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, cast
@@ -57,9 +58,36 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+
 # Mirrors ``EffectiveSettings.difficulty_config`` and is used only when no
 # settings object is wired (bare-orchestrator paths in tests and scripts).
 DEFAULT_FLAG_BELOW = 0.55
+
+
+def _as_flag_threshold(value: object) -> float:
+    """Return a usable ``flag_below``, or the shipped default.
+
+    The dashboard flag is a hint, not a gate, so no reading of this value is
+    worth aborting the dispatch pass for every plan on the install.
+    """
+    try:
+        resolved = float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        logger.warning(
+            "Unusable flag_below %r in the difficulty config; using %s",
+            value,
+            DEFAULT_FLAG_BELOW,
+        )
+        return DEFAULT_FLAG_BELOW
+    if not math.isfinite(resolved):
+        logger.warning(
+            "Non-finite flag_below %r in the difficulty config; using %s",
+            value,
+            DEFAULT_FLAG_BELOW,
+        )
+        return DEFAULT_FLAG_BELOW
+    return resolved
+
 
 # What a flagged leaf gets when neither it nor its project declares a check.
 # Finer granularity has to be paired with MORE verification, not less (MAKER,
@@ -238,7 +266,12 @@ class DispatchMixin:
             # flag_below a dashboard flag that contradicts the gate that
             # produced the score. Resolved once: it is plan-constant.
             config = await self._effective_settings.difficulty_config()
-            flag_below = float(config["flag_below"])
+            # .get with the shipped default, never config["flag_below"]: a
+            # settings object that returns a partial dict raised a KeyError
+            # here, and this runs inside the dispatch pass, which has no
+            # per-plan try, so one missing key aborted dispatch for every plan
+            # on the install in order to decide a dashboard flag.
+            flag_below = _as_flag_threshold(config.get("flag_below"))
 
         if single_branch and dispatchable:
             # SERIALIZE. Every task in this mode pushes to ONE shared work

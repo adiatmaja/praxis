@@ -2,8 +2,16 @@
 
 The worker must never be handed more than its loaded context window can hold;
 overflow causes silent server-side truncation or churny compaction (OpenCode). We estimate cheaply (chars/4), reserve headroom for the agent's own
-reasoning + edits, and drop the lowest-priority sections until the rest fit.
+reasoning + edits, and then FILL what is left in priority order, skipping any
+section too big for the remaining room and carrying on to the next.
 ``floor`` sections are never dropped; if they alone overflow we raise.
+
+That is best-fit packing, not a strict drop order, and the difference is
+visible: a large high-priority section can be skipped while a smaller
+lower-priority one is admitted after it. The docstring here used to say "drop
+the lowest-priority sections until the rest fit", which describes a different
+algorithm, and a reader who believed it would have concluded the packer was
+broken. See ``fit_sections`` for why best-fit is the one that ships.
 """
 
 from __future__ import annotations
@@ -99,7 +107,30 @@ def fit_sections(
     context_window: int | None,
     reserve_fraction: float = WORKER_RESERVE_FRACTION,
 ) -> list[Section]:
-    """Return the highest-priority sections that fit the budget.
+    """Return the floor sections plus a best-fit pack of the rest.
+
+    The floors are kept unconditionally. What is left of the budget is then
+    filled by walking the droppable sections in ascending ``priority`` and
+    taking each one that still fits, SKIPPING any that does not and continuing.
+    So this is best-fit packing, not a strict tail-drop: a large high-priority
+    section can be skipped and a smaller lower-priority one admitted after it.
+
+    That is deliberate, and it is safe only because of how the caller ranks
+    things. In ``worker_bible.build_bible`` every rank that carries an
+    instruction is a FLOOR (goal, leaf contract, edit locations, acceptance,
+    scope briefing, review feedback, handover); the droppable tail is narrative
+    alone (neighbour interfaces, working agreement, caller context, repo
+    memory). Nothing load-bearing is ever a candidate for skipping, so leaving
+    budget unused to preserve a strict order would buy ordering purity and
+    spend real context on nothing.
+
+    ``tests/test_worker_bible_priority.py::
+    test_a_large_high_priority_section_can_lose_to_a_smaller_low_priority_one``
+    pins this end to end, and
+    ``tests/test_token_budget.py::test_a_section_that_does_not_fit_is_skipped_
+    not_a_stop_sign`` pins it here. Change the loop below to stop at the first
+    section that does not fit and BOTH go red, which is the intended way to
+    revisit this decision rather than discover it.
 
     Args:
         sections: Candidate sections.
@@ -132,6 +163,9 @@ def fit_sections(
     remaining = budget - floor_cost
     for s in sorted((s for s in sections if not s.floor), key=lambda s: s.priority):
         cost = estimate_tokens(s.text)
+        # `continue`, not `break`: see the docstring. A section too big for the
+        # room left is skipped and the walk goes on, so the leftover budget can
+        # still be spent on something smaller further down the ranking.
         if cost <= remaining:
             kept.append(s)
             remaining -= cost

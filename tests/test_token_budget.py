@@ -28,6 +28,13 @@ def test_fit_returns_all_when_under_budget():
 
 @pytest.mark.unit
 def test_fit_drops_lowest_priority_first():
+    """The ordinary case: everything ranked above the budget line survives.
+
+    Named the third section explicitly. It used to assert only that `goal` was
+    in and `docs` was out and never mentioned `ctx` at all, so the one section
+    whose fate distinguishes the two candidate packing rules was the one the
+    test declined to look at.
+    """
     sections = [
         Section("goal", "g" * 800, priority=0),
         Section("ctx", "c" * 800, priority=1),
@@ -35,8 +42,79 @@ def test_fit_drops_lowest_priority_first():
     ]
     kept = fit_sections(sections, context_window=1000, reserve_fraction=0.6)
     names = {s.name for s in kept}
-    assert "goal" in names
-    assert "docs" not in names
+    assert names == {"goal", "ctx"}
+
+
+@pytest.mark.unit
+def test_a_section_that_does_not_fit_is_skipped_not_a_stop_sign():
+    """Best-fit packing, pinned HERE rather than three modules away.
+
+    ``fit_sections`` fills the leftover budget in priority order and SKIPS
+    anything too big for the room left, continuing to the next section. So a
+    large rank-0 section can be dropped while a small rank-9 one survives. That
+    is a real design choice and it now says so in the module docstring, which
+    used to describe the opposite algorithm ("drop the lowest-priority sections
+    until the rest fit").
+
+    It is safe only because of how ``worker_bible.build_bible`` ranks things:
+    every instruction-carrying section is a ``floor`` and cannot be skipped at
+    all, so the droppable tail this rule reorders is narrative alone.
+
+    Change the loop to ``break`` on the first section that does not fit and
+    this goes red, together with
+    ``test_worker_bible_priority.py::
+    test_a_large_high_priority_section_can_lose_to_a_smaller_low_priority_one``.
+    Both are the intended tripwires for revisiting the decision.
+    """
+    # 1000 tok window at 0.6 reserve -> a 400 tok budget, no floors.
+    big_first = Section("hi-prio-500tok", "x" * 2000, priority=0)
+    small_last = Section("lo-prio-100tok", "y" * 400, priority=9)
+
+    kept = fit_sections(
+        [big_first, small_last], context_window=1000, reserve_fraction=0.6
+    )
+
+    assert [s.name for s in kept] == ["lo-prio-100tok"]
+
+
+@pytest.mark.unit
+def test_a_skipped_section_does_not_spend_the_budget_it_did_not_get():
+    """The positive control for the test above: the skip is a skip, not a charge.
+
+    Without this, a packer that charged the budget for a section it refused
+    would still pass the assertion above whenever only one candidate was left.
+    Here the rank-9 section fits only if the skipped rank-0 section cost
+    nothing, and the rank-5 one fits only after that.
+    """
+    sections = [
+        Section("too-big", "x" * 2000, priority=0),  # 500 tok, budget is 400
+        Section("mid", "y" * 1200, priority=5),  # 300 tok
+        Section("small", "z" * 320, priority=9),  # 80 tok
+    ]
+
+    kept = fit_sections(sections, context_window=1000, reserve_fraction=0.6)
+
+    assert [s.name for s in kept] == ["mid", "small"]
+
+
+@pytest.mark.unit
+def test_the_pack_is_filled_in_priority_order_not_input_order():
+    """Delete the sort and this goes red; nothing in this module used to.
+
+    Both candidates fit on their own and only one fits at all, so which one
+    survives is decided entirely by which is CONSIDERED first. Every other test
+    here happened to list its sections already in priority order, so the sort
+    could be removed with the module's own suite green.
+    """
+    # 400 tok budget, no floors. Listed worst-ranked first on purpose.
+    sections = [
+        Section("prio-9-250tok", "a" * 1000, priority=9),
+        Section("prio-0-300tok", "b" * 1200, priority=0),
+    ]
+
+    kept = fit_sections(sections, context_window=1000, reserve_fraction=0.6)
+
+    assert [s.name for s in kept] == ["prio-0-300tok"]
 
 
 @pytest.mark.unit

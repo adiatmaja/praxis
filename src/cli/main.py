@@ -11,6 +11,7 @@ from typing import Any, NoReturn
 import httpx
 import typer
 from rich.console import Console
+from rich.markup import escape
 from rich.table import Table
 
 from cli.doctor import doctor as _doctor
@@ -669,10 +670,39 @@ def plans(project_id: str = typer.Argument(..., help="Project ID")) -> None:
         elif plan.get("status") == "completed" and not plan.get(
             "integration_merged_at"
         ):
-            console.print(
-                "  No integration PR: this plan's work is on its own branch "
-                "and is NOT on the base branch."
-            )
+            # The FULL recorded reason, not the 60-char cell preview: it names
+            # the branch the work is stranded on and the base it never reached,
+            # and both are what an operator needs to go find it.
+            reason = plan.get("error")
+            if reason:
+                # markup=False for the same reason `praxis logs` uses it: this
+                # is server text, and rich would eat a bracketed branch name or
+                # raise on a closing-shaped token. highlight=False because a
+                # reason is prose, not a value to be syntax-coloured.
+                console.print(
+                    f"  No integration PR. The server recorded: {reason}",
+                    markup=False,
+                    highlight=False,
+                )
+            else:
+                # This line used to assert the stranded reading for every plan
+                # that reached it, and it is false for the commoner one: a
+                # single-branch plan whose task PRs were merged HAS reached the
+                # base branch and has no plan branch left, so the reader was
+                # sent looking for a branch that had been deleted. Nothing on
+                # the wire settles it, so both readings are named and the
+                # reader is pointed at the verb that does.
+                # No plan id in this sentence, deliberately. It wraps at 80
+                # columns and rich would fold a uuid across the break, which
+                # 404s when it is copied. The copyable `praxis tasks <id>` line
+                # printed above every plan is where the id lives.
+                console.print(
+                    "  No integration PR, and no reason was recorded. Either "
+                    "the work already reached the base branch (its task PRs "
+                    "were merged, or every task was a no-op), or it is on the "
+                    "plan branch and did not. The 'praxis tasks' line above "
+                    "shows which."
+                )
 
 
 #: How much of a stored planner error to show inline in the status cell. A
@@ -683,15 +713,24 @@ _ERROR_PREVIEW_LEN = 60
 
 
 def _truncate_error(error: str) -> str:
-    """Collapse and shorten a stored planner error for one status-cell line.
+    """Collapse, shorten and escape a stored plan error for one status-cell line.
 
     Whitespace is collapsed first: `plans.error` can carry a multi-line raw
     excerpt, and a literal newline in a table cell wraps unpredictably.
+
+    Rich markup is escaped LAST, and it is not cosmetic. This text is written
+    by the server from `gh` output and exception reprs, and a rich table cell
+    parses `[...]` as a style tag: `gh: [main] not a branch` rendered as
+    `gh:  not a branch`, with the branch name silently deleted from the one
+    line that was supposed to explain the failure, and any error carrying a
+    closing-shaped token (`[/dim]`) raised `MarkupError` and took the whole of
+    `praxis plans` down with it. Escaping after truncation keeps the preview
+    budget counting the characters the operator actually reads.
     """
     collapsed = " ".join(error.split())
     if len(collapsed) > _ERROR_PREVIEW_LEN:
-        return collapsed[:_ERROR_PREVIEW_LEN].rstrip() + " ..."
-    return collapsed
+        return escape(collapsed[:_ERROR_PREVIEW_LEN].rstrip() + " ...")
+    return escape(collapsed)
 
 
 def _status_cell(plan: dict[str, Any]) -> str:
@@ -699,9 +738,15 @@ def _status_cell(plan: dict[str, Any]) -> str:
 
     "completed" alone answers the wrong question. It means every task merged
     onto the PLAN branch, which a reader hears as "landed on main". The suffix
-    says which of the three it really is: integrated, waiting on an open PR,
-    or completed with no PR at all (the best-effort `gh pr create` failed,
-    which is a reportable state, not a dash).
+    says which it really is: integrated, waiting on an open PR, or completed
+    with no PR at all.
+
+    That last one is two states, not one, and they are opposites: there was
+    nothing to integrate because the work already reached the base branch, or
+    the integration PR could not be opened and the work is stranded. Only the
+    stranded one records a reason on `plans.error`, so a reason present is
+    printed and a reason absent is left unclaimed. `plans` names both readings
+    under the table; see the comment on the `completed` arm below.
 
     Deliberately a suffix rather than a fifth column. The ID column has to
     stay wide enough to print a uuid contiguously, since every other verb
@@ -722,6 +767,21 @@ def _status_cell(plan: dict[str, Any]) -> str:
     if plan.get("integration_pr_url"):
         return f"{status_text} (PR open)"
     if status_text == "completed":
+        # `(no PR)` alone covered two outcomes that mean opposite things, and
+        # `on_plan_completed` now tells them apart: the STRANDED one records
+        # why on `plans.error`, and the nothing-to-integrate one deliberately
+        # records nothing, because merging the task PRs already put the work on
+        # the base branch. So a reason present is worth printing verbatim.
+        #
+        # One way only. An absent reason is not proof the work landed:
+        # `reset_plan_attempts` clears a recovered plan's attempt COUNT and
+        # leaves `plans.error` alone, and several early-return paths through
+        # `on_plan_completed` record nothing at all. The bare cell therefore
+        # stays exactly what it was, and `plans` names both readings under the
+        # table rather than either surface asserting one.
+        reason = plan.get("error")
+        if reason:
+            return f"{status_text} (no PR; {_truncate_error(str(reason))})"
         return f"{status_text} (no PR)"
     if status_text in ("active", "pending"):
         attempts = plan.get("plan_attempts") or 0

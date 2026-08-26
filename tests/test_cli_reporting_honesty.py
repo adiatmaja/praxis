@@ -382,14 +382,24 @@ def test_plans_offers_approve_and_reject_for_a_pending_proposal(monkeypatch) -> 
 def test_plans_says_a_completed_plan_has_no_integration_pr(monkeypatch) -> None:
     """`completed (no PR)` names the state and used to offer nothing else.
 
-    The status cell was already honest. What was missing is the consequence:
-    the work is on the plan branch and nothing points at it.
+    The consequence line this test was written for said "the work is on the
+    plan branch and is NOT on the base branch", unconditionally. That reading
+    is false for the commoner outcome: a single-branch plan whose task PRs were
+    merged HAS reached the base branch and has no plan branch left, so the
+    reader was sent looking for a branch that had been deleted. With no reason
+    recorded on the plan row, nothing on the wire settles which of the two
+    happened, so the line now names both and points at the verb that does.
+    See `tests/test_cli_plan_integration_honesty.py` for the case where the
+    server DID record a reason.
     """
     _patch(monkeypatch, _json([_plan(status="completed")]))
     result = runner.invoke(app, ["plans", PROJECT_ID])
 
     assert result.exit_code == 0
-    assert "NOT on the base branch" in _flat(result)
+    out = _flat(result)
+    assert "No integration PR" in out
+    assert "already reached the base branch" in out
+    assert "or it is on the plan branch and did not" in out
 
 
 @pytest.mark.unit
