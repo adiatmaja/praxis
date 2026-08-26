@@ -15,13 +15,41 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from orchestrator.models.schemas import LeafTask, TaskStatus, TriageDecision
+from orchestrator.models.schemas import (
+    LeafTask,
+    LeafType,
+    TaskStatus,
+    TriageDecision,
+)
+
+
+def valid_child(child_id: str, title: str, path: str) -> LeafTask:
+    """A split child that PASSES ``leaf_validator.validate_split_children``.
+
+    Split children are graded against the leaf standard before they are
+    inserted, so a fixture missing a required section no longer exercises the
+    split path at all: it exercises the refusal. Every section here, and the
+    backticked command in ``verification``, is load-bearing.
+    """
+    return LeafTask(
+        id=child_id,
+        title=title,
+        plan_text=(
+            f"## Goal\n{title}.\n## Files\n{path}\n"
+            "## Steps\n1. Do it.\n"
+            "## Acceptance\nRun `pytest` and confirm it passes"
+        ),
+        files=[path],
+        estimated_loc=40,
+        verification="Run `pytest -q` and confirm it exits 0",
+        leaf_type=LeafType.FUNCTION_ADD,
+    )
 
 
 def _children() -> list[LeafTask]:
     return [
-        LeafTask(id="c1", title="One", plan_text="Goal: one"),
-        LeafTask(id="c2", title="Two", plan_text="Goal: two"),
+        valid_child("c1", "One", "src/one.py"),
+        valid_child("c2", "Two", "src/two.py"),
     ]
 
 

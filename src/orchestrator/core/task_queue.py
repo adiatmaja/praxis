@@ -626,6 +626,7 @@ class TaskQueue:
         parent_task_id: str,
         parent_slug: str,
         children: list[LeafTask],
+        difficulty_scores: dict[str, float] | None = None,
     ) -> list[str]:
         """Rewire the plan graph and append one task row per split child.
 
@@ -664,7 +665,15 @@ class TaskQueue:
             plan_id: The plan owning the parent.
             parent_task_id: DB id of the leaf being split.
             parent_slug: Graph slug of the leaf being split.
-            children: Validated ``LeafTask`` children from triage.
+            children: ``LeafTask`` children from triage, already graded by
+                ``leaf_validator.validate_split_children``.  This method does
+                NOT re-grade them: it is the persistence step, and a caller
+                that skipped the gate would get an invalid child stored just
+                as readily.  The one caller is the split branch of
+                ``orchestrator_review._run_leaf_triage``.
+            difficulty_scores: Optional ``{child.id: p_success}``.  Omitted
+                means "not scored", which dispatch reads as "not flagged"; it
+                must never be read as "safe".
 
         Returns:
             The new task row ids, in append order.
@@ -686,14 +695,26 @@ class TaskQueue:
         # its first mutation, so a refusal here writes nothing at all.
         appended = rewire_plan_for_split(opus_plan, parent_slug, children)
 
+        # The score goes on the GRAPH entry as well as the row. Every other
+        # activation path writes both, and ``get_dispatchable_tasks`` aligns
+        # the two positionally, so a row carrying a number its graph entry does
+        # not is the shape that reads as corruption to anyone who checks later.
+        # ``rewire_plan_for_split`` appends in ``children`` order, which is what
+        # makes this zip the right pairing rather than a coincidence.
+        scores = difficulty_scores or {}
+        for child, child_data in zip(children, appended, strict=True):
+            score = _as_score(scores.get(child.id))
+            if score is not None:
+                child_data["difficulty_score"] = score
+
         new_ids: list[str] = []
         for child_data in appended:
             child_id = str(uuid.uuid4())
             await self._db.execute(
                 """INSERT INTO tasks
                    (id, plan_id, title, description, branch_name,
-                    parent_task_id, leaf_type, attempt)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, 2)""",
+                    parent_task_id, leaf_type, difficulty_score, attempt)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, 2)""",
                 (
                     child_id,
                     plan_id,
@@ -702,6 +723,7 @@ class TaskQueue:
                     f"agent/{child_data['slug']}",
                     parent_task_id,
                     child_data.get("leaf_type"),
+                    child_data.get("difficulty_score"),
                 ),
             )
             new_ids.append(child_id)

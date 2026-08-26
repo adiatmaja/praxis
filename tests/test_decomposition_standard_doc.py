@@ -230,32 +230,49 @@ def test_the_doc_states_how_verbatim_and_the_template_coexist():
     assert "HARD-rejects" in text
 
 
-@pytest.mark.unit
-def test_the_doc_admits_split_children_are_not_validated():
-    """Policy 1 governs the hypothesis; nothing governs the correction.
-
-    ``validate_leaves`` has exactly one call site, so everything the adaptive
-    split produces reaches dispatch without passing F3. If a second call site
-    ever appears, this goes red and the doc should stop saying otherwise.
-    """
+def _callers_of(symbol: str) -> set[str]:
+    """Production files that CALL ``symbol``, excluding the module defining it."""
     import subprocess
 
     repo = Path(__file__).resolve().parents[1]
     hits = subprocess.run(  # noqa: S603
-        ["git", "grep", "-c", "validate_leaves(", "--", "src/"],
+        ["git", "grep", "-c", f"{symbol}(", "--", "src/"],
         cwd=repo,
         capture_output=True,
         text=True,
         check=False,
     ).stdout
-    callers = {
+    return {
         line.split(":")[0]
         for line in hits.splitlines()
         if line and "leaf_validator.py" not in line
     }
-    assert callers == {"src/orchestrator/core/execute_plan_decompose.py"}
 
-    # Collapsed, because the sentence is wrapped in the doc and a raw substring
-    # would go green or red on where the line break happens to land.
+
+@pytest.mark.unit
+def test_policy_one_governs_the_correction_as_well_as_the_hypothesis():
+    """Both halves of policy 1 have a caller, and the doc names the second.
+
+    This test used to pin the OPPOSITE fact: ``validate_leaves`` had one call
+    site and the doc admitted split children reached dispatch ungraded.  Note
+    what that shape could not catch.  It grepped for ``validate_leaves(``, and
+    a separate entry point for children does not contain that string, so the
+    old assertion would have stayed green while the doc it guards went stale.
+    Naming BOTH entry points is what removes the blind spot.
+    """
+    assert _callers_of("validate_leaves") == {
+        "src/orchestrator/core/execute_plan_decompose.py"
+    }
+    assert _callers_of("validate_split_children") == {
+        "src/orchestrator/core/orchestrator_review.py"
+    }
+
+    # Collapsed, because the sentences are wrapped in the doc and a raw
+    # substring would go green or red on where the line break happens to land.
     text = " ".join(DOC.read_text(encoding="utf-8").split())
-    assert "split children reach dispatch without passing F3 at all" in text
+    assert "validate_split_children" in text
+    assert "split children reach dispatch without passing F3" not in text
+    # The three skipped rules are the part a reader most needs, because their
+    # absence is invisible from the outside.
+    for skipped in ("dangling_dep", "dep_depth", "plan_text_verbatim"):
+        assert skipped in text, f"the standard never says why {skipped} is skipped"

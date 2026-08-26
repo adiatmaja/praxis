@@ -243,7 +243,7 @@ async def orchestrator_fixture(
     """
     from unittest.mock import AsyncMock
 
-    from orchestrator.models.schemas import TaskStatus
+    from orchestrator.models.schemas import CapabilityProfile, TaskStatus
 
     task_queue = TaskQueue(db)
     await db.execute(
@@ -305,6 +305,21 @@ async def orchestrator_fixture(
     settings = AsyncMock()
     settings.implement_escalation.return_value = []
     settings.max_leaves_per_plan.return_value = 24
+    # A REAL profile, not the AsyncMock's auto-child. The triage path grades
+    # split children against this profile's numeric limits, and a Mock compares
+    # to anything without raising, so a Mock here would make every limit test
+    # pass no matter what the limit was.
+    settings.capability_profile.return_value = CapabilityProfile(
+        model_name="qwen3.6-27b",
+        parameter_count_b=27.0,
+        context_window=32768,
+    )
+    # ``difficulty_config`` is deliberately left as the AsyncMock's own return.
+    # ``execute_plan_decompose._resolve_difficulty_config`` already treats a
+    # non-dict as "gate on the module defaults", which is the behaviour under
+    # test everywhere this fixture is used; pinning it to ``{}`` here instead
+    # would KeyError inside ``dispatch_pending_tasks``, which indexes the raw
+    # config directly (``core/orchestrator_dispatch.py``, ``config["flag_below"]``).
 
     orch = Orchestrator(
         task_queue=task_queue,

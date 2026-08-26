@@ -608,6 +608,92 @@ def validate_leaves(
     return result
 
 
+def validate_split_children(
+    children: list[LeafTask],
+    profile: CapabilityProfile,
+) -> ValidationResult:
+    """Grade the children of an adaptive split against the rules that apply.
+
+    ``validate_leaves`` grades a WHOLE graph before any of it has run.  Split
+    children arrive mid-flight, on a plan whose other leaves may already be
+    merged, and carry sibling-scoped ``depends_on`` that
+    ``leaf_split.rewire_plan_for_split`` has not yet rewritten into plan slugs.
+    Three rules therefore measure something that is not true here, so this runs
+    the rest by CALLING THE SAME rule functions ``validate_leaves`` calls.  A
+    second copy of any rule would let the hypothesis and its correction be
+    graded differently, which is the drift ``core/leaf_templates`` exists to
+    prevent.
+
+    Applied, HARD:
+
+    - ``leaf_template``: the point of the exercise.  The triage prompt renders
+      the same ``core/leaf_templates`` block the decompose prompt does, and
+      until this ran nothing graded the answer.
+    - ``verification``: rule 3 of the standard.  A child with no runnable
+      acceptance check has the project command silently substituted at dispatch
+      (``orchestrator_dispatch._normalize_verification``), so the worker is
+      graded on a check its own contract never named.
+    - ``max_files`` / ``max_loc``: the sizing rules.  A split happens BECAUSE
+      the parent was mis-sized, so an oversized child repeats the one failure
+      that is already known to have occurred on this leaf.
+    - ``escalate_mismatch``: per-leaf and profile-driven.  Inert unless the
+      profile names ``escalate_task_types``, and where it fires it means the
+      same thing for a child as for any other leaf.
+    - ``dep_cycle``: over the SIBLING set, the one graph rule that is both
+      meaningful and unguarded here.  Two children pointing at each other
+      survive rewiring intact and neither ever becomes dispatchable, so the
+      plan stalls for good with nothing raised anywhere.
+
+    Applied, SOFT (recorded for the log, never blocking):
+
+    - ``checklist_size`` and ``vague_phrase``: per-leaf, unchanged in meaning.
+    - ``file_overlap``: siblings sharing a file with no dep edge between them
+      get separate ``agent/`` branches and collide at merge.
+
+    Not applied, because each would measure the wrong thing rather than merely
+    repeat itself:
+
+    - ``dangling_dep``: a child dep naming neither a sibling nor anything else
+      resolvable is DROPPED by ``rewire_plan_for_split``, deliberately, and the
+      parent's inherited deps already cover the ordering.  Rejecting a whole
+      split over a fact the very next function repairs would trade a usable
+      graph for a plain retry of the leaf that has already failed twice.
+    - ``dep_depth``: the depth measurable inside a 2-to-4 child set is a
+      FRAGMENT of the child's real chain, because the parent's own inherited
+      depth is added only during rewiring.  The number would not be the leaf's
+      depth, and a HARD rejection quoting a wrong number is worse than none.
+    - ``plan_text_verbatim``: a child is a NEW contract the triage brain
+      authored, not an excerpt of the source plan, and no plan heading names
+      it.  ``_section_for_task`` would return ``""`` and the rule would skip
+      every child; not calling it says so instead of implying it ran.
+
+    Args:
+        children: The brain's replacement leaves, before any graph rewiring.
+        profile: The same capability profile the triage prompt was built from,
+            so a child is graded against the limits the brain was shown.
+
+    Returns:
+        A ``ValidationResult``.  ``dispatchable`` is the caller's gate; ``soft``
+        is for the log.
+    """
+    result = ValidationResult()
+
+    # HARD rules
+    _check_leaf_template(children, result)
+    _check_verification(children, result)
+    _check_max_files(children, profile, result)
+    _check_max_loc(children, profile, result)
+    _check_escalate_mismatch(children, profile, result)
+    _check_dep_cycles(children, result)
+
+    # SOFT rules
+    _check_checklist_size(children, profile, result)
+    _check_vague_phrase(children, result)
+    _check_file_overlap(children, result)
+
+    return result
+
+
 def format_violations_feedback(result: ValidationResult) -> str:
     """Render violations as human-readable feedback text.
 

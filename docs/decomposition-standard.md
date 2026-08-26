@@ -132,12 +132,22 @@ Four policies follow from the standard. They are implemented in
 
 1. **Decompose adaptively.** The first decomposition is a hypothesis. Observed
    failure is the signal to split further (ADaPT, arXiv 2311.05772, plus 28 to 33
-   percent over static plan-and-execute). Known gap: the hypothesis is graded
-   and the correction is not. `validate_leaves` has exactly one call site, in
-   `core/execute_plan_decompose`, so split children reach dispatch without
-   passing F3 at all. The triage prompt asks for the same standard (it renders
-   the same `core/leaf_templates` block the decompose prompt does), but asking
-   is not enforcing.
+   percent over static plan-and-execute). The correction is graded like the
+   hypothesis: `core/leaf_validator.validate_split_children` runs the F3 rules
+   that still mean something for a mid-flight child, by calling the same rule
+   implementations `validate_leaves` calls, and a child with a HARD violation is
+   refused. A refusal degrades to the plain retry path; it never aborts the
+   tick. Asking is not enforcing, and the triage prompt only ever asked (it
+   renders the same `core/leaf_templates` block the decompose prompt does).
+   Three rules are deliberately NOT run on children, because there they would
+   measure the wrong thing rather than merely repeat themselves:
+   `dangling_dep` (`core/leaf_split.rewire_plan_for_split` drops an unresolvable
+   child dep on purpose, so a refusal would trade a repairable graph for a
+   retry of the leaf that already failed twice), `dep_depth` (the depth
+   measurable inside a 2-to-4 child set is a fragment of the child's real
+   chain, since the parent's inherited depth is added only during rewiring),
+   and `plan_text_verbatim` (a child is a new contract the triage brain wrote,
+   not an excerpt of the source plan, so no plan section names it).
 2. **Retry only the failed unit.** Never re-run a completed sibling because a
    later leaf failed. Static decomposition without this raises retry cost by 73
    percent versus a monolithic attempt (arXiv 2605.15425).
@@ -168,6 +178,14 @@ are cheap and pre-execution: declared files touched, LOC estimate against the
 profile limit, dependency depth, whether the acceptance check is runnable,
 context-pack tokens against the worker's per-leaf budget, historical pass rate
 for this model, repo size bucket, and whether the leaf type is `generic`.
+
+Split children are scored too (`core/execute_plan_decompose.score_split_children`),
+and the score NEVER rejects one. At decomposition a rejection has somewhere to
+go: it asks the planner for a better plan. A split has no such alternative, so
+the only thing a rejection could do is fall back to re-dispatching the parent
+leaf, which has already failed twice and is by construction larger than any of
+its children. The score is carried onto the child's `tasks` row instead, where
+the flag band below does the work.
 
 Scoring is a transparent hand-weighted logistic in `src/orchestrator/core/difficulty.py`,
 with weights in `config/praxis.yaml` under `difficulty:`. The weights are

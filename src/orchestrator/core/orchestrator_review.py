@@ -23,7 +23,12 @@ from orchestrator.core.blast_radius import (
     measure_blast_radius,
     render_blast_radius,
 )
-from orchestrator.core.capability_events import TaskEscalatedEvent, TaskSplitEvent
+from orchestrator.core.capability_events import (
+    LeafDifficultyScoredEvent,
+    LeafRejectedEvent,
+    TaskEscalatedEvent,
+    TaskSplitEvent,
+)
 from orchestrator.core.clarification_states import (
     ANSWERED_BY_BRAIN,
     ASKED,
@@ -36,6 +41,7 @@ from orchestrator.core.diff_guard import (
 )
 from orchestrator.core.diff_stats import diff_stats
 from orchestrator.core.escalation import next_escalation
+from orchestrator.core.execute_plan_decompose import score_split_children
 from orchestrator.core.failure_taxonomy import FailureClass
 from orchestrator.core.git_backend import GitBackend, PullRequestRef
 from orchestrator.core.git_ops import (
@@ -47,6 +53,7 @@ from orchestrator.core.git_ops import (
 )
 from orchestrator.core.leaf_split import child_slugs
 from orchestrator.core.leaf_triage import TriageEvidence, triage_leaf
+from orchestrator.core.leaf_validator import Violation, validate_split_children
 from orchestrator.core.llm_router import ProviderRateLimitError
 from orchestrator.core.log_context import task_logger
 from orchestrator.core.merge_policy import auto_merge_eligible
@@ -134,6 +141,31 @@ _INTEGRATION_FAILED = "failed"
 # An auth failure or a gateway 403/5xx never parks, which is exactly why it
 # needs a bound: it spent a real provider call on every tick, forever.
 REVIEW_ERROR_ATTEMPT_CAP: int = 3
+
+
+def _render_child_violations(
+    violations: list[Violation],
+    id_to_slug: dict[str, str],
+) -> str:
+    """Render split-child findings, naming each child by the slug it would get.
+
+    A violation carries the brain's own child id (``c1``, ``child-2``, whatever
+    the model wrote), which appears nowhere else in the system. Translating to
+    the deterministic ``{parent}-sN`` slug is what makes the log line a thing an
+    operator can grep the plan graph for. An id with no slug is printed as-is
+    rather than dropped: a finding nobody can name is still a finding.
+
+    Args:
+        violations: The HARD or SOFT half of a ``ValidationResult``.
+        id_to_slug: Brain child id to the slug the rewiring would assign.
+
+    Returns:
+        One semicolon-joined line.
+    """
+    return "; ".join(
+        f"[{v.rule}] {id_to_slug.get(v.task_id, v.task_id)}: {v.message}"
+        for v in violations
+    )
 
 
 def _log_excerpt(output: str) -> str:
@@ -1273,9 +1305,107 @@ class ReviewMixin:
         if decision.decision == "split" and not is_split_child and decision.children:
             children = decision.children
             slugs = child_slugs(task_slug, len(children))
+            emitter = getattr(self, "_emitter", None)
+            log = task_logger(logger, plan_id=task.get("plan_id"), task_id=task_id)
+            # The graph slug each child WOULD get, so every message and event
+            # below names something an operator can look up. The children still
+            # carry the brain's own ids at this point; rewiring replaces them.
+            id_to_slug = {
+                child.id: slug for child, slug in zip(children, slugs, strict=True)
+            }
+
+            # F3 on the CORRECTION, not only on the hypothesis. Policy 1 of
+            # docs/decomposition-standard.md makes the first decomposition a
+            # hypothesis and observed failure the signal to split, which means
+            # the split is the case where the brain has ALREADY demonstrated it
+            # got the sizing wrong. The triage prompt renders the same
+            # core/leaf_templates block the decompose prompt renders, but until
+            # this ran nothing graded the answer: a child with no Acceptance
+            # section, a "review it manually" verification, or twice the
+            # profile's file budget went straight to a worker.
+            verdict = validate_split_children(children, profile)
+            if verdict.soft:
+                log.warning(
+                    "Split children for %s carry SOFT findings; dispatching "
+                    "anyway, because soft findings are warnings: %s",
+                    task_slug,
+                    _render_child_violations(verdict.soft, id_to_slug),
+                )
+            if not verdict.dispatchable:
+                # The same degradation the refused-rewiring branch below uses,
+                # for the same reason: triage is an OPTIMIZATION over the plain
+                # retry path, so an unusable answer must cost the optimization
+                # and never the task. The decision stays stamped above, so this
+                # leaf does not buy a second triage call on its next failure.
+                log.warning(
+                    "Refusing the triage split for %s: the children fail the "
+                    "leaf standard (%s); falling back to the plain retry path",
+                    task_slug,
+                    _render_child_violations(verdict.hard, id_to_slug),
+                )
+                if emitter is not None:
+                    for violation in verdict.hard:
+                        await emitter.emit(
+                            LeafRejectedEvent(
+                                plan_id=plan["id"],
+                                leaf_slug=id_to_slug.get(
+                                    violation.task_id, violation.task_id
+                                ),
+                                rule_id=violation.rule,
+                            )
+                        )
+                return False
+
+            # Scored, never gated: see score_split_children for why a rejection
+            # here would be strictly worse than dispatching the child.
+            #
+            # FAILS OPEN, and that is the whole contract. Scoring reads the
+            # settings layer and the outcomes table to produce a dashboard flag,
+            # while ``run_once`` has no per-plan try/except: an exception raised
+            # here would abort the orchestration tick for EVERY plan on the
+            # install in order to lose a flag. An unscored child is a state
+            # dispatch already reads correctly (a NULL score means "not
+            # flagged", never "safe"), so degrading to it costs strictly less
+            # than the alternative.
+            child_scores: dict[str, float] = {}
+            try:
+                scored = await score_split_children(
+                    children,
+                    profile,
+                    settings,
+                    db=self._tq._db,
+                    model=project.get("model_name"),
+                    project_id=project.get("id"),
+                )
+            except Exception:  # noqa: BLE001 - scoring must never wedge a task
+                log.exception(
+                    "Could not score the split children of %s; they are "
+                    "inserted UNSCORED, so dispatch will not flag them",
+                    task_slug,
+                )
+            else:
+                child_scores = {
+                    child.id: scored.scores[child.id].p_success for child in children
+                }
+                if emitter is not None:
+                    for child in children:
+                        leaf_score = scored.scores[child.id]
+                        await emitter.emit(
+                            LeafDifficultyScoredEvent(
+                                plan_id=plan["id"],
+                                leaf_slug=id_to_slug[child.id],
+                                p_success=leaf_score.p_success,
+                                features=leaf_score.features,
+                                flagged=leaf_score.p_success < scored.flag_below,
+                            )
+                        )
             try:
                 child_ids = await self._tq.insert_split_children(
-                    plan["id"], task_id, task_slug, children
+                    plan["id"],
+                    task_id,
+                    task_slug,
+                    children,
+                    difficulty_scores=child_scores,
                 )
             except (KeyError, ValueError):
                 # insert_split_children fails closed on a graph it cannot
@@ -1299,7 +1429,6 @@ class ReviewMixin:
                     "reason": decision.reason,
                 }
             )
-            emitter = getattr(self, "_emitter", None)
             if emitter is not None:
                 await emitter.emit(
                     TaskSplitEvent(
