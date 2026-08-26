@@ -42,14 +42,15 @@ def test_schema_version_is_one():
 
 
 @pytest.mark.unit
-def test_capability_event_types_contains_all_nine():
-    assert len(CAPABILITY_EVENT_TYPES) == 9
+def test_capability_event_types_contains_all_ten():
+    assert len(CAPABILITY_EVENT_TYPES) == 10
     assert "decompose_input" in CAPABILITY_EVENT_TYPES
     assert "leaf_validated" in CAPABILITY_EVENT_TYPES
     assert "leaf_rejected" in CAPABILITY_EVENT_TYPES
     assert "leaf_difficulty_scored" in CAPABILITY_EVENT_TYPES
     assert "leaf_rejected_predispatch" in CAPABILITY_EVENT_TYPES
     assert "plan_rejected" in CAPABILITY_EVENT_TYPES
+    assert "task_triaged" in CAPABILITY_EVENT_TYPES
     assert "task_split" in CAPABILITY_EVENT_TYPES
     assert "task_escalated" in CAPABILITY_EVENT_TYPES
     assert "outcome_recorded" in CAPABILITY_EVENT_TYPES

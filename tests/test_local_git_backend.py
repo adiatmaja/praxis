@@ -177,6 +177,68 @@ async def test_a_file_url_and_a_plain_path_behave_identically(bare_repo, ref):
 
 
 @pytest.mark.integration
+async def test_base_contains_a_branch_base_has_already_absorbed(bare_repo, tmp_path):
+    """A plan branch that merely TRAILS base has nothing left to integrate.
+
+    Every leaf closed ``no_changes``/``superseded``, so the plan branch never
+    got a commit of its own; base then moved on. The head SHAs are no longer
+    equal, so the identical-SHA fact cannot fire, and ``gh pr create`` refuses
+    with "No commits between ...". Reported as a failure, that writes
+    ``plans.error`` -- a ONE-WAY signal -- over a plan that did everything
+    right.
+
+    ``ls-remote`` cannot answer ancestry, which is why the question belongs on
+    the backend seam at all: a bare repo has no ``gh`` either.
+    """
+    _git("branch", "plan/x", "main", cwd=bare_repo)
+    work = _clone_for_writing(bare_repo, tmp_path / "advance", tmp_path)
+    (work / "later.txt").write_text("later\n", encoding="utf-8")
+    _git("add", "later.txt", cwd=work)
+    _git("commit", "-m", "base moves on", cwd=work)
+    _git("push", "origin", "main", cwd=work)
+
+    backend = LocalGitBackend(str(bare_repo))
+
+    assert await backend.base_contains("main", "plan/x") is True
+    # The control, and the direction that must NOT be reported as nothing to
+    # integrate: a branch carrying work base has never seen.
+    assert await backend.base_contains("main", "agent/x") is False
+
+
+@pytest.mark.integration
+async def test_a_squash_merged_branch_is_not_an_ancestor_of_base(bare_repo):
+    """The documented cost of using ancestry: a squash merge rewrites history.
+
+    ``LocalGitBackend.merge`` squash-merges, so after a local merge the work is
+    on base but the branch's own commits are not ancestors of it. This answers
+    False and the caller falls through to the ordinary creation attempt, exactly
+    as it does today. That costs coverage in local mode, never correctness.
+    """
+    merged_sha = _git("rev-parse", "refs/heads/agent/x", cwd=bare_repo)
+    backend = LocalGitBackend(str(bare_repo))
+
+    await backend.merge(PullRequestRef(backend="local", branch="agent/x", base="main"))
+    # merge() deletes the source branch, so name the same commits again.
+    _git("branch", "plan/squashed", merged_sha, cwd=bare_repo)
+
+    assert await backend.base_contains("main", "plan/squashed") is False
+
+
+@pytest.mark.integration
+async def test_base_contains_says_unknown_when_the_branch_is_not_there(bare_repo):
+    """Neither True nor False: ``git`` could not answer the question at all.
+
+    Exit 0 and exit 1 are the two ANSWERS ``merge-base --is-ancestor`` gives.
+    Anything else (a ref that does not resolve, exit 128) is a failed lookup,
+    and folding that into False would be a fabricated answer of the kind that
+    only shows up as a wrong outcome much later.
+    """
+    assert (
+        await LocalGitBackend(str(bare_repo)).base_contains("main", "no/such") is None
+    )
+
+
+@pytest.mark.integration
 async def test_head_sha_returns_the_branch_head(bare_repo):
     """The dispatch-time base sha, read straight from the bare repo."""
     expected = _git("rev-parse", "refs/heads/agent/x", cwd=bare_repo)

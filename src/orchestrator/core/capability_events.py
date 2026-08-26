@@ -98,8 +98,45 @@ class PlanRejectedEvent(_CapabilityEvent):
     rounds: int
 
 
+class TaskTriagedEvent(_CapabilityEvent):
+    """Recorded when the brain triages a twice-failed leaf, for ANY decision.
+
+    The DENOMINATOR of the triage trail. ``TaskSplitEvent`` and
+    ``TaskEscalatedEvent`` below record two of the four decisions, and only
+    when the decision could actually be APPLIED: a split is emitted after the
+    children pass the leaf standard and the graph rewiring succeeds, both of
+    which have documented degradation paths that return after
+    ``tasks.triage_decision`` is already stamped. So the trail could report no
+    splits at all for a plan whose brain decided to split repeatedly and had
+    every one refused -- the exact signal policy 1 of the decomposition
+    standard depends on, since it makes the first decomposition a hypothesis
+    and observed failure the evidence for resizing it.
+
+    This event is written where the decision is STAMPED, so "how many triages
+    happened and what did they decide" and "which of them were applied" become
+    two questions the trail can answer separately. The gap between them is
+    itself a measurement, not a bookkeeping error.
+
+    A triage DEFERRED on a provider throttle writes nothing: no decision was
+    made, the leaf keeps its one triage call, and a row would claim otherwise.
+    """
+
+    event_type: Literal["task_triaged"] = "task_triaged"
+    plan_id: str
+    task_id: str
+    leaf_slug: str
+    decision: Literal["retry", "split", "escalate", "human"]
+    attempt: int
+
+
 class TaskSplitEvent(_CapabilityEvent):
-    """Recorded when a task is split into smaller sub-tasks."""
+    """Recorded when a task split is APPLIED to the plan graph.
+
+    Narrower than ``TaskTriagedEvent`` on purpose: this is the ACTION, and it
+    carries what only the action knows (the child slugs the graph really took,
+    the tightened limits, the failure evidence). A split the brain decided and
+    the graph refused has a ``task_triaged`` row and no row here.
+    """
 
     event_type: Literal["task_split"] = "task_split"
     plan_id: str
@@ -110,7 +147,12 @@ class TaskSplitEvent(_CapabilityEvent):
 
 
 class TaskEscalatedEvent(_CapabilityEvent):
-    """Recorded when a task is escalated (e.g. needs a stronger model)."""
+    """Recorded when an escalation is APPLIED (e.g. a stronger model is pinned).
+
+    The action half, on the same terms as ``TaskSplitEvent``: it carries the
+    policy actually taken off the ladder, which the decision event does not
+    know at the point the decision is stamped.
+    """
 
     event_type: Literal["task_escalated"] = "task_escalated"
     plan_id: str
@@ -140,6 +182,7 @@ CapabilityEventModel = (
     | LeafDifficultyScoredEvent
     | LeafRejectedPredispatchEvent
     | PlanRejectedEvent
+    | TaskTriagedEvent
     | TaskSplitEvent
     | TaskEscalatedEvent
     | OutcomeRecordedEvent
@@ -153,6 +196,7 @@ CAPABILITY_EVENT_TYPES: frozenset[str] = frozenset(
         "leaf_difficulty_scored",
         "leaf_rejected_predispatch",
         "plan_rejected",
+        "task_triaged",
         "task_split",
         "task_escalated",
         "outcome_recorded",

@@ -21,6 +21,7 @@ from unittest.mock import ANY, AsyncMock
 
 import pytest
 
+from orchestrator.core.orchestrator_review import NoChangeDecision
 from orchestrator.models.schemas import TaskStatus
 
 
@@ -151,7 +152,17 @@ async def test_an_empty_scoped_diff_is_reported_as_the_task_adding_nothing(
         (task_id,),
     )
     orch.no_change_outcome = AsyncMock(  # type: ignore[method-assign]
-        return_value=(False, "the branch it was cut from did not verify clean")
+        return_value=NoChangeDecision(
+            False,
+            "the branch it was cut from did not verify clean",
+            # A verify command that RAN and refuted the no-op is evidence about
+            # the worker, so this decline is triage-eligible. Immaterial to what
+            # this test asserts (the leaf is on its first attempt, and the
+            # assertions are about the reported SCOPE), and stated truthfully
+            # anyway: a double that lies about which class a decline belongs to
+            # would quietly exercise the wrong branch the day the fixture moves.
+            worker_attributable=True,
+        )
     )
 
     with caplog.at_level("WARNING", logger="orchestrator.core.orchestrator_review"):

@@ -10,17 +10,26 @@ child that splits again just looks like a bigger plan.
 
 from __future__ import annotations
 
+import json
 from typing import Any
 from unittest.mock import AsyncMock
 
 import pytest
 
+from orchestrator.core.llm_router import ProviderRateLimitError
 from orchestrator.models.schemas import (
     LeafTask,
     LeafType,
     TaskStatus,
     TriageDecision,
 )
+
+
+async def _triage_rows(orch: Any, event_type: str) -> list[Any]:
+    """Every durable capability-event row of one type."""
+    return await orch._tq._db.fetch_all(
+        "SELECT * FROM capability_events WHERE event_type = ?", (event_type,)
+    )
 
 
 def valid_child(child_id: str, title: str, path: str) -> LeafTask:
@@ -383,6 +392,155 @@ async def test_retry_decision_threads_the_refined_prompt_into_progress_note(
     task = await orch._tq.get_task(task_id)
     assert task["status"] == TaskStatus.PENDING
     assert "Run only tests/test_widget.py" in (task["progress_note"] or "")
+
+
+# ---------------------------------------------------------------------------
+# The decision trail records every triage, not only the two that act
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+async def test_a_retry_triage_is_recorded_in_the_decision_trail(
+    orchestrator_fixture: tuple[Any, str, dict[str, Any]],
+) -> None:
+    """A spent brain call must leave a trace, whatever it decided.
+
+    ``capability_events`` carried ``task_split`` and ``task_escalated`` only,
+    so a triage answering ``retry`` wrote ``tasks.triage_decision`` and left NO
+    row in the trail. Operationally nothing was lost; analytically the
+    DENOMINATOR was invisible. "Of N triages, how many were split" is the
+    calibration question the capability engine exists to answer, and it cannot
+    be asked of a trail that records only the numerators.
+    """
+    orch, task_id, project = orchestrator_fixture
+    await _second_attempt(orch, task_id)
+    orch._triage_leaf = AsyncMock(
+        return_value=TriageDecision(decision="retry", reason="one more")
+    )
+
+    await orch.review_task(task_id, project)
+
+    rows = await _triage_rows(orch, "task_triaged")
+    assert len(rows) == 1
+    payload = json.loads(rows[0]["payload"])
+    assert payload["decision"] == "retry"
+    assert payload["leaf_slug"] == "a"
+    assert payload["attempt"] == 2
+    # The indexed column, not just the blob: a decision trail about a task has
+    # to be queryable BY that task.
+    assert rows[0]["task_id"] == task_id
+
+
+@pytest.mark.unit
+async def test_a_human_triage_is_recorded_in_the_decision_trail(
+    orchestrator_fixture: tuple[Any, str, dict[str, Any]],
+) -> None:
+    """The other missing quarter, and the most expensive one to lose.
+
+    ``human`` is terminal and irreversible. A leaf ending that way with nothing
+    in the trail is the single decision an operator is most likely to want to
+    audit later.
+    """
+    orch, task_id, project = orchestrator_fixture
+    await _second_attempt(orch, task_id)
+    orch._triage_leaf = AsyncMock(
+        return_value=TriageDecision(decision="human", reason="ambiguous")
+    )
+
+    await orch.review_task(task_id, project)
+
+    rows = await _triage_rows(orch, "task_triaged")
+    assert len(rows) == 1
+    assert json.loads(rows[0]["payload"])["decision"] == "human"
+
+
+@pytest.mark.unit
+async def test_a_split_records_both_the_decision_and_the_action(
+    orchestrator_fixture: tuple[Any, str, dict[str, Any]],
+) -> None:
+    """The two events answer different questions, so both must fire.
+
+    ``task_triaged`` says what the brain DECIDED; ``task_split`` says the graph
+    rewiring was APPLIED, and carries the child slugs and evidence ref that a
+    decision event has no business duplicating. Collapsing them into one would
+    lose whichever half the survivor did not carry.
+    """
+    orch, task_id, project = orchestrator_fixture
+    await _second_attempt(orch, task_id)
+    orch._triage_leaf = AsyncMock(
+        return_value=TriageDecision(
+            decision="split", reason="two concerns", children=_children()
+        )
+    )
+
+    await orch.review_task(task_id, project)
+
+    decided = await _triage_rows(orch, "task_triaged")
+    applied = await _triage_rows(orch, "task_split")
+    assert len(decided) == 1
+    assert json.loads(decided[0]["payload"])["decision"] == "split"
+    assert len(applied) == 1
+
+
+@pytest.mark.unit
+async def test_a_split_the_graph_refuses_is_still_recorded_as_decided(
+    orchestrator_fixture: tuple[Any, str, dict[str, Any]],
+) -> None:
+    """DECIDED and APPLIED are different facts, and the gap is itself the signal.
+
+    ``task_split`` is emitted only after ``validate_split_children`` passes AND
+    ``insert_split_children`` succeeds, both of which have documented
+    degradation paths that return after ``triage_decision`` is already stamped.
+    So the trail could report "0 splits" for a plan whose brain decided to
+    split three times and had every one refused -- which is precisely the
+    signal policy 1 of the decomposition standard cares about, since it makes
+    the first decomposition a hypothesis and observed failure the evidence.
+
+    This is the case a single combined event could not express and the two
+    action events could not see.
+    """
+    orch, task_id, project = orchestrator_fixture
+    await _second_attempt(orch, task_id)
+    orch._tq.insert_split_children = AsyncMock(  # type: ignore[method-assign]
+        side_effect=ValueError("already split")
+    )
+    orch._triage_leaf = AsyncMock(
+        return_value=TriageDecision(
+            decision="split", reason="two concerns", children=_children()
+        )
+    )
+
+    await orch.review_task(task_id, project)
+
+    decided = await _triage_rows(orch, "task_triaged")
+    applied = await _triage_rows(orch, "task_split")
+    assert len(decided) == 1, "the brain decided to split and the trail lost it"
+    assert json.loads(decided[0]["payload"])["decision"] == "split"
+    assert applied == [], "nothing was rewired, so nothing may claim it was"
+
+
+@pytest.mark.unit
+async def test_a_deferred_triage_records_nothing_at_all(
+    orchestrator_fixture: tuple[Any, str, dict[str, Any]],
+) -> None:
+    """A throttle is not a decision, and must not be recorded as one.
+
+    The leaf keeps its one triage call and is asked again once the limit
+    clears. A row here would double-count that leaf in every denominator and
+    claim a decision nobody made.
+    """
+    orch, task_id, project = orchestrator_fixture
+    await _second_attempt(orch, task_id)
+    orch._triage_leaf = AsyncMock(
+        side_effect=ProviderRateLimitError("claude", "usage limit reached")
+    )
+
+    await orch.review_task(task_id, project)
+
+    assert await _triage_rows(orch, "task_triaged") == []
+    task = await orch._tq.get_task(task_id)
+    assert task is not None
+    assert task["triage_decision"] is None
 
 
 @pytest.mark.unit

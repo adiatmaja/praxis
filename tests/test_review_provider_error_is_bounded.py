@@ -34,7 +34,10 @@ from unittest.mock import AsyncMock
 import pytest
 
 from orchestrator.core.llm_router import ProviderAuthError, ProviderRateLimitError
-from orchestrator.core.orchestrator_review import REVIEW_ERROR_ATTEMPT_CAP
+from orchestrator.core.orchestrator_review import (
+    REVIEW_ERROR_ATTEMPT_CAP,
+    NoChangeDecision,
+)
 from orchestrator.models.schemas import TaskStatus
 
 
@@ -214,7 +217,16 @@ async def test_an_empty_diff_decision_clears_the_streak_too(orchestrator_fixture
     # An empty diff is decided by ``no_change_outcome``, never by the brain.
     orch._git.get_pr_diff.return_value = ""
     orch.no_change_outcome = AsyncMock(
-        return_value=(False, "the branch it was cut from did not verify clean")
+        return_value=NoChangeDecision(
+            False,
+            "the branch it was cut from did not verify clean",
+            # See the note in test_review_scope_single_branch: a verify command
+            # that ran and refuted the no-op is worker-attributable, so the
+            # double says so. The leaf is on its first attempt here, so the
+            # triage gate declines on the attempt bound either way and the
+            # streak reset under test is reached identically.
+            worker_attributable=True,
+        )
     )
     await orch._tq.update_task_status(task_id, TaskStatus.REVIEWING)
     await _tick(orch, task_id, project)

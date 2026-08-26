@@ -46,6 +46,7 @@ from orchestrator.models.schemas import TaskStatus
 
 PROJECT_ID = "proj-nocommits"
 REPO_URL = "https://github.com/adiatmaja/playground"
+PLAN_BRANCH = "plan/2026-08-21-nothing-to-do"
 BASE_SHA = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 AHEAD_SHA = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 
@@ -69,7 +70,7 @@ async def _seed(db: Database) -> tuple[TaskQueue, str]:
             "plan_slug": "s",
             "tasks": [{"title": "t", "slug": "t", "description": "d"}],
         },
-        "plan/2026-08-21-nothing-to-do",
+        PLAN_BRANCH,
     )
     rows = await db.fetch_all("SELECT id FROM tasks WHERE plan_id = ?", (plan_id,))
     for row in rows:
@@ -251,6 +252,102 @@ async def test_a_deleted_plan_branch_is_not_a_failed_pr_creation(
         "the skip must say WHICH fact settled it, or the operator cannot tell "
         "a merged-and-deleted branch from an all-no-op plan; got:\n" + caplog.text
     )
+
+
+def _backend(contains: bool | None) -> AsyncMock:
+    """A backend double that answers the ancestry question and nothing else."""
+    backend = AsyncMock()
+    backend.name = "github"
+    backend.base_contains = AsyncMock(return_value=contains)
+    backend.open_integration_pr = AsyncMock(
+        return_value="https://github.test/owner/repo/pull/99"
+    )
+    return backend
+
+
+@pytest.mark.integration
+async def test_a_plan_branch_base_already_carries_is_not_a_failed_pr_creation(
+    db: Database, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The third fact: a branch that merely TRAILS base.
+
+    Every leaf closed ``no_changes``/``superseded``, so the plan branch got no
+    commit of its own and base moved on afterwards. The two SHAs are therefore
+    NOT equal and the branch IS on the remote, so neither existing fact fires;
+    ``gh pr create`` refuses with "No commits between ..." and the except path
+    writes ``plans.error``. That column is a ONE-WAY signal -- ``reset_plan_
+    attempts`` clears the count and not the error -- so the row reads broken
+    permanently for a plan that did everything right.
+    """
+    task_queue, plan_id = await _seed(db)
+    git = _git(plan_branch_sha=AHEAD_SHA)
+    orch = _orchestrator(task_queue, git)
+    backend = _backend(contains=True)
+    orch._resolve_backend = lambda _repo_url: backend  # type: ignore[method-assign]
+    orch._tq.set_plan_error = AsyncMock()  # type: ignore[method-assign]
+
+    with caplog.at_level(logging.INFO):
+        await orch.on_plan_completed(plan_id)
+
+    backend.open_integration_pr.assert_not_awaited()
+    orch._tq.set_plan_error.assert_not_awaited()
+    assert "Integration PR open failed" not in caplog.text
+    assert "nothing to integrate" in caplog.text.lower()
+    assert f"already carries branch={PLAN_BRANCH}" in caplog.text
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("contains", [False, None], ids=["not-contained", "unknown"])
+async def test_only_a_positive_containment_answer_skips_the_pr(
+    db: Database, contains: bool | None
+) -> None:
+    """False and "could not ask" both fall through, unchanged.
+
+    Only a POSITIVE, fully answered check may change the flow. Treating an
+    unanswered lookup as a skip would stop opening integration PRs the first
+    time a token expired or the network hiccupped, and the plan would complete
+    with no PR and no error -- the silent-gap class every comment on this path
+    exists to prevent. False falls through for a simpler reason: the branch
+    really does carry work base has not got.
+    """
+    task_queue, plan_id = await _seed(db)
+    git = _git(plan_branch_sha=AHEAD_SHA)
+    orch = _orchestrator(task_queue, git)
+    backend = _backend(contains=contains)
+    orch._resolve_backend = lambda _repo_url: backend  # type: ignore[method-assign]
+
+    await orch.on_plan_completed(plan_id)
+
+    backend.open_integration_pr.assert_awaited_once()
+
+
+@pytest.mark.integration
+async def test_a_failed_pr_creation_states_only_what_it_established(
+    db: Database,
+) -> None:
+    """The failure text asserted a case it had not checked.
+
+    It said the work "is on the plan branch and has NOT reached the base
+    branch", which in the trailing case is simply false: the work reached base
+    long ago. The reason an operator gets must state the facts (the PR could
+    not be opened, and git's own message) and point at the check, not pick one
+    of the possible causes and assert it.
+    """
+    task_queue, plan_id = await _seed(db)
+    git = _git(plan_branch_sha=AHEAD_SHA)
+    orch = _orchestrator(task_queue, git)
+    backend = _backend(contains=None)
+    backend.open_integration_pr = AsyncMock(side_effect=RuntimeError("gh exploded"))
+    orch._resolve_backend = lambda _repo_url: backend  # type: ignore[method-assign]
+
+    await orch.on_plan_completed(plan_id)
+
+    plan = await task_queue.get_plan(plan_id)
+    assert plan is not None
+    error = plan["error"]
+    assert "gh exploded" in error
+    assert PLAN_BRANCH in error
+    assert "has NOT reached" not in error
 
 
 @pytest.mark.integration

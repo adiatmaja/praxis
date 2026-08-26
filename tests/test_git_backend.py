@@ -275,3 +275,72 @@ async def test_github_backend_head_sha_is_none_without_a_repo_url():
 
     assert await backend.head_sha("plan/x") is None
     git.remote_head_sha.assert_not_awaited()
+
+
+def _compare_ops(merge_base: str | None = None, **kwargs: object) -> AsyncMock:
+    """A GitOps double where every branch has its OWN sha.
+
+    One sha for both branches would make the containment answer independent of
+    which branch's sha the implementation compares against, and that choice is
+    the whole content of the method.
+    """
+    git = _git_ops_mock()
+    git.repo_slug.return_value = "o/r"
+    git.remote_head_sha = AsyncMock(
+        side_effect=lambda _repo, branch: {"main": "basesha", "plan/x": "headsha"}[
+            branch
+        ]
+    )
+    git.compare_merge_base = AsyncMock(return_value=merge_base, **kwargs)
+    return git
+
+
+@pytest.mark.unit
+async def test_github_backend_reports_base_contains_a_branch_it_has_absorbed():
+    """GitHub's merge base for base...head IS head when base already carries it.
+
+    That is the ``behind``/``identical`` half of the compare endpoint's status,
+    read off the primitive this module already uses to bound review ranges.
+    """
+    git = _compare_ops(merge_base="headsha")
+    backend = GitHubBackend(git, "https://github.com/o/r")
+
+    assert await backend.base_contains("main", "plan/x") is True
+    git.compare_merge_base.assert_awaited_once_with("o/r", "main", "plan/x")
+
+
+@pytest.mark.unit
+async def test_github_backend_reports_a_branch_with_its_own_commits_as_not_contained():
+    """The control: a branch base has never seen must still get its PR."""
+    git = _compare_ops(merge_base="basesha")
+    backend = GitHubBackend(git, "https://github.com/o/r")
+
+    assert await backend.base_contains("main", "plan/x") is False
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("kwargs", "url"),
+    [
+        (
+            {"merge_base": None, "side_effect": RuntimeError("gh: rate limited")},
+            "https://github.com/o/r",
+        ),
+        ({"merge_base": "headsha"}, None),
+    ],
+    ids=["gh-failed", "no-repo-url"],
+)
+async def test_github_backend_says_unknown_rather_than_guessing(
+    kwargs: dict[str, object], url: str | None
+):
+    """Every failure is "could not establish", never False and never True.
+
+    A rate limit, an expired token and a backend built without a repository URL
+    are all the same fact: nobody asked GitHub successfully. The caller acts on
+    True alone, so an unknown falls through to the ordinary creation attempt.
+    """
+    merge_base = kwargs.pop("merge_base")
+    git = _compare_ops(merge_base=merge_base, **kwargs)  # type: ignore[arg-type]
+    backend = GitHubBackend(git, url) if url else GitHubBackend(git)
+
+    assert await backend.base_contains("main", "plan/x") is None

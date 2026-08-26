@@ -8,7 +8,27 @@ from orchestrator.core.failure_taxonomy import FailureClass, counts_against_work
 
 
 class TestFailureClassValues:
-    """Verify all seven enum members exist with correct string values."""
+    """Verify every enum member exists with the correct string value."""
+
+    def test_the_vocabulary_is_exactly_this(self) -> None:
+        """The whole set, pinned in one place.
+
+        The per-member tests below say each name still maps to its wire string;
+        this one says nothing was ADDED without a deliberate decision. The
+        values are written into ``task_outcomes.failure_class`` and read back by
+        ``fetch_recent_outcomes``, so a member added on one side of that seam and
+        not the other is a silent change to what the calibration data means.
+        """
+        assert {fc.value for fc in FailureClass} == {
+            "verify_fail",
+            "fixable_in_place",
+            "context_overflow",
+            "too_broad",
+            "needs_stronger_model",
+            "worker_blocked",
+            "provider_error",
+            "no_output",
+        }
 
     def test_verify_fail(self) -> None:
         assert FailureClass.VERIFY_FAIL == "verify_fail"
@@ -31,6 +51,9 @@ class TestFailureClassValues:
     def test_provider_error(self) -> None:
         assert FailureClass.PROVIDER_ERROR == "provider_error"
 
+    def test_no_output(self) -> None:
+        assert FailureClass.NO_OUTPUT == "no_output"
+
 
 class TestCountsAgainstWorker:
     """Parametrized attribution tests."""
@@ -52,6 +75,12 @@ class TestCountsAgainstWorker:
             ("worker_blocked", False),
             (FailureClass.PROVIDER_ERROR, False),
             ("provider_error", False),
+            # A worker that produced nothing is evidence about the worker, so
+            # it counts. Flipping this to False would leave the row in the
+            # table and out of every rate computed from it -- the exact
+            # denominator hole recording it was meant to close.
+            (FailureClass.NO_OUTPUT, True),
+            ("no_output", True),
         ],
     )
     def test_attribution(

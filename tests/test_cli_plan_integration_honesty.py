@@ -49,8 +49,9 @@ PLAN_ID = "11111111-2222-3333-4444-555555555555"
 #: process, which is the mirror this surface exists without.
 STRANDED = (
     "the integration pull request for branch=plan/2026-08-25-x onto base=main "
-    "could not be opened (gh: Head ref must be a branch), so this plan's work "
-    "is on the plan branch and has NOT reached the base branch"
+    "could not be opened (gh: Head ref must be a branch); check whether "
+    "plan/2026-08-25-x carries commits main does not have, and whether the "
+    "credentials for this repository still work"
 )
 
 
@@ -104,7 +105,7 @@ def test_a_stranded_plan_and_a_no_op_plan_do_not_render_alike() -> None:
     assert stranded != nothing
 
 
-def test_a_stranded_plan_says_the_work_did_not_reach_the_base_branch() -> None:
+def test_a_failed_integration_shows_the_servers_own_reason() -> None:
     cell = _status_cell(_plan(error=STRANDED))
 
     assert cell.startswith("completed (no PR; ")

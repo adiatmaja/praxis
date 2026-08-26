@@ -234,6 +234,27 @@ class GitBackend(Protocol):
         """Squash-merge the change into its base."""
         ...
 
+    async def base_contains(self, base: str, head: str) -> bool | None:
+        """Whether ``base`` already carries every commit on ``head``.
+
+        The question ``head_sha`` cannot answer. Two branches that are not
+        EQUAL can still have nothing to integrate between them: a plan branch
+        whose leaves all closed ``no_changes`` never got a commit of its own,
+        and once base moves on it strictly contains the plan branch. ``gh pr
+        create`` refuses that with "No commits between ...", which the caller
+        would otherwise report as a failed integration over a correct outcome.
+
+        This belongs on the seam rather than beside it because neither
+        available shortcut can answer it: ``git ls-remote`` reads refs and
+        knows nothing about ancestry, and a bare repo has no ``gh`` at all.
+
+        Returns:
+            True when ``base`` already contains ``head``, False when it does
+            not, and None when the question could not be established. None is
+            "unknown", never "no": the caller must let it fall through.
+        """
+        ...
+
     async def open_integration_pr(
         self, base: str, head: str, title: str, body: str
     ) -> str:
@@ -385,6 +406,51 @@ class GitHubBackend:
         """Squash-merge the PR and delete its branch."""
         await self._git.merge_pr(".", ref.number, repo=self._repo(ref))
 
+    async def base_contains(self, base: str, head: str) -> bool | None:
+        """Ask GitHub whether ``base`` already carries every commit on ``head``.
+
+        Decided from the merge base GitHub computes for ``base...head``: when
+        that equals ``head``'s own sha, every commit on ``head`` is reachable
+        from ``base``. That is precisely the ``behind``/``identical`` half of
+        the compare endpoint's ``status``, expressed with the primitive this
+        module already trusts for range decisions
+        (:meth:`get_diff_since` uses the same call for the same reason).
+
+        Failure of ANY kind answers None. A missing repository URL, a branch
+        that does not resolve, an expired token, a rate limit and a network
+        error are all "could not establish", and the caller treats only True as
+        a fact. Reporting them as False would be harmless here; reporting them
+        as True would silently stop opening integration PRs.
+
+        Args:
+            base: The branch that may already carry the work.
+            head: The branch whose commits are in question.
+
+        Returns:
+            True, False, or None when the question could not be answered.
+        """
+        if not self._repo_url:
+            return None
+        repo = self._git.repo_slug(self._repo_url)
+        if not isinstance(repo, str) or not repo:
+            return None
+        try:
+            head_sha = await self._git.remote_head_sha(self._repo_url, head)
+            if not isinstance(head_sha, str) or not head_sha:
+                return None
+            merge_base = await self._git.compare_merge_base(repo, base, head)
+        except Exception as exc:  # noqa: BLE001 - unknown, never a verdict
+            logger.warning(
+                "Could not establish whether %s already contains %s (%s)",
+                base,
+                head,
+                exc,
+            )
+            return None
+        if not isinstance(merge_base, str):
+            return None
+        return merge_base.strip() == head_sha.strip()
+
     async def pull_request_state(self, ref: PullRequestRef) -> str | None:
         """Return what GitHub says the pull request's state is.
 
@@ -531,6 +597,54 @@ class LocalGitBackend:
         if code != 0:
             return None
         return out.strip() or None
+
+    async def base_contains(self, base: str, head: str) -> bool | None:
+        """Whether ``base`` already carries every commit on ``head``.
+
+        ``merge-base --is-ancestor`` is the whole answer, and its exit code is
+        a three-way signal: 0 and 1 are the two ANSWERS, and anything else is a
+        failed lookup (a ref that does not resolve exits 128). Folding that
+        third case into False would fabricate an answer.
+
+        Argument order is the entire meaning of the call: ``--is-ancestor A B``
+        asks whether A is an ancestor of B, so ``head`` comes first. Swapped,
+        it asks whether base is contained in the plan branch, which is the
+        ordinary shape of a branch with real work on it and would report
+        "nothing to integrate" for exactly the plans that need integrating.
+
+        Both refs are spelled ``refs/heads/`` so a branch can never be resolved
+        as a tag or an abbreviated sha.
+
+        Args:
+            base: The branch that may already carry the work.
+            head: The branch whose commits are in question.
+
+        Returns:
+            True, False, or None when git could not answer.
+        """
+        code, _out, err = await self._run(
+            [
+                "git",
+                "-C",
+                self._path,
+                "merge-base",
+                "--is-ancestor",
+                f"refs/heads/{head}",
+                f"refs/heads/{base}",
+            ]
+        )
+        if code == 0:
+            return True
+        if code == 1:
+            return False
+        logger.warning(
+            "Could not establish whether %s already contains %s (git exit %d): %s",
+            base,
+            head,
+            code,
+            err.strip(),
+        )
+        return None
 
     async def get_diff_since(self, ref: PullRequestRef, base_sha: str) -> str:
         """Return the diff of the commits added to the branch after ``base_sha``.

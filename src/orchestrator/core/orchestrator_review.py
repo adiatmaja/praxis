@@ -12,7 +12,8 @@ import contextlib
 import json
 import logging
 import tempfile
-from collections.abc import Sequence
+from collections import Counter
+from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -29,6 +30,7 @@ from orchestrator.core.capability_events import (
     LeafRejectedEvent,
     TaskEscalatedEvent,
     TaskSplitEvent,
+    TaskTriagedEvent,
 )
 from orchestrator.core.clarification_states import (
     ANSWERED_BY_BRAIN,
@@ -469,6 +471,39 @@ class _PlanVerifyResult:
     paths: _DeclaredPathCheck | None = None
 
 
+@dataclass(frozen=True)
+class NoChangeDecision:
+    """What an empty diff MEANT, and whether the answer is about the worker.
+
+    ``closed`` and ``why`` are the answer this has always carried.
+    ``worker_attributable`` is the third fact, and it exists because a decline
+    is not one thing: ``no_change_outcome`` declines for five unrelated
+    reasons, and only some of them are evidence about the worker's output.
+
+    That distinction decides whether a repeated failure may spend a brain call
+    on adaptive triage. It is settled HERE, where the verify verdict and the
+    declared-path check are both in hand, rather than recovered afterwards by
+    reading ``why``: a substring match over prose is the same "interpret a
+    failure after the fact" pattern this module rejects everywhere else, and it
+    would silently start answering differently the day a sentence is reworded.
+
+    Iterating yields exactly ``(closed, why)`` so the two call sites outside
+    this module -- the worker callback in ``api/internal.py`` and the micro-edit
+    lane in ``orchestrator_dispatch.py`` -- keep unpacking it unchanged. Both
+    reach this method through an untyped object, so mypy could not have caught
+    a widening that broke them.
+    """
+
+    closed: bool
+    why: str
+    worker_attributable: bool = False
+
+    def __iter__(self) -> Iterator[Any]:
+        """Unpack as the ``(closed, why)`` pair this method has always returned."""
+        yield self.closed
+        yield self.why
+
+
 def _no_op_evidence(verdict: _PlanVerifyResult, base_branch: str) -> str | None:
     """Return the evidence that closes a leaf as a no-op, or None for "not established".
 
@@ -876,6 +911,69 @@ class ReviewMixin:
             f"this task's own commits after {base_sha}",
         )
 
+    async def _record_task_outcome(
+        self,
+        task: dict[str, Any],
+        project: dict[str, Any],
+        *,
+        task_type: str | None,
+        files_touched: int | None,
+        loc_delta: int | None,
+        outcome: str,
+        failure_class: str | None,
+    ) -> None:
+        """Write ONE calibration row for one attempt at one leaf.
+
+        A method rather than a closure inside ``review_task`` because two paths
+        end an attempt and both have to describe the row the same way. The
+        review-verdict path owned this list for as long as it was the only
+        caller, and the cost of that was measured on 2026-08-26: an empty diff
+        returns from ``review_task`` above the closure's own definition, so the
+        one failure shape a calibration loop most wants to see -- a worker that
+        produced nothing -- could not be recorded at all. Splitting the field
+        list in two to fix that would only have moved the drift somewhere it
+        takes longer to notice.
+
+        Args:
+            task: The task row the attempt belongs to.
+            project: Its project row, for the attribution fallbacks.
+            task_type: The leaf's task type from the plan graph, or None.
+                ``summarize_outcomes`` groups by it, so None files the row under
+                "unknown" rather than raising.
+            files_touched: Files the attempt changed, or None when the size of
+                the change was never measured. Never a guessed zero: see
+                ``leaf_triage._unknown``.
+            loc_delta: Net lines changed, on the same terms.
+            outcome: ``pass``, ``fail``, or a value that deliberately votes
+                neither way (see the supply-chain gate's ``blocked``).
+            failure_class: A ``FailureClass`` value, or None for a non-failure.
+                ``record_outcome`` derives ``counts_against_worker`` from THIS
+                and nothing else, so it is also the attribution decision.
+        """
+        await record_outcome(
+            self._tq._db,
+            task_id=str(task["id"]),
+            plan_id=task.get("plan_id"),
+            project_id=project["id"],
+            # Attribution follows the model that ACTUALLY implemented this
+            # attempt. Crediting the original worker with an escalated
+            # success teaches the calibration loop a lie.
+            model_name=(
+                task.get("implement_model")
+                or project.get("agent_model")
+                or project.get("model_name")
+            ),
+            harness=task.get("implement_harness") or project.get("harness"),
+            task_type=task_type,
+            files_touched=files_touched,
+            loc_delta=loc_delta,
+            context_tokens_est=None,
+            attempt=int(task["attempt"]),
+            outcome=outcome,
+            failure_class=failure_class,
+            emitter=getattr(self, "_emitter", None),
+        )
+
     async def _decide_empty_pr_diff(
         self,
         task: dict[str, Any],
@@ -883,6 +981,7 @@ class ReviewMixin:
         plan: dict[str, Any] | None,
         log: Any,
         scope: str | None = None,
+        task_type: str | None = None,
     ) -> None:
         """Decide what a pull request with no diff means, without asking the brain.
 
@@ -909,6 +1008,10 @@ class ReviewMixin:
                 tasks' commits, and reporting THAT as "the pull request carries
                 no diff" is a statement anyone can open the pull request and
                 disprove.
+            task_type: The leaf's task type, already resolved by the caller off
+                the plan graph. Passed rather than re-derived: ``review_task``
+                does that query before it ever reaches here, and a second one
+                could read a graph that changed in between.
         """
         task_id = task["id"]
         subject = scope or f"the pull request {task['pr_url']}"
@@ -917,16 +1020,71 @@ class ReviewMixin:
             "rather than sending an empty change to the reviewer",
             subject,
         )
-        closed, why = await self.no_change_outcome(task_id, project, plan)
-        if closed:
+        decision = await self.no_change_outcome(task_id, project, plan)
+        if decision.closed:
             return
         # ``why`` rather than one fixed sentence: the decision above declines
         # for four unrelated facts and only ONE of them is "the branch did not
         # verify clean". This string is stored on the task, published, and
         # injected into the next worker's prompt by the Bible, so a wrong one
         # sends a worker to fix a verification that never ran.
-        feedback = f"Review could not start: {subject} carries no diff, and {why}."
-        await self._fail_and_maybe_retry(task_id, task, project, feedback)
+        feedback = (
+            f"Review could not start: {subject} carries no diff, and {decision.why}."
+        )
+        if not decision.worker_attributable:
+            # The decline was about the deployment, not the leaf: the branch
+            # could not be resolved, the gate raised, or a configured gate could
+            # not reach the repository. Same class as a reviewer that could not
+            # run, and handled the same way -- fail and retry, never triage.
+            #
+            # And never RECORDED, for the same reason. No calibration row is
+            # written here at all, rather than one carrying a non-attributable
+            # class: ``record_outcome`` derives ``counts_against_worker`` from
+            # ``failure_class`` alone, so the only way to write a row that does
+            # not vote is to name one of the three classes that already mean
+            # something else (``provider_error``, ``worker_blocked``,
+            # ``needs_stronger_model``). Each would put a false CAUSE into the
+            # audit trail to avoid putting a false ROW into the calibration set,
+            # which is the same harm moved one column across. The fault is not
+            # silent either way: ``no_change_outcome`` logs it at WARNING, the
+            # whole ``why`` is stored on ``tasks.review_feedback``, and
+            # ``_fail_and_maybe_retry`` publishes the failure.
+            await self._fail_and_maybe_retry(task_id, task, project, feedback)
+            return
+        # A worker that produced NOTHING is the most common repeated-failure
+        # shape on this path, and until 2026-08-26 it was the one shape that
+        # could never be triaged: this branch called ``_fail_and_maybe_retry``
+        # directly, so a leaf failed here three times and died with
+        # ``triage_decision`` still NULL -- never split, never escalated, never
+        # handed to a human with a reason. Measured live on a one-leaf plan.
+        #
+        # ZERO, not None, and the difference is the whole signal.
+        # ``leaf_triage._unknown`` renders None as "unknown (not measured)" and
+        # says why: "zero files touched is the signature of a worker that did
+        # nothing, which pushes the triage decision toward escalate or human.
+        # The brain is entitled to know the difference between 'nothing changed'
+        # and 'nobody looked'." Here the diff WAS fetched, through a checked
+        # command that raises on a non-zero exit, and it WAS empty. "Nothing
+        # changed" is therefore the measured truth; reporting it as unknown
+        # would suppress exactly the push this path exists to deliver.
+        #
+        # Recorded BEFORE triage, exactly as the review-verdict path records
+        # before ``_triage_then_fail``: this row is about the attempt that just
+        # ended, and triage may supersede the task or end it outright. Until
+        # 2026-08-26 no row was written here at ALL -- measured, not read -- so
+        # a worker that produced nothing was the one failure class the
+        # capability engine's calibration set could not contain, and every rate
+        # over that table had it missing from the denominator.
+        await self._record_task_outcome(
+            task,
+            project,
+            task_type=task_type,
+            files_touched=0,
+            loc_delta=0,
+            outcome="fail",
+            failure_class=FailureClass.NO_OUTPUT.value,
+        )
+        await self._triage_then_fail(task, project, plan, feedback, 0, 0, "")
 
     async def review_task(self, task_id: str, project: dict[str, Any]) -> None:
         """Review a task PR with Opus and merge or retry accordingly."""
@@ -1098,7 +1256,9 @@ class ReviewMixin:
                     # streak into a later outage would be failed on the first
                     # blip after it.
                     self._review_error_streaks().pop(task_id, None)
-                    await self._decide_empty_pr_diff(task, project, plan, log, scope)
+                    await self._decide_empty_pr_diff(
+                        task, project, plan, log, scope, task_type_for_outcome
+                    )
                     return
                 # A micro edit is reviewed at the re-review tier. On a micro
                 # edit the mechanical gate carries nearly all the value: a
@@ -1186,28 +1346,17 @@ class ReviewMixin:
         )
 
         async def _record(outcome: str, failure_class: str | None) -> None:
-            await record_outcome(
-                self._tq._db,
-                task_id=task_id,
-                plan_id=task.get("plan_id"),
-                project_id=project["id"],
-                # Attribution follows the model that ACTUALLY implemented this
-                # attempt. Crediting the original worker with an escalated
-                # success teaches the calibration loop a lie.
-                model_name=(
-                    task.get("implement_model")
-                    or project.get("agent_model")
-                    or project.get("model_name")
-                ),
-                harness=task.get("implement_harness") or project.get("harness"),
+            # The four call sites below are unchanged; what the row CONTAINS
+            # now lives in ``_record_task_outcome``, because the empty-diff path
+            # returns above this definition and has to write the same row.
+            await self._record_task_outcome(
+                task,
+                project,
                 task_type=task_type_for_outcome,
                 files_touched=files_touched,
                 loc_delta=loc_delta,
-                context_tokens_est=None,
-                attempt=int(task["attempt"]),
                 outcome=outcome,
                 failure_class=failure_class,
-                emitter=getattr(self, "_emitter", None),
             )
 
         flagged = destructive_deletions(diff)
@@ -1309,6 +1458,15 @@ class ReviewMixin:
                         "pr_url": task["pr_url"],
                     }
                 )
+                # The third merge site, and it lands exactly what the other two
+                # land: in single-branch mode N tasks share ONE pull request, so
+                # merging it puts every sibling's work on the base branch too.
+                # Without this they stayed PASSED on an already-merged PR, and
+                # unlike the operator-driven path nobody typed a verb here, so
+                # there was no one in the loop to notice. LAST, and never before
+                # the task the merge was FOR is recorded, matching
+                # ``approve_task_merge``.
+                await self._sweep_merged_siblings(task)
                 return
             # Default: park the reviewed PR for explicit human approval.
             await _record("pass", None)
@@ -1352,20 +1510,64 @@ class ReviewMixin:
         await _record("fail", fail_class)
         await backend.comment(ref, feedback)
 
-        # Adaptive triage: the FIRST worker-attributable failure keeps the cheap
-        # retry-with-feedback path (ADaPT: decompose only when the executor
-        # actually fails).  From the SECOND on, ask the brain whether the leaf
-        # should be retried, split, escalated, or handed to a human.  Bounded to
-        # one triage call per leaf lifetime by ``tasks.triage_decision``.
-        #
-        # The task is deliberately left REVIEWING across the brain call rather
-        # than failed first: ``_fail_and_maybe_retry`` is the only owner of the
-        # fail-then-maybe-retry transition, and pre-failing here would widen the
-        # existing crash window between that FAILED write and the retry requeue
-        # from two DB writes to a whole network round trip, turning a crash
-        # during triage into a silently terminal task that still had retries
-        # left.  Every triage branch writes its own terminal or requeued state,
-        # and a REVIEWING task simply gets re-reviewed on the next tick.
+        await self._triage_then_fail(
+            task, project, plan, feedback, files_touched, loc_delta, diff
+        )
+
+    async def _triage_then_fail(
+        self,
+        task: dict[str, Any],
+        project: dict[str, Any],
+        plan: dict[str, Any] | None,
+        feedback: str,
+        files_touched: int | None,
+        loc_delta: int | None,
+        diff: str,
+    ) -> None:
+        """Offer a repeatedly-failing leaf to adaptive triage, then fail it.
+
+        The adaptive-triage GATE, extracted so that being worker-attributable is
+        the thing that decides who gets triaged, rather than which line of
+        ``review_task`` happened to reach the failure. Only two paths call this:
+        the review verdict, and an empty diff whose decline was about the
+        worker. The reviewer-error path and the unparseable-``pr_url`` path call
+        ``_fail_and_maybe_retry`` directly and deliberately, because neither says
+        anything about the leaf -- triaging them would spend a brain call to
+        reason about an infrastructure fault, and ``human`` would gate the leaf
+        permanently over a gateway blip.
+
+        The FIRST worker-attributable failure keeps the cheap retry-with-feedback
+        path (ADaPT, arXiv 2311.05772: decompose only when the executor actually
+        fails; one failure is not yet evidence about the leaf's size). From the
+        SECOND on, ask the brain whether the leaf should be retried, split,
+        escalated, or handed to a human. Bounded to one triage call per leaf
+        lifetime by ``tasks.triage_decision``, and the bound is shared across
+        both callers: a leaf triaged from one path must not buy a second call by
+        failing through the other.
+
+        The task is deliberately left REVIEWING across the brain call rather
+        than failed first: ``_fail_and_maybe_retry`` is the only owner of the
+        fail-then-maybe-retry transition, and pre-failing here would widen the
+        existing crash window between that FAILED write and the retry requeue
+        from two DB writes to a whole network round trip, turning a crash during
+        triage into a silently terminal task that still had retries left. Every
+        triage branch writes its own terminal or requeued state, and a REVIEWING
+        task simply gets re-reviewed on the next tick.
+
+        Args:
+            task: The task row that failed.
+            project: Its project row.
+            plan: The plan row, or None when the task has no plan graph.
+            feedback: What is stored, published, and injected into the next
+                worker's prompt, and what the evidence pack reports as the
+                reason this attempt failed.
+            files_touched: Files changed by the failed attempt, or None when the
+                size of the change is genuinely unknown. Never a guessed zero:
+                see ``leaf_triage._unknown``.
+            loc_delta: Net lines changed, on the same terms.
+            diff: The failed attempt's diff.
+        """
+        task_id = str(task["id"])
         attempt = int(task["attempt"])
         already_triaged = bool(task.get("triage_decision"))
         if attempt >= 2 and not already_triaged and self._llm_router is not None:
@@ -1535,6 +1737,24 @@ class ReviewMixin:
         # Stamped BEFORE acting, so a decision that cannot be applied still
         # burns the one triage call this leaf gets.
         await self._tq.record_triage_decision(task_id, decision.decision)
+        # Recorded HERE, next to the stamp, and for all four decisions.
+        # ``task_split`` and ``task_escalated`` below are ACTION records emitted
+        # only once the decision could be applied, so on their own the trail
+        # answered "how many splits landed" while the calibration question is
+        # "of N triages, how many were split". A ``retry`` was a spent brain
+        # call with no trace at all, and a split the graph refused looked
+        # identical to a triage that never happened.
+        emitter = getattr(self, "_emitter", None)
+        if emitter is not None and plan.get("id"):
+            await emitter.emit(
+                TaskTriagedEvent(
+                    plan_id=str(plan["id"]),
+                    task_id=str(task_id),
+                    leaf_slug=task_slug,
+                    decision=decision.decision,
+                    attempt=int(task["attempt"]),
+                )
+            )
 
         if decision.decision == "split" and not is_split_child and decision.children:
             children = decision.children
@@ -1544,8 +1764,19 @@ class ReviewMixin:
             # The graph slug each child WOULD get, so every message and event
             # below names something an operator can look up. The children still
             # carry the brain's own ids at this point; rewiring replaces them.
+            #
+            # An id carried by TWO children is left out, not resolved to the
+            # last of them: nothing makes the brain's ids unique, this map is
+            # last-wins, and the gate below rejects that shape outright. The
+            # findings then print the ambiguous id raw, which
+            # _render_child_violations already handles, rather than naming one
+            # arbitrary child as though the other did not exist. Same answer
+            # execute_plan_decompose.normalize_slugs gives on the same input.
+            child_id_counts = Counter(child.id for child in children)
             id_to_slug = {
-                child.id: slug for child, slug in zip(children, slugs, strict=True)
+                child.id: slug
+                for child, slug in zip(children, slugs, strict=True)
+                if child_id_counts[child.id] == 1
             }
 
             # F3 on the CORRECTION, not only on the hypothesis. Policy 1 of
@@ -2027,8 +2258,7 @@ class ReviewMixin:
         Returns:
             True when the leaf was closed as a no-op.
         """
-        closed, _why = await self.no_change_outcome(task_id, project, plan)
-        return closed
+        return (await self.no_change_outcome(task_id, project, plan)).closed
 
     async def _declared_edit_locations(
         self, task_id: str, plan: dict[str, Any] | None
@@ -2083,7 +2313,7 @@ class ReviewMixin:
         task_id: str,
         project: dict[str, Any],
         plan: dict[str, Any] | None,
-    ) -> tuple[bool, str]:
+    ) -> NoChangeDecision:
         """Decide whether a worker's empty diff is a no-op or a real failure.
 
         Returns the decision AND the reason for it. The reason exists because
@@ -2177,10 +2407,24 @@ class ReviewMixin:
                 falls back to the project's default branch.
 
         Returns:
+            A :class:`NoChangeDecision`, which still unpacks as
             ``(closed, why)``. ``closed`` is True when the leaf was closed as a
             no-op; False when the caller should treat the run as a normal
             failure. ``why`` states which of the five facts produced that
             answer, in a form fit to show a human and a worker.
+            ``worker_attributable`` says whether that fact is evidence about
+            the WORKER's output, and exactly two of the five declines are:
+
+            - a declared edit location the branch does not carry, which proves
+              the work is absent whatever the command reported, and
+            - a verify command that RAN on that branch and refuted the no-op.
+
+            The other three are the gate failing to produce an answer at all
+            (the branch could not be resolved, the clone/checkout/command
+            raised, or a configured gate could not reach the repository). Those
+            are the same class as a reviewer that could not run: they say
+            nothing about the leaf, so they must never buy a triage call, whose
+            worst answer (``human``) is terminal and irreversible.
         """
         repo_url = project.get("repo_url")
         base_branch = (plan or {}).get("plan_branch_name") or project.get(
@@ -2194,10 +2438,13 @@ class ReviewMixin:
                 repo_url,
                 base_branch,
             )
-            return False, (
+            # Not worker-attributable: nothing was checked, so nothing here is
+            # evidence about the worker. What is wrong is the project row.
+            return NoChangeDecision(
+                False,
                 "the branch it was cut from could not be resolved "
                 f"(repo_url={repo_url!r}, branch={base_branch!r}), so nothing "
-                "could be checked"
+                "could be checked",
             )
 
         declared = await self._declared_edit_locations(task_id, plan)
@@ -2234,10 +2481,17 @@ class ReviewMixin:
                 base_branch,
                 named,
             )
-            return False, (
+            # Worker-attributable, and the strongest form of it: the leaf was
+            # asked to write these locations, the branch does not carry them,
+            # and the worker changed nothing. Nothing about the deployment is
+            # implicated, and this is the one decline that names something a
+            # triage brain can reason about concretely.
+            return NoChangeDecision(
+                False,
                 f"the branch it was cut from ({base_branch}) does not carry "
                 f"edit locations this task declared ({named}), so the work is "
-                "genuinely missing whatever the verify command reports"
+                "genuinely missing whatever the verify command reports",
+                worker_attributable=True,
             )
         evidence = _no_op_evidence(verdict, base_branch)
         if evidence is None:
@@ -2249,6 +2503,23 @@ class ReviewMixin:
                 verdict.status,
                 verdict.reason or "-",
             )
+            # The line between the two classes is whether the gate produced an
+            # ANSWER about the repository, not how bad the answer was.
+            #
+            # ``failed`` is an answer: the command ran on the branch the leaf
+            # was cut from and refuted the no-op, so an empty diff on top of it
+            # is a statement about this worker's output. It is also the same
+            # evidence the review-verdict path already triages on
+            # (``FailureClass.VERIFY_FAIL``), so excluding it here would be the
+            # anomaly rather than the caution.
+            #
+            # ``error`` and the surviving skips are the gate failing to answer:
+            # a clone, checkout or command that raised, or a configured gate
+            # that could not reach the repository. ``_no_op_evidence`` already
+            # refuses to CLOSE a leaf on those because "a verify command IS
+            # configured and the gate could not reach the repository"; the same
+            # sentence is why they must not be triaged either.
+            attributable = verdict.status == "failed"
             if verdict.status == "failed":
                 why = (
                     f"the branch it was cut from ({base_branch}) did not verify "
@@ -2266,7 +2537,7 @@ class ReviewMixin:
                     f"({verdict.reason or 'no reason recorded'}), which "
                     "establishes nothing either way"
                 )
-            return False, why
+            return NoChangeDecision(False, why, worker_attributable=attributable)
 
         locations = _declared_paths_clause(declared, paths, base_branch)
         reason = (
@@ -2294,7 +2565,8 @@ class ReviewMixin:
             }
         )
         logger.info("Task %s closed as a no-op: %s", task_id, reason)
-        return True, reason
+        # A no-op is a SUCCESS and terminal. There is no failure to attribute.
+        return NoChangeDecision(True, reason)
 
     async def approve_plan_integration(
         self, plan_id: str, project: dict[str, Any]
@@ -2827,7 +3099,7 @@ class ReviewMixin:
         return result
 
     async def _nothing_to_integrate_reason(
-        self, repo_url: str, base: str, head: str
+        self, repo_url: str, base: str, head: str, backend: GitBackend
     ) -> str | None:
         """Positively establish that there is no integration PR to open.
 
@@ -2836,7 +3108,7 @@ class ReviewMixin:
         refusal the code could have predicted as `Integration PR open failed`
         misfiles a correct outcome as an error.
 
-        Two facts qualify, and they are different facts:
+        Three facts qualify, and they are different facts:
 
         - **The branches resolve to the same SHA.** The plan branch has nothing
           of its own: every task closed as a no-op, so the repository already
@@ -2848,6 +3120,18 @@ class ReviewMixin:
           integration and the merge deletes the shared branch (walkthrough
           #12). What the absence MEANS is not asserted here, only the fact
           that there is no head to open a PR from.
+        - **Base already contains the branch.** The plan branch merely TRAILS
+          base: a two-tier plan whose leaves all closed ``no_changes`` or
+          ``superseded`` puts no commit on it, and base then moves on, so the
+          SHAs are no longer equal and neither fact above can fire. ``gh pr
+          create`` refuses with "No commits between ..." and the caller wrote
+          ``plans.error``, which is a ONE-WAY signal: the row read broken
+          permanently for a plan that did everything right.
+
+        The third fact is the only one that needs the BACKEND. ``ls-remote``
+        reads refs and knows nothing about ancestry, and a bare repo has no
+        ``gh``, so the question has to be asked through the seam that already
+        abstracts those two worlds.
 
         ``remote_head_sha`` returns ``None`` for an absent branch and RAISES
         when the lookup itself fails, so ``None`` is an ANSWER, not a shrug.
@@ -2864,17 +3148,22 @@ class ReviewMixin:
         for every plan while looking correct. It was measured doing exactly
         that against a loose test double before the check was tightened.
 
-        Sufficient, not necessary, and deliberately so. A branch that merely
-        TRAILS its base also has nothing to integrate but is not detected
-        here; it falls through to the normal creation attempt and the old
-        error path. That is the safe direction, and it is the same rule
-        ``_existing_integration_pr`` follows: only a POSITIVE, fully answered
-        check may change the flow.
+        Sufficient, not necessary, and deliberately so. Only a POSITIVE, fully
+        answered check may change the flow, the same rule
+        ``_existing_integration_pr`` follows: ``base_contains`` returning False
+        or None falls through to the normal creation attempt and the old error
+        path, which is the safe direction. The failure branch is deliberately
+        NOT downgraded wholesale, and the refusal is deliberately NOT
+        recognised by matching ``gh``'s "No commits between" text: credential,
+        rate-limit and network failures reach that branch too, and they mean
+        the plan's work really is stranded.
 
         Args:
             repo_url: The project's repository.
             base: The integration PR's base branch.
             head: The plan's branch.
+            backend: The resolved git backend, for the ancestry question the
+                ``ls-remote`` above cannot answer.
 
         Returns:
             A human-readable reason to log, or None when the question is not
@@ -2907,6 +3196,16 @@ class ReviewMixin:
             return (
                 f"branch={head} is identical to base={base}, so there is no "
                 f"diff to open a PR for"
+            )
+        # Only True changes the flow. False is an answer ("the branch really
+        # does carry work base has not got") and None is the absence of one;
+        # both fall through to the creation attempt, so an unreadable remote
+        # can never turn into a silently skipped integration.
+        contains = await backend.base_contains(base, head)
+        if contains is True:
+            return (
+                f"base={base} already carries branch={head}, which trails it "
+                f"and has no commit of its own to open a PR for"
             )
         return None
 
@@ -3049,14 +3348,16 @@ class ReviewMixin:
                     existing_pr,
                 )
             elif nothing_to_integrate := await self._nothing_to_integrate_reason(
-                repo_url, base, plan_branch
+                repo_url, base, plan_branch, backend
             ):
-                # Not a failure. Two shapes reach here, and neither is an
+                # Not a failure. Three shapes reach here, and none is an
                 # error: a plan whose tasks all closed as no-ops leaves its
                 # branch identical to base ("No commits between main and
-                # plan/...", walkthrough #7), and a single-branch plan whose
+                # plan/...", walkthrough #7), a single-branch plan whose
                 # task PRs were merged has no branch left at all ("Head ref
-                # must be a branch", walkthrough #12). Attempting creation
+                # must be a branch", walkthrough #12), and a two-tier plan
+                # whose branch merely TRAILS a base that moved on is refused
+                # for having no commits of its own. Attempting creation
                 # anyway logged `Integration PR open failed` over a completely
                 # correct outcome. This is the same fact-versus-verdict split
                 # as `no_changes` one layer down: the absence is a fact, and
@@ -3082,14 +3383,19 @@ class ReviewMixin:
                     integration_status = _INTEGRATION_OPENED
                 except Exception as exc:  # noqa: BLE001 - reported, never fatal
                     integration_status = _INTEGRATION_FAILED
-                    # Names the branch the work is stranded on and the base it
-                    # never reached. A reason an operator cannot act on is the
-                    # same silence as no reason at all.
+                    # States what was established and NOTHING ELSE. This used
+                    # to assert that the work "is on the plan branch and has
+                    # NOT reached the base branch", which is one of the causes
+                    # rather than the finding: a branch that merely TRAILS base
+                    # is refused by `gh pr create` for having no commits at
+                    # all, and its work reached base long ago. Naming the check
+                    # an operator can run beats guessing which case this was.
                     integration_detail = (
                         f"the integration pull request for branch={plan_branch} "
-                        f"onto base={base} could not be opened ({exc}), so this "
-                        "plan's work is on the plan branch and has NOT reached "
-                        "the base branch"
+                        f"onto base={base} could not be opened ({exc}); check "
+                        f"whether {plan_branch} carries commits {base} does not "
+                        "have, and whether the credentials for this repository "
+                        "still work"
                     )
                     logger.warning(
                         "Integration PR open failed for %s: %s", plan_id, exc

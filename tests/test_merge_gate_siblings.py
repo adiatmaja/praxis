@@ -275,6 +275,54 @@ async def test_each_swept_sibling_gets_its_checkbox_sync_and_completed_event(
 
 
 @pytest.mark.integration
+async def test_an_auto_merge_sweeps_the_siblings_that_same_merge_landed(
+    gate: _Gate,
+) -> None:
+    """The THIRD merge site, and the only one that was not sweeping.
+
+    ``approve_task_merge`` and ``reconcile_merge_gate`` both call the sweep;
+    ``review_task``'s auto-merge branch merged, marked its own task and
+    returned. Every sibling on that pull request stayed PASSED on a pull
+    request that had already been merged, which is the identical stranding the
+    sweep exists to prevent -- and here nobody typed a verb, so there is no
+    operator in the loop to notice.
+
+    The reachability is narrow and real. Single-branch mode bases the shared
+    work branch on ``project['default_branch']``, which ``is_protected_branch``
+    refuses by identity, so auto-merge should be unreachable. It is not: a
+    GitHub PR URL carries no base, ``PullRequestRef.from_url`` yields
+    ``base=""``, and the fallback is ``plans.plan_branch_name`` -- the
+    caller-named WORK branch, which is not protected.
+    """
+    primary, sibling, elsewhere = await _plan_with_tasks(
+        gate.queue, "proj1", ["one", "two", "three"]
+    )
+    await _park(gate.queue, sibling, SHARED_PR)
+    await _park(gate.queue, elsewhere, OTHER_PR)
+    await gate.queue.set_task_pr_url(primary, SHARED_PR)
+    await gate.queue.update_task_status(primary, TaskStatus.REVIEWING)
+
+    gate.backend.get_diff.return_value = "diff --git a/x b/x\n+y\n"
+    gate.backend.checkout.side_effect = RuntimeError("diff-only review")
+    gate.orch._opus.is_available.return_value = True
+    gate.orch._opus.review_diff.return_value = {"verdict": "pass", "feedback": "ok"}
+
+    project = dict(gate.project)
+    project["auto_merge"] = 1
+
+    await gate.orch.review_task(primary, project)
+
+    assert await gate.status(primary) == TaskStatus.MERGED
+    assert await gate.status(sibling) == TaskStatus.MERGED
+    # Scope control: a task on a different pull request was not landed by this
+    # merge, so a sweep that took it too would be claiming a merge nobody made.
+    assert await gate.status(elsewhere) == TaskStatus.PASSED
+    # The task the merge was FOR is recorded first: one merge can land several
+    # tasks, and the one that triggered it must not depend on any of the others.
+    assert gate.checkbox_calls == [primary, sibling]
+
+
+@pytest.mark.integration
 async def test_the_merge_gate_empties_when_one_pr_lands_three_tasks(
     client: AsyncClient,
     db: Database,
