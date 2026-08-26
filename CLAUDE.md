@@ -199,7 +199,11 @@ Workflows in `.github/workflows/` (added 2026-07-02, verified green on runners):
 
 - **bandit config in `pyproject.toml`** (`[tool.bandit]`): `skips = ["B404","B603","B607"]`
   for legitimate subprocess/CLI shell-outs + targeted inline `# nosec`. Baseline is 0
-  findings, so any NEW hit is a real signal; keep the skip list minimal.
+  findings, so any NEW hit is a real signal; keep the skip list minimal. **A `# nosec`
+  only suppresses the line bandit REPORTS**, which for a multi-line f-string is the first
+  INTERPOLATED line, not the assignment that opens it: a directive on `x = (` or on a
+  comment line of its own is silently DEAD and the scan still fails. Prove a placement by
+  deleting it and re-running; bandit never warns about a nosec that guards nothing.
 - **Dependabot**: weekly pip/actions/docker, grouped by risk tier (runtime deps ungrouped
   so a breaking prod bump is isolated).
 
@@ -240,7 +244,11 @@ Tables: `users`, `projects`, `plans`, `tasks`, `agent_runs`, `opus_state`,
   request" (two-tier mode and every pre-migration row).
 - `plans.plan_attempts` (migration 11) bounds the planning retry; `plans.error` carries
   the reason. Both are on `PlanResponse` and on MCP `poll_plan`, with the cap served
-  alongside the count so no client mirrors it.
+  alongside the count so no client mirrors it. **BOTH planning seats charge it** since
+  2026-08-26: `decompose_pending_execute_plan` used to bound nothing at all, so every
+  exception class escaped and re-ran each tick while the row read exactly like a healthy
+  plan mid-decomposition. `plans.error` is a ONE-WAY signal: `reset_plan_attempts` clears
+  the count but NOT the error, so present means a real reason and absent proves nothing.
 - `projects.context_window` (migration 12) is the per-project override that outranks a
   declared window and the LM Studio probe alike.
 - **Schema version is 12; `tests/test_migrations.py` pins it.** Idempotency is proved by
@@ -322,10 +330,22 @@ same `pr_url` out of the gate with it. All three scope conditions are load-beari
 project one especially, because a local ref is `praxis-local://pr?branch=...&base=...`
 and encodes NO repository, so two local projects sharing a branch name share the exact
 URL string. `pending_approvals`'s `count` counts DISTINCT PRs for the same reason: nine
-parked tasks over four PRs read as "9 PRs awaiting your approval". STILL open: a PR
-merged or closed by a human in the GitHub UI leaves its tasks, and a plan's
-`integration_merged_at`, stale forever; nothing reconciles parked rows against remote PR
-state.
+parked tasks over four PRs read as "9 PRs awaiting your approval".
+
+**A PR resolved in the GitHub UI is reconciled** (2026-08-26): Praxis hands a human a
+`pr_url` and the obvious way to act on it is GitHub, which used to leave the row parked
+forever. `reconcile_merge_gate` asks the backend and acts, and the four outcomes are
+deliberately NOT symmetric. MERGED leaves the gate through `_sweep_merged_siblings`.
+A CLOSED task PR did NOT land, so it FAILS with a reason and never retries: a closed PR
+carries no feedback a worker could act on, and retrying would loop autonomously off a
+human's "no". OPEN, and anything nobody could establish, are left alone. **A CLOSED
+INTEGRATION PR deliberately does LESS**: it records the reason on `plans.error` and stays
+parked, because the only status that unparks it is REJECTED, and that puts the plan
+branch into the sweeper's terminal-failed set where a real `git push --delete` destroys
+the ENTIRE plan's work (`orchestrator_reconcile.py`, the plan branch bucket).
+`praxis-local://` refs are skipped outright, never probed: a bare repo has no UI, and the
+tempting ancestor check is wrong because `LocalGitBackend.merge` SQUASH merges. Throttled
+by a per-PR cooldown, a minimum parked age, and a within-pass memo keyed on `pr_url`.
 
 **Micro-edit lane (2026-08-25):** pass `micro_edit={path, content, commit_message}` to
 `dispatch_task` and NO container is spawned - `core/micro_edit.py` clones server-side,
@@ -454,8 +474,17 @@ story. New gotchas go in `docs/gotchas.md` first. (No count is quoted on purpose
   integration PR. The URL lives on `plans.integration_pr_url`; `integration_merged_at`
   takes it back out of `pending`.
 - **An empty worker diff is a FACT, not a verdict**: entrypoints report `no_changes`; the
-  orchestrator decides by verifying the base branch. Assert on the status carried to the
-  callback, not "empty diff -> failed".
+  orchestrator decides. Assert on the status carried to the callback, not "empty diff ->
+  failed". **The base-branch verify command alone cannot decide it** (fixed 2026-08-26):
+  it answers "is this repo healthy", not "was this task's work done", so a healthy repo
+  made every empty diff read as already-done and closed a task that built NOTHING as a
+  SUCCESS that unblocks dependents. A leaf's DECLARED EDIT LOCATIONS are the
+  discriminator; they live only in `plans.opus_plan` (there is no `tasks.files` column,
+  and `agent_runs.files_touched` is an integer COUNT of what a worker changed). An absent
+  declared path now outranks every verdict the gate can give. A leaf declaring NOTHING
+  keeps its previous answer and SAYS the check could not run; undecidable path shapes
+  decide nothing. The path check rides the SAME checkout the command runs in, because two
+  fetches could observe two states of the branch.
 - **The CLI falls back to the nearest `./.env`** for `AUTH_TOKEN`/`PORT`, walking up from
   cwd; `praxis env` says which source won.
 - **`praxis init` logic is `run_init(Answers(...))`, not `init()`** (typer wraps the
@@ -479,7 +508,13 @@ story. New gotchas go in `docs/gotchas.md` first. (No count is quoted on purpose
 - **The merge verbs use their own `_MERGE_TIMEOUT`** and report "may still be running",
   never "failed" (one `merge_pr` under 504s outlives the read-only 60s budget).
 - **`get_dispatchable_tasks` maps `opus_plan["tasks"]` to rows BY LIST INDEX**: only
-  APPEND to the graph; supersede, never delete.
+  APPEND to the graph; supersede, never delete. The join is positional the whole way
+  through since 2026-08-26; it used to re-key the positional pairs into a SLUG dict,
+  which made the map non-injective the moment two entries shared a slug: the earlier row
+  was orphaned forever, the later one dispatched TWICE in one wave, a dependent leaf ran
+  against unbuilt work, and the plan sat ACTIVE indistinguishable from healthy.
+  `plan_derive` uniques its slugs now (the decomposer and `leaf_split` already did), and
+  a dependency naming a repeated slug waits for EVERY row carrying it.
 - **Hand-built LM Studio payloads must state `reasoning_effort` explicitly**
   (`core/thinking.py` is the SSoT): the endpoint default INVERTED between 2026-08-15 and
   2026-08-21, levels are not monotonic, and `json_schema` extraction returns EMPTY when
@@ -516,6 +551,27 @@ story. New gotchas go in `docs/gotchas.md` first. (No count is quoted on purpose
 - **`scrub_context` does two jobs and only redaction belongs at intake**: length capping
   needs the resolved worker window, so it belongs solely to `worker_bible.build_bible`;
   an intake cap taken without the probe truncates permanently before the real budget runs.
+
+- **The DECOMPOSE PROMPT and the F3 VALIDATOR are one contract and drifted apart**: the
+  prompt ordered a VERBATIM copy of the plan while the template block injected forty lines
+  earlier HARD-required section labels the user never wrote, so a brain that obeyed failed
+  every leaf and every plan paid a wasted brain call. Exactly ONE shape satisfies both
+  (the labels, with the source lines under `Steps`). Edit either side and re-read the
+  other. `_section_for_task` returns `""` when it cannot find a leaf's section, never the
+  whole document: a guess there is a guaranteed violation.
+- **The ADAPTIVE SPLIT is governed too** (2026-08-26): `validate_leaves` had ONE call
+  site, so every child a split produced bypassed every F3 rule while the standard makes
+  adaptive splitting policy #1. `validate_split_children` shares the same rule
+  implementations; three whole-graph rules are deliberately skipped and `dep_cycle` is
+  applied over the SIBLING set, because two children pointing at each other survive
+  rewiring and neither ever becomes dispatchable. Children are SCORED but never gated: a
+  rejection there could only re-run the parent that already failed twice.
+- **A difficulty YAML typo must degrade the score, never wedge decomposition**, and that
+  promise was false at THREE seats that each re-derived the numbers with a bare `float()`.
+  `difficulty.resolve_weights` / `resolve_bias` are the SSoT; an unusable value keeps its
+  grounded default (never 0.0, which silently deletes a sign) and non-finite is rejected,
+  because a NaN weight makes every comparison False and the gate stops flagging while
+  reading as though it ran.
 
 **Contracts that break fixtures**
 

@@ -2030,3 +2030,167 @@ life of the plan.
 Intake now applies only a fixed, window-independent abuse guard against a pathological payload
 (`INTAKE_ABUSE_CEILING_CHARS`) and does not resolve or reference any context window at all.
 `build_bible` remains the sole seam that enforces a real, window-sized budget.
+
+## An empty worker diff verified against the base branch is not evidence the work was done
+
+`no_change_outcome` decides what an empty diff MEANS, and until 2026-08-26 the only
+evidence it used was the project's `verify_cmd` run against the branch the leaf was cut
+from. That command answers "is this repository healthy", not "was this task's work done",
+so for any task whose acceptance is not expressible as "the existing suite passes", a
+healthy repo made every empty diff read as already-done.
+
+The measured case: a task asked for a new eleven-module subpackage, none of which
+existed. The worker ran the acceptance command, saw the repository's pre-existing 294
+tests pass, concluded the tree already satisfied the task, and wrote nothing. The
+orchestrator confirmed the no-op by running THE SAME COMMAND on the base branch. The task
+closed `no_changes`, which is terminal, a success, and in `SATISFIED_STATUSES`, so it
+UNBLOCKS DEPENDENTS: a downstream leaf would have built on work never done.
+
+The discriminator is a leaf's DECLARED EDIT LOCATIONS, and they were not wired. `tasks`
+has no `files` column and `agent_runs.files_touched` is an integer COUNT of what a worker
+changed, not a list of what it was asked to change; the declaration lives only in
+`plans.opus_plan`, reached through the same positional graph join `resolve_task_slug`
+rests on. A declared path absent from the base branch now outranks every verdict the gate
+can give, and its reason NAMES the path, because that reason is injected into the next
+worker's prompt.
+
+Three rules keep this from over-refusing:
+
+- A leaf that declares NOTHING keeps its previous answer exactly, and the stored reason
+  now says the check could not run rather than leaving the stronger claim standing by
+  silence. Refusing there would fail every leaf on the plan_spec path, the improvement
+  loop, and any direct dispatch that omitted `files`, which is the measured failure the
+  whole no-op carve-out exists to prevent.
+- Undecidable path shapes (globs, absolute paths, parent traversal) land in their own
+  bucket and decide nothing. A check that cannot decide must not fail a leaf.
+- When there was NO command to run, a fetch made only to answer the path question cannot
+  change the gate's own answer. `_no_op_evidence` refuses on the no-credential and
+  no-token verdicts because they mean a command IS configured and the gate could not
+  reach the repository; with no `verify_cmd`, "the operator chose to run nothing" is
+  simply true, so the premise that refusal rests on is absent. **Fail-closed governs a
+  gate that was ASKED to run and could not; it says nothing about a gate nobody asked to
+  run.**
+
+The path check rides the SAME checkout the verify command runs in: two fetches could
+observe two different states of the branch and decide a leaf's fate from a mixture.
+
+Known, deliberate regression: a deletion-shaped leaf that declares the path it removes is
+refused rather than closed. That is a false FAILURE, which is visible and retries, not a
+false success.
+
+## A row parked at the merge gate is reconciled against the pull request's real state
+
+Praxis hands a human a `pr_url` and asks them to approve it. The obvious way to do that
+is the GitHub UI, and until 2026-08-26 doing so left the row parked forever, because
+nothing ever asked the hosting provider anything about a parked row. Measured on a live
+install: four of the nine items it told a human to act on were false, three tasks
+offering `praxis merge` on a CLOSED pull request and one plan offering `merge-plan` on a
+PR merged two days earlier.
+
+`ReconcileMixin.reconcile_merge_gate` asks and acts, and the four outcomes are
+deliberately NOT symmetric:
+
+- **MERGED**: the work landed. The row leaves the gate through `_sweep_merged_siblings`,
+  which is now the single place a set of tasks leaves the gate for one PR, with the same
+  follow-through the human path uses. A plan gets `mark_plan_integrated`.
+- **CLOSED, task**: the work did NOT land. Recording it merged would be a fabricated
+  verdict that also unblocks dependents, since `MERGED` is in `SATISFIED_STATUSES`. It
+  fails with a reason naming the PR and its state, and deliberately does NOT retry: a
+  closed PR carries no feedback a worker could act on, so a retry reproduces the same
+  change, re-parks it, and loops autonomously off a human's refusal on a five-second loop.
+- **CLOSED, integration PR**: does LESS, on purpose. There is no honest status that takes
+  such a plan off the gate. Stamping `integration_merged_at` claims a merge nobody made,
+  and REJECTED puts the plan branch into the branch sweeper's terminal-failed bucket,
+  where a real `git push --delete` destroys the branch carrying the ENTIRE plan's work. A
+  background probe must not be able to do that, so the discrepancy is written to
+  `plans.error` and a human decides.
+- **OPEN, or a state nobody could establish**: left alone, and the unknown is said once
+  rather than guessed.
+
+`praxis-local://pr?branch=...&base=...` refs are SKIPPED outright, never probed: a bare
+repo has no UI, so nothing can merge or close one behind Praxis's back. The tempting
+check is also wrong: `LocalGitBackend.merge` SQUASH merges, so after a successful merge
+the head is NOT an ancestor of base and an ancestor test would report "not merged" for
+every merged local plan.
+
+Throttled three ways against the machinery that already exists for repo probes: a per-PR
+cooldown, a minimum parked age so the happy path never spends a call, and a within-pass
+memo keyed on `pr_url`. That memo is load-bearing beyond deduplication: without it, rows
+two and three of a shared closed PR hit the cooldown row one just set and drain one per
+cooldown, which is convergence nobody watching the list can distinguish from stuck.
+
+## The adaptive split produced leaves nothing ever graded
+
+`validate_leaves` had exactly ONE production call site, in the initial decomposition.
+Everything the adaptive-split path produced (`leaf_triage` decides, `insert_split_children`
+writes, `rewire_plan_for_split` rewires) bypassed the leaf-template rule, the verification
+rule, `max_files`, `max_loc`, dep-depth and the difficulty gate. The requirement existed
+only as prose inside the triage prompt, and nothing graded the answer.
+
+That matters more than it sounds, because `docs/decomposition-standard.md` makes adaptive
+splitting policy #1: the first decomposition is a hypothesis and observed failure is the
+signal to split further. So the hypothesis was governed and the correction was not, and
+the correction is exactly the case where the model has already demonstrated it got the
+sizing wrong.
+
+`leaf_validator.validate_split_children` calls the same `_check_*` implementations rather
+than growing a second copy that drifts. Per-leaf rules apply. Three are deliberately
+skipped: `dangling_dep`, because `rewire_plan_for_split` drops an unresolvable dependency
+losslessly moments later and refusing over a fact the next function repairs would trade a
+usable graph for a plain retry of the leaf that already failed twice; `dep_depth`, because
+inside a sibling set the measurable depth is a fragment of the child's real chain; and
+`plan_text_verbatim`, because a child is a new contract the triage brain authored, not an
+excerpt. `dep_cycle` IS applied, over the SIBLING set, because two children pointing at
+each other survive rewiring intact and neither ever becomes dispatchable, so the plan
+stalls forever with nothing raised.
+
+Children are SCORED but never GATED. A rejection has nowhere to go except the plain retry
+path, which re-dispatches the parent that already failed twice and is by construction
+larger than any child, so refusing a child to re-run the parent is a downgrade dressed as
+a safety check. Scoring fails open.
+
+## A difficulty YAML typo wedged decomposition at three separate seats
+
+`difficulty.build_scorer`'s docstring promises that a typo degrades the score and never
+wedges decomposition. That was true of the function and false of the product: three seats
+between the YAML file and the scorer each re-derived the numbers with a bare `float()`.
+`EffectiveSettings.difficulty_config` raised `ValueError` into the per-plan quarantine, so
+decomposition failed for every plan on the install; `execute_plan_decompose._score_leaves`
+re-merged the weights by hand and raised `TypeError` per leaf; `orchestrator_dispatch`
+read the threshold by subscript, so a partial config raised `KeyError` inside the dispatch
+pass, which has no per-plan try, in order to decide a DASHBOARD FLAG.
+
+`difficulty.resolve_weights` and `resolve_bias` are the single sanitiser. An unusable
+value keeps its GROUNDED DEFAULT rather than becoming zero: zeroing silently deletes a
+grounded sign, which is the same corruption as flipping one and is the one the scorer
+cannot detect afterwards. Non-finite is rejected too, because a NaN weight makes every
+comparison False, so the gate stops flagging anything while reading exactly as though it
+ran.
+
+Separately, five of the eight weight SIGNS could be inverted and any weight zeroed with
+the suite fully green (16 of 19 mutations undetected). The weights ARE the model, so an
+inverted `historical_success` scores every leaf the worker has succeeded at as likely to
+fail and poisons `capability_events` from then on. The test now pins each sign with a
+borderline leaf and one realistic single-feature step per weight, with the weight list
+DUPLICATED in the test rather than derived from the production tuple.
+
+## A bandit nosec only suppresses the line bandit REPORTS
+
+B608 fired on an operator-facing refusal message in `agent_manager.host_bind_source`, a
+human-readable error that bandit reads as query construction because it is a multi-line
+f-string. The finding is reported against the first INTERPOLATED line, not the assignment
+that opens the expression, so both of these are silently DEAD and the scan still fails:
+
+```python
+message = (  # nosec B608          <- dead
+    # nosec B608                   <- dead, a directive on its own comment line
+    f"... {container_path} ..."    <- the reported line; the directive must be HERE
+)
+```
+
+Proven the only way that counts: delete each placement in turn and re-run. Bandit never
+warns about a nosec that guards nothing, and its "nosec encountered, but no failed test"
+warning fires on LIVE suppressions too, so it cannot be used to find dead ones.
+
+Prefer an inline annotation over widening `[tool.bandit] skips`: `core/approvals.py`
+builds one GENUINE f-string query, and a blanket B608 skip would stop bandit seeing it.
