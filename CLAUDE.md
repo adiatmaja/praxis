@@ -108,7 +108,10 @@ The rest of `core/`, grouped by concern:
 - **Routing & settings:** `llm_router`, `roles`, `effective_settings`, `settings_file`,
   `opus_bridge` (legacy name, all brain calls), `thinking`, `provider_errors`,
   `escalation`, `worker_presets`, `bench_mode`
-- **Execution:** `task_queue`, `agent_manager`, `agent_prompt`, `worker_bible`, `harnesses`,
+- **Execution:** `task_queue`, `plan_reachability` (pure derivation over
+  `(plans.opus_plan, task rows)`, no DB: which pending leaves can never be dispatched,
+  reproducing `get_dispatchable_tasks`'s pairing rule rather than a second copy),
+  `agent_manager`, `agent_prompt`, `worker_bible`, `harnesses`,
   `preflight`, `session_resume`, `progress_handover`, `clarification_states`,
   `token_budget`, `context_window` (resolves a worker's context window, or says unknown),
   `micro_edit`
@@ -147,6 +150,9 @@ uv run praxis pending                # parked tasks AND plans awaiting integrati
 uv run praxis merge <task-id>        # one task, plus every gated task on the SAME PR
 uv run praxis reject-merge <task-id> [--feedback "..."]   # the other half of the gate
 uv run praxis merge-plan <plan-id>   # parked tasks, then the integration PR
+
+# Unwedge a plan that is stalled but still ACTIVE (`praxis plans` names the id)
+uv run praxis retry <task-id>        # a FAILED task back to pending; 409 on anything else
 
 # Setup, manual equivalent of `praxis init`
 uv venv && uv sync --extra dev && cp .env.example .env
@@ -212,6 +218,9 @@ Workflows in `.github/workflows/` (added 2026-07-02, verified green on runners):
 ```
 PENDING -> IN_PROGRESS -> REVIEWING -> PASSED -> (human approve) -> MERGED
                                     -> FAILED -> (re-dispatch, max 3)
+                                              -> (attempts spent) terminally FAILED,
+                                                 and every PENDING leaf behind it is
+                                                 UNREACHABLE -- `praxis retry <task-id>`
          -> NO_CHANGES        (work already present; verified on the base branch)
          -> NEEDS_CLARIFICATION (worker asked; parks for `praxis clarify` and
                                  waits indefinitely for a person)
@@ -226,7 +235,10 @@ poll for a state that will never arrive. (No count is quoted on purpose: the las
 said "eight" while the enum carried nine.) `NO_CHANGES` and `SUPERSEDED` are terminal,
 neither success nor failure; both are in `SATISFIED_STATUSES` (`core/status_vocab.py`),
 which unblocks dependents and lets the plan complete. `NEEDS_CLARIFICATION` is the third
-gate: nothing advances it but a human answering.
+gate: nothing advances it but a human answering. `FAILED` is NOT in that set, so once a
+leaf is terminally failed its dependents can never be dispatched and the plan is stalled
+while still reading ACTIVE with a null `error` -- deliberately, and the detection is
+`core/plan_reachability.py` (see `docs/gotchas.md`).
 
 ## Data Model (SQLite)
 
@@ -464,7 +476,17 @@ story. New gotchas go in `docs/gotchas.md` first. (No count is quoted on purpose
   `praxis approve` / `reject` are for improvement PLANS and 404 on a task id (reads as a
   broken command rather than the wrong one).
 - **The improvement loop must be given the REPOSITORY and fails closed without it**
-  (`core/repo_survey.py`): no readable repo means NO proposal.
+  (`core/repo_survey.py`): no readable repo means NO proposal. The positive
+  `EMPTY_REPO_SURVEY` "no files found" line is refused by EXACT equality, not by a
+  blankness check it sails through.
+- **An improvement proposal's SHAPE is validated, and a malformed one FAILS the plan
+  terminally**: `activate_plan` commits the plan row BEFORE the task loop that subscripts
+  `title`/`slug`/`description`, with no rollback and a commit per statement, so a missing
+  field left an ACTIVE plan with a graph and ZERO task rows - `all_tasks_done` is
+  `bool(tasks) and ...`, so it was runnable forever. Same `_validate_plan_shape` the
+  `plan_spec` seat uses, but terminal here rather than retried: this seat owns no input a
+  later pass could re-plan. The improvement branch carries the plan id too
+  (`plan/{today}-improve-{plan_id[:8]}`), or two same-day plans share one branch.
 - **A plan with no commits has nothing to integrate**: decided by
   `_nothing_to_integrate_reason` on a positive check, which settles THREE facts. Two known
   equal SHAs (every task a no-op); an ABSENT plan branch (single-branch mode, where
@@ -487,7 +509,23 @@ story. New gotchas go in `docs/gotchas.md` first. (No count is quoted on purpose
   declared path now outranks every verdict the gate can give. A leaf declaring NOTHING
   keeps its previous answer and SAYS the check could not run; undecidable path shapes
   decide nothing. The path check rides the SAME checkout the command runs in, because two
-  fetches could observe two states of the branch.
+  fetches could observe two states of the branch. **That decision also TRIAGES and RECORDS**
+  (2026-08-26): `no_change_outcome` returns `NoChangeDecision(closed, why,
+  worker_attributable)` (still unpacks as a 2-tuple for its two out-of-module callers), an
+  attributable decline writes a `FailureClass.NO_OUTPUT` outcome row and then triages, and a
+  non-attributable one records NOTHING and just fails/retries.
+- **`_triage_then_fail` has exactly TWO callers, and that is the contract**: the review
+  verdict and a worker-attributable empty diff. The reviewer-error and unparseable-`pr_url`
+  paths call `_fail_and_maybe_retry` DIRECTLY, because neither says anything about the leaf
+  and triage's worst answer (`human`) is terminal. A structural rule (who may call what),
+  not a condition that can drift.
+- **A plan can be STALLED while it reads ACTIVE with a null `error`**: a PENDING leaf
+  behind a terminally FAILED one is unreachable forever, transitively.
+  `core/plan_reachability.py` derives it for every surface (`poll_plan`'s `stalled`,
+  `PlanResponse.stalled_task_ids` / `.stalled_blocked_by_task_ids`, `praxis plans`, the
+  dashboard); recovery is `praxis retry <task-id>` / MCP `retry_task` /
+  `POST /api/tasks/{id}/retry`, and only the BLOCKING id is a legal argument (409 on any
+  status but `failed`). The ACTIVE status and the null `error` are both deliberate.
 - **The CLI falls back to the nearest `./.env`** for `AUTH_TOKEN`/`PORT`, walking up from
   cwd; `praxis env` says which source won.
 - **`praxis init` logic is `run_init(Answers(...))`, not `init()`** (typer wraps the
@@ -497,7 +535,16 @@ story. New gotchas go in `docs/gotchas.md` first. (No count is quoted on purpose
 - **An id belongs on its own line, never in a table column** (rich shrinks and folds
   it; a truncated id 404s). `pending`/`plans`/`tasks` print a copyable
   `praxis <verb> <id>` line below the table; assert contiguity on ONE line at 80
-  columns, and test EVERY branch of a conditional copyable line.
+  columns, and test EVERY branch of a conditional copyable line. **The needle must be
+  LONGER than the terminal or the guard cannot fail**: a 48-char `praxis task <uuid>`
+  prefix stayed green with `_copyable` replaced by a bare `console.print`, because the
+  fold lands after it. Assert the WHOLE line under an explicit width precondition.
+- **Server-provided text is DATA and rich reads a bare `[` as a style tag**: a cell takes
+  `rich.text.Text`, an interpolated or `_copyable`d value takes `rich.markup.escape`
+  (`_copyable` must keep markup ON). Both halves are silent in their own way -- `[main]`
+  is DELETED, `[/dim]` raises `MarkupError` out of whatever verb was printing. A rich
+  markup FIXTURE must start with a lowercase letter (`a-z # / @`); `[High]` renders
+  verbatim whatever the code does, so it proves nothing.
 - **Typer help text guards**: strip rich's box glyphs BEFORE collapsing whitespace, or a
   wrapped panel border makes the guard inert.
 - **The CLI forces UTF-8 on stdout/stderr** (`_force_utf8_stdout`): without it,
@@ -569,6 +616,16 @@ story. New gotchas go in `docs/gotchas.md` first. (No count is quoted on purpose
   applied over the SIBLING set, because two children pointing at each other survive
   rewiring and neither ever becomes dispatchable. Children are SCORED but never gated: a
   rejection there could only re-run the parent that already failed twice.
+- **`duplicate_id` is a HARD rule that runs FIRST and ALONE** in both `validate_leaves`
+  and `validate_split_children`, returning immediately when it fires: every rule below it
+  is id-keyed, and on a repeated id `_detect_cycles` turns a sibling edge into a self edge
+  and reports a cycle nobody wrote. Nothing upstream enforced it - `LeafTask.id` is a bare
+  `str` and neither prompt asks for uniqueness - and a repeat collapsed FOUR id-keyed maps
+  at once (sibling rewiring, cycle detection, the capability-event slug, the per-child
+  score), silently, onto whichever leaf came LAST. The decompose path does NOT collapse the
+  same way: `normalize_slugs` re-keys every id to its own uniquified slug, so the fix there
+  is inside `normalize_slugs` (an id carried by two tasks is DELETED from the map, so the
+  dep stays raw and `dangling_dep` rejects it into the informed re-ask).
 - **A difficulty YAML typo must degrade the score, never wedge decomposition**, and that
   promise was false at THREE seats that each re-derived the numbers with a bare `float()`.
   `difficulty.resolve_weights` / `resolve_bias` are the SSoT; an unusable value keeps its

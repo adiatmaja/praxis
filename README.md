@@ -167,8 +167,10 @@ ever reads the diff.
 **A review model gates every merge.** A separate reviewer inspects each PR diff against
 intent: a pass parks the PR, meaning it sits waiting and nothing moves until you act
 (`praxis pending`, `praxis merge <task-id>`); a fail re-dispatches with feedback, up to
-three times. Nothing merges to your default
-branch without you.
+three times. A task that spends all three stops there, and Praxis says so rather than
+leaving you to guess: any task waiting behind it can never run, so `praxis plans` names
+both ends and `praxis retry <task-id>` puts the failed one back in the queue. Nothing
+merges to your default branch without you.
 
 **Isolated, disposable execution.** Each task runs in a throwaway Docker container cloned
 fresh from `origin`; your working tree is never touched, and only the pushed branch and
@@ -299,8 +301,8 @@ With the orchestrator running:
 - **MCP:** wire `praxis-mcp` into your assistant and drive everything from there
   ([docs/mcp.md](docs/mcp.md))
 - **Dashboard:** http://localhost:12323 · **API docs:** http://localhost:12323/docs
-- **CLI:** `uv run praxis projects`, `submit`, `pending`, `merge <task-id>` or
-  `reject-merge <task-id>`, `clarify <task-id> "answer"`, `mode on`
+- **CLI:** `uv run praxis projects`, `submit`, `pending`, `plans`, `merge <task-id>` or
+  `reject-merge <task-id>`, `retry <task-id>`, `clarify <task-id> "answer"`, `mode on`
 
 The planner and reviewer seats use whichever subscription CLI you pointed at during
 init, for example the Claude Pro plan behind your Claude Code login. The implementer

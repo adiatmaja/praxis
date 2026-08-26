@@ -139,8 +139,17 @@ Four policies follow from the standard. They are implemented in
    refused. A refusal degrades to the plain retry path; it never aborts the
    tick. Asking is not enforcing, and the triage prompt only ever asked (it
    renders the same `core/leaf_templates` block the decompose prompt does).
-   Three rules are deliberately NOT run on children, because there they would
-   measure the wrong thing rather than merely repeat themselves:
+   `duplicate_id` runs FIRST and ALONE there, returning immediately, because
+   every rule below it is keyed on `leaf.id`: two children carrying one id
+   collapse the sibling rewiring, the cycle adjacency, the capability-event slug
+   and the per-child score at once, onto whichever child came last, and
+   `_detect_cycles` in particular turns a sibling edge into a self edge and
+   reports a cycle nobody wrote. Nothing upstream enforces uniqueness — the
+   schema is a bare `id: str` and the triage prompt asks only that a child's
+   `depends_on` name its SIBLINGS — so a repeated id is a shape the brain can
+   legitimately return. Three rules are deliberately NOT run on children,
+   because there they would measure the wrong thing rather than merely repeat
+   themselves:
    `dangling_dep` (`core/leaf_split.rewire_plan_for_split` drops an unresolvable
    child dep on purpose, so a refusal would trade a repairable graph for a
    retry of the leaf that already failed twice), `dep_depth` (the depth
@@ -208,3 +217,29 @@ The prediction, the feature vector, and any pre-dispatch rejection are all
 recorded as capability events (`leaf_difficulty_scored`,
 `leaf_rejected_predispatch`), joined later against the leaf's `task_outcomes`
 row. That join is the calibration loop's training set.
+
+## 8. What the trail records about triage
+
+`task_triaged` (`TaskTriagedEvent`) is the DENOMINATOR of the triage trail. It is
+written where `tasks.triage_decision` is stamped, for all four decisions
+(`retry`, `split`, `escalate`, `human`). `task_split` and `task_escalated` record
+only APPLIED decisions, and `task_split` in particular is emitted only after
+`validate_split_children` AND `insert_split_children` both succeed — both of
+which have documented degradation paths that return after the decision is
+already stamped. Until 2026-08-26 those two were the only triage events, so a
+split the brain decided and the graph refused emitted NOTHING, and the trail
+could report zero splits for a plan whose brain decided to split repeatedly.
+That is the exact signal policy 1 above depends on. The three events are kept
+distinct rather than merged, because "how many triages happened and what did
+they decide" and "which of them were applied" are different questions and the
+gap between them is itself a measurement. A throttled deferral records nothing,
+since no decision was made.
+
+`task_outcomes` carries the other half. `FailureClass.NO_OUTPUT` names a worker
+that produced no diff at all, minted rather than overloaded onto `verify_fail`
+(which would state a verification failure that demonstrably did not happen, since
+in the declared-path decline the verify command ran and PASSED) or
+`fixable_in_place` (which means "retry with feedback will probably work", the
+inverse of the signal). Overloading either leaves the table unable to separate a
+model that writes code that breaks the build from a model that writes no code at
+all — two failures demanding opposite responses. It counts against the worker.

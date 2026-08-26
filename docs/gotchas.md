@@ -313,8 +313,14 @@ belongs among the everyday traps.
   (32 768), so every window at or below 54 613 tokens is budgeted exactly as it always
   was and only genuinely large windows stop reserving a proportion they cannot use.
 - **F3 leaf validator is deterministic and fail-closed** — `core/leaf_validator.py`
-  runs after `_normalize_slugs` in `decompose_plan`. It checks: DAG + depth limits,
-  no dangling `depends_on` slugs, file/LOC limits, verbatim `plan_text` (≥70% fuzzy
+  runs after `_normalize_slugs` in `decompose_plan`. It checks: **duplicate ids**
+  (HARD, FIRST, and ALONE — it returns immediately, because every rule below it is
+  keyed on `leaf.id` and on a repeated id `_detect_cycles` turns a sibling edge into
+  a self edge and reports a cycle nobody wrote; one real finding beats a list of
+  invented ones, and the informed re-ask carries this result), then DAG + depth limits,
+  no dangling `depends_on` slugs, file/LOC limits, the per-`LeafType` section labels
+  (`_check_leaf_template`, the rule `core/leaf_templates.py` is the single source
+  for), verbatim `plan_text` (≥70% fuzzy
   match to the source plan SECTION, or full line coverage of it: a faithful copy of a
   short section scores far below 0.70 on the symmetric ratio because the required
   section labels count against it), non-trivial `verification` (the enforced bar is
@@ -835,6 +841,16 @@ belongs among the everyday traps.
   both fall back to `human`: triage is an optimization over the existing retry
   path and must never be able to wedge a task. Provider errors never reach
   triage at all; they take the respawn-cap path and burn no retry.
+- **The review verdict is NOT triage's only entry point, and treating it as one
+  is what let a whole failure class die untriaged.** The gate is the helper
+  `_triage_then_fail`, and it has exactly TWO callers by design: the review
+  verdict, and a worker-attributable EMPTY DIFF. The reviewer-error path and the
+  unparseable-`pr_url` path still call `_fail_and_maybe_retry` directly. That
+  constraint is structural — who may call what — rather than a condition that
+  can drift, and it matters in both directions: an un-triaged worker failure is
+  invisible until the plan dies at attempt 3, and an over-triaged infrastructure
+  fault spends a brain call reasoning about evidence that says nothing about the
+  leaf, whose worst answer (`human`) is terminal.
 - **Split children APPEND to both the graph and the task table, and the parent
   is never deleted**: `TaskQueue.get_dispatchable_tasks` maps
   `opus_plan["tasks"]` to `get_tasks_for_plan` rows BY LIST INDEX, so inserting
@@ -1302,6 +1318,40 @@ belongs among the everyday traps.
   nothing, because "we could not read the container" and "the worker was
   silent" are different facts and only the second is alarming.
 
+- **That markup trap is not about logs, it is about every string the CLI gets
+  off the wire.** `praxis logs` was simply the first place it was noticed, and
+  the class was then closed once more in `praxis plans`' `_truncate_error` and
+  nowhere else, while `cli/doctor.py` had independently reached the right answer
+  and written the reasoning down. The measurement that settles it: `praxis task`
+  printed review feedback with an f-string into `console.print`, and
+  `orchestrator_review` writes bracketed severity markers into that exact
+  column, so `[supply-chain] Blocked: ['requests'] found.` rendered as
+
+      Feedback:  Blocked: ['requests'] found.
+
+  The word telling a human a dependency was BLOCKED is gone, on the one screen
+  they read before approving a merge. The same shape took whole verbs down: a
+  worker question containing `[/dim]` raised `MarkupError` out of `praxis
+  pending`, and the SHARED `_check` error line, which is what every 422 and 502
+  reaches the operator through, printed a detail of `harness [agy] is unknown;
+  allowed: [opencode]` as `harness is unknown; allowed:` — an error stripped of
+  every identifier it exists to name.
+
+  **Two tools, not interchangeable.** `rich.text.Text` for a value printed as
+  its own console argument or put in a table cell: it renders literally and
+  cannot be re-parsed. `rich.markup.escape` for a value INTERPOLATED into a line
+  that carries markup of ours, and for anything handed to `_copyable` — because
+  `_copyable` must keep markup ON, since `plans` feeds it `_status_cell` output
+  that `_truncate_error` has already escaped. Titles, review feedback and worker
+  questions are all model or server output, so brackets in them are routine, not
+  exotic.
+
+  **A rich markup FIXTURE must start with a lowercase letter.** A test using
+  `"qwen3.8-27b [High]"` passed before AND after the fix: rich treats `[...]` as
+  a tag only when the first character is `a-z # / @`, so an uppercase-initial
+  bracket renders verbatim whatever the code does. The fixture proves the code
+  is correct only when the bracket could actually have been eaten.
+
 ## Prerequisites the product diagnoses but does not cure
 
 - **A host hook mounted into the container blocks every brain call, tunnel up or
@@ -1430,6 +1480,17 @@ belongs among the everyday traps.
   yields a positive "no files" line), so a blank string means something failed
   upstream without saying so, and silence must not buy a proposal.
 
+  **And the guard checked BLANKNESS, so the positive "no files" line sailed
+  straight through it.** `build_repo_survey` deliberately never returns `""`, so
+  the sentence `Repository contents: no files found in the checkout.` satisfies
+  every condition above: a survey EXISTS, it is not blank, and everything it says
+  is true. It is still no evidence about what to build, and the brain was asked to
+  propose work for a repository it had just been told was empty — the walkthrough-#7
+  failure exactly, wearing a fact's clothes, and reachable with no clone failure at
+  all whenever a repo's sources sit under an excluded directory name. It is now the
+  named constant `repo_survey.EMPTY_REPO_SURVEY` with an exact-equality predicate
+  beside it, refused at the call site.
+
   Two things about the survey worth keeping. Its bounds ANNOUNCE themselves,
   because a silently truncated survey reads to the planner as a complete picture
   of a smaller project, which is a subtler version of the same failure. And
@@ -1442,6 +1503,59 @@ belongs among the everyday traps.
   `activate_plan` unconditionally and only then flips the status back to
   `PENDING`, so the log says `Activated plan <id> with 5 tasks` even when the
   gate parks it. The status is correct everywhere a human looks.
+
+- **A malformed improvement proposal left an ACTIVE plan with zero task rows,
+  runnable forever.** `create_improvement_plan` was the third seat that builds an
+  `opus_plan` and hands it to `activate_plan`, and the only one that never checked
+  task SHAPE. `_refuse_empty_graph` checks emptiness alone, while `activate_plan`
+  commits the PLAN row FIRST (active + graph + branch) and only then inserts rows
+  in a loop that subscripts `title`, `slug` and `description` — with no rollback
+  and a commit per statement. So a proposal missing one field left a plan
+  `all_tasks_done` can never satisfy, since that predicate is `bool(tasks) and ...`.
+  With two tasks and the SECOND malformed it is worse, not better: one row is
+  written, the plan COMPLETES normally and opens an integration PR while half the
+  proposed work never existed as a row. It now goes through the same
+  `_validate_plan_shape` the `plan_spec` seat uses, but TERMINAL here rather than
+  retried, because this seat owns no input a later pass could re-plan.
+
+- **The improvement branch carried no plan id.** `plan/{today}-improve` meant two
+  improvement plans for one project on one day answered to one name: the second
+  plan's tasks target the first plan's branch and its integration PR carries the
+  first's commits. There is a narrower destructive shape too, stated narrowly
+  because it was verified: `dead_branches` vetoes on live and open-PR branches
+  BEFORE consulting `terminal_failed`, so an ACTIVE sibling is protected, but a
+  COMPLETED plan with no integration PR open yet is neither live nor vetoed, and a
+  sibling going terminal nominates the shared name for a real `git push --delete`.
+  The branch is now `plan/{today}-improve-{plan_id[:8]}`.
+
+- **Proposed slugs were never uniqued, at the one producer whose slugs come
+  verbatim out of a model's JSON.** A slug is an IDENTITY here: `activate_plan`
+  names each branch `agent/{slug}` and `get_dispatchable_tasks` resolves every
+  `depends_on` by slug, so two proposals that slugify alike put two workers on one
+  branch and silently widen both ends of per-task `review_base_sha` scoping.
+  `plan_derive`, the decomposer and `leaf_split` all already refused to repeat a
+  slug; this fourth producer did not, and now shares the same helper rather than
+  carrying a fourth copy of the rule.
+
+- **`survey_repo` cloned on the event loop, bare, with no deadline** — blocking not
+  just the orchestration pass but FastAPI, SSE and every agent callback. The
+  identical hazard had already been recognised and fixed one seat over in
+  `_clone_for_planning`. The fix belongs in `brainstorm._clone_repo`, where the
+  blocking call actually lives, so `read_doc`, `create_session`, `generate_plan`,
+  `list_lifecycle_docs` and `write_and_commit` are fixed with it. **The deadline is
+  the half that is easy to omit and it has a second-order cost**: a clone that HANGS
+  never raises, so `_repo_survey`'s fail-closed `except Exception` can never fire,
+  and the loop does not degrade to a bad proposal — it stops answering.
+
+- **A throttled improvement check is SKIPPED, not deferred, and now says so.** On a
+  brain throttle this seat queued `{"action": "improve"}`, and the queue is a ledger
+  nobody drains. `queue_action`'s docstring justifies that by saying the rows the
+  actions describe are still pending and the loop re-reads them; for THIS caller
+  that is false, because `process_plan_once` writes the plan COMPLETED before
+  calling `check_improvements`, and `get_runnable_plans` returns only pending and
+  active plans. Left fire-and-forget deliberately (a proposal is not work anyone
+  waits on), but `opus_queued` reads everywhere as "this will happen later", so a
+  WARNING now says it was skipped and will not be retried.
 
 - **A plan whose every task is a no-op has nothing to integrate, and that is a
   fact rather than an error.** Such a plan leaves its branch identical to base,
@@ -1503,6 +1617,61 @@ These are the traps where the code is correct, the tests are green, and the
 operator is still told something false. Each was found by walking the product
 as a newcomer, not by reading it.
 
+- **A plan can be STALLED while every field says it is healthy.** Found live on a
+  two-leaf `execute_plan`: leaf 1 exhausted its three attempts and went terminally
+  `failed`, leaf 2 was `pending` and declared leaf 1 as its only dependency.
+  `failed` is not in `SATISFIED_STATUSES`, so `get_dispatchable_tasks` can never
+  return leaf 2 and no tick will ever move the plan. `poll_plan` reported
+  `status: "active"`, `terminal_incomplete: false`, `merge_gate.action_required:
+  null`, `error: null`. Nothing anywhere said the plan could not progress, so a
+  caller polls it forever. The engine already knew — `process_plan_once`
+  publishes `plan_stalled` for exactly this shape — but that is an SSE publish:
+  ephemeral, unlogged, unpersisted, so anyone not listening at that instant never
+  learns.
+
+  Unreachability is TRANSITIVE and computed to a fixpoint, so a leaf behind a
+  leaf behind a failure is caught too; reporting only the direct dependents is
+  the same false "still making progress" one hop further out. Everything that
+  cannot be ESTABLISHED counts as reachable (unreadable graph, a dependency slug
+  with no row written yet), because a false "reachable" costs one more poll while
+  a false "unreachable" tells a human to abandon a live plan.
+
+  **The plan is deliberately left ACTIVE, and this is the part not to "tidy"
+  later.** `orchestrator_reconcile` puts a plan branch into the stale-branch
+  sweeper's `terminal_failed` set when the plan is failed or rejected;
+  `TERMINAL_PLAN_STATUSES` takes it out of `live_branches`; and the open-PR veto
+  fires only on an `integration_pr_url`, which a failed plan never opens. So
+  writing this plan FAILED would put its branch on an unvetoed path to a real
+  `git push --delete`, carrying every leaf that already merged onto it.
+  **`plans.error` is deliberately not written either**: it is a one-way signal
+  (`reset_plan_attempts` clears the count but not the error), and this plan is
+  recoverable — `POST /api/tasks/{id}/retry` resets the failed leaf to `pending`
+  with `attempt + 1`, and the retry cap is enforced only on the review path, so
+  the reset leaf really is re-dispatched and its dependent really does unblock.
+
+  **The DETECTION was MCP-only for one commit and every other surface went on
+  rendering the plan as ACTIVE with a null error** — this repository's own rule
+  (every surface answering the same question answers it the same way, and the
+  twin is fixed in the same commit) broken hours after it was quoted. The ACTION
+  already had parity (`praxis retry`, MCP `retry_task`, the dashboard button,
+  `POST /api/tasks/{id}/retry`); only the derivation did not. It now lives in
+  `core/plan_reachability.py`, which is pure over `(plans.opus_plan, task rows)`
+  and touches no database, and reproduces `get_dispatchable_tasks`'s pairing
+  rules rather than re-deriving them a third time: entry *i* to row *i*, a slug
+  to EVERY row carrying it, an unusable entry skipped WITHOUT shifting positions.
+
+  `PlanResponse` carries TWO derived lists, not the nested MCP shape, because
+  they are different sets and both are load-bearing. `stalled_task_ids` gives the
+  count; `stalled_blocked_by_task_ids` gives the recovery verb its ARGUMENT,
+  since the retry endpoint answers 409 for every status but `failed` and a
+  surface holding only the blocked leaf's id would print a `praxis retry` line
+  that cannot work. The LIST route is populated, not detail-only: `web/app.js`
+  fills its array from the list endpoint and `renderPlanDetail` reads that array,
+  so detail-only would have left both real surfaces blind while looking fixed.
+  The CLI reads the fields with `.get` defaulting to ABSENT, so an older server
+  renders exactly as before — a mutation supplying a non-empty default made the
+  CLI fabricate a stall against a server that never reported one.
+
 - **A guard can be perfect and the fix still inert, because something upstream
   never hands it the rows.** `praxis pending` hid every autonomous improvement
   proposal. `plan_awaits_approval` classified them correctly and the CLI
@@ -1550,6 +1719,15 @@ as a newcomer, not by reading it.
   pinned `COLUMNS=160` and then joined every line before asserting, so a
   three-way fold read as success. An id is copied a LINE at a time; assert
   contiguity on a single line, at the width a real terminal has.
+
+  **And the needle has to be LONGER than the terminal, or the guard cannot
+  fail.** The rewritten `praxis tasks` guard asserted the 48-character prefix
+  `praxis task <uuid>` at 80 columns. rich's fold breaks on whitespace, and at
+  that width it lands AFTER the prefix, so the assertion held with `_copyable`
+  replaced by a bare `console.print` — the exact defect it was written for.
+  Measured by mutation, not reasoned about. Assert the WHOLE line, under an
+  explicit precondition that the line is wider than the console the test pins,
+  so the guard goes red the day the line gets shorter instead of going quiet.
 
 - **On Windows, redirected CLI output is not UTF-8, and rich's ellipsis makes it
   invalid.** Attached to a console, Python writes through `WriteConsoleW` and
@@ -2088,6 +2266,57 @@ Known, deliberate regression: a deletion-shaped leaf that declares the path it r
 refused rather than closed. That is a false FAILURE, which is visible and retries, not a
 false success.
 
+**A leaf that failed by producing nothing never reached adaptive triage, and that is why
+four probes for a split never found one.** Found live on a one-leaf `execute_plan`: the
+worker produced no changes on attempt 1, the declared-path discriminator above correctly
+refused to close it as a false `no_changes` and failed it, it was re-dispatched, produced
+nothing again, and again. Final state: `attempt = 3`, `tasks.triage_decision` NULL
+throughout, plan FAILED. Never split, never escalated, never handed to a human with a
+reason. The gate lived only on the review-verdict path; this branch called
+`_fail_and_maybe_retry` directly, so the most common repeated-failure shape on this path
+could not be triaged at all.
+
+Not every decline is worker-attributable, so `no_change_outcome` now returns a frozen
+`NoChangeDecision(closed, why, worker_attributable)` — still iterable as `(closed, why)`
+for its two out-of-module callers, the worker callback in `api/internal.py` and the
+micro-edit lane in `orchestrator_dispatch.py`, both of which reach it through an untyped
+object where mypy could not have caught a widening. The line is "did the gate produce an
+ANSWER", not "how bad was it": a missing declared edit location and a verify command that
+RAN and failed are attributable; an unresolvable base branch, a gate that errored, and a
+gate that could not reach the repository are not. Including the failed case is the
+consistent choice rather than the risky one — the review path already triages
+`VERIFY_FAIL` on identical evidence. The distinction is settled where the verify verdict
+and the path check are both in hand, never recovered afterwards by substring-matching
+`why`, which would start answering differently the day a sentence is reworded.
+
+**And no `task_outcomes` row was written on this path at all** — verified with a throwaway
+probe rather than by reading: an empty-diff failure produced `[]`, a review-verdict failure
+on the same fixture produced a `fail` row. `task_outcomes` is the capability engine's
+calibration data, so a worker that produces NOTHING, arguably the most informative failure
+a calibration loop can observe, was the one class the data never contained, and every rate
+derived from that table had a silently wrong denominator. An attributable decline now
+records before triaging, exactly as the review-verdict path records before
+`_triage_then_fail`, since the row is about the attempt that just ended and triage may
+supersede the task or end it outright. A NON-attributable decline records NOTHING, because
+`record_outcome` derives `counts_against_worker` from `failure_class` alone: the only way
+to write a non-voting row is to name a class that already means something else, which
+trades a false ROW in the calibration set for a false CAUSE in the audit trail. The no-op
+SUCCESS branch records nothing either; a pass would inflate a model's rate with a task it
+did not do.
+
+Two details worth keeping. `files_touched` is **0, not None**: `leaf_triage._unknown`
+renders None as "unknown (not measured)", and the comment justifying that is scoped to a
+gate that failed BEFORE the diff was fetched. Here the diff WAS fetched, through a checked
+command, and WAS empty, so `(0, 0)` is the measurement and None would have suppressed the
+very push toward escalate/human it was meant to preserve. And the class is a new
+`FailureClass.NO_OUTPUT`, minted rather than overloaded: in the declared-path decline the
+verify command RAN AND PASSED, so `verify_fail` would state a verification failure that
+demonstrably did not happen, and `fixable_in_place` means "retry with feedback will
+probably work", which is the inverse of the signal. Overloading either leaves the table
+unable to separate a model that writes code that breaks the build from a model that writes
+no code at all — two failures demanding opposite responses. `NO_OUTPUT` counts against the
+worker, on the same line `NoChangeDecision` already draws.
+
 ## A row parked at the merge gate is reconciled against the pull request's real state
 
 Praxis hands a human a `pr_url` and asks them to approve it. The obvious way to do that
@@ -2144,7 +2373,8 @@ the correction is exactly the case where the model has already demonstrated it g
 sizing wrong.
 
 `leaf_validator.validate_split_children` calls the same `_check_*` implementations rather
-than growing a second copy that drifts. Per-leaf rules apply. Three are deliberately
+than growing a second copy that drifts. Per-leaf rules apply, and `duplicate_id` runs
+FIRST and ALONE for the same reason it does in `validate_leaves`. Three are deliberately
 skipped: `dangling_dep`, because `rewire_plan_for_split` drops an unresolvable dependency
 losslessly moments later and refusing over a fact the next function repairs would trade a
 usable graph for a plain retry of the leaf that already failed twice; `dep_depth`, because
@@ -2158,6 +2388,46 @@ Children are SCORED but never GATED. A rejection has nowhere to go except the pl
 path, which re-dispatches the parent that already failed twice and is by construction
 larger than any child, so refusing a child to re-run the parent is a downgrade dressed as
 a safety check. Scoring fails open.
+
+**Two children sharing a brain-assigned id silently rewired the graph.** Nothing required
+`LeafTask.id` to be unique across a split's children: the schema is a bare `id: str`, and
+the triage prompt tells the brain to point a child's `depends_on` at the ids of its
+SIBLINGS without ever saying the ids must differ. A brain that labels both children with
+the parent's id, or with a generic `"child"`, is not exotic. The edge is not DROPPED
+either — dropping an unresolvable dep is separate and deliberate; a duplicated id IS in
+the map, so the edge is REDIRECTED to whichever child appeared last. And it is not one
+map: the same input collapses four, all keyed on `child.id` —
+`leaf_split.rewire_plan_for_split` (a sibling dep points at the wrong child),
+`leaf_validator._detect_cycles` (the HARD `dep_cycle` rule goes partly inert, and that is
+the one graph rule `validate_split_children` deliberately keeps), `orchestrator_review`'s
+`id_to_slug` (`LeafRejected`/`LeafDifficultyScored` name the wrong leaf in
+`capability_events`), and `score_split_children` (two children share one difficulty
+score).
+
+What an operator sees is nothing. The plan reads healthy, the misordered child fails on
+its own verification, and `task_outcomes` records a WORKER failure — so the miswiring is
+laundered into the capability calibration data as evidence the model is weaker than it is.
+Same observability profile as the `get_dispatchable_tasks` positional-map bug.
+
+Rejected at the gate rather than repaired by ordering. The remedy used for repeated SLUGS
+(a dep waits for EVERY row carrying it) is safe but repairs one of the four sites, so a new
+HARD `duplicate_id` rule runs first and alone in both `validate_leaves` and
+`validate_split_children`. `rewire_plan_for_split` additionally raises `ValueError` before
+its first mutation, matching that module's existing doctrine for slugs.
+
+The DECOMPOSE path does not collapse the same way, and the correction is worth reading
+before assuming it does: `normalize_slugs` re-keys every task id to its own uniquified
+slug before validation, so ids are unique there by construction and the new rule cannot
+fire. The live collapse is INSIDE `normalize_slugs`, and a mis-resolved dep does not fall
+through as a raw id either — the collapsed entry exists, so the dep resolves to the WRONG
+SLUG, where `dangling_dep` cannot see it. Fixed there instead: an id carried by two tasks
+is DELETED from the map, so a dep naming it stays raw and `dangling_dep` rejects it into
+the informed re-ask.
+
+**A mutation worth recording.** With only the validator rule reverted, the call-site test
+still PASSED: the `leaf_split` raise caught the same shape one step later and produced an
+identical parked task. Two guards fed by one observable are one guard. The test now
+asserts the `capability_events` row that only the gate writes, and goes red under both.
 
 ## A difficulty YAML typo wedged decomposition at three separate seats
 

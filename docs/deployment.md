@@ -449,9 +449,14 @@ Interactive docs available at `/docs` (Swagger UI) when the server is running.
 | Method | Path | Description |
 |--------|------|-------------|
 | `GET` | `/api/plans/{id}/tasks` | List tasks in a plan |
-| `GET` | `/api/tasks/{id}` | Get task with agent run history |
-| `POST` | `/api/tasks/{id}/stop` | Stop a running agent |
-| `GET` | `/api/tasks/{id}/logs` | Stream agent logs |
+| `GET` | `/api/tasks/{id}` | Get task with agent run history. **This is where a finished worker's log lives**: the container is removed seconds after it reports, so its output is captured onto `agent_runs.logs` at that moment and read back here under `runs[].logs`. `praxis logs <task-id>` is the same read |
+| `POST` | `/api/tasks/{id}/stop` | Stop a running agent and mark the task failed |
+| `POST` | `/api/tasks/{id}/retry` | Reset a FAILED task to pending, `attempt + 1`. 409 on any other status, so only a failed id is a legal argument. The verb for a plan stalled behind a terminally failed leaf |
+| `POST` | `/api/tasks/{id}/approve-merge` | Open the merge gate for a review-passed, parked task (and every other gated task on the same PR) |
+| `POST` | `/api/tasks/{id}/reject-merge` | The other half of the gate; optional `feedback` re-dispatches while attempts remain |
+| `POST` | `/api/tasks/{id}/force-status` | Operator override to `merged` / `passed` / `failed` / `pending` with no git operations; 422 on anything else |
+| `POST` | `/api/tasks/{id}/clarify` | Answer a `needs_clarification` task and re-queue it; 409 if it is not awaiting one, 422 on an empty answer |
+| `GET` | `/api/tasks/{id}/logs` | **SSE stream** of stored + live agent logs. Lives in `api/events.py`, not `api/tasks.py`, and its `verify_event_token` dependency accepts a Bearer header OR a `?token=` query parameter, because a browser `EventSource` cannot set a header. For a one-shot read of a finished task use `GET /api/tasks/{id}` above |
 
 ### System
 
