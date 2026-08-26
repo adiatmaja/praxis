@@ -298,6 +298,204 @@ def is_terminal_status(raw_status: str) -> bool:
     return raw_status in _TERMINAL_STATUSES
 
 
+#: The only task status a dependent can never recover from on its own. A
+#: dependency is satisfied by ``status_vocab.SATISFIED_STATUSES``; everything
+#: outside that set is merely OUTSTANDING (a worker is running, a human owes an
+#: answer, a merge is one approval away) except ``failed``, which the engine
+#: will never revisit -- ``get_dispatchable_tasks`` cannot return a leaf behind
+#: one, and no tick changes that. Named here rather than inlined so the reason
+#: the set has exactly one member is written down: adding a status to it claims
+#: the engine has given up on that status too.
+_UNRECOVERABLE_STATUS = "failed"
+
+#: Statuses the engine will still move by itself, without anybody doing
+#: anything. Deliberately expressed as the LIVE set: a status added to the
+#: vocabulary later is absent from this set and so reads as "not moving", which
+#: at worst reports a healthy plan as stalled. The opposite polarity would let
+#: a new status silently keep a dead plan looking alive, which is the failure
+#: this whole module exists to stop.
+_ENGINE_WILL_ADVANCE = frozenset({"in_progress", "reviewing", "needs_clarification"})
+
+
+def _graph_pairs(
+    opus_plan_json: str | None,
+    tasks: list[dict[str, Any]],
+) -> tuple[
+    list[tuple[str, list[str], dict[str, Any]]], dict[str, list[dict[str, Any]]]
+]:
+    """Pair ``opus_plan`` graph entries to task rows the way dispatch does.
+
+    ``TaskQueue.get_dispatchable_tasks`` is the authority on this pairing and
+    the rules it enforces are reproduced here rather than invented:
+
+    * entry *i* belongs to row *i*, POSITIONALLY. ``activate_plan`` writes one
+      row per entry in graph order, ``insert_split_children`` only appends, and
+      ``get_tasks_for_plan`` orders by rowid. Re-keying the pairs into a
+      slug-keyed dict is what made the map non-injective the moment two entries
+      shared a slug, orphaning the earlier row.
+    * a slug maps to EVERY row carrying it, never to one row. A repeated slug
+      is possible on both producer paths, and collapsing it hides a row.
+    * an entry with no usable slug is skipped WITHOUT shifting the entries
+      after it, because the loop is over positions.
+
+    An unusable graph yields empty structures, and every caller reads that as
+    "cannot establish anything", never as "nothing is blocked".
+
+    Args:
+        opus_plan_json: The ``plans.opus_plan`` column value, or None.
+        tasks: Task rows in rowid order.
+
+    Returns:
+        ``(pairs, slug_rows)`` where each pair is ``(slug, depends_on, row)``.
+    """
+    if not opus_plan_json or not tasks:
+        return [], {}
+    try:
+        opus_plan = json.loads(opus_plan_json)
+    except (ValueError, TypeError):
+        return [], {}
+    if not isinstance(opus_plan, dict):
+        return [], {}
+    entries = opus_plan.get("tasks")
+    if not isinstance(entries, list):
+        return [], {}
+
+    pairs: list[tuple[str, list[str], dict[str, Any]]] = []
+    slug_rows: dict[str, list[dict[str, Any]]] = {}
+    for index, entry in enumerate(entries):
+        if index >= len(tasks) or not isinstance(entry, dict):
+            continue
+        slug = entry.get("slug")
+        if not isinstance(slug, str) or not slug:
+            continue
+        raw_deps = entry.get("depends_on")
+        # A depends_on that is not a list is DISCARDED, never iterated: a
+        # planner answering `"depends_on": "add-tests"` would otherwise yield
+        # one CHARACTER per dependency. Same discard as `_entry_dependencies`.
+        deps = [str(dep) for dep in raw_deps] if isinstance(raw_deps, list) else []
+        row = tasks[index]
+        pairs.append((slug, deps, row))
+        slug_rows.setdefault(slug, []).append(row)
+    return pairs, slug_rows
+
+
+def derive_stalled_by_failure_state(
+    opus_plan_json: str | None,
+    tasks: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Name the pending leaves that can never be dispatched, and why.
+
+    Observed live: a two-leaf plan whose first leaf exhausted its retries and
+    whose second leaf declared it as its only dependency. ``failed`` is not in
+    ``SATISFIED_STATUSES``, so dispatch can never return the second leaf, yet
+    every field of ``poll_plan`` read exactly like a plan mid-flight and a
+    caller polls it forever. ``merge_gate`` cannot cover this: it fires only
+    when the unmet dependency is GATED, i.e. when a human approving a merge
+    would release it.
+
+    The plan is NOT dead, which is why this is its own signal rather than a
+    plan status: ``POST /api/tasks/{id}/retry`` puts a failed task back to
+    PENDING, so the recovery is a verb a human can run. Writing the plan FAILED
+    instead would hand its branch to the stale-branch sweeper's terminal-failed
+    set, where a real ``git push --delete`` runs over every leaf that already
+    merged onto it.
+
+    Unreachability is TRANSITIVE and computed to a fixpoint: a leaf behind a
+    leaf that is itself behind a failure will never run either, and reporting
+    only the direct dependents is the same false "still making progress" one
+    hop further out.
+
+    Everything that cannot be ESTABLISHED counts as reachable. An unreadable
+    graph, a dependency slug with no row written yet, a slug no entry declares:
+    all leave the leaf alone. A false "reachable" costs a caller one more poll;
+    a false "unreachable" tells a human to abandon a live plan.
+
+    Args:
+        opus_plan_json: The ``plans.opus_plan`` column value (JSON string), or
+            None while the plan is still being decomposed.
+        tasks: Task rows from ``GET /api/plans/{id}/tasks``, in rowid order.
+
+    Returns:
+        A dict with ``blocked_by_failure`` (one entry per unreachable pending
+        leaf, naming the rows that will never satisfy its edges),
+        ``action_required`` (``"retry_failed_task"`` or None) and ``hint``.
+    """
+    pairs, slug_rows = _graph_pairs(opus_plan_json, tasks)
+
+    # A slug is unsatisfiable when ANY row carrying it is, because
+    # `_dependency_satisfied` requires EVERY row carrying it to be satisfied.
+    dead_rows: dict[int, dict[str, Any]] = {
+        id(row): row for row in tasks if row.get("status") == _UNRECOVERABLE_STATUS
+    }
+    blocked_by: dict[int, list[dict[str, Any]]] = {}
+
+    changed = True
+    while changed:
+        changed = False
+        dead_slugs: dict[str, list[dict[str, Any]]] = {}
+        for slug, carrying in slug_rows.items():
+            offenders = [row for row in carrying if id(row) in dead_rows]
+            if offenders:
+                dead_slugs[slug] = offenders
+        for _slug, deps, row in pairs:
+            if row.get("status") != "pending" or id(row) in dead_rows:
+                continue
+            offenders = [
+                offender for dep in deps for offender in dead_slugs.get(dep, [])
+            ]
+            if not offenders:
+                continue
+            dead_rows[id(row)] = row
+            blocked_by[id(row)] = offenders
+            changed = True
+
+    blocked_by_failure: list[dict[str, Any]] = [
+        {
+            "task_id": row.get("id"),
+            "title": row.get("title"),
+            "blocked_by_task_ids": [o.get("id") for o in blocked_by[id(row)]],
+            "blocked_by_titles": [o.get("title") for o in blocked_by[id(row)]],
+        }
+        for _slug, _deps, row in pairs
+        if id(row) in blocked_by
+    ]
+
+    action_required: str | None = None
+    hint: str | None = None
+    if blocked_by_failure:
+        action_required = "retry_failed_task"
+        stuck = ", ".join(
+            str(b["task_id"]) for b in blocked_by_failure if b.get("task_id")
+        )
+        blockers = ", ".join(
+            sorted(
+                {
+                    str(task_id)
+                    for b in blocked_by_failure
+                    for task_id in b["blocked_by_task_ids"]
+                    if task_id
+                }
+            )
+        )
+        hint = (
+            f"{len(blocked_by_failure)} task(s) can never be dispatched: "
+            f"{stuck}. Their dependencies ({blockers}) will never satisfy the "
+            "edge, so no further tick will move this plan. Nothing here is "
+            "waiting on the orchestrator. Either retry a failed task -- MCP "
+            "tool retry_task(task_id), 'praxis retry <task-id>', or "
+            "POST /api/tasks/{task_id}/retry, each of which resets it to "
+            "pending and lets the wave run again -- or abandon the plan; the "
+            "plan is left active on purpose, because its branch still carries "
+            "whatever did merge."
+        )
+
+    return {
+        "blocked_by_failure": blocked_by_failure,
+        "action_required": action_required,
+        "hint": hint,
+    }
+
+
 def derive_plan_blocked_state(
     opus_plan_json: str | None,
     tasks: list[dict[str, Any]],
@@ -308,6 +506,22 @@ def derive_plan_blocked_state(
     against the live task statuses to find tasks that are pending solely because
     their dependencies are gated at ``passed``/``awaiting_merge`` (i.e. passed
     review but awaiting a human ``approve-merge`` call).
+
+    Two rules this function used to re-type are now taken from where they are
+    already decided, so the module carries one copy of each:
+
+    * a dependency is met when its rows are in ``SATISFIED_STATUSES``, not when
+      they are literally ``"merged"``. `no_changes` and `superseded` unblock a
+      dependent exactly as a merge does, and `no_changes` occurs in eight of
+      eight observed plans. Reading one as unmet made the "every unmet dep is
+      gated" test fail, so NO flag was raised for a plan whose only obstacle
+      was an unapproved merge.
+    * the graph is paired to rows by ``_graph_pairs``, i.e. positionally, with
+      a slug mapping to EVERY row carrying it. The slug -> one-row dict this
+      used to build was last-wins, and with two entries sharing a slug it hid
+      a row from ``gated_task_ids`` entirely and judged the edge from whichever
+      row happened to come last -- reaching the opposite verdict in both
+      directions.
 
     Args:
         opus_plan_json: The ``plans.opus_plan`` column value (JSON string), or
@@ -326,79 +540,67 @@ def derive_plan_blocked_state(
           task is blocked purely by gated deps, else ``None``.
         - ``hint``: human-readable explanation string, or ``None``.
     """
-    if not opus_plan_json or not tasks:
-        return {
-            "gated_task_ids": [],
-            "blocked_by_gate": [],
-            "action_required": None,
-            "hint": None,
-        }
+    pairs, slug_rows = _graph_pairs(opus_plan_json, tasks)
 
-    try:
-        opus_plan = json.loads(opus_plan_json)
-    except (ValueError, TypeError):
-        return {
-            "gated_task_ids": [],
-            "blocked_by_gate": [],
-            "action_required": None,
-            "hint": None,
-        }
-
-    plan_tasks: list[dict[str, Any]] = opus_plan.get("tasks", [])
-
-    # Build slug -> task-row mapping (ordered by rowid, same order as opus_plan).
-    slug_to_row: dict[str, dict[str, Any]] = {}
-    for index, plan_task in enumerate(plan_tasks):
-        slug = plan_task.get("slug", "")
-        if index < len(tasks):
-            slug_to_row[slug] = tasks[index]
-
-    # Identify gated tasks: passed review but not yet merged.
+    # Identify gated tasks: passed review but not yet merged. Iterating the
+    # PAIRS rather than a slug-keyed map is what keeps a repeated slug's other
+    # row visible here; a row appears at exactly one position, so there are no
+    # duplicates to guard against.
     gated_task_ids: list[str] = [
-        row["id"]
-        for row in slug_to_row.values()
+        str(row["id"])
+        for _slug, _deps, row in pairs
         if row.get("status") in _GATED_STATUSES and row.get("id")
     ]
-    gated_slugs: set[str] = {
-        slug
-        for slug, row in slug_to_row.items()
-        if row.get("status") in _GATED_STATUSES
-    }
 
     # Find pending tasks blocked exclusively by gated deps (not failed/missing deps).
     blocked_by_gate: list[dict[str, Any]] = []
-    for plan_task in plan_tasks:
-        slug = plan_task.get("slug", "")
-        row = slug_to_row.get(slug)
-        if row is None or row.get("status") != "pending":
+    for _slug, deps, row in pairs:
+        if row.get("status") != "pending" or not deps:
             continue
-        deps: list[str] = plan_task.get("depends_on") or []
-        if not deps:
-            continue
-        unmet_deps = [
-            d for d in deps if slug_to_row.get(d, {}).get("status") != "merged"
-        ]
-        if not unmet_deps:
-            continue
-        # Only flag as "blocked by gate" when ALL unmet deps are gated (not failed/missing).
-        all_gated = all(d in gated_slugs for d in unmet_deps)
-        if all_gated:
-            blocking_ids = [
-                slug_to_row[d]["id"] for d in unmet_deps if d in slug_to_row
+        blocking_rows: list[dict[str, Any]] = []
+        unmet = False
+        all_gated = True
+        for dep in deps:
+            carrying = slug_rows.get(dep)
+            if not carrying:
+                # A dependency slug no graph entry declares, or one whose row
+                # is not written yet. It is unmet, and it is not something a
+                # human could approve, so the gate claim is withdrawn rather
+                # than made about a row that does not exist.
+                unmet = True
+                all_gated = False
+                continue
+            # EVERY row carrying the slug has to be satisfied, the same rule
+            # `get_dispatchable_tasks` applies, so one outstanding row makes
+            # the edge unmet however many siblings already landed.
+            outstanding = [
+                dep_row
+                for dep_row in carrying
+                if str(dep_row.get("status")) not in status_vocab.SATISFIED_STATUSES
             ]
-            blocking_prs = [
-                slug_to_row[d].get("pr_url")
-                for d in unmet_deps
-                if d in slug_to_row and slug_to_row[d].get("pr_url")
-            ]
-            blocked_by_gate.append(
-                {
-                    "task_id": row.get("id"),
-                    "title": row.get("title"),
-                    "blocked_by_task_ids": blocking_ids,
-                    "blocked_by_pr_urls": blocking_prs,
-                }
-            )
+            if not outstanding:
+                continue
+            unmet = True
+            if all(dep_row.get("status") in _GATED_STATUSES for dep_row in outstanding):
+                blocking_rows.extend(outstanding)
+            else:
+                all_gated = False
+        if not unmet or not all_gated:
+            continue
+        blocked_by_gate.append(
+            {
+                "task_id": row.get("id"),
+                "title": row.get("title"),
+                "blocked_by_task_ids": [
+                    dep_row["id"] for dep_row in blocking_rows if dep_row.get("id")
+                ],
+                "blocked_by_pr_urls": [
+                    dep_row["pr_url"]
+                    for dep_row in blocking_rows
+                    if dep_row.get("pr_url")
+                ],
+            }
+        )
 
     action_required: str | None = None
     hint: str | None = None
@@ -425,26 +627,54 @@ def derive_plan_blocked_state(
 def derive_terminal_incomplete_state(
     plan_status: str | None,
     tasks: list[dict[str, Any]],
+    opus_plan_json: str | None = None,
 ) -> dict[str, Any]:
-    """Detect when a plan is terminal but not fully merged (some tasks failed).
+    """Detect when nothing will advance this plan again, and whether work landed.
 
-    When at least one task has failed and no tasks are still in progress, the
-    plan is effectively stalled. If the plan has a ``plan_branch_name`` the
-    orchestrator may have already opened an integration PR for successfully
-    merged tasks; the caller should check the dashboard for that URL.
+    "Terminal" here means the ORCHESTRATOR is done with it: no tick will change
+    anything. It does not mean irrecoverable -- a human can still merge, answer
+    a question, or retry a failed task -- which is why the plan's own status is
+    left alone and only the report changes.
+
+    Two readings used to suppress this flag on exactly the shapes that needed
+    it, and both had to go:
+
+    * ``merged_count > 0`` excluded the total-failure case, the worst one. The
+      clause looks like it was there because the hint talks about merging
+      partial progress, but a hint that does not apply is not a reason to
+      suppress the FLAG. The hint now branches instead.
+    * every PENDING leaf counted as progress. The correction that put it there
+      was real (a plan with one merged, one failed, one gated and one pending
+      leaf reported ``terminal_incomplete`` AND
+      ``merge_gate.action_required="approve_merge"`` in one payload: two
+      contradictory instructions, one abandoning work a single approval away
+      from running) but it over-shot. A pending leaf counts as progress only
+      while it is REACHABLE; one wedged behind a terminally failed dependency
+      is not going anywhere, and that was the observed defect.
+
+    A GATED leaf counts as progress too. It is one human approval from merging,
+    so a plan holding one has not stopped moving -- and without this, dropping
+    the ``merged_count`` clause would newly report a failed-plus-gated plan as
+    a plan to abandon.
 
     Args:
         plan_status: Current plan status string (e.g. ``"active"``, ``"failed"``).
         tasks: Task rows for the plan.
+        opus_plan_json: The ``plans.opus_plan`` graph, so pending leaves can be
+            judged reachable. Omitted or unreadable means reachability cannot
+            be established, and every pending leaf is then treated as
+            reachable: that is the polarity that never abandons a live plan.
 
     Returns:
         A dict with:
 
-        - ``terminal_incomplete``: ``True`` when some tasks failed and none are
-          actively making progress.
+        - ``terminal_incomplete``: ``True`` when some task failed and nothing
+          the engine owns can still move.
         - ``failed_count``: number of tasks with ``status="failed"``.
         - ``merged_count``: number of tasks with ``status="merged"``.
-        - ``hint``: human-readable explanation, or ``None``.
+        - ``hint``: human-readable explanation, or ``None``. It differs by
+          whether anything landed: partial progress is worth integrating and
+          an all-failed plan has no integration PR to go looking for.
     """
     if not tasks:
         return {
@@ -456,29 +686,47 @@ def derive_terminal_incomplete_state(
 
     failed_count = sum(1 for t in tasks if t.get("status") == "failed")
     merged_count = sum(1 for t in tasks if t.get("status") == "merged")
-    # ``pending`` counts as active. It was excluded, so a plan with one merged,
-    # one failed, one gated and one PENDING leaf reported terminal_incomplete
-    # AND merge_gate.action_required="approve_merge" in the same payload: two
-    # contradictory instructions, one of which abandons work that is a single
-    # approval away from running.
-    in_progress_count = sum(
-        1
-        for t in tasks
-        if t.get("status")
-        in {"pending", "in_progress", "reviewing", "needs_clarification"}
-    )
 
-    terminal_incomplete = (
-        failed_count > 0 and in_progress_count == 0 and merged_count > 0
-    )
+    unreachable = {
+        entry["task_id"]
+        for entry in derive_stalled_by_failure_state(opus_plan_json, tasks)[
+            "blocked_by_failure"
+        ]
+    }
+    advanceable = 0
+    for t in tasks:
+        raw_status = t.get("status")
+        # Three ways a leaf is still moving: the engine owns it, a human
+        # approval releases it, or it dispatches as soon as its dependencies
+        # land. The fourth shape -- pending behind a terminal failure -- is the
+        # one that used to be counted here and is the whole defect.
+        if (
+            raw_status in _ENGINE_WILL_ADVANCE
+            or raw_status in _GATED_STATUSES
+            or (raw_status == "pending" and t.get("id") not in unreachable)
+        ):
+            advanceable += 1
+
+    terminal_incomplete = failed_count > 0 and advanceable == 0
 
     hint: str | None = None
-    if terminal_incomplete:
+    if terminal_incomplete and merged_count:
         hint = (
             f"{failed_count} task(s) failed; {merged_count} task(s) merged. "
             "The orchestrator may have opened an integration PR for the merged tasks. "
             "Check the dashboard_url for the integration PR and consider merging partial "
             "progress, then re-plan the failed tasks."
+        )
+    elif terminal_incomplete:
+        # Deliberately NOT the partial-progress wording. There is no
+        # integration PR for an all-failed plan (the orchestrator refuses to
+        # open one when a task exhausted its retries), so sending a caller to
+        # look for one has them find nothing and read that as a second bug.
+        hint = (
+            f"{failed_count} task(s) failed and no task merged, so nothing "
+            "landed and there is no integration PR to merge. Nothing is "
+            "waiting on the orchestrator. Re-plan the failed tasks, or retry "
+            "them individually with POST /api/tasks/{task_id}/retry."
         )
 
     return {
@@ -531,12 +779,13 @@ def _plan_summary(tasks: list[dict[str, Any]]) -> str:
 async def poll_plan_impl(client: Any, plan_id: str) -> dict[str, Any]:
     """Return the plan status plus a one-line summary of every task in the plan.
 
-    The response is enriched with three diagnostic fields.
+    The response is enriched with four diagnostic fields.
 
-    ``merge_gate`` and ``terminal_incomplete`` are ALWAYS PRESENT, and their
-    "nothing to report" value is a populated dict, not an empty one. So
-    ``if result["merge_gate"]:`` is true on every poll of every healthy plan.
-    Test the inner field instead: ``merge_gate["action_required"]`` and
+    ``merge_gate``, ``stalled`` and ``terminal_incomplete`` are ALWAYS PRESENT,
+    and their "nothing to report" value is a populated dict, not an empty one.
+    So ``if result["merge_gate"]:`` is true on every poll of every healthy
+    plan. Test the inner field instead: ``merge_gate["action_required"]``,
+    ``stalled["action_required"]`` and
     ``terminal_incomplete["terminal_incomplete"]``.
 
     - ``merge_gate``: ``{gated_task_ids, blocked_by_gate, action_required,
@@ -544,9 +793,21 @@ async def poll_plan_impl(client: Any, plan_id: str) -> dict[str, Any]:
       are stalled because their dependencies passed review but have not been
       merged, else ``None``.
 
+    - ``stalled``: ``{blocked_by_failure, action_required, hint}``.
+      ``action_required`` is ``"retry_failed_task"`` when a pending task can
+      never be dispatched because a task it depends on failed terminally.
+      Nothing else in this payload says so: the plan stays ``active``,
+      ``error`` stays null, and ``merge_gate`` covers only the case a merge
+      approval would release. Stop polling when this is set; no tick will
+      change it.
+
     - ``terminal_incomplete``: ``{terminal_incomplete, failed_count,
-      merged_count, hint}``. The boolean is True when some tasks failed while
-      others merged and nothing is still moving.
+      merged_count, hint}``. The boolean is True when some task failed and
+      nothing the orchestrator owns can still move it -- including a plan
+      where EVERY task failed, and a plan whose only pending tasks are the
+      unreachable ones ``stalled`` names. The hint differs by whether anything
+      merged: partial progress is worth going to integrate, an all-failed plan
+      has no integration PR to look for.
 
     - ``approvals``: a one-line digest of ANY work parked at any gate across
       the whole deployment (not just this plan). A failure fetching that digest
@@ -575,7 +836,10 @@ async def poll_plan_impl(client: Any, plan_id: str) -> dict[str, Any]:
     tasks: list[dict[str, Any]] = tasks_data if isinstance(tasks_data, list) else []
     opus_plan_json: str | None = plan_data.get("opus_plan")
     merge_gate = derive_plan_blocked_state(opus_plan_json, tasks)
-    term = derive_terminal_incomplete_state(plan_data.get("status"), tasks)
+    stalled = derive_stalled_by_failure_state(opus_plan_json, tasks)
+    term = derive_terminal_incomplete_state(
+        plan_data.get("status"), tasks, opus_plan_json
+    )
     approvals = await _approvals_digest_line(client)
     return {
         "summary": _plan_summary(tasks),
@@ -593,6 +857,14 @@ async def poll_plan_impl(client: Any, plan_id: str) -> dict[str, Any]:
             for t in tasks
         ],
         "merge_gate": merge_gate,
+        # The third gate, and the one nothing reported. `merge_gate` fires only
+        # when a human APPROVING A MERGE would release the pending leaf; a leaf
+        # wedged behind a terminally FAILED one is released by nothing the
+        # orchestrator does, and every other field of this payload reads as a
+        # plan mid-flight. Kept separate from `terminal_incomplete` because the
+        # ACTION differs: that one says whether to go collect what landed, this
+        # one names the leaf to retry.
+        "stalled": stalled,
         "terminal_incomplete": term,
         # The plan's own last gate. Without these a caller cannot distinguish
         # "completed and landed on the base branch" from "completed, and the
@@ -746,6 +1018,43 @@ async def cancel_task_impl(client: Any, task_id: str) -> dict[str, Any]:
         # had been stopped when nothing was contacted.
         "containers_stopped": data.get("containers_stopped", stopped),
         "docker_available": data.get("docker_available", True),
+    }
+
+
+async def retry_task_impl(client: Any, task_id: str) -> dict[str, Any]:
+    """Reset a FAILED task to PENDING so the engine dispatches it again.
+
+    The counterpart to ``derive_stalled_by_failure_state``: that function tells
+    a caller the plan will never move again and names ``retry_failed_task`` as
+    the action, and until this existed there was no tool with which to take it.
+
+    A response that is not the updated task row settles NOTHING, so it is
+    reported as an error rather than read through: ``{}.get("status")`` is
+    None, and a payload carrying ``status: null`` beside no error reads to a
+    brain as "it worked, poll it" for a task that was never requeued.
+    """
+    try:
+        data = await client.post(f"/api/tasks/{task_id}/retry")
+    except PraxisClientError as exc:
+        return _error(exc)
+    if not isinstance(data, dict):
+        return {
+            "summary": f"Praxis error: retry of {task_id} returned no task row",
+            "error": "bad_response",
+            "message": (
+                f"expected the updated task row, got {type(data).__name__}; "
+                "the retry may or may not have been applied, so poll_task "
+                "before acting on this"
+            ),
+        }
+    status = data.get("status")
+    attempt = data.get("attempt")
+    return {
+        "summary": f"Retried {task_id}: now {status}, attempt {attempt}",
+        "task_id": data.get("id") or task_id,
+        "status": status,
+        "attempt": attempt,
+        "plan_id": data.get("plan_id"),
     }
 
 
@@ -1002,7 +1311,7 @@ async def poll_plan(plan_id: str) -> dict[str, Any]:
     """Get the status of a plan and a one-line summary of each of its tasks.
 
     Returns {summary, plan_id, status, error, task_count, tasks, merge_gate,
-    terminal_incomplete, integration_pr_url, integration_merged_at,
+    stalled, terminal_incomplete, integration_pr_url, integration_merged_at,
     plan_attempts, dashboard_url, approvals}.
 
     ``plan_attempts`` is how many times planning itself has been tried and
@@ -1010,10 +1319,17 @@ async def poll_plan(plan_id: str) -> dict[str, Any]:
     normally for the first time both read as ``active``/``pending`` with no
     tasks; this count is the only thing that tells them apart.
 
-    ``merge_gate`` and ``terminal_incomplete`` are ALWAYS present and are
-    always non-empty dicts, so truth-testing them is always true. Read
-    ``merge_gate["action_required"]`` and
+    ``merge_gate``, ``stalled`` and ``terminal_incomplete`` are ALWAYS present
+    and are always non-empty dicts, so truth-testing them is always true. Read
+    ``merge_gate["action_required"]``, ``stalled["action_required"]`` and
     ``terminal_incomplete["terminal_incomplete"]``.
+
+    STOP POLLING when ``stalled["action_required"]`` is set. It means a pending
+    task depends on one that failed terminally, so no tick will ever dispatch
+    it: ``status`` stays ``active`` and ``error`` stays null forever. The plan
+    is not lost -- ``stalled["hint"]`` names the failed task and the retry
+    endpoint that resets it to pending -- but nothing happens until a person
+    acts. Report it rather than continuing to poll.
 
     Tasks with status ``awaiting_merge`` have passed review and are parked for
     human PR approval; relay the pr_url. Tasks with ``awaiting_clarification``
@@ -1102,6 +1418,39 @@ async def cancel_task(task_id: str) -> dict[str, Any]:
     Check the task's status first.
     """
     return await _with_client(cancel_task_impl, task_id=task_id)
+
+
+@mcp.tool()
+async def retry_task(task_id: str) -> dict[str, Any]:
+    """Requeue a FAILED task: reset it to pending for one more attempt.
+
+    Returns {summary, task_id, status, attempt, plan_id}. ``status`` comes back
+    ``pending`` and ``attempt`` is one higher than before; together those are
+    the only evidence the retry took.
+
+    The ONLY status this accepts is ``failed``. Everything else answers 409,
+    surfaced as ``{"error": "request_error"}`` -- including the three OTHER
+    terminal statuses, which are not failures and have nothing to re-run:
+    ``merged`` (landed), ``no_changes`` (the work was already present, a
+    success) and ``superseded`` (split into children that carry the work).
+    ``awaiting_merge`` is a human's decision and ``awaiting_clarification``
+    needs an answer, not a retry.
+
+    Call it when poll_plan reports ``stalled["action_required"] ==
+    "retry_failed_task"``. A pending leaf whose dependency failed terminally
+    can never be dispatched, so the plan sits ``active`` with nothing moving.
+    Retrying the failed leaf re-runs it, and once it reaches a satisfied
+    status its dependents become dispatchable again on the next tick -- that
+    is the whole point of the call, not a side effect.
+
+    The re-run starts CLEAN: the branch is rebuilt from base and the worker's
+    stored session is dropped, so the worker does not continue where it left
+    off. Nothing here is capped -- the automatic retry bound belongs to the
+    review path -- so a repeated failure will repeat. Read get_task_logs first
+    and change something (a clearer task, a stronger worker) rather than
+    calling this in a loop.
+    """
+    return await _with_client(retry_task_impl, task_id=task_id)
 
 
 @mcp.tool()

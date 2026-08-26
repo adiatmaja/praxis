@@ -209,10 +209,27 @@ def test_terminal_incomplete_in_progress_not_terminal() -> None:
 
 
 def test_terminal_incomplete_only_failed_no_merged() -> None:
-    """All-failed plan with no merged tasks is not terminal-incomplete (no partial progress)."""
+    """An all-failed plan IS terminal-incomplete: it is the worst case, not an exempt one.
+
+    This assertion used to read ``is False``, on the reasoning that there is no
+    partial progress to go and merge. But the flag means "terminal but not
+    fully merged", and a plan where every leaf failed is exactly that; the
+    absence of partial progress belongs to the HINT, which now branches, not to
+    the flag. Suppressing the flag left the total-failure case as the one shape
+    with no terminal signal anywhere in the payload.
+    """
     tasks = [{"id": "t1", "status": "failed"}, {"id": "t2", "status": "failed"}]
     result = server.derive_terminal_incomplete_state("failed", tasks)
-    assert result["terminal_incomplete"] is False
+    assert result["terminal_incomplete"] is True
+    assert result["merged_count"] == 0
+    # The hint must not send a caller off to collect partial progress that does
+    # not exist: the orchestrator refuses to open an integration PR when a task
+    # exhausted its retries, so following that advice finds nothing and reads
+    # as a second bug. Asserted on the ADVICE, not on the words "integration
+    # PR", which this branch legitimately uses to say there is none.
+    hint = result["hint"] or ""
+    assert "partial progress" not in hint
+    assert "Check the dashboard_url" not in hint
 
 
 def test_terminal_incomplete_empty_tasks() -> None:

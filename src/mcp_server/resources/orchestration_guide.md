@@ -170,7 +170,8 @@ mis-sized estimate has to stay visible, and dispatching it properly is your call
   `execute_plan`, it returns the plan's `status` plus a one-line summary of every task
   (`task_id`, `title`, `status`, `pr_url`) as decomposition creates them. Use it when you
   handed over a plan and do not yet know the individual task ids.
-- `poll_task`, `get_task_logs`, `cancel_task` - lifecycle and triage (sections 4 and 6).
+- `poll_task`, `get_task_logs`, `cancel_task`, `retry_task` - lifecycle and triage
+  (sections 4 and 6).
 - `get_project` — read a repo's configured worker model, harness, `verify_cmd` and
   `auto_merge`. Always returns a `project` key: the config, or null when Praxis has
   never seen the repo. Note `improvement_plan_approval_gate` is NOT the merge gate;
@@ -239,6 +240,20 @@ so the individual task ids do not exist yet. `poll_plan` returns the plan `statu
 per-task summary (including `awaiting_merge` tasks parked for human approval) as the tasks
 appear, then drill into any one with `poll_task(task_id)`.
 
+`poll_plan` also carries three dicts that are ALWAYS present and always non-empty, so
+truth-testing them is always true. Read the inner field, not the dict:
+
+- `merge_gate["action_required"] == "approve_merge"` - a pending leaf is waiting only on a
+  human merging a dependency's PR. Relay the gated `pr_url`s; you cannot merge them.
+- `stalled["action_required"] == "retry_failed_task"` - **STOP POLLING.** A pending leaf sits
+  behind a leaf that failed terminally, so no tick will ever dispatch it: `status` stays
+  `active` and `error` stays null forever, which is why nothing else in the payload says so.
+  `stalled["blocked_by_failure"]` names each stuck leaf and the failed rows holding it. The
+  plan is not lost: `retry_task(task_id)` on a failed row puts it back to pending and the wave
+  runs again. Report the stall rather than continuing to poll.
+- `terminal_incomplete["terminal_incomplete"]` - nothing will advance this plan again; read
+  its `hint` for whether any work landed.
+
 ## 5. Reading statuses
 
 The happy path is:
@@ -260,7 +275,9 @@ forever. The terminal set is `merged`, `failed`, `no_changes` and `superseded`.
   change is on the base branch; read `pr_url` for the record.
 - `failed` - a run failed review or produced no usable change. Praxis automatically
   re-dispatches up to the project's max_retries before the task goes terminal. Inspect
-  with `get_task_logs` if it stays failed.
+  with `get_task_logs` if it stays failed. A terminally failed leaf never unblocks its
+  dependents, so in a plan it wedges everything behind it; `retry_task(task_id)` is the
+  only thing that moves it, and that bound does not apply to a retry you ask for.
 - `no_changes` - TERMINAL, and a SUCCESS. The worker found the work already present on
   the base branch, so there is nothing to commit and no PR to relay. Praxis verifies this
   against the branch rather than trusting an empty diff. Dependent tasks unblock exactly
@@ -286,6 +303,15 @@ project's escalation outcome, or do it yourself.
   a task is wedged or repeatedly failing.
 - `cancel_task(task_id)` - stops a running task's containers and marks it failed. Use it
   to abandon a runaway or mis-dispatched task.
+- `retry_task(task_id)` - requeues a FAILED task: back to `pending` with `attempt + 1`,
+  branch rebuilt from base, worker session dropped, so the run starts clean. It is the
+  action `poll_plan`'s `stalled` payload names, and retrying the failed leaf is what makes
+  its dependents dispatchable again. `failed` is the only status it accepts: `merged`,
+  `no_changes` and `superseded` are terminal SUCCESSES with nothing to re-run, and both
+  `awaiting_merge` and `awaiting_clarification` are waiting on a person. Everything else
+  answers 409 as `{"error": "request_error"}`. Nothing caps it here, so read
+  `get_task_logs` and change something (a clearer task, a stronger worker) rather than
+  calling it in a loop.
 
 Tools return `{"error": code, "message": ...}` on failure instead of raising. Codes:
 
