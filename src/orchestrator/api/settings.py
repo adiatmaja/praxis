@@ -251,7 +251,7 @@ async def put_roles(request: Request, body: RoleChains) -> dict[str, list[str]]:
     Models panel, and curl -- reads the EFFECTIVE map, changes one key, and
     PUTs the whole map back. Storing that body wholesale pinned every role
     in the database after a single ``set-role``: editing ``models.roles`` in
-    the mounted ``config/praxis.yaml`` and restarting, which is the
+    the mounted settings file and restarting, which is the
     documented way to change a chain and the reason the file is mounted
     rather than baked, then silently did nothing for ANY role. Storing per
     role but unconditionally would have kept doing exactly that, since the

@@ -52,7 +52,7 @@ EDITABLE_KEYS: frozenset[str] = frozenset(
 #: ``PUT /api/settings/roles`` sends the whole effective map back (they read
 #: it, change one key, and PUT it), so storing the body wholesale pinned
 #: every role in the database after a single ``set-role`` and left the
-#: mounted ``config/praxis.yaml`` unable to change any chain again -- which
+#: mounted settings file unable to change any chain again -- which
 #: is the documented way to change them, and the reason the file is mounted
 #: rather than baked. ``api.settings.put_roles`` consumes this row and
 #: re-expresses it per role.
