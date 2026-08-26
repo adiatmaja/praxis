@@ -21,7 +21,7 @@ from pathlib import Path
 
 import pytest
 
-from orchestrator.core.repo_survey import build_repo_survey
+from orchestrator.core.repo_survey import build_repo_survey, describes_empty_repo
 
 
 def _tree(root: Path, files: dict[str, str]) -> None:
@@ -168,6 +168,55 @@ def test_an_empty_repo_says_so_rather_than_returning_nothing(tmp_path: Path) -> 
 
     assert survey.strip(), "an empty repo must still produce a survey"
     assert "no files" in survey.lower()
+
+
+@pytest.mark.unit
+def test_an_empty_checkout_is_recognisable_as_such(tmp_path: Path) -> None:
+    """The "no files" answer has to be TELLABLE from a real survey.
+
+    It is a positive sentence, so a caller checking blankness lets it straight
+    through and asks the planner to propose work for a repository it has been
+    told is empty. That is the no-evidence state the caller's guard exists to
+    refuse, so the caller needs a way to recognise it that is not a re-typed
+    copy of the sentence.
+    """
+    assert describes_empty_repo(build_repo_survey(tmp_path))
+
+
+@pytest.mark.unit
+def test_a_real_repository_is_never_mistaken_for_an_empty_one(tmp_path: Path) -> None:
+    """The negative control, including the sentence appearing as CONTENT.
+
+    A README quoting the empty-checkout line does not make the repository
+    empty, which is why the check is exact rather than a substring search.
+    """
+    _tree(
+        tmp_path,
+        {
+            "README.md": "Repository contents: no files found in the checkout.\n",
+            "src/mod.py": "x = 1\n",
+        },
+    )
+
+    assert not describes_empty_repo(build_repo_survey(tmp_path))
+
+
+@pytest.mark.unit
+def test_a_checkout_of_only_excluded_directories_reads_as_empty(tmp_path: Path) -> None:
+    """The reachable case, with no clone failure anywhere.
+
+    Every path here is real; none of them is surveyable. The survey is the
+    empty-checkout answer, and the caller must be able to see that.
+    """
+    _tree(
+        tmp_path,
+        {
+            "node_modules/left-pad/index.js": "module.exports = 1\n",
+            ".venv/lib/site-packages/thing.py": "y = 2\n",
+        },
+    )
+
+    assert describes_empty_repo(build_repo_survey(tmp_path))
 
 
 @pytest.mark.unit

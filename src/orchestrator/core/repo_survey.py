@@ -79,6 +79,36 @@ _KEY_FILES: tuple[str, ...] = (
 _DEFAULT_MAX_FILES = 400
 _DEFAULT_EXCERPT_CHARS = 2000
 
+#: The whole survey of a checkout with no surveyable file in it.
+#:
+#: A POSITIVE sentence rather than ``""``, because the improvement loop decides
+#: whether to proceed on whether a survey EXISTS, and a falsy success is
+#: indistinguishable from a failed clone.
+#:
+#: It is a NAMED constant with a predicate beside it for the opposite reason: it
+#: states a fact about the repository ("there is nothing here"), and a caller
+#: that only checks BLANKNESS lets that fact through as though it were evidence,
+#: then asks the brain what to build in a repository it has just been told is
+#: empty. That is the no-evidence state the guard exists to refuse, wearing a
+#: fact's clothes, and it is reachable whenever every source file in a repo sits
+#: under an ``_EXCLUDED_DIRS`` name. Compare against this constant, never
+#: re-type the sentence: two copies drift and the check silently stops firing.
+EMPTY_REPO_SURVEY = "Repository contents: no files found in the checkout."
+
+
+def describes_empty_repo(survey: str) -> bool:
+    """Report whether a survey says the checkout held no files at all.
+
+    Args:
+        survey: A string produced by :func:`build_repo_survey`.
+
+    Returns:
+        True only for the empty-checkout answer. Exact equality, never a
+        substring search: a repository whose README happens to quote that
+        sentence is not an empty repository.
+    """
+    return survey.strip() == EMPTY_REPO_SURVEY
+
 
 def _iter_files(root: Path) -> list[str]:
     """Return repo-relative POSIX paths, sorted, with noise directories pruned.
@@ -131,17 +161,18 @@ def build_repo_survey(
         excerpt_chars: Per-file cap on key-file content.
 
     Returns:
-        A human-readable survey. Always non-empty: an empty repository yields a
-        positive "no files" statement rather than "", because the caller
-        decides whether to proceed on whether a survey exists, and a falsy
-        success is indistinguishable from a failure.
+        A human-readable survey. Always non-empty: an empty repository yields
+        ``EMPTY_REPO_SURVEY``, a positive "no files" statement rather than "",
+        because the caller decides whether to proceed on whether a survey
+        exists, and a falsy success is indistinguishable from a failure. A
+        caller that must tell "empty repository" from "real repository" asks
+        ``describes_empty_repo``.
     """
     files = _iter_files(root)
     lines: list[str] = []
 
     if not files:
-        lines.append("Repository contents: no files found in the checkout.")
-        return "\n".join(lines)
+        return EMPTY_REPO_SURVEY
 
     shown = files[:max_files]
     lines.append(f"Repository contents ({len(files)} files):")

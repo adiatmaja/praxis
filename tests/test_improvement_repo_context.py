@@ -27,6 +27,7 @@ import pytest
 
 from orchestrator.core.event_bus import EventBus
 from orchestrator.core.orchestrator import Orchestrator
+from orchestrator.core.repo_survey import EMPTY_REPO_SURVEY
 from orchestrator.core.task_queue import TaskQueue
 from orchestrator.database import Database
 from orchestrator.models.schemas import TaskStatus
@@ -202,6 +203,28 @@ async def test_an_empty_survey_string_is_treated_as_no_context(db: Database) -> 
 
     result = await _orchestrator(
         task_queue, opus, _Reader(survey="   \n  ")
+    ).check_improvements(plan_id, _project())
+
+    assert result is None
+    opus.analyze_improvements.assert_not_awaited()
+
+
+@pytest.mark.integration
+async def test_a_survey_of_an_empty_checkout_is_also_no_context(db: Database) -> None:
+    """ "No files here" is a fact, and it is still not evidence.
+
+    The blankness check above cannot catch this: a survey EXISTS, it is not
+    blank, and every word of it is true. But the brain is then asked what to
+    build in a repository it has just been told is empty, which is walkthrough
+    #7 exactly -- with nothing to reason about, the only codebase in the
+    planner's context is Praxis itself. Reachable with no clone failure at all,
+    whenever every source file sits under a directory the survey excludes.
+    """
+    task_queue, plan_id = await _seed(db)
+    opus = _opus()
+
+    result = await _orchestrator(
+        task_queue, opus, _Reader(survey=EMPTY_REPO_SURVEY)
     ).check_improvements(plan_id, _project())
 
     assert result is None

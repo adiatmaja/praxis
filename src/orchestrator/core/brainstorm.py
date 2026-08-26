@@ -40,6 +40,19 @@ PLAN_BOOTSTRAP = (
     "Write the plan to docs/superpowers/plans/, commit it, and push it."
 )
 
+# Ceiling on a repository clone made to read something out of it. Mirrors
+# ``orchestrator._CLONE_TIMEOUT_SECONDS``, and deliberately carries the same
+# number: it bounds the same operation (``clone_with_token`` against the same
+# repository) and a second, different answer to "how long may a clone take"
+# would be a knob nobody knew they had.
+#
+# Honest limitation, same as there: cancelling the wait does not kill the git
+# process. It keeps running in its worker thread and may still be writing into
+# the workspace the caller then deletes. Unblocking the caller is worth a leaked
+# process; the alternative is a request (and an orchestration pass) that never
+# returns at all.
+_CLONE_TIMEOUT_SECONDS = 300.0
+
 BRAINSTORM_BOOTSTRAP = (
     "Use the superpowers:brainstorming skill to design a spec interactively. "
     "Ask the user one question at a time. When the design is approved, write the spec to "
@@ -159,8 +172,35 @@ class BrainstormManager:
         self._started: dict[str, bool] = {}
 
     async def _clone_repo(self, repo_url: str, dest: str) -> None:
+        """Check ``repo_url`` out into ``dest``, off the event loop and bounded.
+
+        ``clone_with_token`` is a synchronous ``subprocess.run`` with no
+        deadline of its own, and calling it bare from a coroutine blocks the
+        single event loop this process has: not just the caller but FastAPI,
+        SSE and every agent callback, for as long as the fetch takes. The same
+        hazard was already recognised and fixed one seat over, in
+        ``Orchestrator._clone_for_planning``; this is the same shape.
+
+        The deadline is the half that is easy to leave out, and its absence has
+        a second-order cost that is worse than the wait. A clone that HANGS
+        never raises, so the fail-closed ``except Exception`` around
+        ``survey_repo`` in the improvement loop can never fire: the loop does
+        not fall back to a bad proposal, it stops answering entirely. A timeout
+        converts a hang into an exception a caller can act on.
+
+        Args:
+            repo_url: The repository to clone.
+            dest: The directory to clone into.
+
+        Raises:
+            TimeoutError: The clone outran ``_CLONE_TIMEOUT_SECONDS``.
+            subprocess.CalledProcessError: git refused the clone.
+        """
         token = await self._provider.token_for_repo(repo_url)
-        clone_with_token(repo_url, dest, token, depth=50)
+        await asyncio.wait_for(
+            asyncio.to_thread(clone_with_token, repo_url, dest, token, depth=50),
+            timeout=_CLONE_TIMEOUT_SECONDS,
+        )
 
     async def create_session(self, repo_url: str) -> str:
         session_id = uuid.uuid4().hex
@@ -225,7 +265,19 @@ class BrainstormManager:
         measured failure that produced.
 
         Same clone-read-delete shape as the other readers on this class, so the
-        workspace never outlives the call.
+        workspace never outlives the call, and the clone goes through
+        ``_clone_repo``, which runs it off the event loop under a deadline. The
+        caller is the orchestration loop itself, so a blocking clone here does
+        not merely slow this call down: it stops the whole process answering,
+        and a HANGING one makes the caller's fail-closed guard unreachable.
+
+        Returns:
+            The survey text. Never "": an empty checkout yields
+            ``repo_survey.EMPTY_REPO_SURVEY``, which the caller must recognise
+            with ``describes_empty_repo`` rather than read as evidence.
+
+        Raises:
+            TimeoutError: The clone outran the deadline.
         """
         from orchestrator.core.repo_survey import build_repo_survey
 
