@@ -1753,3 +1753,107 @@ def test_a_flag_pre_answers_the_prompt_in_interactive_mode_too(fake_root, monkey
     )
 
     assert dotenv_values(fake_root / ".env")["PORT"] == "9911"
+
+
+# --------------------------------------------------------------------------
+# A refused run must not end on a green "Wrote ..." line.
+#
+# Measured: `praxis init --non-interactive --preset nope` prints the red
+# "No worker preset named 'nope'", then `Wrote C:\...\.env`, then exits 1. The
+# last line an operator or a CI log reads says success.
+#
+# The partial write itself is deliberate and well argued, but the argument is
+# specifically about "the token, port, and GitHub credential just typed": a
+# newcomer holding Enter through Quick Start who then declines a preset needing
+# a login `init` cannot perform. A NON-INTERACTIVE run typed nothing. There is
+# nothing to rescue, so writing anyway only leaves a half-configured `.env`
+# behind and reports it as an accomplishment.
+# --------------------------------------------------------------------------
+
+
+def _refused_non_interactive(monkeypatch, capsys, flags: Answers, presets: list):
+    """Drive a non-interactive `run_init` that is expected to refuse."""
+    _no_prompts(monkeypatch)
+    monkeypatch.setattr(
+        init_mod, "_fetch_presets_or_defaults", lambda: [dict(p) for p in presets]
+    )
+    with pytest.raises(typer.Exit) as exit_info:
+        init_mod.run_init(flags)
+    return exit_info.value.exit_code, capsys.readouterr().out
+
+
+@pytest.mark.unit
+def test_an_unknown_preset_name_does_not_report_a_successful_write(
+    fake_root, monkeypatch, capsys
+):
+    """The measured defect: a red refusal followed by a green success line."""
+    code, out = _refused_non_interactive(
+        monkeypatch,
+        capsys,
+        Answers(non_interactive=True, auth_token="t", preset="nope"),
+        TWO_PRESETS,
+    )
+
+    assert code == 1
+    assert "No worker preset named" in out
+    assert "Wrote" not in out
+
+
+@pytest.mark.unit
+def test_an_unknown_preset_name_leaves_no_env_behind(fake_root, monkeypatch, capsys):
+    """And the line was not merely silenced: nothing was written either.
+
+    A `.env` on disk after a refused run is what makes the false success line
+    dangerous rather than cosmetic -- the next command finds a file, reads a
+    token out of it, and reports a half-configured install as a working one.
+    """
+    _refused_non_interactive(
+        monkeypatch,
+        capsys,
+        Answers(non_interactive=True, auth_token="t", preset="nope"),
+        TWO_PRESETS,
+    )
+
+    assert not (fake_root / ".env").exists()
+
+
+@pytest.mark.unit
+def test_a_refused_requirement_in_non_interactive_mode_writes_nothing_either(
+    fake_root, monkeypatch, capsys
+):
+    """The other way `_choose_preset` exits, on the same collected-nothing run."""
+    unsatisfiable = [{**TWO_PRESETS[0], "requires": ["api_key"]}]
+
+    code, out = _refused_non_interactive(
+        monkeypatch,
+        capsys,
+        Answers(non_interactive=True, auth_token="t"),
+        unsatisfiable,
+    )
+
+    assert code == 1
+    assert "Wrote" not in out
+    assert not (fake_root / ".env").exists()
+
+
+@pytest.mark.unit
+def test_a_refused_non_interactive_run_leaves_an_existing_env_byte_identical(
+    fake_root, monkeypatch, capsys
+):
+    """A re-run that refuses must not rewrite the operator's working file.
+
+    This is the half a "suppress the message" fix would miss entirely: the
+    partial write merges MANAGED_KEYS into the existing file, so a typo'd
+    `--preset` on a re-run rewrote a live install's `.env` and then exited 1.
+    """
+    before = REAL_SHAPED_ENV
+    (fake_root / ".env").write_text(before, encoding="utf-8")
+
+    _refused_non_interactive(
+        monkeypatch,
+        capsys,
+        Answers(non_interactive=True, auth_token="new-token", preset="nope"),
+        TWO_PRESETS,
+    )
+
+    assert (fake_root / ".env").read_text(encoding="utf-8") == before

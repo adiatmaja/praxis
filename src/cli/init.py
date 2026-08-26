@@ -1248,6 +1248,22 @@ def run_init(answers: Answers) -> None:
         # line untouched.  Scoped to this except so the unrelated "Update
         # .env?" decline path below (reached only once a preset IS chosen)
         # keeps its own guarantee that declining leaves the file untouched.
+        #
+        # INTERACTIVE ONLY, and the qualifier is the whole argument above:
+        # what is being rescued is "the token, port, and GitHub credential
+        # JUST TYPED".  A non-interactive run typed nothing -- every value
+        # came off the command line or out of the file already on disk -- so
+        # there is nothing to rescue and two things to lose.  Measured:
+        # `praxis init --non-interactive --preset nope` printed the red "No
+        # worker preset named 'nope'", then `Wrote ...\.env`, then exited 1,
+        # so the last line a CI log shows for a refused run claims success;
+        # and on a RE-RUN that write merged MANAGED_KEYS into a live install's
+        # `.env`, rewriting the operator's working file over a typo.
+        # `_choose_preset` exits the same way for an unknown `--preset` name
+        # and for an unmet requirement without
+        # `--accept-preset-requirements`; neither collected anything.
+        if answers.non_interactive:
+            raise
         partial = _managed_values(
             token=token, gh_token=gh_token, port=resolved_port, preset=None
         )

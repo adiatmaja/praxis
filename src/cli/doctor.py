@@ -158,6 +158,33 @@ def _error_status_payload(response: httpx.Response) -> dict[str, Any]:
     )
 
 
+def _no_token_payload() -> dict[str, Any]:
+    """Synthesize a doctor payload when no auth token resolves at all.
+
+    ``cli.main._client()`` calls ``_auth_token()``, which prints its own error
+    and raises ``typer.Exit(1)`` BEFORE any request is made.  That exit is not
+    an ``httpx.RequestError``, so it walked past the only handler ``doctor()``
+    had: the operator got a one-line message and NO TABLE, from the command
+    whose module docstring says it never raises, it diagnoses a broken machine.
+
+    ``_error_status_payload`` already calls the 401 sibling "the case where the
+    table helps most".  A token that is ABSENT is strictly more common than one
+    that is wrong -- it is the state of every fresh clone before ``praxis
+    init`` -- and ``auth_token`` is itself one of doctor's own checks.
+
+    Checked up front rather than by catching the exit, so no request is made
+    either: without a token the call cannot succeed, and attempting it would
+    make the verdict depend on whether an orchestrator happens to be running.
+    """
+    return _synthetic_payload(
+        "auth_token",
+        "no auth token resolved: neither the AUTH_TOKEN nor the "
+        "ORCHESTRATOR_TOKEN environment variable is set, and no AUTH_TOKEN was "
+        "found in the nearest .env walking up from the current directory",
+        "not checked: the CLI has no token to authenticate with",
+    )
+
+
 def _payload_for(response: httpx.Response) -> dict[str, Any]:
     """The API's own diagnosis, or a synthesized one when it did not give one."""
     if response.status_code >= 400:
@@ -182,11 +209,17 @@ def doctor() -> None:
     exit-on-error path is correct for every other command and wrong for this
     one, which owes the operator a table whatever the server said.
     """
-    from cli.main import _client
+    from cli.main import _client, _token_available
 
-    try:
-        with _client() as client:
-            payload = _payload_for(client.get("/api/doctor"))
-    except httpx.RequestError as exc:
-        payload = _unreachable_payload(exc)
+    if not _token_available():
+        # `_token_available` is the same resolution `_auth_token` performs,
+        # minus the print-and-exit. Asked BEFORE `_client()`, because
+        # `_auth_token` exits the process from inside the constructor.
+        payload = _no_token_payload()
+    else:
+        try:
+            with _client() as client:
+                payload = _payload_for(client.get("/api/doctor"))
+        except httpx.RequestError as exc:
+            payload = _unreachable_payload(exc)
     raise typer.Exit(code=render(payload))

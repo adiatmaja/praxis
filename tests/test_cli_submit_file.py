@@ -171,3 +171,66 @@ def test_submit_missing_file_errors_without_creating_a_plan(
     # land mid-path; match against colour-free output.
     assert str(missing_path) in flat(result)
     assert called["n"] == 0
+
+
+# --------------------------------------------------------------------------
+# A spec that is not UTF-8 is an ORDINARY input on this platform.
+#
+# `UnicodeDecodeError` is a `ValueError`, not an `OSError`, so it walked
+# straight past the handler two lines above and out of the CLI as a raw
+# traceback. A spec saved by Notepad as ANSI, or one carrying a single Word
+# smart quote pasted from a document, is the normal case here, and a traceback
+# names neither the cause nor the remedy: the operator sees a decoder frame,
+# not "this file is not UTF-8".
+# --------------------------------------------------------------------------
+
+#: cp1252 bytes for `Rencana: "café" — naïve`. Byte 0x97 (an em dash in cp1252)
+#: is not a valid UTF-8 continuation, so this decodes cleanly in the encoding
+#: Notepad and Word produce and raises in the one `submit` requires.
+CP1252_SPEC = "Rencana: “café” — naïve\n".encode("cp1252")
+
+
+def _refusing_handler(called: dict):
+    def handler(request: httpx.Request) -> httpx.Response:
+        called["n"] += 1
+        return httpx.Response(200, json={"id": PLAN_ID, "status": "pending"})
+
+    return handler
+
+
+def test_a_non_utf8_spec_file_is_reported_not_raised(monkeypatch, tmp_path) -> None:
+    """The message must name UTF-8, because that is the whole remedy."""
+    called = {"n": 0}
+    _patch_client(monkeypatch, _refusing_handler(called))
+    spec_path = tmp_path / "spec.md"
+    spec_path.write_bytes(CP1252_SPEC)
+
+    result = runner.invoke(app, ["submit", PROJECT_ID, "--file", str(spec_path)])
+
+    # A SystemExit is the CLI reporting; anything else is the traceback.
+    assert isinstance(result.exception, SystemExit)
+    assert result.exit_code != 0
+    out = flat(result)
+    assert "UTF-8" in out
+    assert str(spec_path) in out
+    assert called["n"] == 0
+
+
+def test_a_non_utf8_stdin_spec_is_reported_not_raised(monkeypatch) -> None:
+    """`--file -` decodes stdin explicitly too, and had the same hole.
+
+    A piped spec is the documented form for anything long
+    (`cat spec.md | praxis submit <id> --file -`), so the file that cannot be
+    passed as an argument is exactly the file most likely to reach this path.
+    """
+    called = {"n": 0}
+    _patch_client(monkeypatch, _refusing_handler(called))
+
+    result = runner.invoke(
+        app, ["submit", PROJECT_ID, "--file", "-"], input=CP1252_SPEC
+    )
+
+    assert isinstance(result.exception, SystemExit)
+    assert result.exit_code != 0
+    assert "UTF-8" in flat(result)
+    assert called["n"] == 0

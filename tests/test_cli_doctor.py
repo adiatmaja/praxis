@@ -313,3 +313,100 @@ def test_a_hint_that_looks_like_markup_is_printed_literally(capsys):
     render(_payload_with_detail("d", hint="run `foo --opt [a|b]` then retry"))
 
     assert "[a|b]" in capsys.readouterr().out
+
+
+# --- No token at all is the commonest broken machine, not an exemption ------
+#
+# `cli.main._client()` calls `_auth_token()`, which PRINTS and raises
+# `typer.Exit(1)` before a request is ever made. That exit is not an
+# `httpx.RequestError`, so it walked past the only handler `doctor()` had and
+# the operator got a one-line message and NO TABLE -- from the command whose
+# module docstring says it "never raises, it diagnoses a broken machine".
+#
+# `_error_status_payload` already handles the 401 sibling explicitly, calling
+# it "the case where the table helps most". A token that is absent is strictly
+# more common on a fresh install than one that is wrong, and `auth_token` is
+# itself one of doctor's own checks.
+
+
+@pytest.fixture
+def _no_token_anywhere(monkeypatch, tmp_path):
+    """No token in the environment and no `.env` to fall back to.
+
+    Both halves are load-bearing: the `.env` walk-up would otherwise find this
+    repository's own working install and resolve a real token, so the test
+    would pass for a reason that has nothing to do with the code under test.
+    """
+    from cli import main as cli_main
+
+    for name in ("AUTH_TOKEN", "ORCHESTRATOR_TOKEN"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.chdir(tmp_path)
+    cli_main._env_file_values.cache_clear()
+    yield
+    cli_main._env_file_values.cache_clear()
+
+
+@pytest.mark.unit
+@pytest.mark.usefixtures("_no_token_anywhere")
+def test_doctor_renders_a_table_when_no_token_resolves():
+    """The table, with `auth_token` red and carrying its own registry hint."""
+    result = runner.invoke(app, ["doctor"])
+
+    assert isinstance(result.exception, SystemExit)
+    assert result.exit_code == 1
+    out = plain(result.stdout)
+    assert "praxis doctor" in out  # the table itself, not a bare error
+    assert "AUTH_TOKEN accepted by the API" in out
+    # The auth_token check's own registry hint, not a fabricated one.
+    assert "check AUTH_TOKEN in .env" in out
+
+
+@pytest.mark.unit
+@pytest.mark.usefixtures("_no_token_anywhere")
+def test_doctor_does_not_invent_verdicts_for_checks_it_could_not_run():
+    """Nothing was probed, so every other row must say so rather than fail.
+
+    The synthetic table asserts only what this process actually knows. A run
+    that reddened every row would tell an operator with one missing variable
+    that their Docker daemon and their build are broken too.
+    """
+    result = runner.invoke(app, ["doctor"])
+
+    out = plain(result.stdout)
+    assert "not checked" in out
+    assert out.count("FAIL") == 2  # one table row, one hint line
+
+
+@pytest.mark.unit
+@pytest.mark.usefixtures("_no_token_anywhere")
+def test_doctor_makes_no_request_when_no_token_resolves(monkeypatch):
+    """A synthesized table must not be a table synthesized after a real call.
+
+    Without a token there is nothing to authenticate with, so the request
+    cannot succeed; making it anyway would mean the verdict depends on whether
+    an orchestrator happens to be running on this machine.
+    """
+    calls = {"n": 0}
+
+    class FakeClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def get(self, url: str, **kwargs):
+            calls["n"] += 1
+            return httpx.Response(200, json={"status": "green", "checks": []})
+
+    monkeypatch.setattr("cli.main.httpx.Client", FakeClient)
+
+    result = runner.invoke(app, ["doctor"])
+
+    assert calls["n"] == 0
+    assert result.exit_code == 1
+    assert "AUTH_TOKEN accepted by the API" in plain(result.stdout)

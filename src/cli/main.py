@@ -13,6 +13,7 @@ import typer
 from rich.console import Console
 from rich.markup import escape
 from rich.table import Table
+from rich.text import Text
 
 from cli.doctor import doctor as _doctor
 from cli.init import _fetch_presets_or_defaults, parse_env
@@ -245,9 +246,30 @@ def _abandoned_merge(exc: httpx.RequestError) -> NoReturn:
     raise typer.Exit(1)
 
 
+#: Server text is DATA, and rich reads a bare "[" as the start of a style tag.
+#: There are two tools here and they are not interchangeable:
+#:
+#: - ``rich.text.Text`` for a value printed as its own console argument or put
+#:   in a table cell. It renders literally and cannot be re-parsed. This is what
+#:   `cli/doctor.py` uses for every string that came off the wire.
+#: - ``rich.markup.escape`` for a value INTERPOLATED into a line that carries
+#:   markup of ours, and for anything handed to :func:`_copyable`, which prints
+#:   with markup ON so that ``_status_cell``'s already-escaped text renders
+#:   right.
+#:
+#: Both halves of the failure are silent in their own way: ``[main]`` is DELETED
+#: with nothing to say it happened, and ``[/dim]`` raises ``MarkupError`` out of
+#: whatever command was printing. `_truncate_error` learned this for `plans`;
+#: the siblings below had not.
 def _check(response: httpx.Response) -> dict[str, Any] | list[dict[str, Any]]:
     if response.status_code >= 400:
-        console.print(f"[red]Error {response.status_code}:[/red] {response.text}")
+        # `response.text` is the server's own detail, which for every route
+        # behind `guard_repo_access` is decoded `git`/`gh` stderr: measured,
+        # `harness [agy] is unknown; allowed: [opencode]` printed as
+        # `harness is unknown; allowed:`, an error with every identifier it
+        # exists to name removed. This checker is SHARED, so a MarkupError
+        # raised here can take down any verb in the CLI.
+        console.print(f"[red]Error {response.status_code}:[/red]", Text(response.text))
         raise typer.Exit(1)
     data = response.json()
     if not isinstance(data, (dict, list)):
@@ -329,10 +351,19 @@ def projects() -> None:
     table.add_column("Improve gate")
     table.add_column("Auto-merge")
     for project in data:
+        # `Text` for every value off the wire (see the note on `_check`). A
+        # project name is operator-typed and a `repo_url` can be a
+        # `praxis-local://` ref carrying query parameters, so neither is safe
+        # to hand to the markup parser. Only the two gate cells, which this
+        # function writes itself, stay plain strings.
         table.add_row(
-            project["name"],
-            project["repo_url"],
-            project["model_name"],
+            Text(project["name"] or ""),
+            Text(project["repo_url"] or ""),
+            # `or ""` is not defensive padding: the API has always allowed a
+            # null `model_name` (the project falls back to the deployment's
+            # DEFAULT_WORKER_MODEL), and `Text` takes a str where `add_row`
+            # took None for an empty cell.
+            Text(project["model_name"] or ""),
             "ON" if project["approval_gate"] else "OFF",
             "ON" if project.get("auto_merge") else "OFF",
         )
@@ -352,7 +383,9 @@ def projects() -> None:
         return
     console.print()
     for project in data:
-        _copyable(f"praxis plans {project['id']}   # {project['name']}")
+        # `escape`, not `Text`: `_copyable` prints with markup ON, because
+        # `plans` feeds it `_status_cell` output that is already escaped.
+        _copyable(f"praxis plans {project['id']}   # {escape(project['name'] or '')}")
 
 
 @app.command()
@@ -419,7 +452,11 @@ def add_project(
         # it would scroll off above the "Error 422: ..." line the operator
         # actually reads last.
         if response.status_code >= 400 and _looks_msys_mangled(repo):
-            console.print(f"[red]Error {response.status_code}:[/red] {response.text}")
+            # `Text`, for the reason on `_check`: this is the same server
+            # detail, printed by a second copy of the same line.
+            console.print(
+                f"[red]Error {response.status_code}:[/red]", Text(response.text)
+            )
             console.print(
                 "[yellow]Your shell rewrote this path.[/yellow] Git Bash "
                 "converts a leading '/' into an MSYS path. Re-run with "
@@ -514,7 +551,38 @@ def configure(
         return
     with _client() as client:
         data = _check_dict(client.patch(f"/api/projects/{project_id}", json=body))
-    console.print(f"[green]Updated project:[/green] {data['name']}")
+    # A project name is operator-typed, so this is the same value `projects`
+    # puts in a table cell and the same hazard: `Text` per the note on `_check`.
+    console.print("[green]Updated project:[/green]", Text(data["name"] or ""))
+
+
+def _not_utf8(what: str, exc: UnicodeDecodeError) -> NoReturn:
+    """Refuse a specification that is not UTF-8, naming the encoding and the fix.
+
+    The encoding has to be in the message. "Cannot read spec file X" alone
+    sends the operator looking for a permissions or path problem, when the file
+    is right there and readable; the only thing wrong with it is how it was
+    saved, and that is something they can fix in thirty seconds once told.
+
+    Args:
+        what: How to refer to the input, e.g. ``spec file C:\\x.md``.
+        exc: The decode failure, whose offset locates the offending byte.
+
+    Raises:
+        typer.Exit: Always, with code 1.
+    """
+    console.print(
+        f"[red]Cannot read {escape(what)}: it is not valid UTF-8.[/red] "
+        f"({exc.reason} at byte {exc.start})",
+        soft_wrap=True,
+    )
+    console.print(
+        "Specs are read as UTF-8. Re-save the file with UTF-8 encoding "
+        "(Notepad: Save As -> Encoding: UTF-8) and run this again. A single "
+        "smart quote pasted from Word is enough to trip this.",
+        soft_wrap=True,
+    )
+    raise typer.Exit(1) from exc
 
 
 @app.command()
@@ -559,7 +627,10 @@ def submit(
             # stdin: on Windows the console default is cp1252, and this
             # command exists specifically to stop the encoding from being
             # left to guesswork.
-            spec_text = sys.stdin.buffer.read().decode("utf-8")
+            try:
+                spec_text = sys.stdin.buffer.read().decode("utf-8")
+            except UnicodeDecodeError as exc:
+                _not_utf8("the piped specification", exc)
         else:
             try:
                 spec_text = file.read_text(encoding="utf-8")
@@ -569,10 +640,19 @@ def submit(
                 # path mid-token, the exact defect class `pending`/`tasks`
                 # already had to fix for uuids.
                 console.print(
-                    f"[red]Cannot read spec file {file}:[/red] {exc}",
+                    f"[red]Cannot read spec file {escape(str(file))}:[/red] {exc}",
                     soft_wrap=True,
                 )
                 raise typer.Exit(1) from exc
+            except UnicodeDecodeError as exc:
+                # A `UnicodeDecodeError` is a `ValueError`, NOT an `OSError`,
+                # so it walked straight past the handler above and out of the
+                # CLI as a raw traceback -- on the most ordinary input this
+                # platform produces. A spec saved by Notepad as ANSI, or one
+                # carrying a single smart quote pasted out of Word, is cp1252,
+                # and the traceback names a decoder frame rather than the file
+                # or the remedy.
+                _not_utf8(f"spec file {file}", exc)
     else:
         spec_text = spec
 
@@ -844,9 +924,12 @@ def tasks(plan_id: str = typer.Argument(..., help="Plan ID")) -> None:
     table.add_column("Status")
     table.add_column("Attempt")
     for task in data:
+        # A title is decomposer output and a branch name is derived from it,
+        # so `refactor [core] parser` is an ordinary value here, not an exotic
+        # one. `Text` per the note on `_check`.
         table.add_row(
-            task["title"],
-            task["branch_name"],
+            Text(task["title"] or ""),
+            Text(task["branch_name"] or ""),
             task["status"],
             str(task["attempt"]),
         )
@@ -863,28 +946,43 @@ def tasks(plan_id: str = typer.Argument(..., help="Plan ID")) -> None:
         return
     console.print()
     for task in data:
-        _copyable(f"praxis task {task['id']}   # {task['title']}")
+        # The title appears TWICE on this screen and each site escapes on its
+        # own; fixing only the table left the copyable line still eating it.
+        _copyable(f"praxis task {task['id']}   # {escape(task['title'] or '')}")
 
 
 @app.command()
 def task(task_id: str = typer.Argument(..., help="Task ID")) -> None:
-    """Get task details with agent run history."""
+    """Get task details with agent run history.
+
+    Every line here is server text, and `review_feedback` is the one that made
+    this urgent: the orchestrator writes its own bracketed safety markers into
+    it (`[supply-chain] Blocked: ...`, `[diff-guard] Warning: ...`), so rendered
+    as markup this surface DELETED the word saying a dependency had been
+    blocked -- on the screen a human reads before approving a merge. Feedback
+    carrying a closing-shaped token raised `MarkupError` and exited 1 with a
+    traceback. See the note on `_check`.
+    """
 
     with _client() as client:
         data = _check_dict(client.get(f"/api/tasks/{task_id}"))
     task_data = data["task"]
-    console.print(f"[bold]{task_data['title']}[/bold]")
+    console.print(Text(task_data["title"] or "", style="bold"))
     console.print(
-        "Status: "
-        f"{task_data['status']} | Branch: {task_data['branch_name']} | "
-        f"Attempt: {task_data['attempt']}"
+        Text(
+            "Status: "
+            f"{task_data['status']} | Branch: {task_data['branch_name']} | "
+            f"Attempt: {task_data['attempt']}"
+        )
     )
     if task_data["pr_url"]:
-        console.print(f"PR: {task_data['pr_url']}")
+        console.print(Text(f"PR: {task_data['pr_url']}"))
     if task_data["review_feedback"]:
-        console.print(f"[yellow]Feedback:[/yellow] {task_data['review_feedback']}")
+        console.print("[yellow]Feedback:[/yellow]", Text(task_data["review_feedback"]))
     for run in data["runs"]:
-        console.print(f"  {run['id'][:8]} | {run['status']} | {run['started_at']}")
+        console.print(
+            Text(f"  {run['id'][:8]} | {run['status']} | {run['started_at']}")
+        )
 
 
 #: Lines of container log printed by default. A worker transcript runs to
@@ -1037,6 +1135,112 @@ def stop(task_id: str = typer.Argument(..., help="Task ID")) -> None:
         )
 
 
+def _read_back_status(client: httpx.Client, task_id: str) -> str | None:
+    """Return a task's current status, or None when it cannot be established.
+
+    Every failure mode collapses to None on purpose. This is called only to
+    make a refusal explicable, so a guess here would put a fabricated fact on
+    the screen an operator acts from, and the caller has a third phrasing for
+    exactly that. Same polarity as the unknown context window and the blank
+    verify command: the state that cannot be settled is reported, never folded
+    into one of the two that can.
+    """
+    try:
+        response = client.get(f"/api/tasks/{task_id}")
+    except httpx.RequestError:
+        return None
+    if response.status_code >= 400:
+        return None
+    try:
+        body = response.json()
+    except ValueError:
+        return None
+    if not isinstance(body, dict):
+        return None
+    task_row = body.get("task")
+    if not isinstance(task_row, dict):
+        return None
+    status_value = task_row.get("status")
+    return status_value if isinstance(status_value, str) and status_value else None
+
+
+def _refused_retry(client: httpx.Client, task_id: str) -> NoReturn:
+    """Explain a 409 from the retry endpoint by naming the task's real status.
+
+    The endpoint answers 409 for every status but `failed`, and its detail
+    names the RULE ("only failed tasks can be retried") rather than the FACT.
+    Left to `_check`, the screen read `Error 409: {"detail": "Task is not
+    failed - only failed tasks can be retried"}`: a raw JSON body for the most
+    likely wrong-verb mistake on this surface, after which the operator still
+    has to run a second command to learn anything.
+
+    The status is READ BACK rather than inferred, because the 409 body cannot
+    supply it and this client must not decide what the server's vocabulary is.
+    """
+    status_value = _read_back_status(client, task_id)
+    if status_value is not None:
+        console.print(
+            "[yellow]Not retried:[/yellow]",
+            Text(
+                f"task {task_id} is {status_value}, and only a failed task can "
+                "be retried."
+            ),
+        )
+    else:
+        console.print(
+            "[yellow]Not retried:[/yellow] only a failed task can be retried, "
+            "and this one is not. Its current status could not be read back, "
+            "so it is not named here rather than guessed."
+        )
+    _copyable(f"praxis task {task_id}   # its real status, and the review feedback")
+    raise typer.Exit(1)
+
+
+@app.command()
+def retry(
+    task_id: str = typer.Argument(..., help="Full task ID from `praxis task`"),
+) -> None:
+    """Requeue a failed task: back to pending, one more attempt.
+
+    The recovery verb for a wedged plan. A PENDING leaf whose dependency FAILED
+    terminally can never be dispatched -- `failed` is not in
+    `SATISFIED_STATUSES`, so no tick will ever return it -- and the plan sits
+    ACTIVE, indistinguishable from healthy, forever. MCP `poll_plan` reports
+    that as `stalled.action_required = "retry_failed_task"` and this is the
+    verb that performs it. `POST /api/tasks/{id}/retry` had existed the whole
+    time with no verb in front of it, so the hint named an action an operator
+    could only take with curl.
+
+    This adds no precondition of its own. The only rule is the server's (a task
+    must be `failed`), and the retry CAP is deliberately enforced on the review
+    path alone: a second copy of it here would be a rule that can drift from
+    the one that actually governs dispatch. A human retrying past the automatic
+    bound is making a decision, not tripping a bug.
+    """
+
+    with _client() as client:
+        response = client.post(f"/api/tasks/{task_id}/retry")
+        if response.status_code == httpx.codes.CONFLICT:
+            _refused_retry(client, task_id)
+        data = _check_dict(response)
+    console.print(
+        "[green]Requeued:[/green]",
+        Text(
+            f"{data.get('title') or task_id} "
+            f"(now {data.get('status')}, attempt {data.get('attempt')})"
+        ),
+    )
+    _copyable(f"praxis task {task_id}   # watch it leave pending and pick up again")
+    plan_id = data.get("plan_id")
+    if plan_id:
+        # Only when the row names one. `praxis tasks` with an empty argument is
+        # a usage error, and a copyable line that cannot be run reads as a
+        # broken CLI rather than as a missing field.
+        _copyable(
+            f"praxis tasks {plan_id}   # the leaves this unblocks, once it passes"
+        )
+
+
 @app.command()
 def status() -> None:
     """Show orchestrator status."""
@@ -1163,10 +1367,12 @@ def pending() -> None:
         # to learn whether the green in front of them means anything.
         table.add_column("Scope")
         for task in tasks:
+            # `Text` per the note on `_check`. `_scope_glance` returns one of
+            # this module's own fixed phrases, so it stays a plain string.
             table.add_row(
                 f"{int(task['age_hours'])}h",
-                task["title"] or task["task_id"],
-                task["branch"] or "",
+                Text(task["title"] or task["task_id"]),
+                Text(task["branch"] or ""),
                 _scope_glance(task.get("review_scope")),
             )
         console.print(table)
@@ -1178,7 +1384,7 @@ def pending() -> None:
         for plan in plans_awaiting:
             plan_table.add_row(
                 f"{int(plan['age_hours'])}h",
-                plan["branch"] or plan["plan_id"],
+                Text(plan["branch"] or plan["plan_id"]),
             )
         console.print(plan_table)
 
@@ -1190,10 +1396,14 @@ def pending() -> None:
         question_table.add_column("Task", max_width=30)
         question_table.add_column("Question", overflow="fold")
         for blocked in clarifications:
+            # A worker's question is raw model output, the most bracket-prone
+            # string on any of these surfaces: one containing `[/dim]` raised
+            # `MarkupError` and took the whole of `praxis pending` down, which
+            # hid the merge gate and the proposals too.
             question_table.add_row(
                 f"{int(blocked['age_hours'])}h",
-                blocked["title"] or blocked["task_id"],
-                blocked["question"] or "(no question recorded)",
+                Text(blocked["title"] or blocked["task_id"]),
+                Text(blocked["question"] or "(no question recorded)"),
             )
         console.print(question_table)
 
@@ -1206,7 +1416,7 @@ def pending() -> None:
         for proposal in proposals:
             proposal_table.add_row(
                 f"{int(proposal['age_hours'])}h",
-                proposal["project_id"] or "",
+                Text(proposal["project_id"] or ""),
             )
         console.print(proposal_table)
 
@@ -1219,7 +1429,8 @@ def pending() -> None:
     # uuid, a url) survives contiguous at any width.
     for task in tasks:
         _copyable(
-            f"praxis merge {task['task_id']}   # {task['title'] or task['task_id']}"
+            f"praxis merge {task['task_id']}   "
+            f"# {escape(task['title'] or task['task_id'])}"
         )
         # The gate is two-way at the API (`approve-merge` and `reject-merge`)
         # and was one-way here, so the only thing `pending` let you say about
@@ -1237,7 +1448,7 @@ def pending() -> None:
         # pre-feature task, or a PASS that recorded no scope statement) rather
         # than printing a fabricated "None".
         if task.get("review_scope"):
-            console.print(f"  {task['review_scope']}")
+            console.print(Text(f"  {task['review_scope']}"))
     for plan in plans_awaiting:
         # The plan line names the same verb the per-task line does, because
         # `merge-plan` is one command that covers both stages: it drains
@@ -1659,13 +1870,24 @@ def env() -> None:
     # because this block exists to be pasted into another shell and half an
     # export block is not usable. Anyone who can run this can already read
     # the same value out of `.env`.
+    # Through `_copyable`, whose docstring is written about exactly this
+    # situation and which these three lines were the only paste-block in the
+    # CLI not using. They had `highlight=False` but not `soft_wrap=True`, so
+    # rich inserted a REAL newline at the console width and selecting the row
+    # gave half a command -- in the one block whose stated job is to be pasted
+    # into another shell. Measured on a hosted install: the PowerShell line,
+    # the longest of the three, folded.
+    #
+    # `escape` because `_copyable` prints with markup on and the token is an
+    # arbitrary operator-chosen string.
+    url = escape(_api_url())
+    token = escape(_auth_token())
     console.print("\nTo make this explicit in another shell:\n")
-    console.print(f"  export ORCHESTRATOR_URL={_api_url()}", highlight=False)
-    console.print(f"  export ORCHESTRATOR_TOKEN={_auth_token()}", highlight=False)
-    console.print(
-        f'  (PowerShell: $env:ORCHESTRATOR_URL="{_api_url()}"; '
-        f'$env:ORCHESTRATOR_TOKEN="{_auth_token()}")',
-        highlight=False,
+    _copyable(f"  export ORCHESTRATOR_URL={url}")
+    _copyable(f"  export ORCHESTRATOR_TOKEN={token}")
+    _copyable(
+        f'  (PowerShell: $env:ORCHESTRATOR_URL="{url}"; '
+        f'$env:ORCHESTRATOR_TOKEN="{token}")'
     )
 
 
