@@ -11,6 +11,7 @@ from httpx import AsyncClient
 
 from orchestrator.api.internal import _resolved_as_no_op
 from orchestrator.core.clarification_states import ANSWERED_BY_BRAIN
+from orchestrator.core.orchestrator_review import NoChangeDecision
 from orchestrator.core.session_resume import resolve_resume_session
 from orchestrator.core.task_queue import TaskQueue
 from orchestrator.database import Database
@@ -229,13 +230,17 @@ async def test_no_changes_callback_closes_the_task_as_a_no_op(
 
     async def _accept(
         task_id_arg: str, project: dict, plan: dict | None
-    ) -> tuple[bool, str]:
+    ) -> NoChangeDecision:
         await queue.mark_no_changes(task_id_arg, "already satisfied")
-        return True, "verify passed on the base branch"
+        return NoChangeDecision(True, "verify passed on the base branch")
 
     # ``no_change_outcome``, not the ``resolve_no_change_run`` wrapper: the
     # callback path takes the reason as well as the answer. Patching the
     # wrapper leaves the real check running and the test measures nothing.
+    # A real ``NoChangeDecision``, not the ``(closed, why)`` pair it unpacks
+    # as: the callback now reads ``worker_attributable`` off it to decide
+    # whether the attempt owes a calibration row, and a bare tuple is a double
+    # that cannot express -- or fail on -- the fact under test.
     monkeypatch.setattr(client.app.state.orchestrator, "no_change_outcome", _accept)
 
     resp = await client.post(
@@ -314,8 +319,13 @@ async def test_a_declined_no_change_records_which_fact_declined(
 
     async def _declined(
         task_id_arg: str, project: dict, plan: dict | None
-    ) -> tuple[bool, str]:
-        return False, "the verify gate on plan/x was skipped (no credential)"
+    ) -> NoChangeDecision:
+        # Non-attributable, matching what the real check returns for this skip:
+        # a configured gate that could not reach the repository establishes
+        # nothing about the worker.
+        return NoChangeDecision(
+            False, "the verify gate on plan/x was skipped (no credential)"
+        )
 
     monkeypatch.setattr(client.app.state.orchestrator, "no_change_outcome", _declined)
 

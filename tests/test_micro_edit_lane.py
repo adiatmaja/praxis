@@ -28,6 +28,7 @@ from orchestrator.core.micro_edit import (
     apply_micro_edit,
     resolve_target,
 )
+from orchestrator.core.orchestrator_review import NoChangeDecision
 from orchestrator.models.schemas import TaskStatus
 
 
@@ -476,7 +477,10 @@ async def test_an_unchanged_micro_edit_goes_through_no_change_governance(
     orch, _task_id, project = orchestrator_fixture
     _configure(orch)
     _lane_result(monkeypatch, committed=False, base_sha=None, pr_url=None)
-    decided = AsyncMock(return_value=(True, ""))
+    # A real ``NoChangeDecision``, not the ``(closed, why)`` pair it unpacks as:
+    # the lane reads ``worker_attributable`` off it to decide whether the
+    # attempt owes a calibration row, and a bare tuple cannot express that.
+    decided = AsyncMock(return_value=NoChangeDecision(True, ""))
     orch.no_change_outcome = decided  # type: ignore[method-assign]
     plan_id = await _micro_edit_plan(orch, project, _PAYLOAD)
 

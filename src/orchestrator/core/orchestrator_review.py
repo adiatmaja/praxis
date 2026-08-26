@@ -13,7 +13,7 @@ import json
 import logging
 import tempfile
 from collections import Counter
-from collections.abc import Iterator, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -1031,60 +1031,148 @@ class ReviewMixin:
         feedback = (
             f"Review could not start: {subject} carries no diff, and {decision.why}."
         )
+        await self.handle_declined_no_change(
+            task, project, plan, decision, feedback, task_type=task_type
+        )
+
+    async def handle_declined_no_change(
+        self,
+        task: dict[str, Any],
+        project: dict[str, Any],
+        plan: dict[str, Any] | None,
+        decision: NoChangeDecision,
+        feedback: str,
+        *,
+        task_type: str | None,
+    ) -> None:
+        """Record and dispose of the attempt a DECLINED no-change just ended.
+
+        The one description of what happens when an absent change is judged NOT
+        to be a no-op. Two paths reach that judgement and they are the same
+        event seen from different ends: an empty pull-request diff caught inside
+        ``review_task``, and a worker that self-reported ``no_changes`` to
+        ``api/internal.py``. Both mean the leaf produced nothing; only the first
+        recorded anything or triaged anything, and the difference was invisible
+        because each path reads as complete on its own.
+
+        Measured live on 2026-08-26 on the second path: a leaf whose declared
+        edit location was absent from the plan branch went 1 -> 2 -> 3 attempts
+        with ``triage_decision`` NULL the whole way, and triage fired only on the
+        one attempt that happened to come back through the review verdict.
+
+        Two branches, and which one is taken is settled by
+        ``decision.worker_attributable`` -- never by reading the reason text,
+        which would start answering differently the day a sentence is reworded:
+
+        - NOT attributable (the branch could not be resolved, the gate raised, a
+          configured gate could not reach the repository): the same class as a
+          reviewer that could not run. Fail and maybe retry, never triage, and
+          never RECORD. ``record_outcome`` derives ``counts_against_worker`` from
+          ``failure_class`` alone, so the only way to write a non-voting row is
+          to name one of the three classes that mean something else
+          (``provider_error``, ``worker_blocked``, ``needs_stronger_model``),
+          which trades a false row in the calibration set for a false cause in
+          the audit trail. And triage's worst answer, ``human``, is terminal and
+          irreversible: spending it on a gateway blip gates a healthy leaf
+          forever. The fault is not silent either way -- ``no_change_outcome``
+          logs it at WARNING, the whole ``why`` is stored on
+          ``tasks.review_feedback``, and the failure is published.
+        - Attributable: record the attempt, then offer the leaf to adaptive
+          triage. The BOUND on who gets triaged is not re-derived here; it lives
+          in ``_triage_then_fail`` (``attempt >= 2``, one call per leaf lifetime)
+          precisely so a leaf cannot buy a second brain call by failing through
+          the other path.
+
+        The evidence passed to triage is ``(0, 0, "")``, identical to what the
+        review path has always passed for this shape, and honest on both: the
+        change is zero files and zero lines because there IS no change, and
+        there is no diff to show. ``leaf_triage._unknown`` reserves ``None`` for
+        "nobody looked", which would be the false statement here.
+
+        Args:
+            task: The task row whose attempt just ended.
+            project: Its project row.
+            plan: The plan row, or None when the task has no plan graph.
+            feedback: What is stored, published, and injected into the next
+                worker's prompt. The CALLER writes it, because the two paths are
+                honestly describing different observations -- "this pull request
+                carries no diff" and "the worker reported no changes" -- and one
+                fixed sentence for both would be false on one of them.
+            task_type: The leaf's type from the plan graph, resolved by the
+                caller (``graph_task_type``).
+        """
+        task_id = str(task["id"])
+        await self.record_declined_no_change(
+            task, project, decision, task_type=task_type
+        )
         if not decision.worker_attributable:
-            # The decline was about the deployment, not the leaf: the branch
-            # could not be resolved, the gate raised, or a configured gate could
-            # not reach the repository. Same class as a reviewer that could not
-            # run, and handled the same way -- fail and retry, never triage.
-            #
-            # And never RECORDED, for the same reason. No calibration row is
-            # written here at all, rather than one carrying a non-attributable
-            # class: ``record_outcome`` derives ``counts_against_worker`` from
-            # ``failure_class`` alone, so the only way to write a row that does
-            # not vote is to name one of the three classes that already mean
-            # something else (``provider_error``, ``worker_blocked``,
-            # ``needs_stronger_model``). Each would put a false CAUSE into the
-            # audit trail to avoid putting a false ROW into the calibration set,
-            # which is the same harm moved one column across. The fault is not
-            # silent either way: ``no_change_outcome`` logs it at WARNING, the
-            # whole ``why`` is stored on ``tasks.review_feedback``, and
-            # ``_fail_and_maybe_retry`` publishes the failure.
             await self._fail_and_maybe_retry(task_id, task, project, feedback)
             return
-        # A worker that produced NOTHING is the most common repeated-failure
-        # shape on this path, and until 2026-08-26 it was the one shape that
-        # could never be triaged: this branch called ``_fail_and_maybe_retry``
-        # directly, so a leaf failed here three times and died with
-        # ``triage_decision`` still NULL -- never split, never escalated, never
-        # handed to a human with a reason. Measured live on a one-leaf plan.
-        #
-        # ZERO, not None, and the difference is the whole signal.
-        # ``leaf_triage._unknown`` renders None as "unknown (not measured)" and
-        # says why: "zero files touched is the signature of a worker that did
-        # nothing, which pushes the triage decision toward escalate or human.
-        # The brain is entitled to know the difference between 'nothing changed'
-        # and 'nobody looked'." Here the diff WAS fetched, through a checked
-        # command that raises on a non-zero exit, and it WAS empty. "Nothing
-        # changed" is therefore the measured truth; reporting it as unknown
-        # would suppress exactly the push this path exists to deliver.
-        #
-        # Recorded BEFORE triage, exactly as the review-verdict path records
-        # before ``_triage_then_fail``: this row is about the attempt that just
-        # ended, and triage may supersede the task or end it outright. Until
-        # 2026-08-26 no row was written here at ALL -- measured, not read -- so
-        # a worker that produced nothing was the one failure class the
-        # capability engine's calibration set could not contain, and every rate
-        # over that table had it missing from the denominator.
-        await self._record_task_outcome(
-            task,
-            project,
-            task_type=task_type,
-            files_touched=0,
-            loc_delta=0,
-            outcome="fail",
-            failure_class=FailureClass.NO_OUTPUT.value,
-        )
         await self._triage_then_fail(task, project, plan, feedback, 0, 0, "")
+
+    async def handle_worker_no_change(
+        self,
+        task: dict[str, Any],
+        project: dict[str, Any],
+        plan: dict[str, Any] | None,
+        decision: NoChangeDecision,
+        feedback: str,
+        *,
+        task_type: str | None,
+    ) -> None:
+        """``handle_declined_no_change`` for a task that is NOT parked in review.
+
+        The callback entry point, and it exists for one reason: triage's
+        rate-limit branch DEFERS by leaving the task exactly where it is, and
+        "where it is" is not the same place on the two paths.
+
+        From ``review_task`` the task is REVIEWING, which is the only state that
+        costs nothing to wait in -- no attempt consumed, no decision stamped,
+        and REVIEWING counts as ACTIVE so the plan neither completes short of
+        the leaf nor reports itself stalled. The next tick re-enters
+        ``review_task`` and triages it once the limit clears.
+
+        From the worker callback the task is IN_PROGRESS and its agent run has
+        ALREADY been completed one line earlier. Nothing re-enters it:
+        ``reconcile_runs`` walks RUNNING runs only, so a completed run is never
+        looked at again, and IN_PROGRESS counts as active, so the plan hangs
+        forever with no error and no stall event -- the exact permanent wedge
+        this file already fixes twice elsewhere. REVIEWING is not available as a
+        resting state either: a task with a NULL ``pr_url`` returns immediately
+        from ``review_task``, which is the same wedge one state over, and a
+        ``no_changes`` worker has no pull request by definition.
+
+        So the disposition is verified against the DATABASE rather than assumed
+        from a return value. A task still sitting in the status it arrived in
+        was deferred (or decided nothing), and takes the ordinary
+        fail-and-maybe-retry path instead. That costs one retry on a throttle;
+        the alternative is a plan that never finishes because a rate limit
+        cleared five minutes later and nobody was listening.
+
+        Args:
+            task: The task row whose attempt just ended, read before this.
+            project: Its project row.
+            plan: The plan row, or None.
+            decision: What ``no_change_outcome`` decided, in full.
+            feedback: Stored, published, and given to the next worker.
+            task_type: The leaf's type from the plan graph.
+        """
+        task_id = str(task["id"])
+        status_before = task["status"]
+        await self.handle_declined_no_change(
+            task, project, plan, decision, feedback, task_type=task_type
+        )
+        settled = await self._tq.get_task(task_id)
+        if settled is not None and settled["status"] == status_before:
+            logger.warning(
+                "Task %s was offered to triage from the worker callback and "
+                "came back still %s, so triage deferred rather than deciding. "
+                "Failing it normally: unlike a review, nothing re-enters a "
+                "callback, so waiting here would strand the task and the plan.",
+                task_id,
+                status_before,
+            )
+            await self._fail_and_maybe_retry(task_id, task, project, feedback)
 
     async def review_task(self, task_id: str, project: dict[str, Any]) -> None:
         """Review a task PR with Opus and merge or retry accordingly."""
@@ -2260,6 +2348,81 @@ class ReviewMixin:
         """
         return (await self.no_change_outcome(task_id, project, plan)).closed
 
+    async def _graph_entry_for_task(
+        self, task_id: str, plan: dict[str, Any] | None
+    ) -> Mapping[str, Any] | None:
+        """Return the plan-graph entry aligned to this task row, or None.
+
+        The join lives here once because THREE facts are now read off the same
+        entry from different places -- the declared edit locations, the leaf's
+        ``task_type`` for the calibration row, and the plan text for the review
+        prompt -- and the join is POSITIONAL, the one ``plan_graph`` argues is
+        safe. Two copies of it is how one caller comes to align a row to a
+        different leaf than another and answer confidently about the wrong one.
+
+        Returns None for every shape that cannot be answered rather than
+        raising, and each of them degrades to exactly the behavior that predates
+        the caller: a plan with no graph, a row with no aligned entry, or a
+        database that would not answer. Nothing read from here decides a leaf's
+        fate on its own, so a fault here must not be able to fail one.
+
+        Args:
+            task_id: The task whose graph entry is wanted.
+            plan: Its plan row, or None.
+
+        Returns:
+            The entry, verbatim as the brain wrote it, or None.
+        """
+        plan_id = (plan or {}).get("id")
+        if not plan_id:
+            return None
+        graph_tasks = parse_graph_tasks(plan)
+        if not graph_tasks:
+            return None
+        try:
+            rows = await self._tq.get_tasks_for_plan(str(plan_id))
+        except Exception:  # noqa: BLE001 - degrade to the pre-check behavior
+            logger.warning(
+                "Could not read the task rows of plan %s, so task %s's plan-graph "
+                "entry could not be resolved",
+                plan_id,
+                task_id,
+                exc_info=True,
+            )
+            return None
+        return graph_entry_for_row(task_id, build_graph_index(rows), graph_tasks)
+
+    async def graph_task_type(
+        self, task_id: str, plan: dict[str, Any] | None
+    ) -> str | None:
+        """Return the leaf's ``task_type`` from the plan graph, or None.
+
+        ``summarize_outcomes`` groups the calibration rows BY this column, so a
+        row that omits it is filed under "unknown" and says nothing about which
+        SHAPE of leaf a model cannot do. ``review_task`` resolves it off the
+        graph before it reviews; the two paths that decide a no-change outside
+        ``review_task`` have no such lookup of their own and would otherwise
+        write a row the review path's row cannot be grouped with.
+
+        Public because ``api/internal.py`` reaches it from outside the class,
+        for the same reason ``no_change_outcome`` is.
+
+        Args:
+            task_id: The task whose leaf type is wanted.
+            plan: Its plan row, or None.
+
+        Returns:
+            The declared task type, or None when the graph does not say. None
+            is an ANSWER here ("the plan never declared one"), which is why it
+            is not distinguished from a failed lookup: ``record_outcome`` files
+            both the same way and neither is a claim about the leaf.
+        """
+        entry = await self._graph_entry_for_task(task_id, plan)
+        if entry is None:
+            return None
+        task_type = entry.get("task_type")
+        return str(task_type) if task_type else None
+
     async def _declared_edit_locations(
         self, task_id: str, plan: dict[str, Any] | None
     ) -> tuple[str, ...]:
@@ -2268,16 +2431,14 @@ class ReviewMixin:
         The declaration lives in ``plans.opus_plan``, never on the task row:
         ``tasks`` has no ``files`` column, and ``agent_runs.files_touched`` is a
         COUNT of what a worker changed, not a list of what it was asked to
-        change. So the row is joined back to its graph entry POSITIONALLY, the
-        one join ``plan_graph`` argues is safe, and read through the same
-        parser the worker's bible section uses.
+        change. So the row is joined back to its graph entry POSITIONALLY (see
+        ``_graph_entry_for_task``) and read through the same parser the worker's
+        bible section uses.
 
         Returns ``()`` for every shape that cannot be answered rather than
-        raising, and each of them degrades to exactly the behavior that
-        predates this check: a plan with no graph, a row with no aligned entry,
-        an entry declaring nothing, or a database that would not answer. This
-        method decides no leaf's fate on its own, so a fault here must not be
-        able to fail one.
+        raising: no aligned entry, or an entry declaring nothing. This method
+        decides no leaf's fate on its own, so a fault here must not be able to
+        fail one.
 
         Args:
             task_id: The task whose declaration is wanted.
@@ -2286,27 +2447,86 @@ class ReviewMixin:
         Returns:
             The declared edit locations, verbatim and in declaration order.
         """
-        plan_id = (plan or {}).get("id")
-        if not plan_id:
-            return ()
-        graph_tasks = parse_graph_tasks(plan)
-        if not graph_tasks:
-            return ()
-        try:
-            rows = await self._tq.get_tasks_for_plan(str(plan_id))
-        except Exception:  # noqa: BLE001 - degrade to the pre-check behavior
-            logger.warning(
-                "Could not read the task rows of plan %s, so task %s's declared "
-                "edit locations were not checked",
-                plan_id,
-                task_id,
-                exc_info=True,
-            )
-            return ()
-        entry = graph_entry_for_row(task_id, build_graph_index(rows), graph_tasks)
+        entry = await self._graph_entry_for_task(task_id, plan)
         if entry is None:
             return ()
         return declared_paths(entry.get("files"))
+
+    async def record_declined_no_change(
+        self,
+        task: dict[str, Any],
+        project: dict[str, Any],
+        decision: NoChangeDecision,
+        *,
+        task_type: str | None,
+    ) -> None:
+        """Write the ONE calibration row a DECLINED no-change owes, or nothing.
+
+        Three paths decide that an absent change is not a no-op -- the review
+        path's empty PR diff, the worker callback in ``api/internal.py``, and
+        the micro-edit lane in ``orchestrator_dispatch.py`` -- and all three
+        owe the calibration set the same row. Only the first wrote one until
+        2026-08-26, measured with a throwaway probe rather than read: both
+        siblings reached a real ``NoChangeDecision(worker_attributable=True)``
+        and left ``task_outcomes`` empty. A worker that produced nothing is the
+        most informative failure a calibration loop can observe, and
+        ``no_changes`` is the status BOTH harness entrypoints report, so the
+        callback is where that shape is judged most often.
+
+        The row's CONTENTS stay in ``_record_task_outcome``; what lives here is
+        the one description of what a declined no-change means, so a fourth
+        caller cannot invent a different class or a different measurement for
+        the same event.
+
+        ``worker_attributable`` decides whether anything is written at all, and
+        the answer is taken from the DECISION rather than from the wording of
+        its reason: a substring match over prose is the pattern this module
+        rejects everywhere else, and it would start answering differently the
+        day a sentence is reworded. A non-attributable decline records NOTHING
+        rather than a row with a softer class, because ``record_outcome``
+        derives ``counts_against_worker`` from ``failure_class`` ALONE: the only
+        non-voting classes (``provider_error``, ``worker_blocked``,
+        ``needs_stronger_model``) each name a different CAUSE, so writing one
+        would trade a false row in the calibration set for a false cause in the
+        audit trail -- the same harm moved one column across.
+
+        There is deliberately no ``closed`` guard. All three callers reach this
+        only on a decline, so a guard here would be dead code reading as a live
+        one; the "a no-op records nothing" rule is theirs to hold and each of
+        them is tested for it.
+
+        Args:
+            task: The task row whose attempt just ended. Attribution is read
+                off it, so a caller whose path implemented the attempt itself
+                must have recorded that first (see the micro-edit lane).
+            project: Its project row, for the attribution fallbacks.
+            decision: What ``no_change_outcome`` decided, in full.
+            task_type: The leaf's type from the plan graph, resolved by the
+                caller. Passed rather than derived here because ``review_task``
+                already holds one taken before the review started, and a second
+                lookup could read a graph that changed in between.
+        """
+        if not decision.worker_attributable:
+            return
+        # ZERO, not None, and the difference is the whole signal.
+        # ``leaf_triage._unknown`` renders None as "unknown (not measured)":
+        # "zero files touched is the signature of a worker that did nothing...
+        # The brain is entitled to know the difference between 'nothing changed'
+        # and 'nobody looked'." Every path reaching here has MEASURED the zero.
+        # The review path fetched the diff through a checked command and got
+        # nothing; both harness entrypoints report ``no_changes`` only when
+        # ``git rev-list --count`` SUCCEEDED and returned 0 (an undeterminable
+        # count deliberately stays ``failed``); and the micro-edit lane got a
+        # clean index back from git after writing the file.
+        await self._record_task_outcome(
+            task,
+            project,
+            task_type=task_type,
+            files_touched=0,
+            loc_delta=0,
+            outcome="fail",
+            failure_class=FailureClass.NO_OUTPUT.value,
+        )
 
     async def no_change_outcome(
         self,

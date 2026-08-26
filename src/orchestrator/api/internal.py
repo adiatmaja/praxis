@@ -9,6 +9,7 @@ from fastapi import APIRouter, HTTPException, Request, status
 from pydantic import BaseModel
 
 from orchestrator.core.harnesses import default_harness_id
+from orchestrator.core.orchestrator_review import NoChangeDecision
 from orchestrator.models.schemas import TaskStatus
 
 
@@ -78,7 +79,7 @@ async def _resolved_as_no_op(
     task_id: str,
     project: dict | None,
     plan: dict | None,
-) -> tuple[bool, str]:
+) -> NoChangeDecision:
     """Ask the orchestrator whether an empty diff was a legitimate no-op.
 
     Kept as a guarded call rather than inlined so the ``else`` branch below
@@ -89,26 +90,93 @@ async def _resolved_as_no_op(
     POSITIVE answer, never the residue of a failed check.
 
     Returns:
-        ``(closed, why)``. ``why`` names WHICH fact declined, because there are
-        at least six and only one of them is "the branch did not verify clean".
-        It is stored on the task and injected into the next worker's prompt by
-        the Bible, so the caller must not substitute a fixed sentence for it:
-        that told a worker to fix a verification nobody had run, and it is the
-        defect the review path was corrected for on 2026-08-24 while this path,
-        the one both harness entrypoints actually take, kept the old string.
+        The whole :class:`NoChangeDecision`, not just ``(closed, why)``. ``why``
+        names WHICH fact declined, because there are at least six and only one
+        of them is "the branch did not verify clean". It is stored on the task
+        and injected into the next worker's prompt by the Bible, so the caller
+        must not substitute a fixed sentence for it: that told a worker to fix a
+        verification nobody had run, and it is the defect the review path was
+        corrected for on 2026-08-24 while this path, the one both harness
+        entrypoints actually take, kept the old string.
+
+        ``worker_attributable`` is the third fact and it was being DISCARDED
+        here, measured on 2026-08-26: a declined ``no_changes`` callback wrote
+        no calibration row at all, so the one failure shape a calibration loop
+        most wants to see could not reach the table from the path both harnesses
+        take. Both guarded returns below default it to False, which is exactly
+        right -- nothing was checked, so nothing is evidence about the worker.
     """
     orchestrator = getattr(request.app.state, "orchestrator", None)
     if orchestrator is None or project is None:
-        return False, (
+        return NoChangeDecision(
+            False,
             "the no-op check could not run here (no orchestrator or no project "
-            "on this request), so nothing was established either way"
+            "on this request), so nothing was established either way",
         )
     try:
-        closed, why = await orchestrator.no_change_outcome(task_id, project, plan)
-        return bool(closed), str(why)
+        decision: NoChangeDecision = await orchestrator.no_change_outcome(
+            task_id, project, plan
+        )
+        return decision
     except Exception:  # noqa: BLE001 - fall through to the failure path
         logger.exception("no-change resolution failed for task %s", _scrub(task_id))
-        return False, "the no-op check itself raised, so nothing was established"
+        return NoChangeDecision(
+            False, "the no-op check itself raised, so nothing was established"
+        )
+
+
+async def _dispose_declined_no_change(
+    request: Request,
+    task: dict,
+    project: dict | None,
+    plan: dict | None,
+    decision: NoChangeDecision,
+    feedback: str,
+) -> bool:
+    """Hand a declined ``no_changes`` to the orchestrator that owns the rules.
+
+    Delegation, not duplication, and deliberately for BOTH halves of it. The
+    calibration row and the adaptive-triage gate are the same two rules the
+    review path applies to the same event, and each was missing here: measured
+    on 2026-08-26, a declined ``no_changes`` callback wrote no ``task_outcomes``
+    row at all, and a leaf that failed this way burned every attempt with
+    ``triage_decision`` NULL -- never split, never escalated, never handed to a
+    human. Copying "who may be triaged" onto this side is exactly the drift
+    ``_triage_then_fail`` was extracted this morning to prevent, so the router
+    supplies the facts and the mixin makes every decision.
+
+    Fails OPEN in the safe direction. Anything that stops the delegation from
+    happening at all (no orchestrator, no project, a lookup that raised) returns
+    False, and the caller's own retry/fail chain runs exactly as it did before,
+    which is the behaviour this endpoint has always had.
+
+    Args:
+        request: For ``app.state.orchestrator``.
+        task: The task row whose attempt just ended.
+        project: Its project row, or None when it could not be resolved.
+        plan: Its plan row, for the leaf's ``task_type``.
+        decision: What the no-op check decided, in full.
+        feedback: What to store, publish, and give the next worker.
+
+    Returns:
+        True when the orchestrator took ownership of the task's next state, so
+        the caller must not touch it again.
+    """
+    orchestrator = getattr(request.app.state, "orchestrator", None)
+    if orchestrator is None or project is None:
+        return False
+    try:
+        task_type = await orchestrator.graph_task_type(task["id"], plan)
+    except Exception:  # noqa: BLE001 - a lookup must not change the disposition
+        logger.exception(
+            "could not resolve the leaf type of task %s; recording without it",
+            _scrub(str(task["id"])),
+        )
+        task_type = None
+    await orchestrator.handle_worker_no_change(
+        task, project, plan, decision, feedback, task_type=task_type
+    )
+    return True
 
 
 def _best_effort_logs(agent_manager: object, container_id: str, task_id: str) -> str:
@@ -248,12 +316,9 @@ async def agent_done(request: Request, body: AgentDonePayload) -> dict[str, str]
     # Resolved once, before the chain, so the failure branch can state WHICH
     # fact declined instead of asserting one. Only a no_changes callback asks
     # the question at all.
-    no_op_closed = False
-    no_op_reason = ""
+    no_op = NoChangeDecision(False, "")
     if body.status == "no_changes":
-        no_op_closed, no_op_reason = await _resolved_as_no_op(
-            request, body.task_id, project, plan
-        )
+        no_op = await _resolved_as_no_op(request, body.task_id, project, plan)
 
     if body.status == "completed" and not completed_without_pr:
         await queue.update_task_status(body.task_id, TaskStatus.REVIEWING)
@@ -262,12 +327,22 @@ async def agent_done(request: Request, body: AgentDonePayload) -> dict[str, str]
         question = body.question or "Worker reported a blocker without details."
         await queue.mark_needs_clarification(body.task_id, question)
         logger.info("Task %s is awaiting clarification", task_id)
-    elif body.status == "no_changes" and no_op_closed:
+    elif body.status == "no_changes" and no_op.closed:
         logger.info("Task %s closed as a no-op (no changes were needed)", task_id)
     else:
         from orchestrator.core.orchestrator_reconcile import ReconcileMixin
 
+        # Hoisted out of the retry chain below because a SECOND decision reads
+        # it now. A transient provider/gateway error is not the worker failing;
+        # this path already refuses to spend a retry on one, and for the same
+        # reason it must not write an attributable calibration row for one.
+        provider_error_run = bool(logs) and ReconcileMixin.is_provider_error(logs)
+
         max_retries = int(project["max_retries"]) if project else 0
+        # Set when the orchestrator took ownership of this task's next state, so
+        # the chain below must not touch it a second time. Only the declined
+        # ``no_changes`` arm can set it; every other shape is still decided here.
+        handled_by_orchestrator = False
         if completed_without_pr:
             feedback = (
                 "Worker reported the task completed but no pull-request URL "
@@ -288,13 +363,37 @@ async def agent_done(request: Request, body: AgentDonePayload) -> dict[str, str]
             # reason comes from the check rather than being asserted here: it
             # declines for at least six unrelated facts and only one of them is
             # "the branch did not verify clean".
-            feedback = f"Worker produced no changes, and {no_op_reason}."
+            feedback = f"Worker produced no changes, and {no_op.why}."
+            # The worker produced NOTHING and the branch it was cut from proves
+            # the work is still needed. That is the most informative failure a
+            # calibration loop can observe, and this path -- the one both
+            # harness entrypoints actually take -- neither recorded it nor
+            # triaged it until 2026-08-26. Both are the orchestrator's rules and
+            # both are applied there, over the whole disposition, so the row is
+            # about the ATTEMPT that just ended and the triage decision is taken
+            # before anything re-dispatches the leaf.
+            #
+            # A provider error is excluded outright, for the same reason it is
+            # excluded from the retry budget below: the model never answered, so
+            # the empty result belongs to the endpoint and not to the worker.
+            # Counting it against the worker's capability, or spending a triage
+            # call whose worst answer is terminal on it, are the same mistake.
+            if not provider_error_run:
+                handled_by_orchestrator = await _dispose_declined_no_change(
+                    request, task, project, plan, no_op, feedback
+                )
         else:
             feedback = body.question or f"Agent finished with status {body.status}"
 
         # Transient provider/gateway errors (403/429/5xx/connection) must not
         # consume the task's retry budget. Reset to PENDING without touching attempt.
-        if logs and ReconcileMixin.is_provider_error(logs):
+        if handled_by_orchestrator:
+            logger.info(
+                "Task %s's declined no-change was recorded and disposed of by "
+                "the orchestrator (triage gate included)",
+                task_id,
+            )
+        elif provider_error_run:
             from datetime import UTC as _UTC
             from datetime import datetime as _datetime
 

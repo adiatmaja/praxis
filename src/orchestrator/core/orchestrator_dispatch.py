@@ -638,14 +638,45 @@ class DispatchMixin:
             # by the same governance a worker's empty diff goes through, which
             # runs the project's verify command against the branch this task was
             # cut from rather than taking the absence of a diff as proof.
-            closed, why = await cast(Any, self).no_change_outcome(
-                task_id, project, plan
-            )
-            if not closed:
+            decision = await cast(Any, self).no_change_outcome(task_id, project, plan)
+            if not decision.closed:
+                # The BRAIN implemented this attempt, and the columns that say so
+                # are written further down, AFTER a pull request is opened -- so
+                # on this branch they are still NULL. Measured on 2026-08-26.
+                # Recording the outcome without them would fall back through
+                # ``_record_task_outcome``'s attribution chain to the PROJECT's
+                # worker model and file a failure against a model that never saw
+                # the task: precisely the lie ``BRAIN_IMPLEMENTER`` exists to
+                # prevent, arriving from the branch nobody had reason to look at.
+                #
+                # Persisted rather than patched into the dict handed to the
+                # recorder, so the task row and the calibration row state the
+                # same fact and every other reader of the column agrees with
+                # them. The estimate that sent a real task down this lane was
+                # wrong, and the rubric needs that to stay observable.
+                await self._tq._db.execute(
+                    """UPDATE tasks
+                       SET implement_harness = ?, implement_model = ?,
+                           updated_at = ?
+                       WHERE id = ?""",
+                    (
+                        BRAIN_IMPLEMENTER,
+                        BRAIN_IMPLEMENTER,
+                        datetime.now(UTC).isoformat(),
+                        task_id,
+                    ),
+                )
+                attributed = await self._tq.get_task(task_id)
+                await cast(Any, self).record_declined_no_change(
+                    attributed or task,
+                    project,
+                    decision,
+                    task_type=await cast(Any, self).graph_task_type(task_id, plan),
+                )
                 await self._tq.fail_task(
                     task_id,
                     f"The micro edit left {edit_path} unchanged, so it was "
-                    f"already correct, and {why}",
+                    f"already correct, and {decision.why}",
                 )
             return
 
