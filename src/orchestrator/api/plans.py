@@ -149,7 +149,15 @@ async def _tasks_by_plan(
         chunk = plan_ids[start : start + _ID_CHUNK]
         placeholders = ",".join("?" * len(chunk))
         rows = await db.fetch_all(
-            f"SELECT * FROM tasks WHERE plan_id IN ({placeholders}) ORDER BY rowid",  # noqa: S608
+            # `placeholders` is built from "?" characters only
+            # (",".join("?" * len(chunk))) and every id is BOUND as a parameter
+            # below, so no caller value reaches the SQL text. The directive is
+            # `nosec`, not ruff's `noqa: S608`: ruff's `select` does not include
+            # "S", so the noqa that was here silenced nothing AND suppressed
+            # nothing. It also has to sit on the line bandit REPORTS -- on a
+            # comment line of its own it is silently dead and the scan still
+            # fails, which is how this one was first "fixed".
+            f"SELECT * FROM tasks WHERE plan_id IN ({placeholders}) ORDER BY rowid",  # nosec B608
             tuple(chunk),
         )
         for row in rows:
