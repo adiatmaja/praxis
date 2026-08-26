@@ -197,8 +197,20 @@ def drop_verification_only_leaves(opus_plan: dict[str, Any]) -> dict[str, Any]:
 
 
 def normalize_slugs(opus_plan: dict[str, Any]) -> None:
-    """Add a unique ``slug`` to each task and remap ``depends_on`` ids -> slugs."""
+    """Add a unique ``slug`` to each task and remap ``depends_on`` ids -> slugs.
+
+    Slugs are uniquified here; the brain's own ``id`` values are NOT unique and
+    nothing upstream makes them so.  An id carried by two tasks is therefore
+    dropped from the map rather than resolved: the map is last-wins, so keeping
+    it pointed every dependent at the SECOND task, which ordered a leaf after
+    work its author never named while the graph still read healthy.  An
+    unresolved dep stays as the raw id, where ``leaf_validator``'s HARD
+    ``dangling_dep`` rule sees it and the decompose loop re-asks with the
+    violation quoted.  Saying "unknown" is the same answer this codebase gives
+    for an unknown context window and a blank verify command.
+    """
     id_to_slug: dict[str, str] = {}
+    ambiguous_ids: set[str] = set()
     seen: set[str] = set()
     for task in opus_plan["tasks"]:
         slug = slugify(str(task.get("title") or task.get("id") or "task"))
@@ -207,7 +219,19 @@ def normalize_slugs(opus_plan: dict[str, Any]) -> None:
         seen.add(slug)
         task["slug"] = slug
         if "id" in task:
-            id_to_slug[str(task["id"])] = slug
+            raw_id = str(task["id"])
+            if raw_id in id_to_slug:
+                ambiguous_ids.add(raw_id)
+            id_to_slug[raw_id] = slug
+    for raw_id in ambiguous_ids:
+        del id_to_slug[raw_id]
+    if ambiguous_ids:
+        logger.warning(
+            "Decomposition reused task id(s) %s across tasks; dependencies "
+            "naming them are left unresolved for validation to reject, rather "
+            "than silently ordered after the last task carrying the id.",
+            ", ".join(sorted(ambiguous_ids)),
+        )
     for task in opus_plan["tasks"]:
         deps = task.get("depends_on") or []
         task["depends_on"] = [id_to_slug.get(str(d), str(d)) for d in deps]

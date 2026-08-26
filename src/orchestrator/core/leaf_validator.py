@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import re
+from collections import Counter
 from dataclasses import dataclass, field
 from difflib import SequenceMatcher
 
@@ -263,6 +264,42 @@ def _section_for_task(source: str, leaf: LeafTask) -> str:
 # ---------------------------------------------------------------------------
 # Rule implementations
 # ---------------------------------------------------------------------------
+
+
+def _check_duplicate_ids(
+    leaves: list[LeafTask],
+    result: ValidationResult,
+) -> None:
+    """HARD: no two leaves in one set may carry the same ``id``.
+
+    Nothing upstream enforces this.  ``LeafTask.id`` is a bare ``str``, the
+    decompose prompt never asks for uniqueness, and the triage prompt asks only
+    that a child's ``depends_on`` name its SIBLINGS.  A repeated id is therefore
+    a shape the brain can legitimately return, and it collapses every map keyed
+    on the id at once -- the sibling edge in ``core/leaf_split``, the adjacency
+    ``_detect_cycles`` walks, the slug the capability events name, and the
+    per-child difficulty score -- each of them silently, to whichever leaf
+    happened to come LAST.
+
+    The collapse is invisible from outside: the graph reads healthy, the
+    misordered leaf fails on its own verification, and ``task_outcomes`` records
+    that failure against the WORKER, which feeds the miswiring back into
+    capability calibration as evidence the model is weaker than it is.  So this
+    is a gate, not a repair: an id that names two leaves names no leaf.
+    """
+    for task_id, count in Counter(lt.id for lt in leaves).items():
+        if count > 1:
+            result.add(
+                Violation(
+                    rule="duplicate_id",
+                    task_id=task_id,
+                    message=(
+                        f"id '{task_id}' is shared by {count} leaves; every "
+                        "dependency, event and score keyed on it would name "
+                        "only the last one"
+                    ),
+                )
+            )
 
 
 def _check_dangling_dep(
@@ -589,7 +626,15 @@ def validate_leaves(
     if not leaves:
         return result
 
-    # HARD rules
+    # HARD rules. Identity FIRST, and alone if it fires: every rule below is
+    # keyed on ``leaf.id``, so on a repeated id they grade a graph that does not
+    # exist -- ``_detect_cycles`` in particular turns a sibling edge into a self
+    # edge and reports a cycle nobody wrote. One real finding beats a list of
+    # invented ones, and the feedback the re-ask carries is this result.
+    _check_duplicate_ids(leaves, result)
+    if result.hard:
+        return result
+
     _check_dangling_dep(leaves, result)
     _check_dep_cycles(leaves, result)
     _check_dep_depth(leaves, profile, result)
@@ -626,6 +671,9 @@ def validate_split_children(
 
     Applied, HARD:
 
+    - ``duplicate_id``: FIRST, and alone if it fires.  Two children sharing one
+      id collapse all four id-keyed maps the caller builds next, so this is the
+      only place the shape can be caught before something acts on it.
     - ``leaf_template``: the point of the exercise.  The triage prompt renders
       the same ``core/leaf_templates`` block the decompose prompt does, and
       until this ran nothing graded the answer.
@@ -678,7 +726,14 @@ def validate_split_children(
     """
     result = ValidationResult()
 
-    # HARD rules
+    # HARD rules. ``duplicate_id`` first and alone, for the reason given in
+    # ``validate_leaves`` and in the rule's own docstring: it is the one finding
+    # that must be reported BEFORE any id-keyed map is built, and the split path
+    # builds four of them the moment this returns dispatchable.
+    _check_duplicate_ids(children, result)
+    if result.hard:
+        return result
+
     _check_leaf_template(children, result)
     _check_verification(children, result)
     _check_max_files(children, profile, result)

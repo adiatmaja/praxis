@@ -153,6 +153,44 @@ def test_each_soft_rule_fires_alone_and_never_blocks(
 
 
 @pytest.mark.unit
+def test_two_children_sharing_one_id_are_refused() -> None:
+    """Nothing else in the system requires a child id to be unique.
+
+    ``LeafTask.id`` is a bare ``str`` and the triage prompt only tells the brain
+    to point ``depends_on`` at SIBLINGS, so a repeated id is a shape the brain
+    can legitimately produce.  Four id-keyed maps then collapse on it at once:
+    the sibling edge in ``leaf_split``, ``_detect_cycles``'s adjacency, the
+    slug the ledger events name, and the per-child difficulty score.  None of
+    them raises, so the gate is the only place the shape can be caught.
+    """
+    children = [
+        valid_child("c1", "One", "src/one.py"),
+        valid_child("c1", "Two", "src/two.py"),
+    ]
+    result = validate_split_children(children, _profile())
+    assert {v.rule for v in result.hard} == {"duplicate_id"}
+    assert not result.dispatchable
+
+
+@pytest.mark.unit
+def test_the_duplicate_check_runs_before_the_id_keyed_rules() -> None:
+    """A collapsed adjacency makes ``dep_cycle`` report a cycle that is not there.
+
+    ``_detect_cycles`` keys ``adj`` on ``lt.id``, so with the id repeated the
+    second child's sibling edge becomes a SELF edge on the surviving entry and
+    the graph is reported as cyclic.  Every rule below the duplicate check is
+    grading a graph that does not exist, so the answer must name the one defect
+    that is real rather than the ones the collapse invented.
+    """
+    children = [
+        valid_child("c1", "One", "src/one.py"),
+        _bend(valid_child("c1", "Two", "src/two.py"), depends_on=["c1"]),
+    ]
+    result = validate_split_children(children, _profile())
+    assert {v.rule for v in result.hard} == {"duplicate_id"}
+
+
+@pytest.mark.unit
 def test_a_correct_pair_of_children_trips_nothing() -> None:
     """The control.  Without it every rule test above passes on a broken rule
     set that rejects everything."""
@@ -350,6 +388,51 @@ async def test_a_refused_split_reaches_the_capability_ledger(
     payload = json.loads(rows[0]["payload"])
     assert payload["rule_id"] == "leaf_template"
     assert payload["leaf_slug"] == "a-s1"
+
+
+@pytest.mark.unit
+async def test_children_sharing_an_id_never_reach_a_worker(
+    orchestrator_fixture: tuple[Any, str, dict[str, Any]],
+) -> None:
+    """The CALL SITE, not the rule: the real split branch must consult the gate.
+
+    A rule the review path never runs is worth nothing, and this shape is the
+    one that reaches a worker looking healthy: two children whose ids collapse
+    are individually valid, so every other rule passes them.
+
+    The ledger row is what makes this a guard on the GATE rather than on the
+    outcome.  ``leaf_split.rewire_plan_for_split`` refuses the same shape a
+    moment later and degrades to the identical parked-and-retried state, so a
+    test asserting only "no child rows" stays green with the rule deleted.
+    Only the gate records WHY.
+    """
+    orch, task_id, project = orchestrator_fixture
+    await _split_with(
+        orch,
+        task_id,
+        [
+            valid_child("c1", "One", "src/one.py"),
+            valid_child("c1", "Two", "src/two.py"),
+        ],
+    )
+
+    await orch.review_task(task_id, project)
+
+    task = await orch._tq.get_task(task_id)
+    assert task["status"] == TaskStatus.PENDING
+    # Stamped, so the refused split does not buy a second triage call.
+    assert task["triage_decision"] == "split"
+    assert await _child_rows(orch, task_id) == []
+
+    rows = await orch._tq._db.fetch_all(
+        "SELECT * FROM capability_events WHERE event_type = 'leaf_rejected'"
+    )
+    payloads = [json.loads(row["payload"]) for row in rows]
+    assert [p["rule_id"] for p in payloads] == ["duplicate_id"]
+    # The ambiguous id is named RAW. Translating it would have to pick one of
+    # the two children the id names, and the map that once did so is exactly
+    # what this rule exists to stop anything reading.
+    assert payloads[0]["leaf_slug"] == "c1"
 
 
 @pytest.mark.unit

@@ -145,6 +145,29 @@ def test_a_second_split_of_the_same_parent_raises_instead_of_duplicating():
 
 
 @pytest.mark.unit
+def test_children_sharing_one_id_raise_instead_of_collapsing_the_map():
+    """Nothing makes the brain's child ids unique, and the map is last-wins.
+
+    ``LeafTask.id`` is a bare ``str`` and the triage prompt only says a child's
+    ``depends_on`` must name SIBLINGS, never that the ids must differ.  Two
+    children carrying one id collapse ``id_to_slug``, so a sibling edge points
+    at whichever child came LAST: the dependent child is ordered after the wrong
+    sibling, runs against work that was never built, and fails its own
+    verification with nothing anywhere naming the miswiring.  Same doctrine as
+    the duplicate-slug rejection above: fail loudly rather than corrupt the map.
+    """
+    children = [
+        LeafTask(id="x1", title="B part one", plan_text="Goal: one"),
+        LeafTask(id="x1", title="B part two", plan_text="Goal: two", depends_on=["x1"]),
+    ]
+    plan = _plan()
+    before = [dict(task) for task in plan["tasks"]]
+    with pytest.raises(ValueError, match="duplicate"):
+        rewire_plan_for_split(plan, "b", children)
+    assert plan["tasks"] == before
+
+
+@pytest.mark.unit
 def test_the_parent_keeps_its_own_position_and_dependencies():
     """The superseded parent stays at index 1 with its edges intact."""
     plan = _plan()

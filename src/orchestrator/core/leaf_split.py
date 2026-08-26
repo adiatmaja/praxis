@@ -25,6 +25,7 @@ have no row yet, so persisting the graph without the rows wedges the plan.
 
 from __future__ import annotations
 
+from collections import Counter
 from typing import Any
 
 from orchestrator.models.schemas import LeafTask
@@ -72,7 +73,9 @@ def rewire_plan_for_split(
         ValueError: If a generated child slug is already taken, which means
             this parent was split before.  Two rows sharing a slug collapse
             the positional map and orphan the earlier one, so fail loudly
-            rather than append duplicates.
+            rather than append duplicates.  Also if two CHILDREN share an
+            ``id``: the sibling map below is keyed on it, so a repeated id
+            redirects a sibling edge to whichever child came last.
     """
     tasks: list[dict[str, Any]] = opus_plan["tasks"]
     parent = next((t for t in tasks if t.get("slug") == parent_slug), None)
@@ -88,6 +91,21 @@ def rewire_plan_for_split(
         message = (
             f"child slugs {collisions} already exist in the plan; "
             f"{parent_slug!r} has already been split"
+        )
+        raise ValueError(message)
+
+    # Belt and braces behind ``leaf_validator._check_duplicate_ids``, which is
+    # the gate this shape is meant to die at.  Nothing in ``LeafTask`` or the
+    # triage prompt makes a child id unique, and the map below is last-wins, so
+    # a repeated id silently points a sibling edge at the wrong child.  Same
+    # doctrine as the slug collision above: raise before the first mutation
+    # rather than build a map that quietly names the wrong task.
+    counts = Counter(child.id for child in children)
+    duplicate_ids = sorted(cid for cid, n in counts.items() if n > 1)
+    if duplicate_ids:
+        message = (
+            f"children share duplicate ids {duplicate_ids}; a sibling "
+            "dependency on a repeated id resolves to the last child only"
         )
         raise ValueError(message)
 

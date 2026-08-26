@@ -13,8 +13,11 @@ from orchestrator.core.execute_plan_decompose import (
     count_plan_tasks,
     decompose_plan,
     drop_verification_only_leaves,
+    normalize_slugs,
 )
+from orchestrator.core.leaf_validator import validate_leaves
 from orchestrator.core.plan_review import PlanReviewError
+from orchestrator.models.schemas import LeafTask
 from tests.conftest import FAKE_GITHUB_TOKEN
 
 
@@ -1157,3 +1160,62 @@ async def test_decompose_still_returns_a_graph_that_parsed_on_the_last_attempt()
     assert opus_plan["tasks"][0]["slug"]
     assert "## Goal" in opus_plan["tasks"][0]["plan_text"]
     assert "LeafValidatedEvent" in emitter.emitted
+
+
+# ---------------------------------------------------------------------------
+# Two tasks may carry the SAME brain id, and the id -> slug map was last-wins.
+# ---------------------------------------------------------------------------
+
+
+def _duplicate_id_plan() -> dict[str, Any]:
+    """A graph whose first two tasks share the brain id the third depends on."""
+    return {
+        "tasks": [
+            {"id": "t1", "title": "First", "description": "d", "depends_on": []},
+            {"id": "t1", "title": "Second", "description": "d", "depends_on": []},
+            {"id": "t9", "title": "Third", "description": "d", "depends_on": ["t1"]},
+        ]
+    }
+
+
+@pytest.mark.unit
+def test_a_dep_on_an_id_two_tasks_share_resolves_to_neither() -> None:
+    """An ambiguous id must resolve to NOTHING, never to whoever came last.
+
+    Nothing requires the brain's ``id`` values to differ: the field is a bare
+    ``str`` on ``LeafTask`` and the decompose prompt never asks for uniqueness.
+    ``id_to_slug`` was last-wins, so a dependent silently pointed at the SECOND
+    task and was ordered after work its author never named. The plan reads
+    healthy the whole way through -- the misordered leaf fails on its own
+    verification and the outcome is recorded against the worker.
+    """
+    opus_plan = _duplicate_id_plan()
+    normalize_slugs(opus_plan)
+    first, second, third = opus_plan["tasks"]
+
+    assert first["slug"] != second["slug"]
+    # Left unresolved: an id that names two tasks names no one task.
+    assert third["depends_on"] == ["t1"]
+
+
+@pytest.mark.unit
+def test_an_ambiguous_dep_is_rejected_by_f3_rather_than_dispatched() -> None:
+    """Unresolved is only safe because the next gate SEES it.
+
+    ``get_dispatchable_tasks`` raises on a dep it cannot resolve, so leaving the
+    raw id in place would wedge the plan if it ever reached dispatch. It does
+    not: F3's HARD ``dangling_dep`` rule runs first on exactly this graph and
+    the decompose loop re-asks with the violation quoted.
+    """
+    opus_plan = _duplicate_id_plan()
+    normalize_slugs(opus_plan)
+    # decompose_plan re-keys every id to the task's own unique slug before
+    # validating; the ambiguous DEP is what survives that.
+    for task in opus_plan["tasks"]:
+        task["id"] = task["slug"]
+    leaves = [LeafTask.model_validate(t) for t in opus_plan["tasks"]]
+
+    result = validate_leaves(opus_plan, _FakeProfile(), "", leaves)
+
+    assert "dangling_dep" in {v.rule for v in result.hard}
+    assert not result.dispatchable
