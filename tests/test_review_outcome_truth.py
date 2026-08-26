@@ -24,6 +24,7 @@ first place.
 from __future__ import annotations
 
 import json
+from collections.abc import Sequence
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
@@ -219,7 +220,12 @@ async def test_an_empty_pr_diff_on_an_unverifiable_branch_stays_a_failure(
         branch: str,
         verify_cmd: str | None,
         disabled_reason: str | None = None,
+        require_paths: Sequence[str] = (),
     ):
+        assert tuple(require_paths) == (), (
+            "this leaf declares no edit locations, so the gate must be asked "
+            "for no path check"
+        )
         return _PlanVerifyResult("failed", output="1 failed")
 
     monkeypatch.setattr(orch, "_verify_plan_branch", _failing_gate)

@@ -94,6 +94,81 @@ def slug_to_graph_task(graph_tasks: Sequence[Any]) -> dict[str, dict[str, Any]]:
     }
 
 
+def graph_entry_for_row(
+    task_id: str,
+    graph_index: Mapping[str, int],
+    graph_tasks: Sequence[Any],
+) -> Mapping[str, Any] | None:
+    """Return the graph entry aligned with a task ROW, or None.
+
+    The same positional join :func:`resolve_task_slug` makes, exposed for the
+    consumers that want a FIELD off the entry rather than its slug. Kept here
+    rather than re-derived at each call site because the alignment argument in
+    the module docstring is the only thing that makes either of them safe.
+
+    Args:
+        task_id: The row's id.
+        graph_index: Row id -> graph index, from :func:`build_graph_index`.
+        graph_tasks: The raw graph entries, from :func:`parse_graph_tasks`.
+
+    Returns:
+        The entry, or None when the row has no aligned one (index missing,
+        index out of range, or the entry is not a mapping). None is the honest
+        answer and never ``{}``: "this row has no graph entry" and "its entry
+        declares nothing" are different facts, and a caller reading a declared
+        field off the second must not be handed the first.
+    """
+    index = graph_index.get(str(task_id))
+    if index is None or not 0 <= index < len(graph_tasks):
+        return None
+    entry = graph_tasks[index]
+    return entry if isinstance(entry, Mapping) else None
+
+
+def declared_paths(files: Any) -> tuple[str, ...]:
+    """Return the repo-relative paths a graph entry's ``files`` declares.
+
+    ``opus_plan["tasks"]`` is raw brain JSON on every path but decomposition
+    (only that one validates through ``LeafTask``), so ``files`` can be any
+    shape and this must never raise: a ``TypeError`` here aborts a whole
+    orchestration pass in one caller and a governance decision in the other.
+
+    ONE parser, deliberately, because it has two consumers that must not
+    disagree: the worker's undroppable EDIT LOCATIONS bible section, which
+    tells the worker where to write, and the no-op check, which asks whether
+    those places exist. A second parser is how the worker comes to be told one
+    list and judged against another.
+
+    Args:
+        files: The raw ``files`` value: a path string, a sequence of path
+            strings or ``{"path"|"file": ...}`` mappings, or anything else.
+
+    Returns:
+        The declared paths in declaration order, verbatim (NOT normalized:
+        the bible section shows the worker what the brain wrote). Empty when
+        nothing usable was found.
+    """
+    if isinstance(files, str):
+        entries: list[Any] = [files]
+    elif isinstance(files, list | tuple):
+        entries = list(files)
+    else:
+        return ()
+
+    paths: list[str] = []
+    for entry in entries:
+        if isinstance(entry, str):
+            path = entry
+        elif isinstance(entry, Mapping):
+            candidate = entry.get("path") or entry.get("file")
+            path = candidate if isinstance(candidate, str) else ""
+        else:
+            continue
+        if path.strip():
+            paths.append(path)
+    return tuple(paths)
+
+
 def resolve_task_slug(
     task: Mapping[str, Any],
     graph_index: Mapping[str, int],

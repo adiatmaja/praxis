@@ -34,6 +34,7 @@ from orchestrator.core.orchestrator_review import (
 )
 from orchestrator.core.plan_graph import (
     build_graph_index,
+    declared_paths,
     parse_graph_tasks,
     resolve_task_slug,
     slug_to_graph_task,
@@ -139,6 +140,11 @@ def _normalize_edit_locations(files: Any) -> str | None:
     dropped, so an unusable value must yield nothing rather than garbage, and
     this must never raise: a ``TypeError`` here aborts the whole loop pass.
 
+    The parsing itself lives in ``plan_graph.declared_paths`` because the no-op
+    check asks whether these same declared locations EXIST on the base branch.
+    Two parsers would let the worker be told one list and judged against
+    another, which is the one failure neither side could see.
+
     Args:
         files: The raw ``files`` value from the plan task: a path string, a
             sequence of path strings or ``{"path"|"file": ...}`` mappings, or
@@ -147,25 +153,7 @@ def _normalize_edit_locations(files: Any) -> str | None:
     Returns:
         The newline-joined paths, or None when nothing usable was found.
     """
-    if isinstance(files, str):
-        entries: list[Any] = [files]
-    elif isinstance(files, list | tuple):
-        entries = list(files)
-    else:
-        return None
-
-    paths: list[str] = []
-    for entry in entries:
-        if isinstance(entry, str):
-            path = entry
-        elif isinstance(entry, Mapping):
-            candidate = entry.get("path") or entry.get("file")
-            path = candidate if isinstance(candidate, str) else ""
-        else:
-            continue
-        if path.strip():
-            paths.append(path)
-    return "\n".join(paths) or None
+    return "\n".join(declared_paths(files)) or None
 
 
 def _normalize_verification(verification: Any) -> str | None:

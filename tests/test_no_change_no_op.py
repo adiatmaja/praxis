@@ -17,6 +17,8 @@ falls through to the normal failure path.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
@@ -83,36 +85,45 @@ async def orch_fixture(db: Database) -> tuple[Orchestrator, str, str, dict[str, 
     return orch, plan_id, task_id, dict(row)
 
 
-def _verify(orch: Orchestrator, status: str, reason: str = "") -> list[str]:
-    """Replace the verify gate with a stub, recording the branch it checked.
+def _verify(orch: Orchestrator, status: str, reason: str = "") -> SimpleNamespace:
+    """Replace the verify gate with a stub, recording what it was asked.
 
     ``reason`` is not decoration: ``_verify_plan_branch`` returns ``skipped``
     for three different reasons and only ONE of them means "the operator
     configured no check". A stub that omits it can only ever test a skip the
     real gate never produces.
+
+    ``require_paths`` is recorded for the same class of reason. The gate now
+    also answers whether the leaf's declared edit locations exist on that
+    branch, and a stub that swallowed the argument would let the whole
+    declaration be dropped on the floor while every test here still passed.
+    None of the leaves in this file declare any, and that is asserted rather
+    than assumed.
     """
     from orchestrator.core.orchestrator_review import _PlanVerifyResult
 
-    seen: list[str] = []
+    calls = SimpleNamespace(branches=[], paths=[])
 
     async def _stub(
         repo_url: str,
         branch: str,
         verify_cmd: str | None,
         disabled_reason: str | None = None,
+        require_paths: Sequence[str] = (),
     ):
-        seen.append(branch)
+        calls.branches.append(branch)
+        calls.paths.append(tuple(require_paths))
         return _PlanVerifyResult(status, reason=reason)
 
     orch._verify_plan_branch = _stub  # type: ignore[method-assign]
-    return seen
+    return calls
 
 
 async def test_a_verified_base_branch_closes_the_leaf_as_a_no_op(orch_fixture) -> None:
     """The load-bearing case: the work is already there, so this is not a failure."""
     orch, plan_id, task_id, project = orch_fixture
     plan = await orch._tq.get_plan(plan_id)
-    seen = _verify(orch, "passed")
+    calls = _verify(orch, "passed")
 
     assert await orch.resolve_no_change_run(task_id, project, plan) is True
 
@@ -123,7 +134,13 @@ async def test_a_verified_base_branch_closes_the_leaf_as_a_no_op(orch_fixture) -
     # Verified against the branch the leaf was cut FROM, which is where task 1
     # already merged its work. Checking the task's own branch would prove
     # nothing: the worker pushed no commit to it.
-    assert seen == ["plan/2026-08-21-add-slugify-helper"]
+    assert calls.branches == ["plan/2026-08-21-add-slugify-helper"]
+    # These leaves declare no ``files``, so the gate is asked for no path
+    # check and the stored reason must say the check did not run rather than
+    # implying it passed. Both halves matter: a leaf that declares nothing is
+    # the norm on the plan_spec, improvement and direct-dispatch paths.
+    assert calls.paths == [()]
+    assert "declared no edit locations" in task["review_feedback"]
 
 
 async def test_a_failing_base_branch_is_still_a_failure(orch_fixture) -> None:

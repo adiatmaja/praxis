@@ -14,6 +14,7 @@ had at that point.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import Any
 from unittest.mock import AsyncMock
 
@@ -38,8 +39,20 @@ def _gate(
         branch: str,
         verify_cmd: str | None,
         disabled_reason: str | None = None,
+        require_paths: Sequence[str] = (),
     ) -> _PlanVerifyResult:
-        seen.append({"branch": branch, "disabled_reason": disabled_reason})
+        seen.append(
+            {
+                "branch": branch,
+                "disabled_reason": disabled_reason,
+                # The gate now also answers whether the leaf's declared edit
+                # locations exist on that branch. Recorded rather than
+                # swallowed: a stub that accepted and ignored the argument
+                # would let the whole declaration be dropped with every test
+                # here still green.
+                "require_paths": tuple(require_paths),
+            }
+        )
         return _PlanVerifyResult(status, output=output, reason=reason)
 
     orch._verify_plan_branch = _stub  # type: ignore[method-assign]
@@ -149,6 +162,11 @@ async def test_bench_mode_is_not_reported_as_an_unconfigured_verify_command(
     assert seen[0]["disabled_reason"] == _SKIP_BENCH_MODE_DISABLED
     assert _SKIP_BENCH_MODE_DISABLED in why
     assert "no verify_cmd configured" not in why
+    # This task has no plan row, so it can declare no edit locations and the
+    # gate must be asked for no path check. The reason then has to SAY the
+    # check did not run rather than leaving the stronger claim standing.
+    assert seen[0]["require_paths"] == ()
+    assert "declared no edit locations" in why
 
 
 # --------------------------------------------------------------------------

@@ -12,6 +12,7 @@ import contextlib
 import json
 import logging
 import tempfile
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -62,6 +63,8 @@ from orchestrator.core.opus_bridge import parking_brain_runner
 from orchestrator.core.outcome_recorder import record_outcome
 from orchestrator.core.plan_graph import (
     build_graph_index,
+    declared_paths,
+    graph_entry_for_row,
     parse_graph_tasks,
     resolve_task_slug,
     slug_to_graph_task,
@@ -323,6 +326,127 @@ def _review_scope_statement(
 
 
 @dataclass(frozen=True)
+class _DeclaredPathCheck:
+    """Which of a leaf's declared edit locations the branch actually carries.
+
+    Three buckets, not two, because "absent" and "not a question we could ask"
+    are opposite facts and collapsing them is how a check turns into a false
+    accusation. A glob, a directory-wide pattern, an absolute path or anything
+    that would read outside the checkout is ``unresolvable``: the leaf declared
+    something this check cannot decide, so it decides nothing.
+
+    ``checked`` is therefore the only honest denominator. An empty ``missing``
+    with ``checked == 0`` means NOTHING was established, and reporting that as
+    "all declared locations exist" would be the same shape of false success
+    this whole check exists to end.
+    """
+
+    present: tuple[str, ...] = ()
+    missing: tuple[str, ...] = ()
+    unresolvable: tuple[str, ...] = ()
+
+    @property
+    def checked(self) -> int:
+        """How many declared locations this check could actually decide."""
+        return len(self.present) + len(self.missing)
+
+
+# Shell/glob metacharacters. A declaration carrying one names a SET of paths,
+# and ``Path.exists`` on the literal string would report the set as missing.
+_GLOB_CHARS = ("*", "?", "[", "]")
+
+
+def _resolve_declared_path(root: Path, raw: str) -> Path | None:
+    """Return ``raw`` as a path inside ``root``, or None if it cannot be one.
+
+    None is returned for every shape whose existence this check must not
+    pronounce on: a glob, an absolute path, a Windows drive or UNC path, or
+    anything climbing out of the checkout with ``..``. The last three are also
+    the security half: ``Path(root) / "/etc/passwd"`` is ``/etc/passwd``, so an
+    unguarded join would stat a file outside the temporary clone and let a
+    brain-authored string decide a governance outcome from the host filesystem.
+
+    Args:
+        root: The already-resolved checkout directory.
+        raw: One declared path, verbatim as the brain wrote it.
+
+    Returns:
+        The path to test, or None when the declaration is not decidable.
+    """
+    # ``src/api.py::make_widget`` addresses a symbol in a file. The file is the
+    # part this check can decide, and deciding it is strictly better than
+    # declining: a missing FILE is still a missing file.
+    candidate = raw.split("::", 1)[0].strip().replace("\\", "/")
+    if not candidate or any(char in candidate for char in _GLOB_CHARS):
+        return None
+    # A single leading "/" is how a brain writes "from the repository root",
+    # and the segment split below simply drops it. A DOUBLE one is a UNC host,
+    # which names no file in this repository; without this it would be read as
+    # the repo-relative ``host/share/...`` and reported MISSING, failing a leaf
+    # over a declaration nobody could have satisfied.
+    if candidate.startswith("//"):
+        return None
+    segments = [part for part in candidate.split("/") if part not in ("", ".")]
+    if not segments or any(part == ".." for part in segments):
+        return None
+    # A drive letter is the other absolute form, and is refused for the same
+    # reason: it addresses the host, not the checkout.
+    if ":" in segments[0]:
+        return None
+    target = root.joinpath(*segments)
+    try:
+        if not target.resolve().is_relative_to(root):
+            return None
+    except (OSError, ValueError):
+        return None
+    return target
+
+
+def _check_declared_paths(root: str, paths: Sequence[str]) -> _DeclaredPathCheck:
+    """Sort a leaf's declared edit locations into present, missing, and undecidable.
+
+    Never raises. This runs inside the no-op decision, and an exception here
+    would turn a governance answer into a loop-level failure.
+
+    Args:
+        root: A checkout of the branch the leaf was cut from.
+        paths: The leaf's declared edit locations, verbatim.
+
+    Returns:
+        The three buckets, each holding the VERBATIM declaration rather than a
+        normalized form, so the reason stored on the task names what the brain
+        actually wrote and an operator can grep the plan for it.
+    """
+    try:
+        root_path = Path(root).resolve()
+    except (OSError, ValueError):  # pragma: no cover - defensive
+        return _DeclaredPathCheck(unresolvable=tuple(paths))
+
+    present: list[str] = []
+    missing: list[str] = []
+    unresolvable: list[str] = []
+    for raw in paths:
+        target = _resolve_declared_path(root_path, raw)
+        if target is None:
+            unresolvable.append(raw)
+            continue
+        try:
+            # A directory counts: the leaf declared a location, and a location
+            # that is there is there. ``exists`` follows symlinks, which is
+            # what "the tree carries this" means to the worker.
+            exists = target.exists()
+        except OSError:
+            unresolvable.append(raw)
+            continue
+        (present if exists else missing).append(raw)
+    return _DeclaredPathCheck(
+        present=tuple(present),
+        missing=tuple(missing),
+        unresolvable=tuple(unresolvable),
+    )
+
+
+@dataclass(frozen=True)
 class _PlanVerifyResult:
     """Outcome of the whole-plan verify gate.
 
@@ -332,11 +456,17 @@ class _PlanVerifyResult:
     ``skipped`` must never mean "we could not work out how to run it": that
     case is an ``error``, which both callers fail closed on.  ``reason`` is set
     on every skip so the distinction stays auditable in a log or a debugger.
+
+    ``paths`` is the SECOND question this gate answers, and only when a caller
+    asks it: did the tree it just materialized carry the edit locations the
+    leaf declared. ``None`` means the question was not asked or no tree was
+    fetched, which is neither a yes nor a no.
     """
 
     status: str
     output: str = ""
     reason: str = ""
+    paths: _DeclaredPathCheck | None = None
 
 
 def _no_op_evidence(verdict: _PlanVerifyResult, base_branch: str) -> str | None:
@@ -385,8 +515,65 @@ def _no_op_evidence(verdict: _PlanVerifyResult, base_branch: str) -> str | None:
     return None
 
 
+def _declared_paths_clause(
+    declared: Sequence[str],
+    paths: _DeclaredPathCheck | None,
+    base_branch: str,
+) -> str:
+    """State what the declared-edit-location check established, including nothing.
+
+    Appended to the reason ``mark_no_changes`` stores on the task, which the
+    dashboard renders and MCP returns. A no-op backed by a checked list of
+    files and a no-op backed by no check at all are worth different amounts of
+    trust, and the surface that reports them has to say which one it is.
+    Silence would read as the stronger of the two, which is the same shape of
+    quiet overclaim the check exists to end.
+
+    Args:
+        declared: The leaf's declared edit locations, verbatim.
+        paths: The check's three buckets, or None when no tree was fetched.
+        base_branch: The branch that was inspected.
+
+    Returns:
+        One clause, always a statement about what IS known.
+    """
+    total = len(declared)
+    if total == 0:
+        return "this task declared no edit locations, so none could be checked"
+    if paths is None:
+        return (
+            f"its {total} declared edit locations could not be checked, "
+            "because no checkout of the branch was made"
+        )
+    if paths.checked == 0:
+        return (
+            f"none of its {total} declared edit locations could be resolved to "
+            "a path, so none could be checked"
+        )
+    if paths.missing:
+        # Unreachable while ``no_change_outcome`` refuses on a missing path
+        # before it builds this string, and stated anyway. The alternative is a
+        # sentence whose truth depends on a caller ordering somewhere else, and
+        # this one is written into ``tasks.review_feedback`` for a human.
+        return (
+            f"{len(paths.missing)} of its {total} declared edit locations are "
+            f"absent from {base_branch}"
+        )
+    clause = (
+        f"all {len(paths.present)} of its declared edit locations exist "
+        f"on {base_branch}"
+    )
+    if paths.unresolvable:
+        clause += f", {len(paths.unresolvable)} more could not be resolved to a path"
+    return clause
+
+
 def _verify_outcome(
-    passed: bool, output: str, plan_branch: str, verify_cmd: str
+    passed: bool,
+    output: str,
+    plan_branch: str,
+    verify_cmd: str,
+    paths: _DeclaredPathCheck | None = None,
 ) -> _PlanVerifyResult:
     """Turn a ``run_verify`` result into a gate verdict, and log it.
 
@@ -403,6 +590,11 @@ def _verify_outcome(
             gate has no task id, only a branch, so the branch is what makes
             the log line greppable against a live run.
         verify_cmd: The project's configured verification command.
+        paths: The declared-edit-location check for the same tree, when a
+            caller asked for one. Carried through rather than folded into the
+            status: a branch can verify clean AND be missing a file the leaf
+            declared, and those are the two facts that together produced the
+            false success this argument exists for.
 
     Returns:
         A ``passed`` or ``failed`` result carrying truncated output.
@@ -417,8 +609,50 @@ def _verify_outcome(
             _log_excerpt(output),
         )
     return _PlanVerifyResult(
-        "passed" if passed else "failed", output[:_VERIFY_OUTPUT_MAX]
+        "passed" if passed else "failed", output[:_VERIFY_OUTPUT_MAX], paths=paths
     )
+
+
+async def _inspect_branch_tree(
+    checkout_dir: str,
+    plan_branch: str,
+    verify_cmd: str | None,
+    require_paths: Sequence[str],
+    skip_reason: str,
+) -> _PlanVerifyResult:
+    """Answer every question the gate has about an already-materialized tree.
+
+    The single place both backend paths converge on once the branch is on
+    disk, for the same reason ``_verify_outcome`` is: the only thing that
+    legitimately differs between local and GitHub is HOW the branch gets to a
+    working directory. Two copies of "check the declared paths, then run the
+    command" is how one backend comes to check something the other does not.
+
+    Doing both here is also what keeps this to ONE checkout. The declared-path
+    check and the verify command must see the SAME tree at the same instant;
+    fetching the branch twice could observe two different states and decide a
+    leaf's fate from a mixture of them.
+
+    Args:
+        checkout_dir: A checkout of ``plan_branch``.
+        plan_branch: The branch under test, for the log lines.
+        verify_cmd: The normalized verify command, or None when there is none
+            to run and only the declared paths were asked about.
+        require_paths: The leaf's declared edit locations; empty means the
+            question was not asked.
+        skip_reason: What to report when there is no command to run.
+
+    Returns:
+        The gate verdict, carrying the path check when one was requested.
+    """
+    paths = (
+        _check_declared_paths(checkout_dir, require_paths) if require_paths else None
+    )
+    if verify_cmd is None:
+        logger.info("verify gate skipped: %s (branch=%s)", skip_reason, plan_branch)
+        return _PlanVerifyResult("skipped", reason=skip_reason, paths=paths)
+    passed, output = await run_verify(checkout_dir, verify_cmd)
+    return _verify_outcome(passed, output, plan_branch, verify_cmd, paths)
 
 
 class ReviewMixin:
@@ -1796,6 +2030,54 @@ class ReviewMixin:
         closed, _why = await self.no_change_outcome(task_id, project, plan)
         return closed
 
+    async def _declared_edit_locations(
+        self, task_id: str, plan: dict[str, Any] | None
+    ) -> tuple[str, ...]:
+        """Return the edit locations the task's plan-graph entry declares.
+
+        The declaration lives in ``plans.opus_plan``, never on the task row:
+        ``tasks`` has no ``files`` column, and ``agent_runs.files_touched`` is a
+        COUNT of what a worker changed, not a list of what it was asked to
+        change. So the row is joined back to its graph entry POSITIONALLY, the
+        one join ``plan_graph`` argues is safe, and read through the same
+        parser the worker's bible section uses.
+
+        Returns ``()`` for every shape that cannot be answered rather than
+        raising, and each of them degrades to exactly the behavior that
+        predates this check: a plan with no graph, a row with no aligned entry,
+        an entry declaring nothing, or a database that would not answer. This
+        method decides no leaf's fate on its own, so a fault here must not be
+        able to fail one.
+
+        Args:
+            task_id: The task whose declaration is wanted.
+            plan: Its plan row, or None.
+
+        Returns:
+            The declared edit locations, verbatim and in declaration order.
+        """
+        plan_id = (plan or {}).get("id")
+        if not plan_id:
+            return ()
+        graph_tasks = parse_graph_tasks(plan)
+        if not graph_tasks:
+            return ()
+        try:
+            rows = await self._tq.get_tasks_for_plan(str(plan_id))
+        except Exception:  # noqa: BLE001 - degrade to the pre-check behavior
+            logger.warning(
+                "Could not read the task rows of plan %s, so task %s's declared "
+                "edit locations were not checked",
+                plan_id,
+                task_id,
+                exc_info=True,
+            )
+            return ()
+        entry = graph_entry_for_row(task_id, build_graph_index(rows), graph_tasks)
+        if entry is None:
+            return ()
+        return declared_paths(entry.get("files"))
+
     async def no_change_outcome(
         self,
         task_id: str,
@@ -1845,6 +2127,49 @@ class ReviewMixin:
         also what keeps the stored reason from claiming a check that was never
         chosen and never ran.
 
+        The verify command alone is NOT enough, and this was measured on
+        2026-08-25. A leaf asked for a new eleven-module subpackage that did
+        not exist and declared the repository's own suite as its acceptance
+        check. The worker wrote nothing, ran that suite, watched 294
+        pre-existing tests pass, and reported no changes. The gate then ran the
+        same command on the base branch, got the same pass, and closed the leaf
+        as terminally SATISFIED, releasing every dependent leaf onto work
+        nobody had done. The command answers "is this repository healthy", not
+        "was THIS leaf's work done", and for any leaf whose acceptance is not
+        expressible as "the existing suite passes" a healthy repository makes
+        every empty diff read as "already done".
+
+        So the leaf's own declared edit locations are checked against the same
+        tree. A declared path the branch does not carry REFUTES the no-op
+        outright, whatever the command reported, and that refutation is
+        deliberately taken BEFORE the gate verdict is read: it is the more
+        specific fact and the only one that tells the next worker what to
+        create.
+
+        A leaf that declares NO edit locations gets the third answer rather
+        than either of the first two. The check cannot run, so the decision is
+        exactly what it was before, and the stored reason SAYS the check did
+        not run rather than implying it passed. That matters because declaring
+        nothing is the norm, not the exception: only the decomposition path
+        produces ``files``, while the plan_spec path, the improvement loop and
+        a direct dispatch that omitted them all arrive here declaring nothing.
+        Refusing those would fail every such leaf, which is the measured
+        alternative this method exists to avoid.
+
+        A tree that could not be FETCHED is the same third answer for the same
+        reason, and ``_verify_plan_branch`` is where that is enforced: when
+        there was no command to run, a fetch made only to answer the declared
+        paths reports the skip the gate always reported. The distinction that
+        makes this consistent with the fail-closed rule, rather than a hole in
+        it, is what the operator asked for. ``_no_op_evidence`` refuses on
+        ``_SKIP_NO_CREDENTIAL_PROVIDER`` and ``_SKIP_NO_TOKEN`` because, in its
+        own words, "a verify command IS configured and the gate could not reach
+        the repository" -- closing there would claim the operator had chosen to
+        run nothing. With no command configured that claim is simply true, so
+        the premise the refusal rests on is absent and the refusal does not
+        apply. Fail-closed governs a gate that was asked to run and could not;
+        it says nothing about a gate nobody asked to run.
+
         Args:
             task_id: The task whose run produced no diff.
             project: Project dict (needs ``repo_url``, ``verify_cmd``).
@@ -1854,7 +2179,7 @@ class ReviewMixin:
         Returns:
             ``(closed, why)``. ``closed`` is True when the leaf was closed as a
             no-op; False when the caller should treat the run as a normal
-            failure. ``why`` states which of the four facts produced that
+            failure. ``why`` states which of the five facts produced that
             answer, in a form fit to show a human and a worker.
         """
         repo_url = project.get("repo_url")
@@ -1875,6 +2200,7 @@ class ReviewMixin:
                 "could be checked"
             )
 
+        declared = await self._declared_edit_locations(task_id, plan)
         bench_disabled = verify_gate_disabled()
         verify_cmd = None if bench_disabled else project.get("verify_cmd")
         verdict = await self._verify_plan_branch(
@@ -1887,7 +2213,32 @@ class ReviewMixin:
             # the no-op event, so a bench run's own records would say the
             # project had no verify command when it has one.
             disabled_reason=_SKIP_BENCH_MODE_DISABLED if bench_disabled else None,
+            # Answered off the SAME checkout the command runs in, so the two
+            # observations cannot come from two different states of the branch.
+            require_paths=declared,
         )
+        paths = verdict.paths
+        if paths is not None and paths.missing:
+            # Taken before the gate verdict is read, and it outranks every one
+            # of the verdict's own answers. A branch can verify perfectly clean
+            # and still not carry a file this leaf was asked to write; that is
+            # exactly the pair of facts that produced the measured false
+            # success, and only this one names something the next worker can
+            # act on.
+            named = ", ".join(paths.missing)
+            logger.warning(
+                "Task %s reported no changes, but %d of its declared edit "
+                "locations are absent from %s (%s); treating as a failure",
+                task_id,
+                len(paths.missing),
+                base_branch,
+                named,
+            )
+            return False, (
+                f"the branch it was cut from ({base_branch}) does not carry "
+                f"edit locations this task declared ({named}), so the work is "
+                "genuinely missing whatever the verify command reports"
+            )
         evidence = _no_op_evidence(verdict, base_branch)
         if evidence is None:
             logger.warning(
@@ -1917,9 +2268,10 @@ class ReviewMixin:
                 )
             return False, why
 
+        locations = _declared_paths_clause(declared, paths, base_branch)
         reason = (
             "No changes needed: the repository already satisfied this task "
-            f"({evidence})."
+            f"({evidence}; {locations})."
         )
         await self._tq.mark_no_changes(task_id, reason)
         self._bus.publish(
@@ -1932,6 +2284,12 @@ class ReviewMixin:
                 # produces mean opposite things about how much this no-op is
                 # worth trusting.
                 "verify_reason": verdict.reason,
+                # Published, not only stored: a no-op backed by a checked list
+                # of edit locations and one backed by nothing are worth
+                # different amounts of trust, and every read-only surface has
+                # to be able to tell them apart without re-deriving it.
+                "declared_paths_checked": 0 if paths is None else paths.checked,
+                "declared_paths_total": len(declared),
                 "reason": reason,
             }
         )
@@ -2208,6 +2566,7 @@ class ReviewMixin:
         plan_branch: str,
         verify_cmd: str | None,
         disabled_reason: str | None = None,
+        require_paths: Sequence[str] = (),
     ) -> _PlanVerifyResult:
         """Run the project's verify command against the accumulated plan branch.
 
@@ -2246,6 +2605,32 @@ class ReviewMixin:
                 would say the operator configured none. That reason is stored
                 on the task and rides the no-op event, so it is a statement
                 about the project, not a debug detail.
+            require_paths: Edit locations a leaf declared, to be checked
+                against the same tree this gate materializes. Empty (the
+                default) leaves every existing caller byte-identical: no check
+                is made and ``paths`` on the result stays None.
+
+                Non-empty also makes the tree worth fetching on its own, so a
+                project with NO verify command still gets the branch checked
+                out and the declared paths answered. That is the one case where
+                this method now does I/O it used to skip, and it is deliberate:
+                with no command configured the harness's clean exit was the
+                only evidence, and a declared file that is not there is better
+                evidence than anything the gate had.
+
+                That new fetch can FAIL, and when it does the gate reports the
+                answer it gave before ``require_paths`` existed: ``skipped``
+                with ``skip_reason`` and no path check. Asking a question we
+                then could not answer must not be what converts a leaf into a
+                failure. The three unfetchable faults would otherwise produce
+                ``_SKIP_NO_CREDENTIAL_PROVIDER``, ``_SKIP_NO_TOKEN`` and
+                ``error``, all three of which ``_no_op_evidence`` refuses, so a
+                credential-less GitHub project with no verify command would go
+                from closing its no-op leaves to failing every one of them.
+
+                This applies ONLY when ``verify_cmd`` is None. With a command
+                configured the same fetch failure keeps refusing, and must:
+                there the operator asked for a check and it did not run.
 
         Returns:
             The gate verdict.
@@ -2257,15 +2642,73 @@ class ReviewMixin:
         # evidence string "verify passed on <branch>" for a command that never
         # ran.  Normalized, it reports ``skipped`` and says so.
         verify_cmd = normalize_verify_cmd(verify_cmd)
-        if verify_cmd is None:
-            reason = disabled_reason or _SKIP_NO_VERIFY_CMD
-            logger.info("verify gate skipped: %s (branch=%s)", reason, plan_branch)
-            return _PlanVerifyResult("skipped", reason=reason)
+        skip_reason = disabled_reason or _SKIP_NO_VERIFY_CMD
+        if verify_cmd is None and not require_paths:
+            logger.info("verify gate skipped: %s (branch=%s)", skip_reason, plan_branch)
+            return _PlanVerifyResult("skipped", reason=skip_reason)
 
+        result = await self._fetch_and_inspect_branch(
+            repo_url, plan_branch, verify_cmd, require_paths, skip_reason
+        )
+        # The tree never materialized AND there was no command to run, so the
+        # fetch happened for ``require_paths`` alone. ``paths is None`` is the
+        # exact test for that: ``require_paths`` is non-empty by here, so an
+        # inspected tree always carries a check.
+        #
+        # Report the answer this gate gave before ``require_paths`` existed.
+        # Asking a question we then could not answer must not, by itself,
+        # convert a leaf that closed into a failure: the failure is a fact about
+        # the DEPLOYMENT, not about the leaf. With a verify command configured
+        # this does not fire, and it must not: there the same fetch failure
+        # means a check the operator ASKED FOR did not run, which is the
+        # fail-closed refusal ``_no_op_evidence`` makes on purpose.
+        if verify_cmd is None and result.paths is None:
+            logger.warning(
+                "The branch %s could not be fetched, so %d declared edit "
+                "location(s) went unchecked (%s); the gate's own answer is "
+                "unchanged: %s",
+                plan_branch,
+                len(require_paths),
+                result.reason or result.status,
+                skip_reason,
+            )
+            return _PlanVerifyResult("skipped", reason=skip_reason)
+        return result
+
+    async def _fetch_and_inspect_branch(
+        self,
+        repo_url: str,
+        plan_branch: str,
+        verify_cmd: str | None,
+        require_paths: Sequence[str],
+        skip_reason: str,
+    ) -> _PlanVerifyResult:
+        """Get the branch onto disk and answer whatever was asked about it.
+
+        Split out of :meth:`_verify_plan_branch` so the "a fetch made only for
+        ``require_paths`` must not change the gate's own answer" rule has ONE
+        place to live. Inline, that rule would have to be repeated at each of
+        the four points a fetch can fail (no credential provider, no token, the
+        GitHub clone raising, the local checkout raising), and those four
+        already produce three different verdicts between them.
+
+        Args:
+            repo_url: The project's repository URL or local bare-repo path.
+            plan_branch: The branch to fetch.
+            verify_cmd: The normalized verify command, or None when the fetch
+                exists only to answer ``require_paths``.
+            require_paths: Edit locations a leaf declared.
+            skip_reason: What a missing ``verify_cmd`` should report.
+
+        Returns:
+            The gate verdict. ``paths`` is set only when a tree was actually
+            inspected, which is what lets the caller tell a fetch that failed
+            from one that succeeded.
+        """
         backend = self._resolve_backend(repo_url)
         if backend.name == "local":
             return await self._verify_local_plan_branch(
-                backend, repo_url, plan_branch, verify_cmd
+                backend, repo_url, plan_branch, verify_cmd, require_paths, skip_reason
             )
 
         provider = getattr(self._git, "_provider", None)
@@ -2304,24 +2747,32 @@ class ReviewMixin:
             with tempfile.TemporaryDirectory() as checkout_dir:
                 clone_with_token(repo_url, checkout_dir, token)
                 checkout_branch(checkout_dir, plan_branch, token)
-                passed, output = await run_verify(checkout_dir, verify_cmd)
+                result = await _inspect_branch_tree(
+                    checkout_dir,
+                    plan_branch,
+                    verify_cmd,
+                    require_paths,
+                    skip_reason,
+                )
         except Exception as exc:  # noqa: BLE001 - degrade, never wedge the loop
             logger.warning(
                 "verify gate error (branch=%s, cmd=`%s`): %s",
                 plan_branch,
-                verify_cmd,
+                verify_cmd or "-",
                 exc,
             )
             return _PlanVerifyResult("error")
 
-        return _verify_outcome(passed, output, plan_branch, verify_cmd)
+        return result
 
     async def _verify_local_plan_branch(
         self,
         backend: GitBackend,
         repo_url: str,
         plan_branch: str,
-        verify_cmd: str,
+        verify_cmd: str | None,
+        require_paths: Sequence[str] = (),
+        skip_reason: str = _SKIP_NO_VERIFY_CMD,
     ) -> _PlanVerifyResult:
         """Run the verify command against a plan branch in a local bare repo.
 
@@ -2338,10 +2789,16 @@ class ReviewMixin:
             backend: The already-resolved local backend.
             repo_url: The bare repo's path, for logging only.
             plan_branch: The accumulated plan branch to verify.
-            verify_cmd: The project's configured verification command.
+            verify_cmd: The project's configured verification command, or None
+                when the branch is being fetched only to answer
+                ``require_paths``.
+            require_paths: Edit locations a leaf declared, checked against the
+                same checkout. Empty means the question was not asked.
+            skip_reason: What a missing ``verify_cmd`` should report.
 
         Returns:
-            The gate verdict: ``passed``, ``failed``, or ``error``.
+            The gate verdict: ``passed``, ``failed``, ``skipped`` (no command,
+            paths only), or ``error``.
         """
         # ``LocalGitBackend.checkout`` reads only ``branch``.  ``base`` is set
         # to the same branch rather than left empty so that a future checkout
@@ -2350,18 +2807,24 @@ class ReviewMixin:
         try:
             with tempfile.TemporaryDirectory() as checkout_dir:
                 await backend.checkout(ref, checkout_dir)
-                passed, output = await run_verify(checkout_dir, verify_cmd)
+                result = await _inspect_branch_tree(
+                    checkout_dir,
+                    plan_branch,
+                    verify_cmd,
+                    require_paths,
+                    skip_reason,
+                )
         except Exception as exc:  # noqa: BLE001 - degrade, never wedge the loop
             logger.warning(
                 "verify gate error (repo=%s, branch=%s, cmd=`%s`): %s",
                 repo_url,
                 plan_branch,
-                verify_cmd,
+                verify_cmd or "-",
                 exc,
             )
             return _PlanVerifyResult("error")
 
-        return _verify_outcome(passed, output, plan_branch, verify_cmd)
+        return result
 
     async def _nothing_to_integrate_reason(
         self, repo_url: str, base: str, head: str
