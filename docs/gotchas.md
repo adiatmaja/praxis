@@ -1452,7 +1452,7 @@ belongs among the everyday traps.
   means. `_nothing_to_integrate_reason` now makes that call BEFORE attempting
   creation.
 
-  **It settles TWO facts, and they are different facts.** Two known, equal SHAs
+  **It settles THREE facts, and they are different facts.** Two known, equal SHAs
   means every task was a no-op and the branch has nothing of its own. An ABSENT
   plan branch means there is no head ref to open a PR from at all, which in
   single-branch mode is the ORDINARY ending rather than an edge case (found
@@ -1474,8 +1474,18 @@ belongs among the everyday traps.
 
   The check is POSITIVE and deliberately sufficient rather than necessary,
   exactly like `_existing_integration_pr`. A branch that merely TRAILS its base
-  also has nothing to integrate, is not detected, and falls through to the
-  normal attempt. That is the safe direction. The reason is returned as a
+  also has nothing to integrate, and since 2026-08-26 that IS detected, by a
+  third arm: `GitBackend.base_contains(base, head)`, on the protocol and both
+  backends. It is the only one of the three that needs the backend, because
+  `remote_head_sha` is a `git ls-remote` and ls-remote cannot answer ancestry
+  at all, while a bare local repo has no `gh`. Only `True` changes the flow;
+  `False` and `None` fall through to the normal attempt, so "could not ask" is
+  still not an answer. Note this does NOT contradict the `praxis-local://`
+  gotcha elsewhere in this file warning that an ancestor check is the wrong way
+  to decide a MERGE succeeded: `LocalGitBackend.merge` squash merges, so after
+  a successful merge head is not an ancestor of base and `base_contains`
+  returns False, which falls through safely. Different question, safe
+  direction. The reason is returned as a
   string and logged verbatim, so the operator can tell a merged-and-deleted
   branch from an all-no-op plan; both used to print the same "identical to
   base" line, and only one of them would have been true.

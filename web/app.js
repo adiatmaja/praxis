@@ -712,6 +712,25 @@
 
     function renderPlanDetail(plan) {
       if (!plan) return '<div class="detail-empty">Plan not found</div>';
+      // A plan wedged behind a terminally FAILED dependency renders as a
+      // perfectly healthy `active` badge with no error anywhere, because it IS
+      // active and its `error` column IS null -- the engine leaves it that way
+      // on purpose so a human can still retry. Both fields are derived by the
+      // server (`plan_reachability`), never recomputed here: a second copy of
+      // the rule in JS is how the dashboard ends up disagreeing with `praxis
+      // plans` about the same plan. `|| []` because a server older than the
+      // fields sends neither, and absent must read as "nothing to say".
+      const stalledIds = plan.stalled_task_ids || [];
+      const stalledBlockers = plan.stalled_blocked_by_task_ids || [];
+      // The BLOCKERS are named, not the blocked leaves: only a failed task can
+      // be retried, so those are the ids a reader can act on.
+      const stalledRow = stalledIds.length ?
+        '<div class="detail-field"><span class="field-label">Stalled</span><span class="field-value">' +
+          esc(stalledIds.length + (stalledIds.length === 1 ? " task" : " tasks") +
+              " can never be dispatched: a dependency failed terminally and the loop never revisits it. " +
+              (stalledBlockers.length ? "Retry a blocker to release them:" : "")) +
+          (stalledBlockers.length ? ' ' + stalledBlockers.map(mono).join(", ") : "") +
+        '</span></div>' : "";
       const approveReject = (plan.status === "pending" && plan.source === "autonomous") ?
         '<button class="btn btn-primary" type="button" onclick="approvePlan(\'' + esc(plan.id) + '\')">Approve</button>' +
         '<button class="btn btn-danger" type="button" onclick="rejectPlan(\'' + esc(plan.id) + '\')">Reject</button>' : "";
@@ -740,6 +759,7 @@
           '<div class="detail-field"><span class="field-label">Status</span><span class="field-value">' + badge(plan.status) + '</span></div>' +
           '<div class="detail-field"><span class="field-label">Branch</span><span class="field-value">' + mono(plan.plan_branch_name) + '</span></div>' +
           '<div class="detail-field"><span class="field-label">Created</span><span class="field-value">' + esc(plan.created_at) + '</span></div>' +
+          stalledRow +
           '</div></div></div>' +
           (approveReject ? '<div class="detail-actions">' + approveReject + '</div>' : "");
     }

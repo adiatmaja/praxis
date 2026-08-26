@@ -19,6 +19,11 @@ from orchestrator.core.github_credentials import (
 )
 from orchestrator.core.markdown_utils import extract_frontmatter_field
 from orchestrator.core.plan_derive import PlanDeriveError, derive_opus_plan
+from orchestrator.core.plan_reachability import (
+    blocking_task_ids,
+    derive_stalled_by_failure_state,
+    stalled_task_ids,
+)
 from orchestrator.core.spec_docs import render_spec_doc, spec_doc_path
 from orchestrator.core.status_vocab import SATISFIED_STATUSES
 from orchestrator.models.schemas import (
@@ -87,6 +92,69 @@ def _refuse_wrong_state(
             f"that is {' or '.join(sorted(allowed))}. {why}"
         ),
     )
+
+
+#: How many plan ids go into one ``IN (...)`` clause. SQLite's bound-parameter
+#: ceiling is 999 on builds older than 3.32 and 32766 after, and which one is in
+#: play depends on the interpreter that happens to be running, not on anything
+#: this repository pins. A project accumulates plans forever, so the day the
+#: query is too wide is a 500 on ``praxis plans`` for the busiest project.
+_ID_CHUNK = 400
+
+
+def _attach_stall_state(plan: dict[str, Any], tasks: list[dict[str, Any]]) -> None:
+    """Write the derived reachability fields onto a plan row, in place.
+
+    One call to the shared rule, two projections of it. Doing this here rather
+    than in each route is what keeps the list and detail payloads answering
+    identically: they load their task rows differently (batched vs. singly) and
+    that is the only difference allowed between them.
+
+    Args:
+        plan: A ``plans`` row, mutated in place.
+        tasks: That plan's task rows in rowid order. Empty is fine and means
+            the derivation establishes nothing, never "not stalled by proof".
+    """
+    state = derive_stalled_by_failure_state(plan.get("opus_plan"), tasks)
+    plan["stalled_task_ids"] = stalled_task_ids(state)
+    plan["stalled_blocked_by_task_ids"] = blocking_task_ids(state)
+
+
+async def _tasks_by_plan(
+    db: Any, plan_ids: list[str]
+) -> dict[str, list[dict[str, Any]]]:
+    """Load task rows for many plans at once, grouped and still in rowid order.
+
+    ONE query per chunk rather than one per plan. The list route is the surface
+    a newcomer runs first and a project's plan count only grows, so an N+1 here
+    would make ``praxis plans`` get slower for exactly the people who use it
+    most; the batched form costs a fixed extra query whatever N is.
+
+    Ordering is load-bearing and comes free: filtering a globally rowid-ordered
+    result down to one ``plan_id`` leaves that plan's rows in rowid order, which
+    is the order ``get_tasks_for_plan`` returns and the order the positional
+    graph pairing requires. Sorting the groups afterwards, or grouping from an
+    unordered query, would silently re-pair every leaf with a different graph
+    entry.
+
+    Args:
+        db: The database handle.
+        plan_ids: Plans to load tasks for. Empty means no query is issued.
+
+    Returns:
+        ``plan_id -> rows``. A plan with no tasks is absent, not empty-listed.
+    """
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for start in range(0, len(plan_ids), _ID_CHUNK):
+        chunk = plan_ids[start : start + _ID_CHUNK]
+        placeholders = ",".join("?" * len(chunk))
+        rows = await db.fetch_all(
+            f"SELECT * FROM tasks WHERE plan_id IN ({placeholders}) ORDER BY rowid",  # noqa: S608
+            tuple(chunk),
+        )
+        for row in rows:
+            grouped.setdefault(str(row["plan_id"]), []).append(row)
+    return grouped
 
 
 @router.post(
@@ -162,7 +230,8 @@ async def create_plan(
 async def list_plans(request: Request, project_id: str) -> list[dict[str, Any]]:
     """List plans for a project."""
 
-    project = await request.app.state.db.fetch_one(
+    db = request.app.state.db
+    project = await db.fetch_one(
         "SELECT id FROM projects WHERE id = ?",
         (project_id,),
     )
@@ -170,21 +239,36 @@ async def list_plans(request: Request, project_id: str) -> list[dict[str, Any]]:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Project not found"
         )
-    return cast(
+    plans = cast(
         list[dict[str, Any]],
         await request.app.state.task_queue.get_plans_for_project(project_id),
     )
+    # The LIST route carries the stall too, not detail only. This is where a
+    # wedged plan gets read: `praxis plans` renders from here, and the
+    # dashboard's plan view renders from an in-memory array this endpoint
+    # fills, so a detail-only field would leave both surfaces exactly as blind
+    # as they were. A plan with no graph cannot be stalled by a dependency
+    # edge, so those are excluded from the query rather than derived and
+    # discarded.
+    with_graph = [str(plan["id"]) for plan in plans if plan.get("opus_plan")]
+    grouped = await _tasks_by_plan(db, with_graph)
+    for plan in plans:
+        _attach_stall_state(plan, grouped.get(str(plan["id"]), []))
+    return plans
 
 
 @router.get("/plans/{plan_id}", response_model=PlanResponse)
 async def get_plan(request: Request, plan_id: str) -> dict[str, Any]:
     """Get a plan by ID."""
 
-    plan = await request.app.state.task_queue.get_plan(plan_id)
+    queue = request.app.state.task_queue
+    plan = await queue.get_plan(plan_id)
     if plan is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Plan not found"
         )
+    tasks = await queue.get_tasks_for_plan(plan_id) if plan.get("opus_plan") else []
+    _attach_stall_state(plan, tasks)
     return cast(dict[str, Any], plan)
 
 

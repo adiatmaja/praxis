@@ -500,6 +500,26 @@ class PlanResponse(BaseModel):
     #: from a plan whose work reached the base branch.
     integration_pr_url: str | None = None
     integration_merged_at: str | None = None
+    #: DERIVED, not a column. Two projections of one
+    #: ``plan_reachability.derive_stalled_by_failure_state`` call: the pending
+    #: leaves that can never be dispatched, and the terminally FAILED tasks
+    #: holding them there. No migration backs either, because both are a pure
+    #: function of ``opus_plan`` plus the live task rows, and persisting them
+    #: would create a second answer that goes stale the moment a task moves.
+    #:
+    #: They are DIFFERENT sets and both are needed, which is why this is not
+    #: one list. The first gives a reader the count ("1 task blocked by a
+    #: failure"); the second gives the recovery verb its argument, and only the
+    #: second is a legal one -- ``POST /api/tasks/{id}/retry`` answers 409 for
+    #: every status but ``failed``, so a surface holding only the first would
+    #: print a ``praxis retry`` line that cannot work.
+    #:
+    #: Default empty, and every client reads them with a fallback: a server
+    #: older than this field simply does not send them, and the absence must
+    #: render as it did before the field existed rather than as "not stalled",
+    #: which is the same answer here but would not be if the polarity inverted.
+    stalled_task_ids: list[str] = []
+    stalled_blocked_by_task_ids: list[str] = []
     created_at: str
 
 

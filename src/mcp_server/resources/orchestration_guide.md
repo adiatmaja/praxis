@@ -307,7 +307,8 @@ project's escalation outcome, or do it yourself.
   branch rebuilt from base, worker session dropped, so the run starts clean. It is the
   action `poll_plan`'s `stalled` payload names, and retrying the failed leaf is what makes
   its dependents dispatchable again. `failed` is the only status it accepts: `merged`,
-  `no_changes` and `superseded` are terminal SUCCESSES with nothing to re-run, and both
+  `no_changes` and `superseded` are TERMINAL with nothing to re-run (`no_changes` and
+  `superseded` are neither successes nor failures, they are simply settled), and both
   `awaiting_merge` and `awaiting_clarification` are waiting on a person. Everything else
   answers 409 as `{"error": "request_error"}`. Nothing caps it here, so read
   `get_task_logs` and change something (a clearer task, a stronger worker) rather than

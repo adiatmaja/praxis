@@ -733,6 +733,37 @@ def plans(project_id: str = typer.Argument(..., help="Project ID")) -> None:
     console.print()
     for plan in data:
         _copyable(f"praxis tasks {plan['id']}   # {_status_cell(plan)}")
+        # NOT an arm of the chain below, deliberately. Being wedged on a failed
+        # dependency and having an integration PR open are independent facts
+        # about a plan, and folding this into the `elif` ladder would let one
+        # of them suppress the other -- which is the "a conditional copyable
+        # line reads as a working one right up until you need the id it
+        # withheld" defect this very block was rewritten to fix.
+        #
+        # The ids printed are the BLOCKERS, never the blocked leaves. Only a
+        # `failed` task can be retried (the endpoint answers 409 for anything
+        # else), so a copyable `praxis retry <blocked-leaf-id>` would be an
+        # offer that cannot be taken. The blocked leaves are a COUNT in the
+        # status cell above and are listed by `praxis tasks`; one copyable
+        # line per blocker, because each is a separate command to run and an
+        # id sharing a line with another id cannot be selected cleanly.
+        blockers = plan.get("stalled_blocked_by_task_ids") or []
+        if blockers:
+            stuck = plan.get("stalled_task_ids") or []
+            noun = "task" if len(stuck) == 1 else "tasks"
+            # No plan id and no task id in this sentence: it wraps at 80
+            # columns and rich would fold a uuid across the break, which 404s
+            # when it is copied. The ids live on the copyable lines only.
+            console.print(
+                f"  Stalled: {len(stuck)} {noun} can never be dispatched, "
+                "because a dependency failed terminally and the loop never "
+                "revisits it. Nothing here is waiting on the orchestrator."
+            )
+            for blocker in blockers:
+                _copyable(
+                    f"praxis retry {escape(str(blocker))}"
+                    "   # release the tasks waiting on it"
+                )
         # One next-step line per STATE, not only for the one state that had
         # one. A plan whose only offered verb was `praxis tasks` left the
         # reader at an empty table with no way forward: a pending autonomous
@@ -864,6 +895,26 @@ def _status_cell(plan: dict[str, Any]) -> str:
             return f"{status_text} (no PR; {_truncate_error(str(reason))})"
         return f"{status_text} (no PR)"
     if status_text in ("active", "pending"):
+        # AHEAD of the planning arm below, and the order is the point. A plan
+        # wedged on a FAILED dependency has finished planning; what it carries
+        # on `plans.error` is whatever the last planning attempt recorded, and
+        # `reset_plan_attempts` clears the COUNT without clearing the error, so
+        # a recovered plan keeps a stale one indefinitely. Letting that arm win
+        # would print "active (planning; last error: ...)" over a plan that is
+        # not planning and cannot be fixed by waiting -- describing the wrong
+        # obstacle at exactly the moment somebody needs the right one.
+        #
+        # `.get` with an empty default, like every other field read here: a
+        # server that predates `stalled_task_ids` sends nothing and this cell
+        # then renders exactly as it did before the field existed. The falsy
+        # default is also the SAFE polarity, since claiming a live plan is
+        # wedged is the more expensive mistake of the two.
+        blocked = plan.get("stalled_task_ids") or []
+        if blocked:
+            noun = "task" if len(blocked) == 1 else "tasks"
+            return (
+                f"{status_text} (stalled; {len(blocked)} {noun} blocked by a failure)"
+            )
         attempts = plan.get("plan_attempts") or 0
         error = plan.get("error")
         # The denominator comes off the WIRE (`PlanResponse.max_planning_attempts`),

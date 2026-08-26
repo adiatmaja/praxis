@@ -221,8 +221,9 @@ Then, once every task is done:
 plan COMPLETED -> integration PR -> (human approve) -> integration_merged_at
 ```
 
-All eight `TaskStatus` values appear above; a surface that lists fewer teaches a caller to
-poll for a state that will never arrive. `NO_CHANGES` and `SUPERSEDED` are terminal,
+Every `TaskStatus` value appears above; a surface that lists fewer teaches a caller to
+poll for a state that will never arrive. (No count is quoted on purpose: the last one
+said "eight" while the enum carried nine.) `NO_CHANGES` and `SUPERSEDED` are terminal,
 neither success nor failure; both are in `SATISFIED_STATUSES` (`core/status_vocab.py`),
 which unblocks dependents and lets the plan complete. `NEEDS_CLARIFICATION` is the third
 gate: nothing advances it but a human answering.
@@ -465,11 +466,13 @@ story. New gotchas go in `docs/gotchas.md` first. (No count is quoted on purpose
 - **The improvement loop must be given the REPOSITORY and fails closed without it**
   (`core/repo_survey.py`): no readable repo means NO proposal.
 - **A plan with no commits has nothing to integrate**: decided by
-  `_nothing_to_integrate_reason` on a positive check, which settles TWO facts. Two known
-  equal SHAs (every task a no-op), and an ABSENT plan branch (single-branch mode, where
-  merging the task PRs IS the integration and deletes the branch). `remote_head_sha`
-  returns None for an absent branch and RAISES when it cannot ask, so None is an ANSWER;
-  only the exception falls through to the creation attempt.
+  `_nothing_to_integrate_reason` on a positive check, which settles THREE facts. Two known
+  equal SHAs (every task a no-op); an ABSENT plan branch (single-branch mode, where
+  merging the task PRs IS the integration and deletes the branch); and a branch that
+  merely TRAILS base, via `GitBackend.base_contains`, the only arm that needs the BACKEND.
+  `remote_head_sha` returns None for an absent branch and RAISES when it cannot ask, so
+  None is an ANSWER; only the exception falls through to the creation attempt. Likewise
+  `base_contains` returns `None` for "could not ask" and only `True` changes the flow.
 - **A plan reaches the gate TWICE**: each task onto the plan branch, then the plan's own
   integration PR. The URL lives on `plans.integration_pr_url`; `integration_merged_at`
   takes it back out of `pending`.
