@@ -10,6 +10,7 @@ from __future__ import annotations
 import logging
 import math
 from collections.abc import Mapping
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, cast
 
@@ -34,6 +35,7 @@ from orchestrator.core.micro_edit import BRAIN_IMPLEMENTER, apply_micro_edit
 from orchestrator.core.orchestrator_review import (
     _SKIP_BENCH_MODE_DISABLED,
     _SKIP_NO_VERIFY_CMD,
+    _PlanVerifyResult,
 )
 from orchestrator.core.plan_graph import (
     build_graph_index,
@@ -103,6 +105,110 @@ def _as_flag_threshold(value: object) -> float:
 # This one has no review-side equivalent: only the per-wave gate verifies the
 # accumulated PLAN branch, so only it can be missing one.
 _SKIP_NO_PLAN_BRANCH = "no plan branch or repo_url recorded on the plan"
+
+# The base branch a plan branch is cut from is ``projects.default_branch``, and
+# nothing else can stand in for it here: the plan branch IS the head at this
+# seat, so the review path's ``plan_branch_name`` fallback would compare a
+# branch against itself and report every regression as pre-existing.
+_SKIP_NO_BASE_BRANCH = "the project records no default_branch to compare against"
+
+# What the parked-wave event says when the gate itself raised and printed
+# nothing. Named rather than inlined so the two park sites cannot drift.
+_GATE_ERRORED = (
+    "plan verify gate errored (clone/checkout/verify raised); see orchestrator logs"
+)
+
+
+@dataclass(frozen=True)
+class _WaveAttribution:
+    """What a RED project verify command on the plan branch turned out to mean.
+
+    ``park`` is the decision, ``memoize`` is whether that decision is an ANSWER
+    worth reusing for this wave, and ``detail`` is the sentence that has to
+    reach a human. The three are returned together because the caller needs all
+    three in one breath and because splitting them is how the "we parked but
+    never said why" shape came back.
+    """
+
+    park: bool
+    memoize: bool
+    detail: str
+
+
+def attribute_wave_verify_failure(
+    base: _PlanVerifyResult, base_branch: str
+) -> _WaveAttribution:
+    """Decide whether a red plan branch is a regression THIS plan caused.
+
+    The wave gate called a red plan branch "a cross-leaf regression" and parked
+    the next wave on it. That word is a CLAIM, and it is only true if the same
+    command was GREEN on the branch the plan was cut from. Measured live on
+    2026-08-26: a two-leaf dependent plan whose project command is red on
+    ``main`` (the repository's acceptance file imports the symbol leaf 2 is
+    contracted to write) parked its second wave forever after leaf 1 merged.
+    Nothing could clear it -- ``merged_count`` advances only when something
+    merges, nothing can merge while the wave is parked -- and no leaf was
+    FAILED, so ``plan_reachability`` saw a healthy graph.
+
+    This is the SAME question ``orchestrator_review._attribute_head_verify_failure``
+    asks one layer down about a task's PR head, and the two must answer it
+    identically: fixing that layer (cd0c127) is exactly what made this one
+    reachable, because before it leaf 1 of a dependent chain failed review and
+    nothing ever merged. The seats differ only in what they have to work with.
+    That one has a task, so it can fall through to the leaf's OWN declared
+    verification; this one is judging a branch several leaves share, where no
+    single leaf's check could speak for the whole tree, so step 1 settles it.
+    ``tests/test_wave_verify_gate.py`` drives BOTH seats over the same base
+    statuses and asserts they agree, because nothing else holds them together.
+
+    Args:
+        base: What the same command did on the base branch.
+        base_branch: Its name, for the sentence a human reads.
+
+    Returns:
+        The decision, in full.
+    """
+    if base.status == "passed":
+        # The one arm that is byte-for-byte the old behaviour: green on the
+        # base and red here, so a leaf this plan merged is what broke it.
+        return _WaveAttribution(
+            park=True,
+            memoize=True,
+            detail=(
+                f"CROSS-LEAF REGRESSION: the same command PASSES on "
+                f"{base_branch}, so a leaf this plan already merged is what "
+                f"broke it."
+            ),
+        )
+    if base.status == "failed":
+        # Not a regression this plan caused. Memoized as a real answer from a
+        # real double run, on the same ground a clean pass is: without it the
+        # gate re-clones and re-runs the suite TWICE per loop tick for the whole
+        # life of exactly the plan shape this exists for.
+        return _WaveAttribution(
+            park=False,
+            memoize=True,
+            detail=(
+                f"the same command fails identically on {base_branch}, so it is "
+                f"not a regression this plan caused and the wave is not parked "
+                f"on it."
+            ),
+        )
+    # ``error`` and every skip: the gate produced no ANSWER about the base
+    # branch. Fail closed, exactly as before the comparison existed, and say the
+    # comparison is missing rather than implying it was made. NOT memoized: a
+    # transient clone/network fault on the base must not wedge a plan forever,
+    # which is the same reason a head ``error`` is not memoized either.
+    return _WaveAttribution(
+        park=True,
+        memoize=False,
+        detail=(
+            f"whether this failure pre-dates the plan could NOT be established, "
+            f"because the same command could not be run on {base_branch} "
+            f"(status={base.status}, reason={base.reason or '-'}), so it is "
+            f"reported as-is."
+        ),
+    )
 
 
 def resolve_implementer(
@@ -796,17 +902,29 @@ class DispatchMixin:
 
         Runs the project's verify command against the plan branch once per wave
         boundary (memoized on ``merged_count``). Returns True when dispatch may
-        proceed (gate passed, skipped, or already-verified for this wave), False
-        when a cross-leaf regression is detected OR the gate errors out — in
-        which case a ``plan_wave_verify_failed`` event is published and the wave
-        is parked.
+        proceed (gate passed, skipped, already-verified for this wave, or red
+        for a reason this plan did not cause), False when a cross-leaf
+        regression is PROVED or the comparison that would prove it could not be
+        made — in which case a ``plan_wave_verify_failed`` event is published
+        and the wave is parked.
+
+        A red plan branch is only evidence when the same command is GREEN on the
+        branch the plan was cut from, so a red one is taken to
+        ``attribute_wave_verify_failure`` before anything is parked; see that
+        function for the rule and for why the review seat has to share it. A
+        head ``error`` never reaches the comparison: the gate did not run, so
+        there is no verdict to attribute and a second full test run would be
+        bought for nothing.
 
         Skips (no verify_cmd, no plan branch, no credential) never block
-        dispatch. A genuine failure or an infra error (clone/checkout/verify
-        raised) fails closed: an error is NOT memoized, so the next loop tick
-        retries the gate (transient clone/network faults self-heal); a real
-        regression stays parked. The whole-plan gate in ``on_plan_completed`` is
-        the final backstop.
+        dispatch. A PROVED regression fails closed and is memoized; an infra
+        error, and a base branch that could not be asked, fail closed and are
+        NOT memoized, so the next loop tick retries the gate and a transient
+        clone/network fault self-heals. The whole-plan gate in
+        ``on_plan_completed`` is the final backstop.
+
+        A memoized park is PERMANENT and is recorded on ``plans.error``: see
+        ``_record_wave_regression``.
         """
         # Bench condition C disables the mechanical gate at every level; see
         # core/bench_mode.py.
@@ -853,40 +971,146 @@ class DispatchMixin:
         result = await cast(Any, self)._verify_plan_branch(
             repo_url, plan_branch, verify_cmd
         )
-        if result.status in ("failed", "error"):
-            # Fail closed on a real regression AND on an infra error: a
-            # swallowed checkout error used to green the wave silently. Only a
-            # genuine ``failed`` is memoized; an ``error`` is left un-memoized so
-            # the next loop tick retries (transient clone/network faults
-            # self-heal) rather than permanently wedging the wave.
-            if result.status == "failed":
-                state[plan_id] = (merged_count, False)
-            self._bus.publish(
-                {
-                    "type": "plan_wave_verify_failed",
-                    "plan_id": plan_id,
-                    "merged_count": merged_count,
-                    "output": result.output
-                    or (
-                        "plan verify gate errored (clone/checkout/verify raised); "
-                        "see orchestrator logs"
-                    ),
-                    "status": result.status,
-                }
-            )
-            logger.warning(
-                "Wave verify gate %s for plan %s after %d merged leaves; "
-                "parking the next wave.",
-                result.status.upper(),
-                plan_id,
-                merged_count,
+        if result.status not in ("failed", "error"):
+            # passed / skipped -> allow dispatch, memoize only a clean pass.
+            if result.status == "passed":
+                state[plan_id] = (merged_count, True)
+            return True
+
+        if result.status == "error":
+            # The gate did not RUN. There is no verdict to attribute, so the
+            # base branch is not asked: it could only cost a second full clone
+            # and test run to compare against nothing. Fail closed exactly as
+            # before, un-memoized, so the next tick retries.
+            self._park_the_wave(
+                plan_id, merged_count, result.status, result.output or _GATE_ERRORED
             )
             return False
 
-        # passed / skipped -> allow dispatch, memoize only a clean pass.
-        if result.status == "passed":
-            state[plan_id] = (merged_count, True)
-        return True
+        base_branch = str(project.get("default_branch") or "").strip()
+        base = (
+            await cast(Any, self)._verify_plan_branch(repo_url, base_branch, verify_cmd)
+            if base_branch
+            else _PlanVerifyResult("skipped", reason=_SKIP_NO_BASE_BRANCH)
+        )
+        attribution = attribute_wave_verify_failure(
+            base, base_branch or "the base branch"
+        )
+        detail = f"{attribution.detail}\n\n{result.output}".strip()
+
+        if not attribution.park:
+            if attribution.memoize:
+                state[plan_id] = (merged_count, True)
+            # A log line and no event: nothing is stuck, dispatch proceeds, and
+            # ``plan_wave_verify_failed`` means "the wave was parked" to every
+            # reader it has ever had. Publishing it for a wave that was NOT
+            # parked would be the same class of untrue claim this fix removes.
+            logger.warning(
+                "Wave verify gate is RED on plan %s's branch after %d merged "
+                "leaves, but %s",
+                plan_id,
+                merged_count,
+                attribution.detail,
+            )
+            return True
+
+        if attribution.memoize:
+            state[plan_id] = (merged_count, False)
+            await self._record_wave_regression(
+                plan_id, plan, plan_branch, base_branch, verify_cmd, merged_count
+            )
+        self._park_the_wave(plan_id, merged_count, result.status, detail)
+        return False
+
+    def _park_the_wave(
+        self, plan_id: str, merged_count: int, status: str, output: str
+    ) -> None:
+        """Publish and log one parked wave.
+
+        Both park sites go through here so the event's shape and the log line
+        cannot drift apart, which is how the errored site came to say less than
+        the failing one.
+
+        Args:
+            plan_id: The plan whose next wave is held.
+            merged_count: The wave boundary this verdict belongs to.
+            status: The plan-branch gate status that produced it.
+            output: What a human needs to read, evidence included.
+        """
+        self._bus.publish(
+            {
+                "type": "plan_wave_verify_failed",
+                "plan_id": plan_id,
+                "merged_count": merged_count,
+                "output": output,
+                "status": status,
+            }
+        )
+        logger.warning(
+            "Wave verify gate %s for plan %s after %d merged leaves; "
+            "parking the next wave.",
+            status.upper(),
+            plan_id,
+            merged_count,
+        )
+
+    async def _record_wave_regression(
+        self,
+        plan_id: str,
+        plan: dict[str, Any],
+        plan_branch: str,
+        base_branch: str,
+        verify_cmd: str,
+        merged_count: int,
+    ) -> None:
+        """Make a park that can never clear visible on a read-only surface.
+
+        A memoized park is PERMANENT: the memo is keyed on ``merged_count``,
+        that count advances only when a leaf merges, and no leaf can merge while
+        the wave is parked. Until now the only trace was one SSE event and one
+        log line, so the plan read ACTIVE with a null ``error`` and every
+        read-only surface called it healthy.
+
+        ``plan_reachability`` is this repo's SSoT for "this plan can never
+        advance" and is deliberately NOT extended here: it is pure over
+        ``(plans.opus_plan, task rows)``, and a parked wave leaves every leaf a
+        healthy PENDING with no FAILED dependency, so the fact is simply not in
+        its inputs. Putting it there would mean persisting a new column and
+        teaching a second module to read it -- a second stalled-detection
+        mechanism, which is the thing to avoid.
+
+        ``plans.error`` is the existing durable channel for exactly this shape,
+        with exactly this precedent: ``_reconcile_parked_plan`` records a closed
+        integration PR there and leaves the row parked rather than inventing a
+        status. ``PlanResponse``, MCP ``poll_plan``, ``praxis plans`` and the
+        dashboard all already render it, and no surface derives a status from
+        it, so this adds a reason without moving the plan.
+
+        The stored string IS the latch. The memo is per-process, so a restart
+        re-runs the gate; re-writing an identical row every tick would re-log it
+        every tick, which is the noise ``_reconcile_parked_plan``'s identical
+        check exists to prevent.
+
+        Args:
+            plan_id: The parked plan.
+            plan: Its row, read at the top of this dispatch pass.
+            plan_branch: The branch that is red.
+            base_branch: The branch it is green on.
+            verify_cmd: The command that settled it.
+            merged_count: How many leaves had merged when it did.
+        """
+        reason = (
+            f"The plan branch {plan_branch} fails the project verify command "
+            f"(`{verify_cmd}`) after {merged_count} merged leaf/leaves, and the "
+            f"same command PASSES on {base_branch}, so a leaf this plan already "
+            f"merged broke it. The next wave is parked, and nothing in the loop "
+            f"can clear it: this check is re-run only when another leaf merges, "
+            f"and no leaf can merge while the wave is parked. Fix the regression "
+            f"on {plan_branch}."
+        )
+        if str(plan.get("error") or "") == reason:
+            return
+        await self._tq.set_plan_error(plan_id, reason)
 
     async def _build_worker_bible(
         self,

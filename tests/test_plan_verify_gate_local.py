@@ -293,8 +293,15 @@ async def test_the_wave_gate_parks_a_local_plan_on_a_real_regression(
 
     Before the fix this returned True for every local plan, dispatching the
     next wave on top of a branch nobody had verified.
+
+    ``_VERIFY_SEES_MAIN`` rather than ``_VERIFY_FAILS`` since 2026-08-26: the
+    gate now PROVES a regression before parking, and a command that fails on
+    every branch (which ``_VERIFY_FAILS`` is) is not a regression at all. This
+    test asserted a difference it did not create; ``_VERIFY_SEES_MAIN`` is green
+    on ``main`` and red on the plan branch, which is one. The unparked case has
+    its own test in ``tests/test_wave_verify_gate.py``.
     """
-    plan_id = await _seed_plan(db, str(bare_repo), _VERIFY_FAILS)
+    plan_id = await _seed_plan(db, str(bare_repo), _VERIFY_SEES_MAIN)
     bus = EventBus()
     events = _drain(bus)
     orch = _orchestrator(db, bus=bus)
@@ -308,6 +315,8 @@ async def test_the_wave_gate_parks_a_local_plan_on_a_real_regression(
     failed = [e for e in published if e["type"] == "plan_wave_verify_failed"]
     assert len(failed) == 1
     assert "CROSS-LEAF REGRESSION" in failed[0]["output"]
+    # The command prints the source it read, so this says WHICH tree went red.
+    assert "return 2" in failed[0]["output"]
 
 
 @pytest.mark.integration

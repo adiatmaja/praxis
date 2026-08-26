@@ -151,7 +151,14 @@ async def test_provider_error_at_cap_halts_and_signals(db: Database) -> None:
 
 @pytest.mark.integration
 async def test_wave_verify_gate_parks_wave_on_failure(db: Database) -> None:
-    """A failing plan-branch verify parks the next wave (no dispatch)."""
+    """A plan-branch verify that is GREEN on the base parks the next wave.
+
+    The stub answers per BRANCH rather than uniformly, and that is the whole
+    point since 2026-08-26: a command red on the plan branch AND red on the base
+    is not a regression this plan caused, and parking on it kills the plan
+    permanently (see ``tests/test_wave_verify_gate.py``). A uniform ``failed``
+    mock asserted a difference it did not create.
+    """
     tq, plan_id, _ = await _setup(db)
     plan = await tq.get_plan(plan_id)
     project = await tq.get_project("p1")
@@ -161,24 +168,40 @@ async def test_wave_verify_gate_parks_wave_on_failure(db: Database) -> None:
     bus = EventBus()
     events = bus.subscribe()
     orch = _make_orch(tq, bus)
-    orch._verify_plan_branch = AsyncMock(  # type: ignore[method-assign]
-        return_value=_PlanVerifyResult("failed", "AttributeError: leaf.slug")
-    )
+    plan_branch = str(dict(plan)["plan_branch_name"])
+
+    async def _per_branch(
+        repo_url: str, branch: str, *args: object, **kwargs: object
+    ) -> _PlanVerifyResult:
+        if branch == plan_branch:
+            return _PlanVerifyResult("failed", "AttributeError: leaf.slug")
+        return _PlanVerifyResult("passed", "")
+
+    calls: list[str] = []
+
+    async def _counting(
+        repo_url: str, branch: str, *args: object, **kwargs: object
+    ) -> _PlanVerifyResult:
+        calls.append(branch)
+        return await _per_branch(repo_url, branch, *args, **kwargs)
+
+    orch._verify_plan_branch = _counting  # type: ignore[method-assign]
 
     proceed = await orch._wave_verify_gate(plan_id, dict(plan), project, merged_count=3)
     assert proceed is False
+    assert calls == [plan_branch, project["default_branch"]]
 
     published = []
     while not events.empty():
         published.append(events.get_nowait())
     assert any(e["type"] == "plan_wave_verify_failed" for e in published)
     # Memoized as failed for this wave -> second call does not re-run verify.
-    orch._verify_plan_branch.reset_mock()
+    calls.clear()
     proceed2 = await orch._wave_verify_gate(
         plan_id, dict(plan), project, merged_count=3
     )
     assert proceed2 is False
-    orch._verify_plan_branch.assert_not_called()
+    assert calls == []
 
 
 @pytest.mark.integration
