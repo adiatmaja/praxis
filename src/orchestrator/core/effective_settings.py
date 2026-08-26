@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import math
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from orchestrator.config import Settings
 from orchestrator.core.context_window import (
@@ -41,6 +42,43 @@ EDITABLE_KEYS: frozenset[str] = frozenset(
         "auto_delegate.enabled",
     }
 )
+
+
+#: DB key that used to hold EVERY role's chain in one row.
+#:
+#: It is still read, because an install that ever ran ``praxis config
+#: set-role`` has one, and dropping it on upgrade would silently re-route
+#: that install's brain calls. It is no longer WRITTEN: every writer of
+#: ``PUT /api/settings/roles`` sends the whole effective map back (they read
+#: it, change one key, and PUT it), so storing the body wholesale pinned
+#: every role in the database after a single ``set-role`` and left the
+#: mounted ``config/praxis.yaml`` unable to change any chain again -- which
+#: is the documented way to change them, and the reason the file is mounted
+#: rather than baked. ``api.settings.put_roles`` consumes this row and
+#: re-expresses it per role.
+LEGACY_ROLE_CHAINS_KEY = "models.roles"
+
+#: Prefix of the per-role override keys (``models.roles.plan``, ...).
+#:
+#: Deliberately a strict extension of :data:`LEGACY_ROLE_CHAINS_KEY`, so the
+#: existing ``DELETE ... WHERE key LIKE 'models.%'`` reset path keeps
+#: clearing role chains. It cannot collide with the per-call-site keys
+#: (``models.<call_site>``): no call site is named ``roles.<anything>``.
+ROLE_CHAIN_KEY_PREFIX = "models.roles."
+
+#: DB key holding the model registry. Unlike the role chains this stays
+#: wholesale, and the difference is in the data, not in the effort: a list
+#: has no per-entry identity that "absent means use the settings file" could
+#: hang off, and a per-entry merge could no longer express REMOVING a model
+#: the file declares -- which ``PUT /api/settings/registry`` documents as its
+#: behaviour. What it does share is the rule below: a registry equal to the
+#: file's is not stored at all.
+REGISTRY_KEY = "models.registry"
+
+
+def role_chain_key(role: str) -> str:
+    """Return the settings_overrides key holding one role's chain."""
+    return f"{ROLE_CHAIN_KEY_PREFIX}{role}"
 
 
 def _as_threshold(value: Any, default: float) -> float:
@@ -193,31 +231,77 @@ class EffectiveSettings:
 
         return load_yaml_settings(config_file_path())
 
-    async def registered_models(self) -> list[dict[str, Any]]:
-        override = await self._get_override("models.registry")
-        if override is not None:
-            import json
-            from typing import cast
-
-            return cast(list[dict[str, Any]], json.loads(override))
+    async def _yaml_models(self) -> dict[str, Any]:
+        """Return the settings file's ``models`` block, or ``{}``."""
         yaml_data = await self._get_yaml()
-        from typing import cast
+        models = yaml_data.get("models")
+        return models if isinstance(models, dict) else {}
 
-        return cast(
-            list[dict[str, Any]], yaml_data.get("models", {}).get("registry", [])
+    async def settings_file_registered_models(self) -> list[dict[str, Any]]:
+        """Return the registry the settings FILE declares, ignoring the DB.
+
+        The write path needs this to tell an operator's own registry apart
+        from the file's: a body equal to the file is not an override at all,
+        and storing one would freeze the mounted file out of a surface it is
+        supposed to own.
+        """
+        registry = (await self._yaml_models()).get("registry")
+        return cast(list[dict[str, Any]], registry) if registry else []
+
+    async def registered_models(self) -> list[dict[str, Any]]:
+        override = await self._get_override(REGISTRY_KEY)
+        if override is not None:
+            return cast(list[dict[str, Any]], json.loads(override))
+        return await self.settings_file_registered_models()
+
+    async def settings_file_role_chains(self) -> dict[str, list[str]]:
+        """Return the chains the settings FILE declares, ignoring the DB.
+
+        Same job as :meth:`settings_file_registered_models`: it is the
+        baseline a submitted chain is compared against, so that only a chain
+        that actually differs from the file is stored.
+        """
+        chains = (await self._yaml_models()).get("roles")
+        return cast(dict[str, list[str]], chains) if chains else {}
+
+    async def role_chain_overrides(self) -> dict[str, list[str]]:
+        """Return the per-role chains held in the database, keyed by role."""
+        rows = await self._db.fetch_all(
+            "SELECT key, value FROM settings_overrides WHERE key LIKE ?",
+            (f"{ROLE_CHAIN_KEY_PREFIX}%",),
         )
+        stored: dict[str, list[str]] = {}
+        for row in rows:
+            value = row["value"]
+            if not value:
+                continue
+            role = str(row["key"])[len(ROLE_CHAIN_KEY_PREFIX) :]
+            if role:
+                stored[role] = cast(list[str], json.loads(value))
+        return stored
 
     async def role_chains(self) -> dict[str, list[str]]:
-        override = await self._get_override("models.roles")
-        if override is not None:
-            import json
-            from typing import cast
+        """Return the effective per-role fallback chains.
 
-            return cast(dict[str, list[str]], json.loads(override))
-        yaml_data = await self._get_yaml()
-        from typing import cast
-
-        return cast(dict[str, list[str]], yaml_data.get("models", {}).get("roles", {}))
+        Layered per role: a stored per-role override wins, otherwise the
+        settings file decides. The legacy wholesale row (see
+        :data:`LEGACY_ROLE_CHAINS_KEY`) replaces the file's map entirely when
+        present, exactly as it did before it stopped being written -- an
+        upgraded install must resolve to what it resolved to yesterday, and
+        the file's chains must not reappear underneath it uninvited.
+        """
+        legacy = await self._get_override(LEGACY_ROLE_CHAINS_KEY)
+        overrides = await self.role_chain_overrides()
+        if legacy is None:
+            chains = dict(await self.settings_file_role_chains())
+        elif not overrides:
+            # Unchanged from the pre-split behaviour, down to not reading
+            # the settings file at all.
+            return cast(dict[str, list[str]], json.loads(legacy))
+        else:
+            chains = cast(dict[str, list[str]], json.loads(legacy))
+        chains.update(overrides)
+        return chains
 
     async def call_site_chain(
         self, call_site: str, project_id: str | None

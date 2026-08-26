@@ -6,11 +6,17 @@ import json
 from typing import Any, cast
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 from orchestrator.api.auth import verify_token
 from orchestrator.core.capabilities import CapabilityCatalog
-from orchestrator.core.effective_settings import EDITABLE_KEYS, EffectiveSettings
+from orchestrator.core.effective_settings import (
+    EDITABLE_KEYS,
+    LEGACY_ROLE_CHAINS_KEY,
+    REGISTRY_KEY,
+    EffectiveSettings,
+    role_chain_key,
+)
 from orchestrator.core.llm_router import CALL_SITE_DEFAULTS
 from orchestrator.core.roles import MODEL_ROLES, ROLE_OF_CALL_SITE
 from orchestrator.models.schemas import RegisteredModel, RoleChains
@@ -184,14 +190,45 @@ async def get_registry(request: Request) -> list[dict[str, Any]]:
     )
 
 
+def _normalized_registry(entries: list[dict[str, Any]]) -> list[dict[str, Any]] | None:
+    """Return the settings file's registry in the shape a PUT body arrives in.
+
+    A body is validated into ``RegisteredModel`` and dumped, so it carries
+    every field explicitly (``effort: null``) while the hand-written file
+    usually omits the optional ones. Comparing the two raw would report a
+    difference that is only a spelling. Returns None when the file's entries
+    cannot be read as registry records at all, which is treated as "not
+    equal" rather than guessed at.
+    """
+    try:
+        return [RegisteredModel(**entry).model_dump() for entry in entries]
+    except (TypeError, ValidationError):
+        return None
+
+
 @router.put("/settings/registry")
 async def put_registry(
     request: Request, body: list[RegisteredModel]
 ) -> list[dict[str, Any]]:
-    """Replace the model registry."""
+    """Replace the model registry.
+
+    Stored only when it DIFFERS from the settings file. The registry is
+    replaced wholesale when it does differ, and that is deliberate rather
+    than an oversight: unlike the role chains it is a list, so there is no
+    per-entry key for "absent means use the settings file", and a per-entry
+    merge could not express removing a model the file declares. The cost is
+    real and worth stating -- after one ``praxis config add-model``, later
+    edits to ``models.registry`` in the mounted file no longer apply -- but
+    it is inherent to a list-shaped surface with replace semantics, whereas
+    the role-chain version of it was not.
+    """
     es = cast(EffectiveSettings, request.app.state.effective_settings)
     payload = [m.model_dump() for m in body]
-    await es.set_override("models.registry", json.dumps(payload))
+    from_file = _normalized_registry(
+        await _settings_file(es.settings_file_registered_models(), "model registry")
+    )
+    unchanged = from_file is not None and from_file == payload
+    await es.set_override(REGISTRY_KEY, None if unchanged else json.dumps(payload))
     return await es.registered_models()
 
 
@@ -206,7 +243,26 @@ async def get_roles(request: Request) -> dict[str, list[str]]:
 
 @router.put("/settings/roles")
 async def put_roles(request: Request, body: RoleChains) -> dict[str, list[str]]:
-    """Replace the per-role fallback chains (validated against the registry)."""
+    """Replace the per-role fallback chains (validated against the registry).
+
+    Each role is stored on its own, and only when its chain DIFFERS from the
+    settings file. Both halves are needed, because every writer of this
+    endpoint -- ``praxis config set-role``, the dashboard's Settings ->
+    Models panel, and curl -- reads the EFFECTIVE map, changes one key, and
+    PUTs the whole map back. Storing that body wholesale pinned every role
+    in the database after a single ``set-role``: editing ``models.roles`` in
+    the mounted ``config/praxis.yaml`` and restarting, which is the
+    documented way to change a chain and the reason the file is mounted
+    rather than baked, then silently did nothing for ANY role. Storing per
+    role but unconditionally would have kept doing exactly that, since the
+    body names every role either way -- the comparison against the file is
+    what makes "the caller touched this one" recoverable.
+
+    Two consequences worth naming. Submitting a chain identical to the
+    file's does not pin it: the operator gets what the file says, today and
+    after the next file edit. And a role the body omits has its override
+    cleared, which keeps the replace semantics this endpoint has always had.
+    """
     es = cast(EffectiveSettings, request.app.state.effective_settings)
     known = {
         m["name"]
@@ -220,7 +276,21 @@ async def put_roles(request: Request, body: RoleChains) -> dict[str, list[str]]:
         unknown = [n for n in chain if n not in known]
         if unknown:
             raise HTTPException(422, detail=f"unknown models in {role}: {unknown}")
-    await es.set_override("models.roles", json.dumps(body.chains))
+
+    from_file = await _settings_file(es.settings_file_role_chains(), "role chains")
+    stored = await es.role_chain_overrides()
+    # The legacy wholesale row is CONSUMED, not merely ignored. Nothing is
+    # stranded by that: the body was read from the effective map, so
+    # whatever the wholesale row pinned is either in this body (and is about
+    # to be re-stored per role, or dropped exactly as a wholesale replace
+    # would have dropped it) or equals what the settings file already says.
+    await es.set_override(LEGACY_ROLE_CHAINS_KEY, None)
+    for role in set(body.chains) | set(stored):
+        submitted = body.chains.get(role)
+        pin = submitted is not None and submitted != from_file.get(role)
+        await es.set_override(
+            role_chain_key(role), json.dumps(submitted) if pin else None
+        )
     return await es.role_chains()
 
 
