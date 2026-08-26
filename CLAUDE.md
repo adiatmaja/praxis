@@ -161,6 +161,9 @@ uv venv && uv sync --extra dev && cp .env.example .env
 docker compose --profile agents build
 
 # Run - containerized (RECOMMENDED: survives terminal exit, restart: unless-stopped)
+# NOTE: the dev overlay BIND-MOUNTS ./src and runs --reload, so this container serves the
+# WORKING TREE. A live observation taken while anything is editing src/ is evidence about
+# the tree, not about HEAD, and rebuilding does not help (the mount shadows the image).
 docker compose -f docker-compose.yml -f docker-compose.local.yml up --build -d  # dev, hot-reload
 docker compose up --build                                                         # production
 docker compose --profile hosted up --build                                        # with Caddy
@@ -210,6 +213,18 @@ Workflows in `.github/workflows/` (added 2026-07-02, verified green on runners):
   INTERPOLATED line, not the assignment that opens it: a directive on `x = (` or on a
   comment line of its own is silently DEAD and the scan still fails. Prove a placement by
   deleting it and re-running; bandit never warns about a nosec that guards nothing.
+  **`# noqa: S608` is RUFF's code and does NOTHING here**: bandit never reads `noqa`, and
+  this repo's `[tool.ruff.lint] select` has no `"S"`, so that directive silences neither
+  tool while looking like a suppression.
+- **RUN THE CI COMMANDS, NOT YOUR OWN.** Both CI reds of 2026-08-26 were local checks that
+  passed for a reason CI does not share. `uv run bandit` exits `program not found` (bandit
+  is NOT a dev dependency; CI uses `uvx`), and grepping that error for findings looks
+  exactly like a clean scan - run `uvx bandit -r src/ -c pyproject.toml` and read the
+  `Total issues (by severity)` block. And CI has NO `.env`, so anything resolved from the
+  worker-preset default differs from a developer box: to test a suspected environment
+  dependence, FORCE the CI value (e.g. `DEFAULT_WORKER_HARNESS=agy`) and confirm the old
+  form fails, then sweep the whole suite under it rather than fixing one test per CI round
+  trip.
 - **Dependabot**: weekly pip/actions/docker, grouped by risk tier (runtime deps ungrouped
   so a breaking prod bump is isolated).
 
@@ -384,7 +399,10 @@ story. New gotchas go in `docs/gotchas.md` first. (No count is quoted on purpose
 - **Patch orchestrator helpers on the MIXIN module** that calls them
   (`orchestrator_{dispatch,review,reconcile,improve}.py`), never `core.orchestrator`.
 - **`.env` is read by pydantic-settings**: tests asserting a missing env var must pass
-  `_env_file=None`, and clear ambient env or CI's value wins.
+  `_env_file=None`, and clear ambient env or CI's value wins. **A test that asserts two
+  things DIFFER must CREATE the difference**: hardcoding one side of a `!=` while the
+  other resolves from the worker-preset default passed locally (`.env` set `opencode`)
+  and failed on CI (no `.env`, both sides `agy`) with `assert 'agy' != 'agy'`.
 - **SQLite lives at `data/orchestrator.db`** (CWD-relative); delete it to reset state.
 - **Windows port cleanup is `taskkill //PID <pid> //F`**, never `kill -9`.
 - **`.gitattributes` pins the tree to LF**; the Windows CI runner checks out CRLF, which
@@ -445,6 +463,16 @@ story. New gotchas go in `docs/gotchas.md` first. (No count is quoted on purpose
   `plan: [sonnet, opus]`, `review: [sonnet, haiku]`, so on a stock install every routed
   call-site runs sonnet. A **Settings → Models** override for a role'd call-site is
   stored and IGNORED: clear the role chain first. Full account: `docs/configurations.md`.
+- **A role chain is stored PER ROLE, and only when it differs from the settings file.**
+  Every writer of `PUT /api/settings/roles` (`praxis config set-role`, the dashboard, a
+  bare curl) GETs the EFFECTIVE map, changes one key and PUTs the whole map back, so
+  storing that body wholesale pinned EVERY role after a single `set-role` and the mounted
+  YAML stopped reaching any of them. Per-role keys alone do NOT fix it, because the body
+  names every role either way: the comparison against the file is what makes "the caller
+  touched this one" recoverable. A legacy wholesale row is CONSUMED on the next write, not
+  stranded. `models.registry` keeps wholesale storage (a list has no per-entry key for
+  "absent means use the file", and a merge could no longer express REMOVING a model the
+  file declares) but adopts the same equality rule.
 - **A key in `.env` that the settings file also names WINS and says so** (one `INFO`
   line naming the winner, once per key per process).
 - **An unrecognised key in `.env` is IGNORED, not rejected**: a typo in a real key is
@@ -514,11 +542,22 @@ story. New gotchas go in `docs/gotchas.md` first. (No count is quoted on purpose
   worker_attributable)` (still unpacks as a 2-tuple for its two out-of-module callers), an
   attributable decline writes a `FailureClass.NO_OUTPUT` outcome row and then triages, and a
   non-attributable one records NOTHING and just fails/retries.
-- **`_triage_then_fail` has exactly TWO callers, and that is the contract**: the review
-  verdict and a worker-attributable empty diff. The reviewer-error and unparseable-`pr_url`
-  paths call `_fail_and_maybe_retry` DIRECTLY, because neither says anything about the leaf
-  and triage's worst answer (`human`) is terminal. A structural rule (who may call what),
-  not a condition that can drift.
+- **Adaptive triage is reached by WORKER-ATTRIBUTABLE failures only, and that is the
+  contract**: the review verdict, and a worker-attributable no-change decline WHEREVER it
+  is decided - the review path's empty diff, the worker callback (`api/internal.py`), and
+  the micro-edit lane. The reviewer-error and unparseable-`pr_url` paths call
+  `_fail_and_maybe_retry` DIRECTLY, because neither says anything about the leaf and
+  triage's worst answer (`human`) is terminal. Attribution comes from
+  `NoChangeDecision.worker_attributable`, never from matching the reason text.
+  **This entry said "exactly TWO callers" for one day and it was WRONG**: the gate was
+  extracted with the two call sites its author had enumerated, and a worker that
+  self-reports `no_changes` fails through the callback router, which never enters
+  `review_task`. Measured live: `attempt` 1 -> 2 -> 3 with `triage_decision` NULL and no
+  triage call at all. A structural rule is a claim about the paths you ENUMERATED, not
+  the paths that EXIST - derive the list with a query ("what else can fail a task"), never
+  by reading. The router supplies facts and the mixin decides, so the `attempt >= 2 and
+  not already_triaged` bound exists ONCE; a mutation of it must turn EVERY route's tests
+  red, which is the only proof the gate is shared rather than copied.
 - **A plan can be STALLED while it reads ACTIVE with a null `error`**: a PENDING leaf
   behind a terminally FAILED one is unreachable forever, transitively.
   `core/plan_reachability.py` derives it for every surface (`poll_plan`'s `stalled`,

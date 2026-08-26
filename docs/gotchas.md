@@ -843,14 +843,45 @@ belongs among the everyday traps.
   triage at all; they take the respawn-cap path and burn no retry.
 - **The review verdict is NOT triage's only entry point, and treating it as one
   is what let a whole failure class die untriaged.** The gate is the helper
-  `_triage_then_fail`, and it has exactly TWO callers by design: the review
-  verdict, and a worker-attributable EMPTY DIFF. The reviewer-error path and the
-  unparseable-`pr_url` path still call `_fail_and_maybe_retry` directly. That
-  constraint is structural — who may call what — rather than a condition that
-  can drift, and it matters in both directions: an un-triaged worker failure is
-  invisible until the plan dies at attempt 3, and an over-triaged infrastructure
-  fault spends a brain call reasoning about evidence that says nothing about the
-  leaf, whose worst answer (`human`) is terminal.
+  `_triage_then_fail`, and what may reach it is a WORKER-ATTRIBUTABLE failure:
+  the review verdict, and a worker-attributable no-change decline wherever it is
+  decided — the review path's empty diff, the worker callback in
+  `api/internal.py`, and the micro-edit lane. The reviewer-error path and the
+  unparseable-`pr_url` path still call `_fail_and_maybe_retry` directly. It
+  matters in both directions: an un-triaged worker failure is invisible until the
+  plan dies at attempt 3, and an over-triaged infrastructure fault spends a brain
+  call reasoning about evidence that says nothing about the leaf, whose worst
+  answer (`human`) is terminal.
+
+  **This entry read "exactly TWO callers by design" for one day, and that is the
+  cautionary tale.** The gate was extracted with the two call sites its author
+  had enumerated, and the enumeration was done by reading `review_task`. A worker
+  that SELF-REPORTS `no_changes` and is refused by the declared-edit-locations
+  check fails through the callback ROUTER, which never enters `review_task` at
+  all, so it reached neither the gate nor the calibration recorder. Measured live
+  the same day the "fix" landed: `attempt` went 1 → 2 → 3 with `triage_decision`
+  NULL and zero triage log lines in the whole process; triage only fired at
+  attempt 3, when the failure happened to come back through the review verdict.
+  A structural constraint ("only these callers may do X") is a claim about the
+  paths you ENUMERATED, not about the paths that EXIST. The query that would have
+  found it in seconds is "what else can fail a task", not "what calls this
+  function".
+
+  The gate is now SHARED rather than copied — the router supplies facts and the
+  mixin decides, so `attempt >= 2 and not already_triaged` exists exactly once.
+  That is provable and must stay provable: widening that single bound turns EVERY
+  route's tests red from one edit. Two green test files over two copies look
+  identical to one implementation until you try it.
+
+  One hazard the delegation had to handle, and the reason the disposition is
+  verified against the DATABASE rather than assumed: triage's rate-limit branch
+  DEFERS by leaving the task where it is. From `review_task` that is REVIEWING —
+  active, re-entered next tick, free. From the callback the task is IN_PROGRESS
+  and its agent run was completed a few lines earlier, and `reconcile_runs` walks
+  running runs only, so nothing would ever look at it again while IN_PROGRESS
+  still counts as active and suppresses `plan_stalled`. REVIEWING is not
+  available as a resting state either, because a NULL `pr_url` makes
+  `review_task` return immediately.
 - **Split children APPEND to both the graph and the task table, and the parent
   is never deleted**: `TaskQueue.get_dispatchable_tasks` maps
   `opus_plan["tasks"]` to `get_tasks_for_plan` rows BY LIST INDEX, so inserting
@@ -2474,3 +2505,120 @@ warning fires on LIVE suppressions too, so it cannot be used to find dead ones.
 
 Prefer an inline annotation over widening `[tool.bandit] skips`: `core/approvals.py`
 builds one GENUINE f-string query, and a blanket B608 skip would stop bandit seeing it.
+
+## A local check that passes for a reason CI does not share
+
+Two `Security`/`CI` reds on 2026-08-26 came from the same shape, and neither was visible
+locally. Both are cheap to avoid and expensive to discover one CI round trip at a time.
+
+**The scan that never ran.** `uv run bandit ...` exits
+`Failed to spawn: bandit - program not found`: bandit is not a dev dependency here, and
+`security.yml` runs it through `uvx`. Grepping that error message for `Issue:` finds
+nothing, which is indistinguishable from a clean scan, and "bandit clean locally" was
+reported off exactly that. Run it the way CI does — `uvx bandit -r src/ -c pyproject.toml`
+— and read the `Total issues (by severity)` block rather than grepping for a pattern that
+is absent from BOTH a pass and a crash.
+
+Relatedly: `# noqa: S608` is RUFF's code for the flake8-bandit rule. Bandit never reads
+`noqa`, and this repo's `[tool.ruff.lint] select` does not include `"S"`, so on a Praxis
+file that directive silences nothing in ruff AND suppresses nothing in bandit while
+looking exactly like a suppression. Bandit's directive is `# nosec B608`, on the line
+bandit REPORTS (see the section above).
+
+**The assertion that CI made vacuous.** A test hardcoded one side of a comparison and
+asserted it DIFFERED from a project's harness:
+
+```python
+await queue.set_task_implementer(task_id, "agy", "gemini-3-pro", 1)
+...
+assert rows[0]["harness"] != project["harness"]     # 'agy' != 'agy' on CI
+```
+
+The project's harness is not a constant: it resolves from the worker preset marked
+`default: true` in the committed `config/praxis.yaml`, which is `gemini-agy` → `agy`. A
+developer whose `.env` sets `DEFAULT_WORKER_HARNESS=opencode` gets a meaningful assertion;
+CI has no `.env` and both operands collapse onto the same value. Nothing was missing and
+nothing raised — an ambient value simply made a negative assertion vacuous.
+
+**A test that asserts two things DIFFER must CREATE the difference**, e.g. derive one
+operand from the other:
+
+```python
+escalated_harness = "opencode" if project["harness"] == "agy" else "agy"
+```
+
+And verify a suspected environment dependence by FORCING the CI value
+(`DEFAULT_WORKER_HARNESS=agy uv run pytest ...`), confirming the old form FAILS under it,
+then sweeping the whole suite under it for siblings. (That sweep reddens
+`tests/test_config_default_worker.py`, which asserts the pydantic FIELD default and is
+broken BY the forced variable rather than by anything CI does — an artifact of the
+simulation, not a finding.)
+
+## The dev container serves the working tree, not the image
+
+`docker-compose.local.yml` bind-mounts `./src` into the orchestrator and runs
+`uvicorn --reload`. So the dev orchestrator serves whatever is on disk, reloading within
+seconds of any edit, and `docker compose up -d --build` does NOT change that: the mount
+shadows the image's `/app/src` regardless of what was baked into it.
+
+The consequence is a trap whenever a live run and an implementation agent overlap. During
+a live probe on 2026-08-26 a `task_outcomes` row appeared with a brand-new failure class,
+and it was read as proof that the path already recorded outcomes. It was not: `docker logs`
+showed `WatchFiles detected changes in 'src/orchestrator/api/internal.py'. Reloading...`
+minutes before the callback fired, and `git show HEAD:` had no recorder in that file at
+all. The row was an agent's in-flight fix. Worse in the other direction: that agent's
+byte-level MUTATIONS were live in the same container for minutes at a time, and a mutation
+that disables a recorder is indistinguishable from the defect being hunted.
+
+**A live observation taken while anything is editing `src/` is evidence about the WORKING
+TREE, not about HEAD.** Probe against a committed tree, or treat the observation as
+provisional until re-checked against `git show HEAD:<file>`. When a live run contradicts
+your reading of the code, check `docker logs orchestrator | grep -i "detected changes"`
+before concluding the code is wrong. Findings grounded in the git tree (what a worker
+committed to a branch), in HEAD's source, or in the target repository are unaffected.
+
+Note the sibling asymmetry, because all three refresh differently: the CLI reads the
+working tree on every invocation, the orchestrator reloads continuously from the mount,
+and the MCP server is a stdio SUBPROCESS frozen at session start — a change to
+`src/mcp_server/` cannot be verified in the session that makes it, and must be checked
+through the REST route and the CLI twin instead.
+
+## One `set-role` pinned every role and made the mounted YAML inert
+
+`GET /api/settings/roles` returns the EFFECTIVE map, which falls back to the settings file
+when no override exists. Every writer of the companion PUT — `praxis config set-role`, the
+dashboard's Settings → Models panel, and plain curl — reads that map, changes ONE key, and
+PUTs the whole thing back. Storing the body wholesale under a single `models.roles` row
+therefore pinned EVERY role in the database after one `set-role`, and editing the mounted
+YAML plus `docker compose restart` — the documented way to change a chain, and the whole
+reason that file is mounted rather than baked — then silently did nothing for ANY role.
+
+This lands on a surface that already had one silently-inert write: a YAML role chain
+shadows `CALL_SITE_DEFAULTS` entirely, so a Settings → Models override for a role'd
+call-site is stored and ignored until the chain is cleared.
+
+**Per-role keys alone do NOT fix it**, and that is the part worth remembering. The PUT body
+names every role either way, so storing `models.roles.<role>` unconditionally reproduces
+the defect exactly. The discriminator has to be the settings file: a role is stored only
+when its chain DIFFERS from what the file declares, so the database holds the differences
+and a role nobody touched has no row at all. A mutation that keeps the per-role keys and
+drops only the comparison fails on its own.
+
+A legacy wholesale row is CONSUMED on the next write rather than ignored, so an install
+that already ran `set-role` is not stranded; while it exists `role_chains()` still honours
+it and resolves byte-identically to before. `models.registry` keeps wholesale storage for a
+reason in the data rather than the effort — a list has no per-entry key for "absent means
+use the settings file", and a per-entry merge could no longer express REMOVING a model the
+file declares — but adopts the same equality rule.
+
+Two behaviour changes follow, both deliberate: a chain identical to the file's is not
+pinned at all, and a partial curl PUT can no longer disable file-declared chains outright
+(an omitted role resets to the file rather than vanishing).
+
+The fix belongs in the RESPONSE-side seam, not in a warning printed by the CLI: the CLI is
+one of three callers, so a CLI-printed caveat is the "a doctor fix is not a product fix"
+mistake in its exact form. The `stored_but_shadowed` shape that `PUT /api/settings/models`
+uses for this class is NOT available here — `praxis config add-model` wraps the registry
+response in `_check_list`, which exits non-zero on a non-list body, and `config show`
+iterates the roles response AS the chains map, so an added status key renders as a bogus
+role row. Either would need the CLI changed in the same commit.
