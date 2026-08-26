@@ -501,6 +501,74 @@ class GitOps:
         except (ValueError, AttributeError):
             return False
 
+    async def pr_state(self, pr_number: int | None, repo: str) -> str | None:
+        """Ask GitHub what state a pull request is in.
+
+        Deliberately NOT ``_pr_is_merged`` above. That one answers a yes/no
+        question inside ``merge_pr``'s retry loop and folds CLOSED, OPEN and
+        "could not ask" together into ``False``, which is right there: it fails
+        closed on a merge it is about to attempt anyway. A caller reconciling a
+        parked row has to tell those apart. MERGED means the work landed, CLOSED
+        means a human rejected it outside Praxis, OPEN means the row is parked
+        correctly, and not knowing means leave it alone. Collapsing any pair of
+        those produces a fabricated verdict.
+
+        Args:
+            pr_number: Pull request number. Typed optional because
+                ``PullRequestRef.number`` is, and a ref with no number cannot be
+                asked about.
+            repo: ``owner/name`` slug. Required, never optional: without
+                ``--repo`` the ``gh`` call resolves against the orchestrator's
+                own working directory and answers about the wrong repository.
+
+        Returns:
+            The state GitHub reported, upper-cased (``"OPEN"``, ``"CLOSED"`` or
+            ``"MERGED"``), or None when the question could not be answered at
+            all: no PR number, ``gh`` missing or refused to spawn, a non-zero
+            exit, output that is not JSON, or a payload carrying no state. None
+            is an ANSWER meaning "unknown", and the caller must not read it as
+            any particular state.
+        """
+        if pr_number is None:
+            return None
+        token = await self._token_for_repo(repo)
+        cmd = ["gh", "pr", "view", str(pr_number), "--json", "state", "--repo", repo]
+        try:
+            code, stdout, stderr = await self._run_command(cmd, token=token)
+        except OSError as spawn_error:
+            # gh missing from PATH, or the spawn refused. Not knowing is not a
+            # state, so this returns None rather than a guess.
+            logger.warning(
+                "Could not ask GitHub for the state of PR #%d in %s: %s",
+                pr_number,
+                repo,
+                spawn_error,
+            )
+            return None
+        if code != 0:
+            logger.warning(
+                "gh could not report the state of PR #%d in %s (exit %d): %s",
+                pr_number,
+                repo,
+                code,
+                stderr.strip(),
+            )
+            return None
+        try:
+            state = json.loads(stdout).get("state")
+        except (ValueError, AttributeError):
+            logger.warning(
+                "gh returned no readable state for PR #%d in %s: %r",
+                pr_number,
+                repo,
+                stdout[:200],
+            )
+            return None
+        # An empty or absent state is the same unknown as unparseable output;
+        # returning "" would compare unequal to every state name and read as a
+        # confident "none of the above".
+        return str(state).upper() if state else None
+
     async def merge_pr(
         self, workspace: str, pr_number: int, repo: str | None = None
     ) -> None:

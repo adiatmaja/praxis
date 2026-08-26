@@ -18,7 +18,9 @@ from typing import TYPE_CHECKING, Any, Literal, cast
 import httpx
 
 from orchestrator.core import branch_sweeper
-from orchestrator.core.status_vocab import TERMINAL_STATUSES
+from orchestrator.core.approvals import fetch_pending_approvals
+from orchestrator.core.git_backend import PullRequestRef
+from orchestrator.core.status_vocab import GATED_STATUSES, TERMINAL_STATUSES
 from orchestrator.models.schemas import PlanStatus, TaskStatus
 
 
@@ -80,6 +82,42 @@ _QUARANTINE_MAX_COOLDOWN_DOUBLINGS: int = (
     _QUARANTINE_MAX_COOLDOWN_PASSES // _QUARANTINE_INITIAL_COOLDOWN_PASSES
 ).bit_length()
 
+# --- Merge-gate reconciliation ------------------------------------------
+#
+# What GitHub reports for a pull request. Named rather than written inline at
+# the three comparison sites, because the whole feature turns on telling these
+# apart and a typo in a bare string literal is a silent no-op: the row simply
+# stays parked, which is exactly what the unfixed defect looks like.
+_PR_MERGED = "MERGED"
+_PR_CLOSED = "CLOSED"
+
+# Passes to skip between two probes of the SAME pull request. Each probe is a
+# `gh` call over the network, and reconcile runs every pass (~5s at the shipped
+# loop_interval), so an unthrottled reconciler would spend one call per parked
+# row every five seconds forever. Expressed in PASSES, not seconds, to match
+# the quarantine constants above; at the shipped interval 60 passes is roughly
+# five minutes, or about twelve calls an hour per pull request. The thing being
+# waited on is a human, who acts on a scale of minutes to days, so a five-minute
+# cadence loses nothing a faster one would catch.
+MERGE_GATE_PROBE_COOLDOWN_PASSES: int = 60
+
+# How long a row must have been parked before it is probed at all. On the happy
+# path the operator runs `praxis merge`, which does the whole follow-through
+# itself; probing on the pass that parks the row would spend a `gh` call for
+# every task that ever passes review, to learn that a pull request opened
+# seconds ago is open. Fifteen minutes is well under any human's response time
+# and removes that call entirely. Nothing is broken while it waits: the row is
+# parked, which is where it belongs until somebody acts.
+MERGE_GATE_MIN_PARKED_AGE_HOURS: float = 0.25
+
+# Ceiling for the failure backoff, and the clamp on the doublings that reach
+# it, derived exactly as the branch-sweep pair above so neither can go stale
+# when a constant moves. ~1 hour at the shipped interval.
+_MERGE_GATE_MAX_COOLDOWN_PASSES: int = 720
+_MERGE_GATE_MAX_COOLDOWN_DOUBLINGS: int = (
+    _MERGE_GATE_MAX_COOLDOWN_PASSES // MERGE_GATE_PROBE_COOLDOWN_PASSES
+).bit_length()
+
 # The observable outcome of one sweep_dead_branches call. Kept explicit (over
 # returning None) so a repo that was genuinely PROBED and found to have
 # nothing to reclaim ("swept") stays distinguishable in tests from one that
@@ -106,7 +144,11 @@ class RepoProbeState:
             0 the moment a probe succeeds.
         cooldown_remaining: Sweep passes left to skip before the next
             re-probe is attempted. Counts down by one on every quarantined
-            pass; a probe is attempted again once it reaches 0.
+            pass; a probe is attempted again once it reaches 0. The merge-gate
+            reconciler shares this dataclass and additionally sets it after a
+            SUCCESSFUL probe, to space out a poll that would otherwise run
+            every pass; there the failure backoff simply extends the same
+            counter rather than introducing a second one.
         warned: Whether THIS quarantine episode has already logged its one
             warning. Reset to False on recovery, so a repo that goes bad
             again later gets a fresh single warning rather than permanent
@@ -343,6 +385,7 @@ class ReconcileMixin:
         _git: Any
         _branch_delete_failures: dict[tuple[str, str], int]
         _repo_probe_failures: dict[str, RepoProbeState]
+        _merge_gate_probe_state: dict[str, RepoProbeState]
 
     def _safe_logs(self, container_id: str) -> str:
         """Fetch full container logs, swallowing any backend errors."""
@@ -644,6 +687,408 @@ class ReconcileMixin:
                     )
         except Exception:  # noqa: BLE001 - sweeper call is best-effort
             logger.exception("Failed to sweep dead branches during reconcile pass")
+
+        try:
+            # AFTER the sweep, not before. This pass can mark a task merged or
+            # failed, which moves its branch between the sweeper's live and
+            # dead sets; letting the sweeper act on one-pass-stale facts errs
+            # towards keeping a branch one pass longer, and the other order
+            # errs towards deleting one. Only one of those is reversible.
+            #
+            # Its own try/except for the same reason the sweep has one:
+            # ``run_once`` calls ``reconcile_runs`` with NO guard around it, so
+            # anything escaping here stops every plan on the install, on every
+            # tick, and looks like a loop that has simply gone quiet.
+            await self.reconcile_merge_gate()
+        except Exception:  # noqa: BLE001 - reconciliation is best-effort
+            logger.exception("Failed to reconcile the merge gate this pass")
+
+    def _merge_gate_probes(self) -> dict[str, RepoProbeState]:
+        """Return the per-pull-request probe state, creating it on first use.
+
+        Lazily attached to the instance exactly like ``_branch_delete_failures``
+        and ``_repo_probe_failures``, and for the same reasons:
+        ``Orchestrator.__init__`` lives outside this file, and a restart
+        clearing the map is correct because a restart is when an operator wants
+        a fresh attempt regardless of any backoff. Bounded in practice by the
+        number of pull requests parked at the gate.
+
+        Returns:
+            A ``pr_url -> RepoProbeState`` map that lives for the process.
+        """
+        state = getattr(self, "_merge_gate_probe_state", None)
+        if state is None:
+            state = {}
+            self._merge_gate_probe_state = state
+        return state
+
+    async def reconcile_merge_gate(self) -> None:
+        """Reconcile each parked row against its pull request's real state.
+
+        Praxis parks reviewed work at the merge gate and hands a human a
+        ``pr_url``. The obvious way to act on that is the hosting provider's
+        UI, and nothing reconciled the row afterwards, so a human who merged or
+        closed a pull request left the row parked forever. Every surface that
+        reports parked work then repeated it: ``praxis pending``, the
+        dashboard, ``GET /api/approvals/pending`` and MCP
+        ``pending_approvals``, all offering ``praxis merge`` on a pull request
+        that no longer exists to merge.
+
+        The four outcomes are NOT symmetric:
+
+        - MERGED: the work landed. The row leaves the gate with the same
+          follow-through the human path performs, siblings included.
+        - CLOSED: the work did NOT land. Recording MERGED would fabricate a
+          verdict and, because ``MERGED`` is in ``SATISFIED_STATUSES``, release
+          every dependent leaf onto work that is not on the branch.
+        - OPEN: parked is the correct state. The common case. Do nothing.
+        - Unknown: never guess. Leave it parked and say so once. Same standing
+          rule as ``core/context_window`` and ``verify_gate`` -- an unknown
+          value says it is unknown rather than picking a plausible answer.
+
+        The rows come from ``fetch_pending_approvals``, the SAME reader the two
+        surfaces use, so the reconciler can never act on a different set than
+        the one a human is being shown; a second, near-identical query here is
+        precisely how the digest once came to omit every improvement proposal.
+
+        Never raises: every row is handled independently and the caller wraps
+        the whole call as well.
+        """
+        summary = await fetch_pending_approvals(self._tq._db)
+        # One probe per pull request per pass, not one per row. Single-branch
+        # (auto-delegate) mode puts N tasks on ONE shared pull request, which is
+        # its designed shape and was three of the eight rows measured live.
+        # Keyed on the URL alone is safe because a GitHub URL encodes its
+        # repository; a local ref does not, but a local ref is never probed.
+        probed: dict[str, str | None] = {}
+
+        for entry in summary.get("tasks", []):
+            try:
+                await self._reconcile_parked_task(entry, probed)
+            except Exception:  # noqa: BLE001 - one row, not the whole gate
+                logger.exception(
+                    "Could not reconcile parked task %s against %s; it stays "
+                    "at the merge gate",
+                    entry.get("task_id"),
+                    entry.get("pr_url"),
+                )
+
+        for entry in summary.get("plans", []):
+            try:
+                await self._reconcile_parked_plan(entry, probed)
+            except Exception:  # noqa: BLE001 - one row, not the whole gate
+                logger.exception(
+                    "Could not reconcile plan %s against %s; it stays at the "
+                    "merge gate",
+                    entry.get("plan_id"),
+                    entry.get("pr_url"),
+                )
+
+    async def _reconcile_parked_task(
+        self, entry: dict[str, Any], probed: dict[str, str | None]
+    ) -> None:
+        """Act on one parked task once its pull request's state is known.
+
+        Args:
+            entry: One item from ``summarize_pending``'s ``tasks`` list.
+            probed: This pass's ``pr_url -> state`` memo, shared with the plan
+                loop so a task and its plan's integration PR never cost two
+                calls for one URL.
+        """
+        pr_url = str(entry.get("pr_url") or "").strip()
+        if not pr_url:
+            # A parked row with no pull request has nothing to ask about. It is
+            # still something a human must decide, which is why
+            # ``summarize_pending`` keeps listing it.
+            return
+        if float(entry.get("age_hours") or 0.0) < MERGE_GATE_MIN_PARKED_AGE_HOURS:
+            return
+
+        task_id = str(entry.get("task_id") or "")
+        task = await self._tq.get_task(task_id)
+        if task is None or str(task["status"]) not in GATED_STATUSES:
+            # Re-read rather than trust the snapshot. An EARLIER row in this
+            # same pass may have merged the shared pull request and swept this
+            # one out of the gate already, and acting on the stale copy would
+            # publish a second task_completed for work recorded once.
+            return
+
+        plan = await self._tq.get_plan(str(task["plan_id"]))
+        project = (
+            await self._tq.get_project(str(plan["project_id"]))
+            if plan is not None
+            else None
+        )
+        if project is None:
+            return
+
+        state = await self._probe_pull_request_state(pr_url, project, probed)
+        if state == _PR_MERGED:
+            await self._record_task_merged_elsewhere(task, pr_url)
+        elif state == _PR_CLOSED:
+            await self._record_task_rejected_elsewhere(task, pr_url)
+
+    async def _record_task_merged_elsewhere(
+        self, task: dict[str, Any], pr_url: str
+    ) -> None:
+        """Take a task out of the gate on a merge Praxis did not perform.
+
+        The follow-through is deliberately identical to ``approve_task_merge``
+        and in the same order, because the checkbox sync and the
+        ``task_completed`` event are what the plan document and every SSE
+        consumer read: a status flipped without them leaves the row quiet
+        rather than merged.
+
+        Args:
+            task: The parked task row.
+            pr_url: Its pull request, already known to be MERGED.
+        """
+        task_id = str(task["id"])
+        await self._tq.mark_merged(task_id)
+        await cast(Any, self)._sync_plan_checkbox(task)
+        self._bus.publish(
+            {"type": "task_completed", "task_id": task_id, "pr_url": pr_url}
+        )
+        logger.info(
+            "Task %s left the merge gate: %s is merged on the remote, so its "
+            "work has already landed",
+            task_id,
+            pr_url,
+        )
+        # LAST, and reusing the review mixin's helper rather than repeating its
+        # three scope conditions here. It is the single place a SET of tasks
+        # leaves the gate for one pull request, and re-deriving that scope is
+        # how the two copies drift into disagreeing about which rows a merge
+        # landed.
+        await cast(Any, self)._sweep_merged_siblings(task)
+
+    async def _record_task_rejected_elsewhere(
+        self, task: dict[str, Any], pr_url: str
+    ) -> None:
+        """Fail a task whose pull request a human closed without merging.
+
+        FAILED, not MERGED and not left parked. Closing a pull request is that
+        human rejecting the change outside Praxis, and ``reject-merge`` is the
+        verb for exactly that intent, so this lands on the same status that verb
+        does. FAILED is not in ``SATISFIED_STATUSES``, so no dependent leaf is
+        released onto work that is not on the branch.
+
+        It does NOT re-dispatch, which is where it parts company with
+        ``reject_task_merge``. That verb retries because a human running it
+        supplies feedback the worker can act on. A closed pull request supplies
+        none, so a retry would reproduce the same change, re-park it at the
+        gate and loop autonomously off a human's "no" -- and this runs on the
+        loop, unattended, where that loop has nothing to stop it.
+
+        Args:
+            task: The parked task row.
+            pr_url: Its pull request, already known to be CLOSED.
+        """
+        task_id = str(task["id"])
+        reason = (
+            f"Pull request {pr_url} was closed on the remote without being "
+            "merged, so this task's work did not land. Praxis did not close "
+            "it: closing a pull request is a rejection made outside Praxis, "
+            "and it is recorded here as one. Re-dispatch the task with "
+            "feedback if the work is still wanted."
+        )
+        await self._tq.fail_task(task_id, reason)
+        # Same event shape reject_task_merge publishes for the same intent, so
+        # no consumer has to learn a second one.
+        self._bus.publish(
+            {"type": "task_failed", "task_id": task_id, "feedback": reason}
+        )
+        logger.warning(
+            "Task %s left the merge gate as failed: %s was closed without merging",
+            task_id,
+            pr_url,
+        )
+
+    async def _reconcile_parked_plan(
+        self, entry: dict[str, Any], probed: dict[str, str | None]
+    ) -> None:
+        """Act on one completed plan whose integration PR is still listed.
+
+        The MERGED half mirrors ``approve_plan_integration``. The CLOSED half
+        deliberately does LESS: it records the reason and leaves the row parked.
+        There is no plan-rejection verb to follow, and the two states that would
+        take the row off the gate are both wrong. Stamping
+        ``integration_merged_at`` claims a merge nobody made. Setting the plan
+        REJECTED puts its plan branch into the branch sweeper's
+        ``terminal_failed`` set, and that branch carries the ENTIRE plan's work:
+        a background probe must not be able to delete it. So the discrepancy is
+        made visible on ``plans.error`` -- which ``PlanResponse`` and MCP
+        ``poll_plan`` already surface -- and a human decides.
+
+        Args:
+            entry: One item from ``summarize_pending``'s ``plans`` list.
+            probed: This pass's ``pr_url -> state`` memo.
+        """
+        pr_url = str(entry.get("pr_url") or "").strip()
+        if not pr_url:
+            return
+        if float(entry.get("age_hours") or 0.0) < MERGE_GATE_MIN_PARKED_AGE_HOURS:
+            return
+
+        plan_id = str(entry.get("plan_id") or "")
+        plan = await self._tq.get_plan(plan_id)
+        if plan is None or plan.get("integration_merged_at"):
+            return
+        project = await self._tq.get_project(str(plan["project_id"]))
+        if project is None:
+            return
+
+        state = await self._probe_pull_request_state(pr_url, project, probed)
+        if state == _PR_MERGED:
+            await self._tq.mark_plan_integrated(plan_id)
+            self._bus.publish(
+                {
+                    "type": "plan_integrated",
+                    "plan_id": plan_id,
+                    "project_id": project["id"],
+                    "pr_url": pr_url,
+                }
+            )
+            logger.info(
+                "Plan %s left the merge gate: integration PR %s is merged on "
+                "the remote",
+                plan_id,
+                pr_url,
+            )
+        elif state == _PR_CLOSED:
+            reason = (
+                f"Integration PR {pr_url} was closed on the remote without "
+                "being merged, so this plan's work is still on its plan branch "
+                "and not on the base branch. Praxis has not changed the plan's "
+                "state: reopen or re-create the integration PR if the work is "
+                "still wanted."
+            )
+            # The stored reason IS the once-only latch, and it survives a
+            # restart in a way an in-memory flag would not. Re-writing an
+            # identical string every five minutes would also re-log it every
+            # five minutes, which is the noise the branch sweeper's `warned`
+            # latch exists to prevent one screen up.
+            if str(plan.get("error") or "") == reason:
+                return
+            await self._tq.set_plan_error(plan_id, reason)
+            logger.warning(
+                "Plan %s is still listed at the merge gate but its integration "
+                "PR %s was closed without merging",
+                plan_id,
+                pr_url,
+            )
+
+    async def _probe_pull_request_state(
+        self,
+        pr_url: str,
+        project: dict[str, Any],
+        probed: dict[str, str | None],
+    ) -> str | None:
+        """Return the pull request's state, or None for "no verdict this pass".
+
+        None covers every reason not to act, and they are handled differently
+        INSIDE this function even though they produce the same outcome: a local
+        ref is skipped silently and never probed, an unreachable remote is
+        counted towards a quarantine and warned about once, and a cooled-down
+        URL is not called at all.
+
+        Args:
+            pr_url: The stored ``tasks.pr_url`` / ``plans.integration_pr_url``.
+            project: The owning project row, for backend resolution.
+            probed: This pass's memo, read and written here.
+
+        Returns:
+            The state string, or None to leave the row parked.
+        """
+        if pr_url in probed:
+            return probed[pr_url]
+        # Recorded as "no verdict" up front so every early return below memoizes
+        # correctly without repeating the assignment on each branch.
+        probed[pr_url] = None
+
+        try:
+            ref = PullRequestRef.from_url(pr_url)
+        except ValueError:
+            # DEBUG, not WARNING: ``approve_task_merge`` already raises loudly
+            # on this exact value the moment a human acts on the row, so the
+            # operator-facing report exists. A background loop repeating it
+            # every cadence would only bury it.
+            logger.debug("Merge gate: unparseable pull-request ref %r", pr_url)
+            return None
+
+        if ref.backend != "github":
+            # A ``praxis-local://`` ref. The local backend has no pull-request
+            # object, so there is no state to ask for, and nothing could have
+            # merged or closed it behind Praxis's back: this whole reconciler
+            # exists because a human can click Merge in a hosting provider's
+            # UI, and a bare repo has no UI. Skipped OUTRIGHT rather than
+            # treated as "could not ask", which would warn about a question
+            # that does not exist and put every local row into a backoff path
+            # built for an unreachable remote.
+            #
+            # Keyed on the REF, not on the resolved backend, because the two
+            # come from independent sources that can disagree (see
+            # ``GitHubBackend._repo``): editing a project's repo_url while
+            # tasks exist is enough. A local ref reaching a GitHub backend is
+            # that disagreement, and probing it would run gh against a ref that
+            # carries no repository.
+            return None
+
+        backend = cast(Any, self)._resolve_backend(project["repo_url"])
+        probe = getattr(backend, "pull_request_state", None)
+        if probe is None:
+            # A backend with no pull-request state at all: LocalGitBackend, or
+            # a test double predating this capability. Same fact as a local
+            # ref, reached from the other direction, and equally not a failure.
+            return None
+
+        state = self._merge_gate_probes().setdefault(pr_url, RepoProbeState())
+        if state.cooldown_remaining > 0:
+            state.cooldown_remaining -= 1
+            return None
+
+        answer: str | None = None
+        failure: str | None = None
+        try:
+            answer = await probe(ref)
+        except Exception as exc:  # noqa: BLE001 - unreachable is a condition
+            failure = f"{type(exc).__name__}: {exc}"
+        if answer is None and failure is None:
+            failure = "gh could not report a state"
+
+        if answer is not None:
+            if state.consecutive_failures > 0:
+                logger.info(
+                    "Merge gate can read %s again after %d consecutive failures",
+                    pr_url,
+                    state.consecutive_failures,
+                )
+            state.consecutive_failures = 0
+            state.warned = False
+            state.cooldown_remaining = MERGE_GATE_PROBE_COOLDOWN_PASSES
+            probed[pr_url] = answer
+            return answer
+
+        state.consecutive_failures += 1
+        cooldown = MERGE_GATE_PROBE_COOLDOWN_PASSES
+        if state.consecutive_failures >= REPO_PROBE_FAILURE_QUARANTINE_THRESHOLD:
+            if not state.warned:
+                state.warned = True
+                logger.warning(
+                    "Cannot read the state of %s after %d consecutive "
+                    "attempts; it stays parked at the merge gate and will be "
+                    "retried with backoff. Last reason: %s",
+                    pr_url,
+                    state.consecutive_failures,
+                    failure,
+                )
+            doublings = min(
+                state.consecutive_failures - REPO_PROBE_FAILURE_QUARANTINE_THRESHOLD,
+                _MERGE_GATE_MAX_COOLDOWN_DOUBLINGS,
+            )
+            cooldown = min(cooldown * (2**doublings), _MERGE_GATE_MAX_COOLDOWN_PASSES)
+        state.cooldown_remaining = cooldown
+        return None
 
     def _start_monitor(self, run_id: str, task_id: str, container_id: str) -> None:
         task = asyncio.create_task(self.monitor_run(run_id, task_id, container_id))

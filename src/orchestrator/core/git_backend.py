@@ -385,6 +385,37 @@ class GitHubBackend:
         """Squash-merge the PR and delete its branch."""
         await self._git.merge_pr(".", ref.number, repo=self._repo(ref))
 
+    async def pull_request_state(self, ref: PullRequestRef) -> str | None:
+        """Return what GitHub says the pull request's state is.
+
+        Deliberately NOT on the ``GitBackend`` protocol, and NOT implemented on
+        ``LocalGitBackend``. A bare repo has no pull-request object, so there is
+        no state to report and nothing that could have changed it behind
+        Praxis's back: the merge gate is reconciled against a HUMAN acting in a
+        hosting provider's UI, and a bare repo has no UI. Answering "unknown"
+        for local mode would be the same fabrication as answering "open", one
+        step quieter, and it would put every local row into a retry-with-backoff
+        path built for an unreachable remote. Callers skip local refs by
+        ``ref.backend`` instead; the absence of this method is the second,
+        independent guard for a backend double or a local project whose task
+        somehow carries a GitHub ref.
+
+        Args:
+            ref: The pull request to ask about.
+
+        Returns:
+            ``"OPEN"``, ``"CLOSED"``, ``"MERGED"``, or None when the question
+            could not be answered.
+
+        Raises:
+            ValueError: If the ref carries no repo. Same guard as every other
+                ``gh`` call on this class: without ``--repo`` the call resolves
+                against the orchestrator's own working directory.
+        """
+        return cast(
+            str | None, await self._git.pr_state(ref.number, repo=self._repo(ref))
+        )
+
     async def open_integration_pr(
         self, base: str, head: str, title: str, body: str
     ) -> str:
