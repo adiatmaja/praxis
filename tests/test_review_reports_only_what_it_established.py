@@ -40,6 +40,7 @@ def _gate(
         verify_cmd: str | None,
         disabled_reason: str | None = None,
         require_paths: Sequence[str] = (),
+        leaf_verify_cmd: str | None = None,
     ) -> _PlanVerifyResult:
         seen.append(
             {
@@ -81,7 +82,18 @@ async def _review(orch: Any, task_id: str, project: dict[str, Any]) -> None:
 @pytest.mark.parametrize(
     ("status", "reason", "expected", "forbidden"),
     [
-        pytest.param("failed", None, "did not verify clean", "could not be verified"),
+        # A red PROJECT command with no leaf check of its own. Since 2026-08-26
+        # this no longer says "did not verify clean, so the work is genuinely
+        # missing": on this path the command runs on the very tree the worker was
+        # handed, so it is red identically before and after the attempt and says
+        # nothing about the work. The sentence a worker reads must not send it
+        # chasing a failure it did not cause and cannot fix from here.
+        pytest.param(
+            "failed",
+            None,
+            "says nothing about the work it was asked to do",
+            "genuinely missing",
+        ),
         pytest.param(
             "error", None, "could not be verified at all", "did not verify clean"
         ),

@@ -2312,13 +2312,18 @@ Not every decline is worker-attributable, so `no_change_outcome` now returns a f
 for its two out-of-module callers, the worker callback in `api/internal.py` and the
 micro-edit lane in `orchestrator_dispatch.py`, both of which reach it through an untyped
 object where mypy could not have caught a widening. The line is "did the gate produce an
-ANSWER", not "how bad was it": a missing declared edit location and a verify command that
-RAN and failed are attributable; an unresolvable base branch, a gate that errored, and a
-gate that could not reach the repository are not. Including the failed case is the
-consistent choice rather than the risky one — the review path already triages
-`VERIFY_FAIL` on identical evidence. The distinction is settled where the verify verdict
-and the path check are both in hand, never recovered afterwards by substring-matching
-`why`, which would start answering differently the day a sentence is reworded.
+answer ABOUT THIS LEAF": a missing declared edit location and the leaf's OWN declared
+verification refuting the no-op are attributable; an unresolvable base branch, a gate that
+errored, a gate that could not reach the repository, and — since the correction below — the
+PROJECT verify command going red are not. The distinction is settled where the verify
+verdict, the path check and the leaf check are all in hand, never recovered afterwards by
+substring-matching `why`, which would start answering differently the day a sentence is
+reworded.
+
+That line was drawn one place over when this was written ("did the gate produce an ANSWER",
+including the failed case, "because the review path already triages `VERIFY_FAIL` on
+identical evidence") and both halves of that argument were wrong; see the correction at the
+end of the section below.
 
 **And no `task_outcomes` row was written on this path at all** — verified with a throwaway
 probe rather than by reading: an empty-diff failure produced `[]`, a review-verdict failure
@@ -2414,14 +2419,57 @@ per review. No memo, because the only path that re-enters a REVIEWING task is th
 reviewer-error streak (`REVIEW_ERROR_ATTEMPT_CAP`), and the brain-availability check returns
 above the gate, so a throttle spends nothing.
 
-**Still open, and deliberately not changed here: `no_change_outcome` makes the same
-inference in the opposite direction.** For an EMPTY diff it reads a failing base-branch
-verify as "the work is genuinely missing", which on a dependent chain is false for the
-identical reason. It is left alone because it fails in the SAFE direction — declining to
-close a leaf as terminally satisfied — and because the declared-edit-location check already
-outranks it. The enumeration that found it is the query `grep -rn "run_verify(\|_verify_plan_branch("
+**`no_change_outcome` made the same inference in the opposite direction, and BOTH reasons
+for leaving it alone were wrong (closed the next day).** For an EMPTY diff it read a failing
+base-branch verify as "the work is genuinely missing", marked it `worker_attributable`, and
+so charged a `FailureClass.NO_OUTPUT` row and bought a triage call whose worst answer
+(`human`) is terminal.
+
+- "It fails in the SAFE direction" is the wrong safety property. It cannot green missing
+  work, but it terminally failed PRESENT work and wrote a row `failure_taxonomy` counts
+  against the worker, so it corrupted calibration rather than merely being cautious.
+- "The declared-edit-location check already outranks it" is true only for `paths.missing`.
+  When every declared path is PRESENT — exactly the case where the work IS done — that
+  positive answer was discarded, because only the verdict and the branch reached
+  `_no_op_evidence`.
+
+And the inference itself was unsound in a way the review path had already been corrected
+for. On this path the worker changed NOTHING, so the branch verified IS the tree it was
+handed: a red verdict is red identically on head and base by construction, which is exactly
+the shape `_attribute_head_verify_failure` calls `_GATE_UNATTRIBUTED` and refuses to charge.
+It never discriminated what it was read as discriminating, either — on a healthy repository
+the identical worker behaviour is CLOSED as a no-op ("verify passed on <branch>"), so every
+empty diff this route ever charged was one sitting on a red repository, and repository
+health was being written into the column the capability loop reads as worker capability.
+
+The fix is the same positive signal, not a second policy: the leaf's OWN declared
+`verification` now runs on the SAME checkout the project command ran in, and only when that
+command went red. It PASSES → the no-op is established and the leaf closes (this is what
+stops a dependent chain being retried to the identical correct answer until its attempts are
+spent). It FAILS → attributable, and the reason carries the DECLARED command's output, never
+the project command's. There is none → fail closed, but do not charge; the absence of a leaf
+check must not reinstate an attribution just shown to be false. A leaf's declared paths
+merely being PRESENT is deliberately NOT promoted to evidence: a path that exists proves a
+file is there, not that it does the leaf's job.
+
+The enumeration that found it is the query `grep -rn "run_verify(\|_verify_plan_branch("
 src/`, which is the only honest way to ask "what else fails a task on a project verify
 result": the previous structural claim on this path was hand-derived and wrong within a day.
+
+**A related half of the same seam, fixed at the same time: `_verify_failure_stands` said the
+attribution could not be established and then recorded it as established.** Every arm
+reaching it is "the base branch could not be ASKED" (an unresolvable base, a clone that
+raised, `_SKIP_NO_TOKEN`), and its own feedback says so in words — yet the `fail` row beside
+it read `VERIFY_FAIL`, which counts against the worker, so an unanswered question was handed
+to the capability gate as an answer. `handle_declined_no_change` applies the opposite rule to
+the same uncertainty one seat over. Failing the task is unchanged and still right; the row
+now carries a NULL `failure_class` via a distinct `verify_state` (`_GATE_UNCOMPARED`), keyed
+on the STATE rather than on `_VERIFY_FAIL_MARKER`, which is still in that feedback and must
+be. The row is still WRITTEN — `fetch_recent_outcomes` requires `failure_class IN (...)` for
+a `fail` row, so it stays auditable and countable while voting neither way, the same
+"withdraw the claim rather than state a false one" move the supply-chain gate makes with its
+`blocked` outcome. Substituting one of the three non-voting classes would have traded a false
+row in the calibration set for a false CAUSE in the audit trail.
 
 ## A row parked at the merge gate is reconciled against the pull request's real state
 

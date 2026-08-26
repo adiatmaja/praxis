@@ -44,9 +44,18 @@ from orchestrator.core.failure_taxonomy import FailureClass
 from orchestrator.core.orchestrator_review import (
     _SKIP_NO_TOKEN,
     _DeclaredPathCheck,
+    _LeafVerifyRun,
     _PlanVerifyResult,
 )
 from orchestrator.database import Database
+
+
+#: A leaf's own declared verification, run on the branch it was cut from and
+#: REFUTING the no-op. Since 2026-08-26 this -- not a red project command -- is
+#: what makes an empty diff worker-attributable: the project command runs on the
+#: very tree the worker was handed, so it is red identically before and after the
+#: attempt and can never be about work the worker did not do.
+_LEAF_REFUTED = _LeafVerifyRun('python -c "import a"', passed=False, output="boom")
 
 
 def _gate(
@@ -54,13 +63,14 @@ def _gate(
     status: str,
     reason: str = "",
     paths: _DeclaredPathCheck | None = None,
+    leaf: _LeafVerifyRun | None = None,
 ) -> None:
     """Replace the base-branch verify gate with a stub of a stated verdict.
 
-    Same stub shape as ``test_empty_diff_reaches_triage``: ``reason`` and
-    ``paths`` are both load-bearing, because ``_verify_plan_branch`` returns
-    ``skipped`` for four different reasons and ``paths`` is the second,
-    independent question the same checkout answers.
+    Same stub shape as ``test_empty_diff_reaches_triage``: ``reason``, ``paths``
+    and ``leaf`` are all load-bearing, because ``_verify_plan_branch`` returns
+    ``skipped`` for four different reasons and the other two are the second and
+    third independent questions the same checkout answers.
     """
 
     async def _stub(
@@ -69,8 +79,9 @@ def _gate(
         verify_cmd: str | None,
         disabled_reason: str | None = None,
         require_paths: Sequence[str] = (),
+        leaf_verify_cmd: str | None = None,
     ) -> _PlanVerifyResult:
-        return _PlanVerifyResult(status, reason=reason, paths=paths)
+        return _PlanVerifyResult(status, reason=reason, paths=paths, leaf=leaf)
 
     orch._verify_plan_branch = _stub
 
@@ -130,7 +141,7 @@ async def test_an_empty_diff_failure_writes_a_calibration_row(
     plan_id = (await orch._tq.get_task(task_id))["plan_id"]
     await _set_task_type(db, plan_id, "code")
     _empty_diff(orch)
-    _gate(orch, "failed")
+    _gate(orch, "failed", leaf=_LEAF_REFUTED)
 
     await orch.review_task(task_id, project)
 
@@ -168,7 +179,7 @@ async def test_the_recorded_row_is_returned_by_the_calibration_query(
     """
     orch, task_id, project = orchestrator_fixture
     _empty_diff(orch)
-    _gate(orch, "failed")
+    _gate(orch, "failed", leaf=_LEAF_REFUTED)
 
     await orch.review_task(task_id, project)
 
@@ -221,7 +232,7 @@ async def test_the_row_names_the_model_that_actually_implemented_the_attempt(
     orch, task_id, project = orchestrator_fixture
     await orch._tq.set_task_implementer(task_id, "agy", "gemini-3-pro", 1)
     _empty_diff(orch)
-    _gate(orch, "failed")
+    _gate(orch, "failed", leaf=_LEAF_REFUTED)
 
     await orch.review_task(task_id, project)
 

@@ -14,7 +14,7 @@ import logging
 import tempfile
 from collections import Counter
 from collections.abc import Iterator, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -128,6 +128,16 @@ _GATE_FAILED = "failed"
 # ``_review_scope_statement``, and it must: the human at the merge gate is being
 # handed a PASS on a repository whose verify command is red.
 _GATE_UNATTRIBUTED = "failed on the PR head and identically on the base branch"
+
+# The seventh outcome: the project gate went RED on the PR head and whether that
+# failure pre-dates this task could not be established at all, because the base
+# branch could not be ASKED. The task still fails -- an unanswered question must
+# never buy a pass -- but the attribution is UNKNOWN, and a ``task_outcomes`` row
+# claiming ``verify_fail`` would assert exactly the thing the stored feedback
+# says was not established. Like ``_GATE_FAILED`` and unlike ``_GATE_UNATTRIBUTED``
+# this never reaches ``_review_scope_statement``: it always carries a failing
+# verdict, and that path is only walked under ``verdict == "pass"``.
+_GATE_UNCOMPARED = "failed on the PR head with no base comparison available"
 
 # The marker ``review_task`` classifies a failure by. Shared between the two
 # places that write it and the one that reads it, because a feedback string
@@ -322,7 +332,7 @@ def _review_scope_statement(
     Args:
         checkout_available: Whether a clean PR-head checkout backed the review.
         verify_state: One of ``_GATE_PASSED``, ``_GATE_FAILED``,
-            ``_GATE_UNATTRIBUTED`` or a ``_SKIP_*`` reason.
+            ``_GATE_UNCOMPARED``, ``_GATE_UNATTRIBUTED`` or a ``_SKIP_*`` reason.
         verify_cmd: The project's command, named only when it actually ran.
         radius: The blast-radius measurement, or None when none was made.
         unattributed: Set with ``verify_state == _GATE_UNATTRIBUTED``, and
@@ -341,7 +351,9 @@ def _review_scope_statement(
     else:
         clauses.append(f"read the diff text only ({_SKIP_CHECKOUT_UNAVAILABLE})")
 
-    # Three arms, and still deliberately no ``_GATE_FAILED`` one. A gate that
+    # Three arms, and still deliberately no ``_GATE_FAILED`` one -- nor a
+    # ``_GATE_UNCOMPARED`` one, which is unreachable here for the identical
+    # reason. A gate that
     # failed AND was charged to this task writes ``verdict: fail`` where it
     # runs, before any brain call, and this function is reached only under
     # ``verdict == "pass"``, so ``_GATE_FAILED`` cannot arrive here. The arm
@@ -523,6 +535,27 @@ def _check_declared_paths(root: str, paths: Sequence[str]) -> _DeclaredPathCheck
 
 
 @dataclass(frozen=True)
+class _LeafVerifyRun:
+    """What a leaf's OWN declared verification did on the tree just inspected.
+
+    A separate carrier rather than a second status on the gate result, because
+    the two answer different questions about the same tree and collapsing them
+    is the conflation this whole seat exists to end: the project command asks
+    "is this repository healthy", the declared command asks "was THIS leaf's
+    work done". The gate keeps its own verdict unchanged, and this rides beside
+    it.
+
+    ``command`` is carried so the reason stored on the task can NAME what was
+    run. A sentence claiming a leaf check without saying which one is the same
+    quiet overclaim as a scope statement that omits the gate.
+    """
+
+    command: str
+    passed: bool
+    output: str = ""
+
+
+@dataclass(frozen=True)
 class _PlanVerifyResult:
     """Outcome of the whole-plan verify gate.
 
@@ -537,12 +570,20 @@ class _PlanVerifyResult:
     asks it: did the tree it just materialized carry the edit locations the
     leaf declared. ``None`` means the question was not asked or no tree was
     fetched, which is neither a yes nor a no.
+
+    ``leaf`` is the THIRD, asked only by ``no_change_outcome`` and only when the
+    project command went RED on the branch the leaf was cut from. ``None`` means
+    the question was not asked, the leaf declared nothing runnable, or the
+    project command did not fail -- three different absences that all mean "this
+    settles nothing", which is why the caller may only ever act on a PRESENT
+    answer.
     """
 
     status: str
     output: str = ""
     reason: str = ""
     paths: _DeclaredPathCheck | None = None
+    leaf: _LeafVerifyRun | None = None
 
 
 @dataclass(frozen=True)
@@ -605,10 +646,19 @@ def _no_op_evidence(verdict: _PlanVerifyResult, base_branch: str) -> str | None:
     ``mark_no_changes`` writes this string to ``tasks.review_feedback``, where
     the dashboard renders it and MCP returns it.
 
-    Exactly two answers qualify, and ``skipped`` alone is not one of them:
+    Exactly three answers qualify, and ``skipped`` alone is not one of them:
 
     - ``passed``: the gate ran on the branch the leaf was cut from and the
       tree there already satisfies it.
+    - ``failed``, but the leaf's OWN declared verification passed on that same
+      tree. The project command is the bar for a REGRESSION and the wrong bar
+      for a leaf (cd0c127, measured live twice): on a dependent chain it is
+      routinely red for a SIBLING's contract, and on THIS path it is red on the
+      very tree the worker was handed, so it can never be about work the worker
+      did or did not do. The declared command is the only evidence here that is
+      about this leaf, and a PASS from it is strictly stronger than either of
+      the other two answers -- it is a statement about the leaf's contract
+      rather than about the repository's health.
     - ``skipped`` BECAUSE no verify command is configured, or because bench
       mode disabled the gate on purpose: no independent evidence, only the
       harness's clean exit. Deliberate, documented, and the weakest link here;
@@ -616,6 +666,14 @@ def _no_op_evidence(verdict: _PlanVerifyResult, base_branch: str) -> str | None:
       the DECISION is the same for both, and are kept apart in the stored
       string because the STATEMENT is not: a bench run whose project does
       configure a verify command used to record that it had none.
+
+    A leaf's declared paths merely being PRESENT is deliberately NOT a fourth
+    answer. A path that exists proves a file is there, not that it does the
+    leaf's job -- a sibling that wrote a stub satisfies it -- and greening a
+    leaf on it would unblock every dependent onto work nobody finished, which is
+    the exact shape of false success the 2026-08-25 measurement produced from
+    the other direction. The positive path answer stays what it has always
+    been: a REFUTER (``paths.missing``) and a clause in the stored reason.
 
     The other two skips (``_SKIP_NO_CREDENTIAL_PROVIDER``, ``_SKIP_NO_TOKEN``)
     mean a verify command IS configured and the gate could not reach the
@@ -634,6 +692,13 @@ def _no_op_evidence(verdict: _PlanVerifyResult, base_branch: str) -> str | None:
     """
     if verdict.status == "passed":
         return f"verify passed on {base_branch}"
+    if verdict.status == "failed" and verdict.leaf is not None and verdict.leaf.passed:
+        return (
+            f"the project verify command is red on {base_branch} and fails there "
+            "for reasons that pre-date this task, so it was not held against it; "
+            f"this task's OWN declared verification (`{verdict.leaf.command}`) "
+            "passes on that same tree"
+        )
     if verdict.status == "skipped" and verdict.reason in (
         _SKIP_NO_VERIFY_CMD,
         _SKIP_BENCH_MODE_DISABLED,
@@ -746,6 +811,7 @@ async def _inspect_branch_tree(
     verify_cmd: str | None,
     require_paths: Sequence[str],
     skip_reason: str,
+    leaf_verify_cmd: str | None = None,
 ) -> _PlanVerifyResult:
     """Answer every question the gate has about an already-materialized tree.
 
@@ -755,10 +821,10 @@ async def _inspect_branch_tree(
     working directory. Two copies of "check the declared paths, then run the
     command" is how one backend comes to check something the other does not.
 
-    Doing both here is also what keeps this to ONE checkout. The declared-path
-    check and the verify command must see the SAME tree at the same instant;
-    fetching the branch twice could observe two different states and decide a
-    leaf's fate from a mixture of them.
+    Doing all of it here is also what keeps this to ONE checkout. The
+    declared-path check, the project command and the leaf's own command must see
+    the SAME tree at the same instant; fetching the branch twice could observe
+    two different states and decide a leaf's fate from a mixture of them.
 
     Args:
         checkout_dir: A checkout of ``plan_branch``.
@@ -768,9 +834,17 @@ async def _inspect_branch_tree(
         require_paths: The leaf's declared edit locations; empty means the
             question was not asked.
         skip_reason: What to report when there is no command to run.
+        leaf_verify_cmd: The leaf's OWN declared verification, already reduced
+            to something shellable by ``shell_command_for_verification``. Run
+            ONLY when the project command went red, because that is the only
+            arm where the project command's answer cannot settle attribution.
+            On a green project command the no-op is already established, and
+            running this there could only REFUSE leaves that close today --
+            a behaviour change on every path that reaches this gate.
 
     Returns:
-        The gate verdict, carrying the path check when one was requested.
+        The gate verdict, carrying the path check when one was requested and
+        the leaf run when one was made.
     """
     paths = (
         _check_declared_paths(checkout_dir, require_paths) if require_paths else None
@@ -779,7 +853,23 @@ async def _inspect_branch_tree(
         logger.info("verify gate skipped: %s (branch=%s)", skip_reason, plan_branch)
         return _PlanVerifyResult("skipped", reason=skip_reason, paths=paths)
     passed, output = await run_verify(checkout_dir, verify_cmd)
-    return _verify_outcome(passed, output, plan_branch, verify_cmd, paths)
+    result = _verify_outcome(passed, output, plan_branch, verify_cmd, paths)
+    if result.status != "failed" or leaf_verify_cmd is None:
+        return result
+    leaf_passed, leaf_output = await run_verify(checkout_dir, leaf_verify_cmd)
+    logger.info(
+        "leaf verification %s on %s (`%s`): %s",
+        "passed" if leaf_passed else "FAILED",
+        plan_branch,
+        leaf_verify_cmd,
+        _log_excerpt(leaf_output),
+    )
+    return replace(
+        result,
+        leaf=_LeafVerifyRun(
+            leaf_verify_cmd, leaf_passed, leaf_output[:_VERIFY_OUTPUT_MAX]
+        ),
+    )
 
 
 class ReviewMixin:
@@ -1716,11 +1806,30 @@ class ReviewMixin:
             )
             return
 
-        fail_class = (
-            FailureClass.VERIFY_FAIL.value
-            if _VERIFY_FAIL_MARKER in feedback
-            else FailureClass.FIXABLE_IN_PLACE.value
-        )
+        # NULL, and it is the third answer this line has to be able to give.
+        # ``_GATE_UNCOMPARED`` means the project command went red on the PR head
+        # and whether that pre-dates this task could NOT be established, because
+        # the base branch could not be ASKED. Both attributable classes below
+        # count against the worker in ``failure_taxonomy``, so either one would
+        # assert the very thing the stored feedback says was not established, and
+        # ``fetch_recent_outcomes`` would hand it to the capability gate as
+        # capability. There is no honest class to substitute: the three
+        # non-voting ones each name a different CAUSE (``provider_error``,
+        # ``worker_blocked``, ``needs_stronger_model``), which would trade a false
+        # row in the calibration set for a false cause in the audit trail. A NULL
+        # names no cause at all, and ``fetch_recent_outcomes`` requires
+        # ``failure_class IN (...)`` for a ``fail`` row, so the row is written,
+        # auditable and countable while voting neither way.
+        #
+        # Keyed on the STATE, not on the marker text: the marker is still in this
+        # feedback (the gate really did fail) and must stay there, so a text test
+        # cannot tell the two apart.
+        if verify_state == _GATE_UNCOMPARED:
+            fail_class = None
+        elif _VERIFY_FAIL_MARKER in feedback:
+            fail_class = FailureClass.VERIFY_FAIL.value
+        else:
+            fail_class = FailureClass.FIXABLE_IN_PLACE.value
         await _record("fail", fail_class)
         await backend.comment(ref, feedback)
 
@@ -2549,35 +2658,6 @@ class ReviewMixin:
         task_type = entry.get("task_type")
         return str(task_type) if task_type else None
 
-    async def _declared_edit_locations(
-        self, task_id: str, plan: dict[str, Any] | None
-    ) -> tuple[str, ...]:
-        """Return the edit locations the task's plan-graph entry declares.
-
-        The declaration lives in ``plans.opus_plan``, never on the task row:
-        ``tasks`` has no ``files`` column, and ``agent_runs.files_touched`` is a
-        COUNT of what a worker changed, not a list of what it was asked to
-        change. So the row is joined back to its graph entry POSITIONALLY (see
-        ``_graph_entry_for_task``) and read through the same parser the worker's
-        bible section uses.
-
-        Returns ``()`` for every shape that cannot be answered rather than
-        raising: no aligned entry, or an entry declaring nothing. This method
-        decides no leaf's fate on its own, so a fault here must not be able to
-        fail one.
-
-        Args:
-            task_id: The task whose declaration is wanted.
-            plan: Its plan row, or None.
-
-        Returns:
-            The declared edit locations, verbatim and in declaration order.
-        """
-        entry = await self._graph_entry_for_task(task_id, plan)
-        if entry is None:
-            return ()
-        return declared_paths(entry.get("files"))
-
     async def record_declined_no_change(
         self,
         task: dict[str, Any],
@@ -2686,9 +2766,20 @@ class ReviewMixin:
 
         The evidence used is the project's own verify command, run against the
         branch the leaf was cut FROM. If the tree there already passes, the
-        leaf is genuinely a no-op. A failure or an infra error is treated as a
-        real failure and falls through to the normal retry path, so this can
-        never green a leaf whose work is actually missing.
+        leaf is genuinely a no-op. An infra error is treated as a real failure
+        and falls through to the normal retry path, so this can never green a
+        leaf whose work is actually missing.
+
+        A RED project command is the one verdict that settles nothing on its
+        own, and reading it as "the work is missing" was the defect corrected on
+        2026-08-26. The worker changed nothing, so the branch verified IS the
+        tree it was handed; the redness therefore pre-dates the attempt by
+        construction, and on a dependent chain it is routinely the bar only the
+        complete feature can clear. The leaf's OWN declared verification is run
+        on that same checkout to settle it: a PASS establishes the no-op, a FAIL
+        refutes it and is the only thing here that is evidence about the worker,
+        and no declared check at all leaves the question open (fail closed, but
+        do not charge).
 
         A gate skipped BECAUSE no ``verify_cmd`` is configured also closes the
         leaf. That is deliberate and it is the weakest link here: with no
@@ -2759,18 +2850,21 @@ class ReviewMixin:
             failure. ``why`` states which of the five facts produced that
             answer, in a form fit to show a human and a worker.
             ``worker_attributable`` says whether that fact is evidence about
-            the WORKER's output, and exactly two of the five declines are:
+            the WORKER's output, and only two shapes are:
 
             - a declared edit location the branch does not carry, which proves
               the work is absent whatever the command reported, and
-            - a verify command that RAN on that branch and refuted the no-op.
+            - the leaf's OWN declared verification, run on that branch, refuting
+              the no-op.
 
-            The other three are the gate failing to produce an answer at all
-            (the branch could not be resolved, the clone/checkout/command
-            raised, or a configured gate could not reach the repository). Those
-            are the same class as a reviewer that could not run: they say
-            nothing about the leaf, so they must never buy a triage call, whose
-            worst answer (``human``) is terminal and irreversible.
+            Everything else says nothing about the leaf: the gate failing to
+            produce an answer at all (the branch could not be resolved, the
+            clone/checkout/command raised, a configured gate could not reach the
+            repository), and -- since 2026-08-26 -- the PROJECT command going
+            red, which on this path is red on the very tree the worker was
+            handed. All of them are the same class as a reviewer that could not
+            run, so none may buy a triage call, whose worst answer (``human``)
+            is terminal and irreversible.
         """
         repo_url = project.get("repo_url")
         base_branch = (plan or {}).get("plan_branch_name") or project.get(
@@ -2793,7 +2887,27 @@ class ReviewMixin:
                 "could be checked",
             )
 
-        declared = await self._declared_edit_locations(task_id, plan)
+        # ONE read of the graph, two facts derived from it. Two lookups could
+        # observe two states of a graph an adaptive split is free to rewrite,
+        # and the declared paths and the declared verification are both about
+        # the same leaf at the same instant or they are about nothing.
+        #
+        # Both declarations live in ``plans.opus_plan``, never on the task row:
+        # ``tasks`` has no ``files`` column and ``agent_runs.files_touched`` is a
+        # COUNT of what a worker changed, not a list of what it was asked to
+        # change. The row is joined back POSITIONALLY (see
+        # ``_graph_entry_for_task``), and every shape that cannot be answered --
+        # no aligned entry, or an entry declaring nothing -- yields the empty
+        # answer rather than raising: neither fact decides a leaf's fate alone,
+        # so a fault here must not be able to fail one.
+        entry = await self._graph_entry_for_task(task_id, plan)
+        declared = declared_paths((entry or {}).get("files"))
+        # Prose is never shelled: ``shell_command_for_verification`` accepts far
+        # less than ``is_runnable_verification`` does, and errs toward "absent",
+        # which never decides anything. Handing "the module imports cleanly" to a
+        # shell yields ``the: command not found`` and would CHARGE a worker on
+        # evidence Praxis fabricated -- a new false accusation for an old one.
+        leaf_check = shell_command_for_verification((entry or {}).get("verification"))
         bench_disabled = verify_gate_disabled()
         verify_cmd = None if bench_disabled else project.get("verify_cmd")
         verdict = await self._verify_plan_branch(
@@ -2809,6 +2923,10 @@ class ReviewMixin:
             # Answered off the SAME checkout the command runs in, so the two
             # observations cannot come from two different states of the branch.
             require_paths=declared,
+            # The third question, asked on that same checkout and only when the
+            # project command goes red -- the one arm where its answer cannot be
+            # about this task.
+            leaf_verify_cmd=leaf_check,
         )
         paths = verdict.paths
         if paths is not None and paths.missing:
@@ -2849,27 +2967,61 @@ class ReviewMixin:
                 verdict.status,
                 verdict.reason or "-",
             )
-            # The line between the two classes is whether the gate produced an
-            # ANSWER about the repository, not how bad the answer was.
+            # The line is whether the gate produced an answer ABOUT THIS LEAF,
+            # not whether it produced an answer about the repository. Until
+            # 2026-08-26 it was the second, and ``failed`` alone was enough.
             #
-            # ``failed`` is an answer: the command ran on the branch the leaf
-            # was cut from and refuted the no-op, so an empty diff on top of it
-            # is a statement about this worker's output. It is also the same
-            # evidence the review-verdict path already triages on
-            # (``FailureClass.VERIFY_FAIL``), so excluding it here would be the
-            # anomaly rather than the caution.
+            # That was the same unsound inference cd0c127 removed from
+            # ``review_task``, running in the opposite direction. The command
+            # here runs on the branch the leaf was cut FROM, and the worker
+            # changed NOTHING, so that branch IS the tree it was handed: a red
+            # verdict is red identically on head and base by construction, which
+            # is precisely the shape cd0c127 named ``_GATE_UNATTRIBUTED`` and
+            # refused to charge. Two seats cannot answer one fact both ways.
             #
-            # ``error`` and the surviving skips are the gate failing to answer:
-            # a clone, checkout or command that raised, or a configured gate
+            # It is also the whole of the old attributable set, and it never
+            # discriminated what it was read as discriminating: on a HEALTHY
+            # repository the identical worker behaviour is CLOSED as a no-op
+            # ("verify passed on <branch>"), so the only empty diffs this route
+            # ever charged were the ones sitting on a red repository. The column
+            # the capability loop reads as worker capability was being fed
+            # repository health.
+            #
+            # The leaf's OWN declared verification is the discriminator, and it
+            # is the same one cd0c127 chose for the same question. A leaf that
+            # declares none leaves nothing here that is about it: cd0c127's step
+            # 3, "the ABSENCE of a leaf check must not reinstate an attribution
+            # that was just shown to be false". Not attributing is not passing --
+            # the leaf still fails closed and still retries, it is simply not
+            # charged and not offered a terminal triage answer.
+            #
+            # ``error`` and the surviving skips are the gate failing to answer at
+            # all: a clone, checkout or command that raised, or a configured gate
             # that could not reach the repository. ``_no_op_evidence`` already
             # refuses to CLOSE a leaf on those because "a verify command IS
             # configured and the gate could not reach the repository"; the same
             # sentence is why they must not be triaged either.
-            attributable = verdict.status == "failed"
-            if verdict.status == "failed":
+            leaf_refuted = verdict.leaf is not None and not verdict.leaf.passed
+            attributable = verdict.status == "failed" and leaf_refuted
+            if verdict.status == "failed" and verdict.leaf is not None:
+                # The DECLARED command's output, never the project command's.
+                # This string is stored on the task, injected verbatim into the
+                # next worker's prompt by the Bible and handed to the triage
+                # brain; reporting a sibling's stack trace here is what poisoned
+                # that evidence on the review path.
                 why = (
-                    f"the branch it was cut from ({base_branch}) did not verify "
-                    "clean, so the work is genuinely missing"
+                    f"this task's own declared verification "
+                    f"(`{verdict.leaf.command}`) fails on the branch it was cut "
+                    f"from ({base_branch}), so the work is genuinely missing: "
+                    f"{_log_excerpt(verdict.leaf.output)}"
+                )
+            elif verdict.status == "failed":
+                why = (
+                    f"the project verify command is red on the branch it was cut "
+                    f"from ({base_branch}), which is the tree this task was handed "
+                    "and says nothing about the work it was asked to do; the task "
+                    "declares no runnable verification of its own, so the no-op "
+                    "could not be established either way"
                 )
             elif verdict.status == "error":
                 why = (
@@ -3396,7 +3548,7 @@ class ReviewMixin:
     def _verify_failure_stands(
         verify_cmd: str, gate_output: str, why_no_comparison: str
     ) -> _VerifyAttribution:
-        """Keep the pre-2026-08-26 behaviour, and say the comparison is missing.
+        """Fail the task, and say the attribution could not be established.
 
         Every arm that reaches here is "the base branch could not be asked",
         never "the base branch answered". Those are opposite facts and the
@@ -3404,6 +3556,20 @@ class ReviewMixin:
         stored on the task AND injected verbatim into the next worker's prompt
         by ``core/worker_bible``: a worker told a comparison was made would be
         reading a claim nobody established.
+
+        FAILING is unchanged and right: an unanswered question must never buy a
+        task a pass. What changed on 2026-08-26 is the CALIBRATION row. The state
+        returned is ``_GATE_UNCOMPARED`` rather than ``_GATE_FAILED``, and
+        ``review_task`` writes that row with a NULL ``failure_class`` instead of
+        ``VERIFY_FAIL``, which ``failure_taxonomy`` counts against the worker.
+        This method's own feedback says, in words, that whether the failure
+        pre-dates the task could NOT be established; a row asserting the worker's
+        change failed verification asserts exactly that unestablished thing, and
+        ``fetch_recent_outcomes`` then feeds it to the capability gate as
+        capability. The row is still WRITTEN, so the attempt stays auditable and
+        countable -- the same "withdraw the claim rather than state a false one"
+        move the supply-chain gate makes with its ``blocked`` outcome, and the
+        opposite of a silently missing row.
 
         Args:
             verify_cmd: The project command that failed on the PR head.
@@ -3423,7 +3589,7 @@ class ReviewMixin:
                     f"reported as-is:\n\n{gate_output}"
                 ),
             },
-            verify_state=_GATE_FAILED,
+            verify_state=_GATE_UNCOMPARED,
         )
 
     async def _verify_plan_branch(
@@ -3433,6 +3599,7 @@ class ReviewMixin:
         verify_cmd: str | None,
         disabled_reason: str | None = None,
         require_paths: Sequence[str] = (),
+        leaf_verify_cmd: str | None = None,
     ) -> _PlanVerifyResult:
         """Run the project's verify command against the accumulated plan branch.
 
@@ -3497,6 +3664,10 @@ class ReviewMixin:
                 This applies ONLY when ``verify_cmd`` is None. With a command
                 configured the same fetch failure keeps refusing, and must:
                 there the operator asked for a check and it did not run.
+            leaf_verify_cmd: The leaf's OWN declared verification, run on the
+                SAME checkout and only when ``verify_cmd`` went red. Absent (the
+                default) leaves every existing caller byte-identical: no second
+                command is run and ``leaf`` on the result stays None.
 
         Returns:
             The gate verdict.
@@ -3514,7 +3685,12 @@ class ReviewMixin:
             return _PlanVerifyResult("skipped", reason=skip_reason)
 
         result = await self._fetch_and_inspect_branch(
-            repo_url, plan_branch, verify_cmd, require_paths, skip_reason
+            repo_url,
+            plan_branch,
+            verify_cmd,
+            require_paths,
+            skip_reason,
+            leaf_verify_cmd,
         )
         # The tree never materialized AND there was no command to run, so the
         # fetch happened for ``require_paths`` alone. ``paths is None`` is the
@@ -3548,6 +3724,7 @@ class ReviewMixin:
         verify_cmd: str | None,
         require_paths: Sequence[str],
         skip_reason: str,
+        leaf_verify_cmd: str | None = None,
     ) -> _PlanVerifyResult:
         """Get the branch onto disk and answer whatever was asked about it.
 
@@ -3565,6 +3742,9 @@ class ReviewMixin:
                 exists only to answer ``require_paths``.
             require_paths: Edit locations a leaf declared.
             skip_reason: What a missing ``verify_cmd`` should report.
+            leaf_verify_cmd: The leaf's own declared verification, for the same
+                checkout. Threaded rather than re-resolved per backend so one
+                backend cannot come to run a check the other does not.
 
         Returns:
             The gate verdict. ``paths`` is set only when a tree was actually
@@ -3574,7 +3754,13 @@ class ReviewMixin:
         backend = self._resolve_backend(repo_url)
         if backend.name == "local":
             return await self._verify_local_plan_branch(
-                backend, repo_url, plan_branch, verify_cmd, require_paths, skip_reason
+                backend,
+                repo_url,
+                plan_branch,
+                verify_cmd,
+                require_paths,
+                skip_reason,
+                leaf_verify_cmd,
             )
 
         provider = getattr(self._git, "_provider", None)
@@ -3619,6 +3805,7 @@ class ReviewMixin:
                     verify_cmd,
                     require_paths,
                     skip_reason,
+                    leaf_verify_cmd,
                 )
         except Exception as exc:  # noqa: BLE001 - degrade, never wedge the loop
             logger.warning(
@@ -3639,6 +3826,7 @@ class ReviewMixin:
         verify_cmd: str | None,
         require_paths: Sequence[str] = (),
         skip_reason: str = _SKIP_NO_VERIFY_CMD,
+        leaf_verify_cmd: str | None = None,
     ) -> _PlanVerifyResult:
         """Run the verify command against a plan branch in a local bare repo.
 
@@ -3661,6 +3849,8 @@ class ReviewMixin:
             require_paths: Edit locations a leaf declared, checked against the
                 same checkout. Empty means the question was not asked.
             skip_reason: What a missing ``verify_cmd`` should report.
+            leaf_verify_cmd: The leaf's own declared verification, run in the
+                same checkout when the project command goes red.
 
         Returns:
             The gate verdict: ``passed``, ``failed``, ``skipped`` (no command,
@@ -3679,6 +3869,7 @@ class ReviewMixin:
                     verify_cmd,
                     require_paths,
                     skip_reason,
+                    leaf_verify_cmd,
                 )
         except Exception as exc:  # noqa: BLE001 - degrade, never wedge the loop
             logger.warning(

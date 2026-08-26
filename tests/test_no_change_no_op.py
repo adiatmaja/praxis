@@ -110,6 +110,7 @@ def _verify(orch: Orchestrator, status: str, reason: str = "") -> SimpleNamespac
         verify_cmd: str | None,
         disabled_reason: str | None = None,
         require_paths: Sequence[str] = (),
+        leaf_verify_cmd: str | None = None,
     ):
         calls.branches.append(branch)
         calls.paths.append(tuple(require_paths))

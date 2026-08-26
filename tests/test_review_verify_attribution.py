@@ -30,6 +30,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from orchestrator.core import orchestrator_review as review_mod
+from orchestrator.core.capability_history import fetch_recent_outcomes
 from orchestrator.core.leaf_validator import (
     is_runnable_verification,
     shell_command_for_verification,
@@ -376,6 +377,48 @@ async def test_a_comparison_that_could_not_be_made_fails_closed_and_says_so(
     stored = updated["review_feedback"] or ""
     assert "ImportError" in stored
     assert "could NOT be established" in stored
+
+
+@pytest.mark.unit
+async def test_an_unestablished_attribution_is_recorded_but_never_counted(
+    orchestrator_fixture, monkeypatch
+):
+    """Saying "could NOT be established" and then recording it as established.
+
+    The feedback above states in words that whether this failure pre-dates the
+    task is unknown, because the base branch could not be ASKED. The row written
+    beside it said ``verify_fail``, which ``failure_taxonomy`` counts against the
+    worker -- so the capability gate was fed an unanswered question as an answer.
+    ``handle_declined_no_change`` applies the opposite rule to the same
+    uncertainty one seat over.
+
+    Both halves are asserted on the SAME run, so the test creates the difference
+    it claims rather than inheriting one: the row EXISTS (withdrawing a claim is
+    not the same as losing the attempt, and a silently missing row is its own
+    defect) and ``fetch_recent_outcomes`` -- the query the capability gate
+    actually issues -- does not return it. Asserting only the NULL would pass for
+    a row that was never written at all.
+    """
+    orch, task_id, project = orchestrator_fixture
+    orch._resolve_backend = lambda _repo_url: _backend()
+    monkeypatch.setattr(
+        review_mod, "run_verify", AsyncMock(return_value=(False, "E   ImportError"))
+    )
+    _base_verify(orch, _PlanVerifyResult("error"))
+
+    await _review(orch, task_id, _gated(project))
+
+    rows = await orch._tq._db.fetch_all(
+        "SELECT * FROM task_outcomes WHERE task_id = ?", (task_id,)
+    )
+    assert [(r["outcome"], r["failure_class"]) for r in rows] == [("fail", None)]
+    counted = await fetch_recent_outcomes(
+        orch._tq._db, str(project["model_name"]), str(project["id"])
+    )
+    assert counted == [], (
+        "an attribution nobody could establish was handed to the capability "
+        "gate as a measured worker failure"
+    )
 
 
 @pytest.mark.unit

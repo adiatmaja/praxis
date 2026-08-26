@@ -57,6 +57,7 @@ from orchestrator.core.micro_edit import BRAIN_IMPLEMENTER
 from orchestrator.core.orchestrator_review import (
     _SKIP_NO_TOKEN,
     _DeclaredPathCheck,
+    _LeafVerifyRun,
     _PlanVerifyResult,
 )
 from orchestrator.core.task_queue import TaskQueue
@@ -81,20 +82,29 @@ def _mock_preflight(monkeypatch: pytest.MonkeyPatch) -> AsyncMock:
     return m
 
 
+#: A leaf's own declared verification, run on the branch it was cut from and
+#: REFUTING the no-op. Since 2026-08-26 this -- not a red project command -- is
+#: what makes an empty diff worker-attributable: the project command runs on the
+#: very tree the worker was handed, so it is red identically before and after the
+#: attempt and can never be about work the worker did not do.
+_LEAF_REFUTED = _LeafVerifyRun('python -c "import a"', passed=False, output="boom")
+
+
 def _gate(
     orch: Any,
     status: str,
     reason: str = "",
     paths: _DeclaredPathCheck | None = None,
+    leaf: _LeafVerifyRun | None = None,
 ) -> None:
     """Replace the base-branch verify gate with a stub of a stated verdict.
 
-    The same stub shape the review-path tests use. ``reason`` and ``paths`` are
-    load-bearing rather than decoration: ``_verify_plan_branch`` returns
-    ``skipped`` for four different reasons and only two of them close a leaf,
-    and ``paths`` is the second, independent question the same checkout answers.
-    Everything below the stub -- ``no_change_outcome``, the decision object, the
-    attribution and the row -- is the real code.
+    The same stub shape the review-path tests use. ``reason``, ``paths`` and
+    ``leaf`` are load-bearing rather than decoration: ``_verify_plan_branch``
+    returns ``skipped`` for four different reasons and only two of them close a
+    leaf, and the other two are the second and third independent questions the
+    same checkout answers. Everything below the stub -- ``no_change_outcome``,
+    the decision object, the attribution and the row -- is the real code.
     """
 
     async def _stub(
@@ -103,8 +113,9 @@ def _gate(
         verify_cmd: str | None,
         disabled_reason: str | None = None,
         require_paths: Sequence[str] = (),
+        leaf_verify_cmd: str | None = None,
     ) -> _PlanVerifyResult:
-        return _PlanVerifyResult(status, reason=reason, paths=paths)
+        return _PlanVerifyResult(status, reason=reason, paths=paths, leaf=leaf)
 
     orch._verify_plan_branch = _stub
 
@@ -165,7 +176,11 @@ async def test_a_declined_worker_no_change_writes_a_calibration_row(
     queue: TaskQueue = client.app.state.task_queue  # type: ignore[attr-defined]
     plan_id = (await queue.get_task(task_id))["plan_id"]
     await _set_task_type(db, plan_id, "code")
-    _gate(client.app.state.orchestrator, "failed")  # type: ignore[attr-defined]
+    _gate(
+        client.app.state.orchestrator,  # type: ignore[attr-defined]
+        "failed",
+        leaf=_LEAF_REFUTED,
+    )
 
     await _post_no_changes(client, task_id, run_id)
 
@@ -209,7 +224,11 @@ async def test_the_callback_row_is_returned_by_the_calibration_query(
     queue: TaskQueue = client.app.state.task_queue  # type: ignore[attr-defined]
     plan = await queue.get_plan((await queue.get_task(task_id))["plan_id"])
     project = await queue.get_project(plan["project_id"])
-    _gate(client.app.state.orchestrator, "failed")  # type: ignore[attr-defined]
+    _gate(
+        client.app.state.orchestrator,  # type: ignore[attr-defined]
+        "failed",
+        leaf=_LEAF_REFUTED,
+    )
 
     await _post_no_changes(client, task_id, run_id)
 
@@ -247,7 +266,11 @@ async def test_the_callback_row_names_the_model_that_implemented_the_attempt(
     # passing locally -- the test asserted a difference it did not create.
     escalated_harness = "opencode" if project["harness"] == "agy" else "agy"
     await queue.set_task_implementer(task_id, escalated_harness, "gemini-3-pro", 1)
-    _gate(client.app.state.orchestrator, "failed")  # type: ignore[attr-defined]
+    _gate(
+        client.app.state.orchestrator,  # type: ignore[attr-defined]
+        "failed",
+        leaf=_LEAF_REFUTED,
+    )
 
     await _post_no_changes(client, task_id, run_id)
 
@@ -378,7 +401,11 @@ async def test_a_provider_error_run_records_no_worker_failure(
         return "openai: HTTP 429 Too Many Requests"
 
     client.app.state.agent_manager.get_container_logs = _throttled_logs  # type: ignore[attr-defined]
-    _gate(client.app.state.orchestrator, "failed")  # type: ignore[attr-defined]
+    _gate(
+        client.app.state.orchestrator,  # type: ignore[attr-defined]
+        "failed",
+        leaf=_LEAF_REFUTED,
+    )
 
     await _post_no_changes(client, task_id, run_id)
 
@@ -412,7 +439,7 @@ async def test_a_declined_micro_edit_no_op_writes_a_calibration_row(
     orch, _seed, project = orchestrator_fixture
     _configure(orch)
     _lane_result(monkeypatch, committed=False, base_sha=None, pr_url=None)
-    _gate(orch, "failed")
+    _gate(orch, "failed", leaf=_LEAF_REFUTED)
     plan_id = await _micro_edit_plan(orch, project, _MICRO_EDIT_PAYLOAD)
 
     await orch.dispatch_pending_tasks(plan_id, project)
@@ -446,7 +473,7 @@ async def test_the_micro_edit_row_is_attributed_to_the_brain(
     orch, _seed, project = orchestrator_fixture
     _configure(orch)
     _lane_result(monkeypatch, committed=False, base_sha=None, pr_url=None)
-    _gate(orch, "failed")
+    _gate(orch, "failed", leaf=_LEAF_REFUTED)
     plan_id = await _micro_edit_plan(orch, project, _MICRO_EDIT_PAYLOAD)
 
     await orch.dispatch_pending_tasks(plan_id, project)

@@ -493,6 +493,7 @@ async def test_the_declared_paths_of_the_right_row_reach_the_gate(
         verify_cmd: str | None,
         disabled_reason: str | None = None,
         require_paths: Sequence[str] = (),
+        leaf_verify_cmd: str | None = None,
     ) -> _PlanVerifyResult:
         handed.append(tuple(require_paths))
         return _PlanVerifyResult("passed")
@@ -615,6 +616,7 @@ async def test_the_worker_callback_carries_the_refusal_all_the_way_to_the_row(
         verify_cmd: str | None,
         disabled_reason: str | None = None,
         require_paths: Sequence[str] = (),
+        leaf_verify_cmd: str | None = None,
     ) -> _PlanVerifyResult:
         # Exactly what the real gate returned in the measured run: the
         # repository's own suite passing on the branch the leaf was cut from.

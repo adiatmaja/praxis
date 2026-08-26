@@ -43,7 +43,7 @@ import pytest
 from httpx import AsyncClient
 
 from orchestrator.core.llm_router import ProviderRateLimitError
-from orchestrator.core.orchestrator_review import _PlanVerifyResult
+from orchestrator.core.orchestrator_review import _LeafVerifyRun, _PlanVerifyResult
 from orchestrator.core.task_queue import TaskQueue
 from orchestrator.database import Database
 from orchestrator.models.schemas import CapabilityProfile, TaskStatus, TriageDecision
@@ -58,7 +58,17 @@ def _mock_preflight(monkeypatch: pytest.MonkeyPatch) -> AsyncMock:
     return m
 
 
-def _gate(orch: Any, status: str, reason: str = "") -> None:
+#: A leaf's own declared verification, run on the branch it was cut from and
+#: REFUTING the no-op. Since 2026-08-26 this -- not a red project command -- is
+#: what makes an empty diff worker-attributable: the project command runs on the
+#: very tree the worker was handed, so it is red identically before and after the
+#: attempt and can never be about work the worker did not do.
+_LEAF_REFUTED = _LeafVerifyRun('python -c "import a"', passed=False, output="boom")
+
+
+def _gate(
+    orch: Any, status: str, reason: str = "", leaf: _LeafVerifyRun | None = None
+) -> None:
     """Stub the base-branch verify gate with a stated verdict."""
 
     async def _stub(
@@ -67,8 +77,9 @@ def _gate(orch: Any, status: str, reason: str = "") -> None:
         verify_cmd: str | None,
         disabled_reason: str | None = None,
         require_paths: Sequence[str] = (),
+        leaf_verify_cmd: str | None = None,
     ) -> _PlanVerifyResult:
-        return _PlanVerifyResult(status, reason=reason)
+        return _PlanVerifyResult(status, reason=reason, leaf=leaf)
 
     orch._verify_plan_branch = _stub
 
@@ -133,7 +144,7 @@ async def test_a_second_self_reported_no_change_reaches_triage(
     )
     queue: TaskQueue = client.app.state.task_queue  # type: ignore[attr-defined]
     orch = client.app.state.orchestrator  # type: ignore[attr-defined]
-    _gate(orch, "failed")
+    _gate(orch, "failed", leaf=_LEAF_REFUTED)
     triage = _triage_ready(
         orch, TriageDecision(decision="human", reason="the leaf is ambiguous")
     )
@@ -172,7 +183,7 @@ async def test_the_triage_evidence_carries_the_measured_zero(
         client, db, auth_headers, attempt=2, max_retries=3
     )
     orch = client.app.state.orchestrator  # type: ignore[attr-defined]
-    _gate(orch, "failed")
+    _gate(orch, "failed", leaf=_LEAF_REFUTED)
     triage = _triage_ready(orch, TriageDecision(decision="retry", reason="one more"))
 
     await _post_no_changes(client, task_id, run_id)
@@ -237,7 +248,7 @@ async def test_the_first_self_reported_no_change_does_not_triage(
     )
     queue: TaskQueue = client.app.state.task_queue  # type: ignore[attr-defined]
     orch = client.app.state.orchestrator  # type: ignore[attr-defined]
-    _gate(orch, "failed")
+    _gate(orch, "failed", leaf=_LEAF_REFUTED)
     triage = _triage_ready(orch, TriageDecision(decision="human", reason="never asked"))
 
     await _post_no_changes(client, task_id, run_id)
@@ -266,7 +277,7 @@ async def test_an_already_triaged_leaf_does_not_buy_a_second_call(
     queue: TaskQueue = client.app.state.task_queue  # type: ignore[attr-defined]
     await queue.record_triage_decision(task_id, "retry")
     orch = client.app.state.orchestrator  # type: ignore[attr-defined]
-    _gate(orch, "failed")
+    _gate(orch, "failed", leaf=_LEAF_REFUTED)
     triage = _triage_ready(orch, TriageDecision(decision="human", reason="never asked"))
 
     await _post_no_changes(client, task_id, run_id)
@@ -296,7 +307,7 @@ async def test_a_provider_error_run_never_triages(
 
     client.app.state.agent_manager.get_container_logs = _throttled_logs  # type: ignore[attr-defined]
     orch = client.app.state.orchestrator  # type: ignore[attr-defined]
-    _gate(orch, "failed")
+    _gate(orch, "failed", leaf=_LEAF_REFUTED)
     triage = _triage_ready(orch, TriageDecision(decision="human", reason="never asked"))
 
     await _post_no_changes(client, task_id, run_id)
@@ -334,7 +345,7 @@ async def test_a_throttled_triage_still_settles_the_task(
     )
     queue: TaskQueue = client.app.state.task_queue  # type: ignore[attr-defined]
     orch = client.app.state.orchestrator  # type: ignore[attr-defined]
-    _gate(orch, "failed")
+    _gate(orch, "failed", leaf=_LEAF_REFUTED)
     triage = _triage_ready(
         orch, ProviderRateLimitError("claude", "usage limit reached")
     )

@@ -221,6 +221,7 @@ async def test_an_empty_pr_diff_on_an_unverifiable_branch_stays_a_failure(
         verify_cmd: str | None,
         disabled_reason: str | None = None,
         require_paths: Sequence[str] = (),
+        leaf_verify_cmd: str | None = None,
     ):
         assert tuple(require_paths) == (), (
             "this leaf declares no edit locations, so the gate must be asked "

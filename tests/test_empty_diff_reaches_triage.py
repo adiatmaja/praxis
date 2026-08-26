@@ -24,12 +24,22 @@ Both directions of the fix fail SILENTLY, which is why both are pinned here:
   no clock undoes.
 
 So the empty-diff DECLINE is not one fact. ``no_change_outcome`` declines for
-five unrelated reasons and only two of them are about the worker: a declared
-edit location the branch does not carry, and a verify command that RAN on that
-branch and refuted the no-op. The other three (the branch could not be
-resolved, the gate raised, the gate was configured and could not reach the
-repository) are the same class as a reviewer that could not run, and are
-excluded for the same reason.
+several unrelated reasons and only two of them are about the worker: a declared
+edit location the branch does not carry, and the leaf's OWN declared
+verification refuting the no-op on that branch. Everything else -- the branch
+could not be resolved, the gate raised, a configured gate could not reach the
+repository, and the PROJECT verify command going red -- is the same class as a
+reviewer that could not run, and is excluded for the same reason.
+
+The project command joined that list on 2026-08-26, and it had been the whole
+of the attributable set. On THIS path the branch verified is the tree the worker
+was handed unchanged, so a red verdict is red identically before and after the
+attempt -- the exact shape ``review_task`` calls ``_GATE_UNATTRIBUTED`` and
+refuses to charge (cd0c127). It never discriminated what it was read as
+discriminating either: on a healthy repository the identical worker behaviour is
+CLOSED as a no-op, so the only empty diffs it ever charged were the ones sitting
+on a red repository, and repository health was being written into the column the
+capability loop reads as worker capability.
 """
 # ruff: noqa: S101
 
@@ -46,9 +56,17 @@ from orchestrator.core.orchestrator_review import (
     _SKIP_NO_TOKEN,
     REVIEW_ERROR_ATTEMPT_CAP,
     _DeclaredPathCheck,
+    _LeafVerifyRun,
     _PlanVerifyResult,
 )
 from orchestrator.models.schemas import TaskStatus, TriageDecision
+
+
+#: The leaf's OWN declared verification, run on the branch it was cut from and
+#: REFUTING the no-op. This -- not a red project command -- is what makes an
+#: empty diff worker-attributable, and it is the same positive signal cd0c127
+#: chose for the same question on the review path.
+_LEAF_REFUTED = _LeafVerifyRun('python -c "import a"', passed=False, output="boom")
 
 
 def _gate(
@@ -56,14 +74,17 @@ def _gate(
     status: str,
     reason: str = "",
     paths: _DeclaredPathCheck | None = None,
+    leaf: _LeafVerifyRun | None = None,
 ) -> None:
     """Replace the base-branch verify gate with a stub of a stated verdict.
 
-    ``reason`` and ``paths`` are both load-bearing rather than decoration.
-    ``_verify_plan_branch`` returns ``skipped`` for four different reasons and
-    only two of them close a leaf, and ``paths`` is the second, independent
-    question the same checkout answers. A stub that flattened either one could
-    only ever exercise a verdict the real gate never produces.
+    ``reason``, ``paths`` and ``leaf`` are all load-bearing rather than
+    decoration. ``_verify_plan_branch`` returns ``skipped`` for four different
+    reasons and only two of them close a leaf; ``paths`` and ``leaf`` are the
+    second and third independent questions the same checkout answers, and they
+    are the only two that are about the LEAF rather than the repository. A stub
+    that flattened any of them could only ever exercise a verdict the real gate
+    never produces.
     """
 
     async def _stub(
@@ -72,8 +93,9 @@ def _gate(
         verify_cmd: str | None,
         disabled_reason: str | None = None,
         require_paths: Sequence[str] = (),
+        leaf_verify_cmd: str | None = None,
     ) -> _PlanVerifyResult:
-        return _PlanVerifyResult(status, reason=reason, paths=paths)
+        return _PlanVerifyResult(status, reason=reason, paths=paths, leaf=leaf)
 
     orch._verify_plan_branch = _stub
 
@@ -117,14 +139,14 @@ async def test_a_second_empty_diff_failure_reaches_triage(
 ) -> None:
     """THE measured case. The worker produced nothing, twice.
 
-    The verify command RAN on the branch the leaf was cut from and refuted the
-    no-op, so the absence of a change is evidence about this worker's output
-    and nothing else. Before the fix this went straight to
+    The leaf's OWN declared verification RAN on the branch it was cut from and
+    refuted the no-op, so the absence of a change is evidence about this
+    worker's output and nothing else. Before the fix this went straight to
     ``_fail_and_maybe_retry`` and the brain was never asked.
     """
     orch, task_id, project = orchestrator_fixture
     _empty_diff(orch)
-    _gate(orch, "failed")
+    _gate(orch, "failed", leaf=_LEAF_REFUTED)
     await _second_attempt(orch, task_id)
     orch._triage_leaf = AsyncMock(
         return_value=TriageDecision(decision="retry", reason="one more")
@@ -151,7 +173,7 @@ async def test_the_triage_decision_is_honoured_on_the_empty_diff_path(
     """
     orch, task_id, project = orchestrator_fixture
     _empty_diff(orch)
-    _gate(orch, "failed")
+    _gate(orch, "failed", leaf=_LEAF_REFUTED)
     await _second_attempt(orch, task_id)
     orch._triage_leaf = AsyncMock(
         return_value=TriageDecision(decision="human", reason="the leaf is ambiguous")
@@ -192,7 +214,7 @@ async def test_the_empty_diff_evidence_pack_carries_the_measured_zero(
     """
     orch, task_id, project = orchestrator_fixture
     _empty_diff(orch)
-    _gate(orch, "failed")
+    _gate(orch, "failed", leaf=_LEAF_REFUTED)
     await _second_attempt(orch, task_id)
     orch._triage_leaf = AsyncMock(
         return_value=TriageDecision(decision="retry", reason="one more")
@@ -227,7 +249,7 @@ async def test_the_first_empty_diff_failure_still_takes_the_cheap_retry_path(
     """
     orch, task_id, project = orchestrator_fixture
     _empty_diff(orch)
-    _gate(orch, "failed")
+    _gate(orch, "failed", leaf=_LEAF_REFUTED)
     orch._triage_leaf = _never_called()
 
     await orch.review_task(task_id, project)
@@ -251,7 +273,7 @@ async def test_an_empty_diff_triage_runs_at_most_once_per_leaf(
     """
     orch, task_id, project = orchestrator_fixture
     _empty_diff(orch)
-    _gate(orch, "failed")
+    _gate(orch, "failed", leaf=_LEAF_REFUTED)
     await orch._tq.retry_task(task_id)
     await orch._tq.record_triage_decision(task_id, "retry")
     await orch._tq.update_task_status(task_id, TaskStatus.REVIEWING)
@@ -378,14 +400,26 @@ async def test_a_missing_declared_path_is_worker_attributable(
 
 
 @pytest.mark.unit
-async def test_a_verify_command_that_ran_and_failed_is_worker_attributable(
+async def test_a_red_project_command_alone_is_not_worker_attributable(
     orchestrator_fixture: tuple[Any, str, dict[str, Any]],
 ) -> None:
-    """The gate produced a real answer about the repository and it refutes the no-op.
+    """This test asserted the OPPOSITE until 2026-08-26, and it was wrong.
 
-    This is the same class of evidence the review-verdict path already triages
-    on (``FailureClass.VERIFY_FAIL``); excluding it here would be the anomaly,
-    and it is the decline a real run produces most often.
+    It read: "the gate produced a real answer about the repository and it
+    refutes the no-op ... the same class of evidence the review-verdict path
+    already triages on". Two things in that were false. The evidence is not the
+    same class: on the review path the command runs on the PR HEAD, which
+    carries the worker's change, and cd0c127 then compares it against the base
+    before charging anyone. Here it runs on the branch the leaf was cut FROM,
+    and the worker changed nothing, so head and base are one tree -- the
+    comparison cd0c127 makes is satisfied automatically and its answer is always
+    "not this task's". And the gate answering something about the REPOSITORY is
+    not the same as answering something about the LEAF, which is the only
+    question attribution asks.
+
+    A test that pins a defect outlives it. This one is rewritten rather than
+    deleted, because the shape it exercises is still the one a real run produces
+    most often and something has to hold the corrected answer.
     """
     orch, task_id, project = orchestrator_fixture
     _gate(orch, "failed")
@@ -393,8 +427,56 @@ async def test_a_verify_command_that_ran_and_failed_is_worker_attributable(
 
     decision = await orch.no_change_outcome(task_id, project, plan)
 
+    assert decision.closed is False, (
+        "no positive evidence closed the leaf, so it must still fail closed"
+    )
+    assert decision.worker_attributable is False
+
+
+@pytest.mark.unit
+async def test_a_leaf_verification_that_ran_and_failed_is_worker_attributable(
+    orchestrator_fixture: tuple[Any, str, dict[str, Any]],
+) -> None:
+    """The other half, and the one that keeps the correction from being a mute.
+
+    The leaf's OWN declared command ran on that same tree and refuted the no-op.
+    That IS about this leaf, so it may buy the triage call the test above must
+    not. Asserted beside its opposite, on the same fixture and the same gate
+    verdict, so the only thing that differs between them is the fact under test.
+    """
+    orch, task_id, project = orchestrator_fixture
+    _gate(orch, "failed", leaf=_LEAF_REFUTED)
+    plan = await orch._tq.get_plan((await orch._tq.get_task(task_id))["plan_id"])
+
+    decision = await orch.no_change_outcome(task_id, project, plan)
+
     assert decision.closed is False
     assert decision.worker_attributable is True
+
+
+@pytest.mark.unit
+async def test_a_leaf_verification_that_passed_closes_the_leaf_as_a_no_op(
+    orchestrator_fixture: tuple[Any, str, dict[str, Any]],
+) -> None:
+    """The third answer, and the one that stops the dependent chain dying.
+
+    The project command is red for a sibling's contract and the leaf's own check
+    passes on the same tree: the leaf really is satisfied. Without this the leaf
+    is retried to the identical correct answer until its attempts are spent, and
+    every leaf behind it becomes unreachable.
+    """
+    orch, task_id, project = orchestrator_fixture
+    _gate(
+        orch,
+        "failed",
+        leaf=_LeafVerifyRun('python -c "import a"', passed=True, output="ok"),
+    )
+    plan = await orch._tq.get_plan((await orch._tq.get_task(task_id))["plan_id"])
+
+    decision = await orch.no_change_outcome(task_id, project, plan)
+
+    assert decision.closed is True
+    assert decision.worker_attributable is False
 
 
 @pytest.mark.unit
@@ -471,11 +553,11 @@ async def test_the_decision_still_unpacks_as_closed_and_why(
     mypy to notice if it did.
     """
     orch, task_id, project = orchestrator_fixture
-    _gate(orch, "failed")
+    _gate(orch, "failed", leaf=_LEAF_REFUTED)
     plan = await orch._tq.get_plan((await orch._tq.get_task(task_id))["plan_id"])
 
     closed, why = await orch.no_change_outcome(task_id, project, plan)
 
     assert closed is False
     assert isinstance(why, str)
-    assert "did not verify clean" in why
+    assert "own declared verification" in why
