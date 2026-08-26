@@ -279,8 +279,19 @@ def host_bind_source(container_path: str, repos_path: str, host_path: str) -> st
 
     trimmed = container_path.strip().rstrip("/\\")
     if not path_is_under(trimmed, repos):
+        # The trailing `nosec B608` below is NOT decorative and is NOT on the
+        # line you would expect. This is an operator-facing refusal message,
+        # not SQL; bandit reaches for B608 only because a multi-line f-string
+        # happens to read like query construction. It reports the finding
+        # against the first INTERPOLATED line, so the directive has to sit
+        # there: on the `message = (` line, or on a comment line of its own, it
+        # is silently dead and the scan still fails. Verified by deleting each
+        # placement and re-running, because bandit never warns about a nosec
+        # that guards nothing. Annotated inline rather than adding B608 to the
+        # pyproject skip list: the project builds one REAL f-string query
+        # (core/approvals.py) and a blanket skip would stop bandit seeing it.
         message = (
-            f"local repository path {container_path} is not under "
+            f"local repository path {container_path} is not under "  # nosec B608
             f"LOCAL_REPOS_PATH ({repos_path}), and this deployment sets "
             f"LOCAL_REPOS_HOST_PATH ({host_path}) to a different string, so "
             "there is no honest way to name this repo in the HOST namespace. "
