@@ -365,6 +365,22 @@ class ImprovementMixin:
         await self._tq.activate_plan(plan_id, opus_plan, branch)
         if not activate:
             await self._tq.update_plan_status(plan_id, PlanStatus.PENDING)
+            # `activate_plan` has just logged "Activated plan <id> with N
+            # tasks", which is momentarily true and then is not: the write
+            # above parks it for the approval gate. The row and the event
+            # below are both correct, so this only ever misled somebody
+            # TAILING THE LOG, who saw an autonomous plan announce itself as
+            # activated and had no following line saying it had not started.
+            # Observed 2026-08-28. Cheaper to state the outcome here than to
+            # thread a "do not log" flag through a method four other callers
+            # share.
+            logger.info(
+                "Improvement plan %s is PARKED for approval, not running: "
+                "its %d task(s) stay pending until `praxis approve %s`",
+                plan_id,
+                len(opus_plan["tasks"]),
+                plan_id,
+            )
         self._bus.publish(
             {
                 "type": "improvement_plan_created",

@@ -23,12 +23,22 @@
       <button class="nav-item" type="button" data-view="logs" onclick="switchView('logs')"><span class="nav-icon"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="1" y="2" width="14" height="12" rx="1"/><line x1="4" y1="6" x2="12" y2="6"/><line x1="4" y1="9" x2="9" y2="9"/></svg></span>Live Logs</button>
       <button class="nav-item" type="button" data-view="memory" onclick="switchView('memory')"><span class="nav-icon"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="8" cy="5" rx="6" ry="3"/><path d="M2 5v3c0 1.66 2.69 3 6 3s6-1.34 6-3V5"/><path d="M2 8v3c0 1.66 2.69 3 6 3s6-1.34 6-3V8"/></svg></span>Memory</button>
     </nav>
+    <!-- Defaults are an em dash, NOT 0. Every one of these is written only
+         AFTER its fetch succeeds, so a rejected token or an unreachable API
+         leaves the static default on screen. Shipping "0" there stated four
+         measurements nobody took: on an unauthorized dashboard the panel two
+         rows down correctly read "not authorized" while this one read
+         Projects 0, Plans 0, Agents 0, Queue 0. Same defect class as the
+         "N/M merged" and "Agents: NaN" entries in
+         tests/test_dashboard_truthful_rendering.py, an absent fact degraded
+         into a value that looks measured. Nothing parses these back out of
+         the DOM, so a non-numeric placeholder is safe here. -->
     <div class="sidebar-stats">
       <div class="section-label">Stats</div>
-      <div class="stat-row"><span>Projects</span><strong id="stat-projects">0</strong></div>
-      <div class="stat-row"><span>Plans</span><strong id="stat-plans">0</strong></div>
-      <div class="stat-row"><span>Agents</span><strong id="stat-agents">0</strong></div>
-      <div class="stat-row"><span>Queue</span><strong id="stat-queue">0</strong></div>
+      <div class="stat-row"><span>Projects</span><strong id="stat-projects">&mdash;</strong></div>
+      <div class="stat-row"><span>Plans</span><strong id="stat-plans">&mdash;</strong></div>
+      <div class="stat-row"><span>Agents</span><strong id="stat-agents">&mdash;</strong></div>
+      <div class="stat-row"><span>Queue</span><strong id="stat-queue">&mdash;</strong></div>
     </div>
     <div class="sidebar-connections">
       <div class="section-label">Connections</div>
