@@ -129,17 +129,26 @@ def test_parse_preserves_declaration_order():
 
 
 @pytest.mark.unit
-def test_the_shipped_yaml_declares_the_three_reference_presets():
+def test_the_shipped_yaml_declares_only_presets_that_can_be_exercised():
+    """Every SHIPPED preset must name a worker somebody here can actually run.
+
+    ``hosted-openweight`` was removed on 2026-08-27. It named a model no
+    endpoint in this deployment serves, so it could never be exercised or
+    verified - and the worker endpoint answers HTTP 200 for ANY model string
+    and serves whatever is loaded, so choosing it would not have failed
+    loudly either. It would have run some other model under that preset's
+    name.
+
+    Exact equality, not a count and not a subset: the point is that a preset
+    nobody can run must not creep back in, and a count would pass the moment
+    one was swapped for another.
+    """
     from orchestrator.core.settings_file import config_file_path, load_yaml_settings
 
     presets = parse_presets(
         load_yaml_settings(config_file_path()).get("worker_presets", [])
     )
-    assert {p.name for p in presets} == {
-        "local-lmstudio",
-        "hosted-openweight",
-        "gemini-agy",
-    }
+    assert {p.name for p in presets} == {"local-lmstudio", "gemini-agy"}
 
 
 @pytest.mark.unit

@@ -124,7 +124,6 @@ declared in `worker_presets` in `config/praxis.yaml` and served by
 
 | Preset | Runs on | Requires |
 |---|---|---|
-| `hosted-openweight` | An open-weight model on a hosted OpenAI-compatible endpoint | An API key |
 | `local-lmstudio` | An open-weight model on your own GPU via LM Studio | Nothing beyond LM Studio running |
 | `gemini-agy` | Gemini through the agy harness | A one-time interactive login |
 
@@ -232,7 +231,8 @@ The reference configuration. Judgment-heavy seats run on a capable hosted model
 driven through its CLI on a flat-rate subscription; the token-heavy implement
 seat runs on an open-weight model you serve yourself.
 
-- Worker preset: `local-lmstudio` or `hosted-openweight`
+- Worker preset: `local-lmstudio`, or a hosted OpenAI-compatible endpoint you
+  configure yourself and have verified serves the model string you name
 - `models.roles`: `plan` and `review` on hosted chains, `implement` on `local`
 - Merge gate: on, which is the default
 - Possible fillings: brain on Claude or on Codex; worker on a local open-weight

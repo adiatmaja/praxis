@@ -303,7 +303,7 @@ def _copyable(line: str) -> None:
     wider than the terminal arrives as two lines and selecting either one
     yields half a command. That is how `praxis reject <plan-id>` shipped with
     its verb on one row and its argument on the next, and how
-    `praxis init --non-interactive --preset hosted-openweight
+    `praxis init --non-interactive --preset local-lmstudio
     --accept-preset-requirements` lost its trailing flag: the uuid itself
     never folds, because rich breaks only on whitespace, which is exactly why
     a wide terminal and a test pinned to one both looked fine.

@@ -31,11 +31,6 @@ allow_local_repo_paths: false
 context_windows:
   models:
     "Gemini 3.7 Flash (High)": 1000000
-    # glm-4.7 ships as a worker preset AND as an escalation rung, and its real
-    # window is not declared anywhere in this repo. Left commented DELIBERATELY:
-    # a guessed number here is the exact defect this key exists to remove.
-    # Set it to your provider's published figure and both seams pick it up.
-    # "glm-4.7": 200000
   harnesses:
     # Catches model-string variants nobody enumerated: Gemini 3.7 Pro, the agy
     # id spelling gemini-3.7-flash-high, and future tiers.
@@ -64,13 +59,28 @@ escalation:
 #
 # Every rung must name an implementer STRONGER than default_worker_model
 # (currently agy / "Gemini 3.7 Flash (High)"), or the escalation is a no-op.
-# Rung availability is deployment-specific: glm-4.7 needs an API key for the
-# hosted endpoint, and qwen3.8-27b needs LM Studio reachable.
-implement_escalation:
-  - harness: opencode
-    model: "glm-4.7"
-  - harness: opencode
-    model: "qwen3.8-27b"
+#
+# SHIPPED EMPTY, DELIBERATELY, and an empty ladder is a supported state: it
+# means "never escalate", and a triage `escalate` decision then falls through
+# to `human` (see EffectiveSettings.implement_escalation). That is the honest
+# default, because a rung Praxis cannot verify is WORSE than no rung at all.
+#
+# Measured 2026-08-27: the configured worker endpoint answers HTTP 200 for ANY
+# `model` string and serves whatever is loaded - `glm-4.7` and even
+# `totally-made-up-model-xyz` both came back as `qwen3.8-27b`. So a rung naming
+# a model the endpoint does not have is not an error you find out about. It is
+# a SILENT no-op that still stamps `tasks.implement_model` and still writes
+# `task_outcomes` rows under that name, teaching the capability engine a
+# stronger model's success rate from a weaker model's output.
+#
+# Before adding a rung, verify it end to end:
+#   curl -s $LM_STUDIO_URL/v1/chat/completions -H 'Content-Type: application/json' \
+#     -d '{"model":"<rung>","messages":[{"role":"user","content":"hi"}],"max_tokens":2}' \
+#     | jq -r .model
+# and confirm the value that comes back is the model you asked for. A namespace
+# prefix being stripped (`vendor/x` -> `x`) or an instance suffix being added
+# (`x` -> `x:2`) is benign; a DIFFERENT model is the fault above.
+implement_escalation: []
 
 # Hard ceiling on leaves in one plan, counting split children. Adaptive
 # splitting without this is an unbounded token spend.
@@ -170,17 +180,8 @@ worker_presets:
     model: "qwen3.8-27b"
     endpoint: "http://host.docker.internal:1234"
     requires: []
-  # Last on purpose: this deployment has no api.z.ai key, so it is the one
-  # preset that cannot be exercised or verified here.
-  - name: hosted-openweight
-    label: "Hosted open-weight model (OpenAI-compatible endpoint)"
-    harness: opencode
-    model: "glm-4.7"
-    endpoint: "https://api.z.ai/v1"
-    requires: [api_key]
-    setup_doc: "docs/deployment.md"
-    setup_hint: |
-      Set an API key for your OpenAI-compatible endpoint in .env after init:
-        LM_STUDIO_API_KEY=<your key>
-      Then re-run `praxis init` and pick this preset again.
+  # A hosted-open-weight preset was REMOVED on 2026-08-27. It named a model
+  # nobody here could serve, so it could never be exercised or verified, and it
+  # was the source of the escalation fiction described above. Add one back only
+  # with a model string you have verified end to end against your own endpoint.
 

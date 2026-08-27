@@ -823,7 +823,7 @@ async def test_a_caller_resolved_window_wins_and_skips_the_probe(
         branch="agent/t",
         base_branch="main",
         task_prompt="do it",
-        model_name="glm-4.7",
+        model_name="qwen3.8-27b",
         callback_url="http://cb/",
         harness="opencode",
         context_limit=128_000,

@@ -3201,6 +3201,14 @@ two `run_failed` calibration rows against a model that never ran. Worse, the con
 had ALREADY logged `Model glm-4.7 not found in .../api/v0/models` before the spawn, and
 used that answer only to skip the budget gate.
 
+> **Update, 2026-08-27.** That rung is no longer shipped: `glm-4.7` was never a real
+> model anywhere, `implement_escalation` now ships EMPTY, and the `hosted-openweight`
+> preset is removed. The refusal above is still a genuine observation, but it is only ONE
+> of the two behaviours this endpoint has: it also answers HTTP 200 for any `model` string
+> and silently serves whatever is loaded. See the retraction at the end of this document.
+> The context probe was right both times, and the decision to dispatch anyway is what
+> turned a knowable misconfiguration into a poisoned calibration row.
+
 So there are THREE categories, not two, and `permanent_worker_config_error` is the third:
 the endpoint ANSWERED and refused by name something Praxis asked it for. Nothing about a
 retry changes it.
@@ -3556,3 +3564,46 @@ context window is known for opencode/glm-4.7 ... Skipping the pre-dispatch conte
 gate." That is the designed behaviour for an unknown window, but the escalation rung is
 where a bigger task meets an unmeasured one. Declare the escalation models under
 `context_windows` in `config/praxis.yaml`.
+
+### RETRACTION: the endpoint ignores `model`, so that escalation was a placebo
+
+The section above claimed the escalation was vindicated. **It was not, and the claim is
+withdrawn.** Measured on 2026-08-27, minutes after it was written:
+
+```
+requested model : glm-4.7                    requested: totally-made-up-model-xyz
+responded model : qwen3.8-27b                responded: qwen3.8-27b
+```
+
+The configured worker endpoint returns HTTP 200 for ANY `model` string and serves whatever
+is loaded. It does not 404 and it does not refuse by name. So the six hundred correct
+lines were written by `qwen3.8-27b` - the same model that had produced nothing twice - and
+what actually changed on attempt 3 was the retry-with-feedback path, not a stronger
+implementer. That is still a real positive result for retry-with-feedback. It is no
+evidence at all about escalation.
+
+**The round-6 note that `glm-4.7` "IS served despite being absent from BOTH model lists"
+is likewise wrong.** The model-list probe WAS authoritative; the completions endpoint just
+substitutes silently instead of erroring, so dispatching anyway looked like it worked.
+
+### Why this is a defect and not just a deployment quirk
+
+Escalation is a **silent no-op** against any OpenAI-compatible endpoint that ignores
+`model`, and Praxis cannot tell. It records `implement_model` as the rung it asked for and
+writes `task_outcomes` rows under that name, so the capability engine learns a stronger
+model's success rate from a weaker model's output. `task_outcomes` is the one table the
+whole calibration loop reads.
+
+`permanent_worker_config_error` was written for exactly this scenario - its docstring says
+"adaptive triage answered `escalate` and promoted a leaf to a model the configured endpoint
+does not serve, then two `run_failed` calibration rows were written against that model's
+record for runs in which it never ran." But its detector greps the CONTAINER LOG for a
+refusal by name, and a substituting endpoint never refuses, so it cannot fire here. The
+round-6 conclusion that its premise was "refuted" was drawn from the same wrong reading:
+the model that "refused by name at 02:19 and served real work at 06:03" was never serving
+that model at 06:03 either.
+
+The usable signal needs no inference and no log parsing: **ask the endpoint for one token
+and compare the `model` field of the response to the model that was requested.** A
+mismatch is unambiguous, and it is a property of the (model, endpoint) PAIR, which is
+exactly how the existing reason sentence is already worded.
