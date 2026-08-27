@@ -543,8 +543,34 @@ class TaskResponse(BaseModel):
     clarification_question: str | None = None
     clarification_answer: str | None = None
     clarification_state: str | None = None
+    contract_drift: dict | None = None
+    """What this task's diff did to the paths its PLAN DOCUMENT authorised
+    (``core/contract_drift``), computed at review time and carried to whoever
+    opens the merge gate. ``None`` means the check never ran - a task older
+    than the column, or one whose review failed before a diff existed - and
+    every renderer must show that as "not checked" rather than as a clean
+    result. A task that WAS checked and could not be graded carries
+    ``gradable: false`` with the reason in ``why_not``."""
     created_at: str
     updated_at: str
+
+    @field_validator("contract_drift", mode="before")
+    @classmethod
+    def decode_contract_drift(cls, value: object) -> object:
+        """Accept the column's JSON TEXT and hand callers a dict.
+
+        The row stores JSON text; every reader wants the object. Decoding here
+        rather than in each query means the CLI, the dashboard and MCP cannot
+        drift into parsing it three different ways.
+
+        A value that will not decode becomes ``None`` - "not checked" - rather
+        than raising. This field is advisory: it annotates the merge gate and
+        blocks nothing, so a corrupt row must not be able to 500 the endpoint
+        that lists a plan's tasks.
+        """
+        from orchestrator.core.contract_drift import decode_payload
+
+        return decode_payload(value)
 
 
 class AgentRunResponse(BaseModel):

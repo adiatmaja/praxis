@@ -947,6 +947,27 @@ class TaskQueue:
             (pr_url, now, task_id),
         )
 
+    async def record_contract_drift(self, task_id: str, payload: str) -> None:
+        """Store what this task's diff did to the paths its PLAN authorised.
+
+        Written once per review, from ``core/contract_drift.as_payload``, so
+        that the finding survives to the moment a human opens the merge gate -
+        which may be hours later, in another process, from the CLI, the
+        dashboard or MCP. Recomputing it there would mean re-fetching a diff
+        per parked task on every read.
+
+        Args:
+            task_id: The task the finding belongs to.
+            payload: JSON text. Never the empty string: a row that was never
+                computed keeps its NULL, and NULL is what every reader
+                renders as "not checked".
+        """
+        now = datetime.now(UTC).isoformat()
+        await self._db.execute(
+            "UPDATE tasks SET contract_drift = ?, updated_at = ? WHERE id = ?",
+            (payload, now, task_id),
+        )
+
     async def record_worker_session(
         self, task_id: str, session_id: str, harness: str
     ) -> None:

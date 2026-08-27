@@ -12,6 +12,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from orchestrator.core.clarification_states import RESUMABLE_CLARIFICATION_STATES
+from orchestrator.core.contract_drift import decode_payload
 from orchestrator.core.status_vocab import GATED_STATUSES
 from orchestrator.models.schemas import TaskStatus
 
@@ -231,6 +232,13 @@ def summarize_pending(
             "pr_url": r.get("pr_url"),
             "age_hours": _age_hours(r.get("updated_at")),
             "review_scope": _review_scope_from_feedback(r.get("review_feedback")),
+            # What the diff did to the paths the PLAN authorised. The review's
+            # own verdict cannot carry this: the reviewer grades against the
+            # LEAF's plan_text, so a leaf that was told to rewrite the plan's
+            # acceptance bar passes correctly and says nothing about it. None
+            # here means the check never ran, which every renderer must show
+            # as "not checked" rather than as a clean result.
+            "contract_drift": decode_payload(r.get("contract_drift")),
         }
         for r in parked
     ]

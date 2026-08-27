@@ -209,6 +209,25 @@
       }[c]));
     }
 
+    // What a task's diff did to the paths its PLAN DOCUMENT authorised. The
+    // review's own verdict cannot carry this: the reviewer grades against the
+    // LEAF's plan_text, so a leaf told to rewrite the plan's acceptance bar
+    // passes correctly and says nothing. Renders only when there is something
+    // to say -- a clean result on every parked task trains the eye to skip the
+    // block that also carries the warning. `null` (never computed) is silent
+    // for the same reason, and is NOT rendered as clean.
+    function contractDriftBlock(drift) {
+      if (!drift || typeof drift !== "object") return "";
+      const named = drift.named_not_authorised || [];
+      const unmentioned = drift.unmentioned || [];
+      if (drift.gradable && !named.length && !unmentioned.length) return "";
+      if (!drift.gradable && !drift.why_not) return "";
+      const tone = named.length ? "#b45309" : "inherit";
+      return '<div class="detail-section"><div class="detail-section-title">Plan paths</div>' +
+        '<div class="detail-card" style="font-size:12px;line-height:1.6;color:' + tone + ';">' +
+        esc(drift.summary || drift.why_not || "") + '</div></div>';
+    }
+
     function renderMarkdown(src) {
       // Strip a leading YAML frontmatter block (--- ... ---) so spec_path/type
       // metadata isn't shown as literal text.
@@ -944,6 +963,7 @@
           '</div></div>' +
           (task.description ? '<div class="detail-section"><div class="detail-section-title">Description</div>' +
           '<div class="detail-card" style="white-space:pre-wrap;font-size:13px;line-height:1.6;">' + esc(task.description) + '</div></div>' : "") +
+          contractDriftBlock(task.contract_drift) +
           (task.review_feedback ? '<div class="detail-section"><div class="detail-section-title">Review Feedback</div>' +
           '<div class="detail-card" style="white-space:pre-wrap;font-size:12px;font-family:Cascadia Mono, SF Mono, Consolas, monospace;line-height:1.5;">' + esc(task.review_feedback) + '</div></div>' : "") +
         '</div><div class="detail-actions">' + stopBtn +
@@ -1764,6 +1784,10 @@
         '<div class="side-panel-content">' +
           '<div class="side-panel-meta-strip">' + metaStrip + '</div>' +
           descAccordion +
+          // NOT an accordion, and above the review: a folded warning is a
+          // warning nobody reads, and this exists precisely because the
+          // review's own verdict cannot say it.
+          contractDriftBlock(task.contract_drift) +
           reviewAccordion +
           '<div class="side-panel-log-section">' +
             '<div class="side-panel-log-header">' +

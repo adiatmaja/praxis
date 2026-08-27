@@ -117,7 +117,9 @@ The rest of `core/`, grouped by concern:
   `micro_edit`
 - **Git & platform:** `git_ops`, `git_backend` (GitHub / local), `github_credentials`,
   `repo_url_policy`, `merge_policy`, `branch_sweeper`, `diff_guard`, `diff_stats`,
-  `blast_radius` (repo-wide reach of the identifiers a diff changes, for the review prompt)
+  `blast_radius` (repo-wide reach of the identifiers a diff changes, for the review prompt),
+  `contract_drift` (did this diff edit a path the PLAN DOCUMENT names but never
+  authorises - computed at review, rendered at the merge gate, never blocks)
 - **Capability engine:** `execute_plan_decompose`, `plan_derive`, `plan_graph`, `plan_review`,
   `leaf_validator`, `leaf_templates`, `leaf_split`, `leaf_triage`, `difficulty`,
   `capabilities`, `capability_events`, `capability_history`, `outcome_recorder`,
@@ -280,7 +282,14 @@ Tables: `users`, `projects`, `plans`, `tasks`, `agent_runs`, `opus_state`,
   the count but NOT the error, so present means a real reason and absent proves nothing.
 - `projects.context_window` (migration 12) is the per-project override that outranks a
   declared window and the LM Studio probe alike.
-- **Schema version is 12; `tests/test_migrations.py` pins it.** Idempotency is proved by
+- `tasks.contract_drift` (migration 13) is what a task's diff did to the paths its PLAN
+  DOCUMENT authorised, computed at review time from the diff already in hand and carried
+  to whoever opens the merge gate. JSON text, decoded by the ONE decoder
+  (`core/contract_drift.decode_payload`). NULLABLE, and the NULL is load-bearing: it means
+  "never computed" (a pre-feature row, or a review that failed before a diff existed) and
+  every surface renders it as "not checked", never as clean - a checked-and-clean task
+  carries `{"gradable": true, "named_not_authorised": [], ...}` instead.
+- **Schema version is 13; `tests/test_migrations.py` pins it.** Idempotency is proved by
   invoking a step DIRECTLY TWICE, never by rewinding `user_version`: a rewind that no
   longer reaches far enough silently stops re-running the step, and a `count(...) == 1`
   assertion passes whether the step re-ran or never ran at all.
@@ -504,6 +513,19 @@ story. New gotchas go in `docs/gotchas.md` first. (No count is quoted on purpose
   only a vanished branch gets a fresh one; NULL means "review the whole PR".
 - **Merge is gated by default** (`core/merge_policy.py`); protected branches never
   auto-merge at all.
+- **A review verdict CANNOT say the diff rewrote the plan's contract, so the gate says it**
+  (`core/contract_drift.py`, 2026-08-27). The reviewer grades against the LEAF's
+  `plan_text`, so a leaf told to rewrite the plan's acceptance bar passes CORRECTLY and in
+  silence - that is round 7's fabrication exactly. Computed at review from the diff already
+  in hand, stored on `tasks.contract_drift`, rendered by `praxis pending` / `praxis task`,
+  `GET /api/approvals/pending`, MCP `poll_task` (strong tier in the SUMMARY, so a relaying
+  assistant repeats it) and the dashboard. TWO tiers: a path the plan NAMES but never
+  authorises (strong - caught PR #103) versus one the plan never mentions (weak - a new
+  sibling file, the normal output of the sizing rule). ADVISORY everywhere and wrapped so
+  it cannot wedge a review. **The same signal was REFUSED as an F3 validator rule and that
+  is not a contradiction**: a false positive costs a brain call and can fail a plan
+  upstream, and one glance here. Full account, with the mutation-proven properties, in
+  `docs/gotchas.md`.
 - **A blank `verify_cmd` is "not configured", never a pass** (blank shell exits 0).
   `core/verify_gate.normalize_verify_cmd` is the SSoT at all four read sites; the API
   rejects it 422; `run_verify` raises rather than shell it.

@@ -37,6 +37,8 @@ from orchestrator.core.clarification_states import (
     ASKED,
     AWAITING_HUMAN,
 )
+from orchestrator.core.contract_drift import as_payload as contract_drift_payload
+from orchestrator.core.contract_drift import assess as assess_contract_drift
 from orchestrator.core.diff_guard import (
     added_dependencies,
     destructive_deletions,
@@ -1278,6 +1280,66 @@ class ReviewMixin:
             f"this task's own commits after {base_sha}",
         )
 
+    async def _record_contract_drift(
+        self,
+        task_id: str,
+        diff: str,
+        plan: dict[str, Any] | None,
+        log: Any,
+    ) -> None:
+        """Grade this diff against the plan document's own ``Files:`` lines.
+
+        Advisory and fail-open by construction. This annotates the merge gate
+        for a human; it never changes a verdict, never blocks a merge and must
+        never be able to wedge a review, so every failure is logged and
+        swallowed. A review that completed with no drift row is strictly better
+        than a review that did not complete.
+
+        The plan DOCUMENT is the externally-authored text the user submitted,
+        kept in ``plans.pending_input`` under ``"plan"``. A task with no such
+        document behind it (a bare ``dispatch_task``, an autonomous proposal)
+        is recorded as ungradable WITH ITS REASON rather than skipped: "nothing
+        was found" and "nothing was looked for" are the two states this whole
+        feature exists to keep apart, so the ungradable answer is written down
+        exactly like a clean one.
+
+        Args:
+            task_id: The task under review.
+            diff: The diff the review just graded. Never empty here.
+            plan: The task's plan row, or None when it could not be read.
+            log: The review's task-scoped logger.
+        """
+        try:
+            document: str | None = None
+            pending_input = (plan or {}).get("pending_input")
+            if pending_input:
+                try:
+                    envelope = json.loads(pending_input)
+                except (TypeError, ValueError):
+                    # A corrupt envelope is not a drift finding. The
+                    # decomposition seat already fails the plan permanently on
+                    # this (``_corrupt_pending_input_reason``); here it just
+                    # means the document cannot be read, which is ungradable.
+                    envelope = None
+                if isinstance(envelope, dict):
+                    plan_document = envelope.get("plan")
+                    document = plan_document if isinstance(plan_document, str) else None
+            drift = assess_contract_drift(diff, document)
+            await self._tq.record_contract_drift(
+                task_id, json.dumps(contract_drift_payload(drift))
+            )
+            if drift.named_not_authorised:
+                # WARNING, not info: this is the one tier that caught a real
+                # fabrication, and a terminal-only operator sees the review's
+                # own "verdict: pass" line right beside it.
+                log.warning(
+                    "contract drift: diff edits %s, which the plan names but "
+                    "never authorises",
+                    ", ".join(drift.named_not_authorised),
+                )
+        except Exception:  # noqa: BLE001 - advisory; must never wedge a review
+            logger.exception("contract-drift check failed for task %s", task_id)
+
     async def _record_task_outcome(
         self,
         task: dict[str, Any],
@@ -1920,6 +1982,18 @@ class ReviewMixin:
         files_touched, loc_delta = (
             (None, None) if gate_failed_before_diff else diff_stats(diff)
         )
+
+        # What this diff did to the paths the PLAN DOCUMENT authorised, stored
+        # for the human at the merge gate. Computed here because the diff is
+        # already in hand; recomputing it at read time would mean re-fetching a
+        # diff per parked task on every surface that lists them.
+        #
+        # Skipped entirely when the gate failed before a diff existed: there is
+        # no diff to grade, and writing "clean" for it would be the same lie
+        # this feature exists to stop. The row keeps its NULL, which every
+        # reader renders as "not checked".
+        if not gate_failed_before_diff:
+            await self._record_contract_drift(task_id, diff, plan, log)
 
         async def _record(outcome: str, failure_class: str | None) -> None:
             # The four call sites below are unchanged; what the row CONTAINS

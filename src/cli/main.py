@@ -1502,6 +1502,51 @@ def _scope_glance(review_scope: str | None) -> str:
     return f"{checkout}, {verify}"
 
 
+def _drift_line(drift: object) -> str:
+    """The stored contract-drift summary, or "" when there is nothing to print.
+
+    Deliberately prints NOTHING for two different-looking cases: a task whose
+    check never ran (``None`` -- a row older than the column, or a review that
+    failed before a diff existed) and one that ran and found the diff inside
+    the plan's authorised paths. A clean result is the normal case at this
+    gate, and a line saying so on every parked task is the fastest way to
+    train a reader to skip the block that also carries the warnings.
+
+    The ungradable REASON is printed, because that one is not the normal case
+    and reads as a silence otherwise.
+
+    The summary is the producer's own sentence (``contract_drift.summary_line``)
+    rather than a second wording assembled here, for the same reason
+    ``_scope_glance`` parses the review's sentence instead of re-deriving it.
+    """
+    if not isinstance(drift, dict):
+        return ""
+    if drift.get("gradable") and not (
+        drift.get("named_not_authorised") or drift.get("unmentioned")
+    ):
+        return ""
+    summary = drift.get("summary")
+    return summary if isinstance(summary, str) else ""
+
+
+def _drift_glance(drift: object) -> str:
+    """One table cell: the strong tier, the weak tier, or nothing.
+
+    Kept to a few characters because it shares a row with the age, title,
+    branch and scope on an 80-column console. The strong tier names its count
+    rather than its paths -- the paths are on the copyable line below the
+    table, where there is room for them.
+    """
+    if not isinstance(drift, dict):
+        return ""
+    named = drift.get("named_not_authorised") or []
+    if named:
+        return f"{len(named)} unauthorised"
+    if drift.get("unmentioned"):
+        return "new paths"
+    return ""
+
+
 @app.command()
 def pending() -> None:
     """List tasks and completed plans parked at the human merge gate."""
@@ -1537,15 +1582,24 @@ def pending() -> None:
         # whether to click approve does not have to open `praxis task` first
         # to learn whether the green in front of them means anything.
         table.add_column("Scope")
+        # Only when at least one parked task has something to say. An always-on
+        # column of blanks costs width on every row of an 80-column table for
+        # the common case where every diff stayed where the plan put it.
+        show_drift = any(_drift_glance(t.get("contract_drift")) for t in tasks)
+        if show_drift:
+            table.add_column("Plan paths")
         for task in tasks:
             # `Text` per the note on `_check`. `_scope_glance` returns one of
             # this module's own fixed phrases, so it stays a plain string.
-            table.add_row(
+            row = [
                 f"{int(task['age_hours'])}h",
                 Text(task["title"] or task["task_id"]),
                 Text(task["branch"] or ""),
                 _scope_glance(task.get("review_scope")),
-            )
+            ]
+            if show_drift:
+                row.append(_drift_glance(task.get("contract_drift")))
+            table.add_row(*row)
         console.print(table)
 
     if plans_awaiting:
@@ -1620,6 +1674,14 @@ def pending() -> None:
         # than printing a fabricated "None".
         if task.get("review_scope"):
             console.print(Text(f"  {task['review_scope']}"))
+        # What the diff did to the paths the PLAN authorised. Printed after the
+        # scope statement and only when there is something to say, because this
+        # is the fact the review's own verdict structurally cannot carry: the
+        # reviewer grades against the leaf's plan_text, so a leaf told to
+        # rewrite the plan's acceptance bar passes, correctly, in silence.
+        drift_line = _drift_line(task.get("contract_drift"))
+        if drift_line:
+            console.print(Text(f"  {drift_line}"))
     for plan in plans_awaiting:
         # The plan line names the same verb the per-task line does, because
         # `merge-plan` is one command that covers both stages: it drains

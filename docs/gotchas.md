@@ -3591,6 +3591,56 @@ file and both carry the plan's real acceptance command, where the original put
 decomposer is evidence, not proof, but it is evidence on the one input that matters.
 Guard: `test_replaying_the_fabricating_plan_no_longer_grabs_the_contract_file`.
 
+### Where the signal DID belong: the merge gate, not the validator
+
+`core/contract_drift.py`, built 2026-08-27 off the measurements above. The same
+path-versus-plan question that fails as an F3 rule works at the gate, and the reason is
+the seat rather than the rule:
+
+- **As a validator** a false positive spends a brain call on a re-ask and can fail the
+  plan after the re-ask budget. That is why both the section-scoped and the
+  document-scoped forms were refused above.
+- **At the merge gate** a false positive costs a human one glance. Imprecision is
+  affordable there and fatal upstream, so the same signal is worth carrying.
+
+And the gate is the seat that actually held: in the round-7 fabrication every automated
+gate behaved correctly, because each graded against the LEAF's `plan_text`, and the human
+was shown "review verdict: pass" with nothing saying the diff had rewritten the file the
+plan called its contract.
+
+Two tiers, split by construction rather than by a threshold. `named_not_authorised` is a
+path the plan MENTIONS and never puts in a `Files:` line - by construction a path the plan
+talks about for a reason other than assigning it as work. `unmentioned` is a path the plan
+never names at all, which is usually benign, because the decompose prompt's own sizing
+rule tells a leaf to carry a NEW sibling test file. Measured on the real artefacts before
+any of it was built:
+
+| case | strong tier | weak tier |
+|---|---|---|
+| playground PR #103 (the fabrication) | `src/playground/test_hm.py` | -- |
+| PR #105, #106 (honest work) | -- | -- |
+| the faithful replay's leaf 2 | -- | `__init__.py` |
+
+Three properties are load-bearing and each has a guard proven RED by mutation:
+
+- **Both diff sides are read.** A created file carries `--- /dev/null` and its path only
+  on the `+++` side, and deleting a contract then re-adding it is exactly the shape this
+  must not miss.
+- **Suffix matching stops at a path BOUNDARY.** Plans abbreviate (`hm.py`) and diffs never
+  do (`src/playground/hm.py`), so matching is by suffix - but a bare `endswith` makes
+  `src/playground/test_hm.py` satisfy a plan that authorised `hm.py`, silently
+  authorising the one file round 7 forbade. The first version of that guard used the
+  plan's FULL path and stayed green under the mutation; a guard needs a fixture that
+  STRADDLES the change.
+- **Ungradable is an ANSWER, stored in words.** A task with no plan document behind it (a
+  bare `dispatch_task`) and a plan with no `Files:` line at all each record their reason.
+  A NULL column means something else again - "never computed" - and no surface may render
+  it as clean.
+
+It is ADVISORY at every seat: it annotates, it never blocks, and its computation is
+wrapped so that no failure in it can wedge a review. One real defect is a thin positive
+evidence base, and that is a second reason it advises rather than gates.
+
 ## The route that reaches triage for a big leaf argues against `split`
 
 `07583d2` made the verify-gate route reachable for a leaf whose declared check restates

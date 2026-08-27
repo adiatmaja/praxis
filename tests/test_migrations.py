@@ -119,8 +119,8 @@ async def test_escalation_index_defaults_to_zero(tmp_path):
 
 
 @pytest.mark.unit
-def test_current_schema_version_is_twelve():
-    assert CURRENT_SCHEMA_VERSION == 12
+def test_current_schema_version_is_thirteen():
+    assert CURRENT_SCHEMA_VERSION == 13
 
 
 @pytest.mark.unit
@@ -286,3 +286,61 @@ async def test_migration_adds_plan_integration_columns(tmp_path):
     assert row["integration_pr_url"] == "https://x/pull/1"
     assert row["integration_merged_at"] is None
     await db.close()
+
+
+@pytest.mark.unit
+async def test_migration_adds_contract_drift_defaulting_to_null(tmp_path):
+    """A task's contract-drift finding starts as "never computed".
+
+    NULLABLE and NULL by default, and that is load-bearing: every row older
+    than this column has one, as does any task whose review failed before a
+    diff existed. A reader must render it as "not checked" rather than as a
+    clean result, which is the distinction the whole feature turns on.
+    """
+    db = Database(f"sqlite+aiosqlite:///{tmp_path / 'drift.db'}")
+    await db.initialize()
+    await db.execute("INSERT INTO users (id, name, token_hash) VALUES ('u1', 'U', 'h')")
+    await db.execute(
+        "INSERT INTO projects (id, user_id, name, repo_url) "
+        "VALUES ('proj1', 'u1', 'P', 'https://example.com/repo')"
+    )
+    await db.execute(
+        "INSERT INTO plans (id, project_id, source, status) "
+        "VALUES ('p1', 'proj1', 'test', 'active')"
+    )
+    await db.execute(
+        "INSERT INTO tasks (id, plan_id, title, description, branch_name) "
+        "VALUES ('t1', 'p1', 'T', 'D', 'agent/t')"
+    )
+    row = await db.fetch_one("SELECT contract_drift FROM tasks WHERE id = 't1'")
+    assert row is not None
+    assert row["contract_drift"] is None
+    await db.close()
+
+
+@pytest.mark.unit
+async def test_migration_13_is_idempotent(tmp_path):
+    """Re-applying the step against a table that already has the column.
+
+    Invoked DIRECTLY twice rather than by rewinding ``user_version``, for the
+    reason given in ``test_migration_12_is_idempotent``: the rewind is a proxy
+    that stops reaching the step as soon as a later migration is added, and the
+    surviving assertion cannot tell a re-applied guard from a step that never
+    ran.
+    """
+    from orchestrator.database import _migration_0013_contract_drift
+
+    db = Database(f"sqlite+aiosqlite:///{tmp_path / 'm13-idem.db'}")
+    await db.initialize()
+    # try/finally: without it a FAILING version of this test hangs instead of
+    # failing, because the raising second call skips close() and the aiosqlite
+    # worker thread keeps the loop alive until the suite times out.
+    try:
+        connection = db._connection
+        assert connection is not None
+        await _migration_0013_contract_drift(connection)
+        await _migration_0013_contract_drift(connection)
+        names = [r["name"] for r in await db.fetch_all("PRAGMA table_info(tasks)")]
+        assert names.count("contract_drift") == 1
+    finally:
+        await db.close()

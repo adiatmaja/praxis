@@ -233,6 +233,17 @@ def _task_summary(task: dict[str, Any]) -> str:
     attempt = task.get("attempt")
     if isinstance(attempt, int) and attempt > 1:
         parts.append(f"attempt {attempt}")
+    # The strong tier only, and in the SUMMARY, because this is the one fact a
+    # passing review structurally cannot carry: the reviewer grades a diff
+    # against the LEAF's plan_text, so a leaf that was told to rewrite the
+    # plan's acceptance bar passes correctly and silently. An assistant relaying
+    # "awaiting_merge, here is the PR" to a human must relay this with it.
+    # The weak tier (paths the plan never mentions - usually a new sibling
+    # file) stays out of the one-line summary and is in the payload below.
+    drift = task.get("contract_drift")
+    if isinstance(drift, dict) and drift.get("named_not_authorised"):
+        named = ", ".join(str(p) for p in drift["named_not_authorised"])
+        parts.append(f"WARNING: diff edits {named}, which the plan never authorised")
     return ", ".join(parts)
 
 
@@ -288,6 +299,12 @@ async def poll_task_impl(client: Any, task_id: str) -> dict[str, Any]:
         # the prose summary but only when > 1, which left a caller reading the
         # STRUCTURED result with no way to tell attempt 1 from attempt 3.
         "attempt": task.get("attempt"),
+        # Structured, both tiers, alongside the summary's strong-tier warning.
+        # ``None`` means the check never ran (a task older than the column, or
+        # a review that failed before a diff existed) and must not be read as
+        # "clean" -- a graded task that found nothing carries
+        # ``{"gradable": true, "named_not_authorised": [], ...}``.
+        "contract_drift": task.get("contract_drift"),
         "dashboard_url": _dashboard_url(client),
         "approvals": approvals,
     }

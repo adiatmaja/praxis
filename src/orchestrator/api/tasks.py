@@ -10,6 +10,7 @@ from pydantic import BaseModel
 
 from orchestrator.api.auth import verify_token
 from orchestrator.core.clarification_states import RESOLVED
+from orchestrator.core.contract_drift import decode_payload
 from orchestrator.models.schemas import TaskResponse, TaskStatus
 
 
@@ -56,8 +57,12 @@ async def get_task(request: Request, task_id: str) -> dict[str, Any]:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Task not found"
         )
+    # This route returns the raw row (no response_model), so the JSON TEXT in
+    # ``contract_drift`` would reach the CLI and the dashboard as a string
+    # while ``TaskResponse`` hands its own callers a dict. One shape, decided
+    # here, or every renderer grows its own parser.
     return {
-        "task": task,
+        "task": {**task, "contract_drift": decode_payload(task.get("contract_drift"))},
         "runs": await queue.get_runs_for_task(task_id),
     }
 

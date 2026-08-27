@@ -387,6 +387,35 @@ async def _migration_0012_project_context_window(
         )
 
 
+async def _migration_0013_contract_drift(
+    connection: aiosqlite.Connection,
+) -> None:
+    """Add tasks.contract_drift: what this task's diff did to the PLAN's paths.
+
+    The merge gate is the surface that actually held when a decomposition
+    rewrote a plan's acceptance contract (round 7): every automated gate passed
+    correctly, because each was grading against the leaf's own ``plan_text``,
+    and the human was shown "review verdict: pass" with nothing saying the diff
+    had deleted the file the plan called its bar.
+
+    The finding is computed at REVIEW time, where the diff is already in hand,
+    and it has to survive to the moment a person looks at the gate - which may
+    be hours later, in a different process, from the CLI, the dashboard or MCP.
+    A column is the only place all of those read from.
+
+    JSON text (``core/contract_drift.as_payload``), and NULLABLE. The NULL is
+    load-bearing and means "never computed": every row that predates this
+    column has one, and so does any task whose review failed before a diff
+    existed. It must render as "not checked", never as "clean" - the two are
+    different facts and conflating them is the exact failure this feature
+    exists to correct.
+    """
+    cursor = await connection.execute("PRAGMA table_info(tasks)")
+    cols = {row[1] for row in await cursor.fetchall()}
+    if "contract_drift" not in cols:
+        await connection.execute("ALTER TABLE tasks ADD COLUMN contract_drift TEXT")
+
+
 MIGRATIONS: list[Migration] = [
     Migration(1, "baseline: schema as of 2026-07-02", _migration_0001_baseline),
     Migration(
@@ -443,6 +472,11 @@ MIGRATIONS: list[Migration] = [
         12,
         "add projects.context_window so an operator can declare the worker window",
         _migration_0012_project_context_window,
+    ),
+    Migration(
+        13,
+        "add tasks.contract_drift so the merge gate can say what the diff touched",
+        _migration_0013_contract_drift,
     ),
 ]
 
