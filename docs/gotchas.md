@@ -3535,3 +3535,24 @@ lifetime, so a leaf that has already escalated cannot later produce one.
 
 Triage is otherwise live and healthy: it also answered `retry` on a three-line leaf, with
 calibration rows written for both of that leaf's attempts.
+
+### The escalation was vindicated, and that is the answer
+
+Attempt 3 of that task ran on the ladder's next rung and wrote six hundred lines of the
+module in one shot. `verify gate passed (python -m pytest src/playground -q)` against the
+real, untouched acceptance bar, the reviewer called the implementation correct and
+complete, and the task parked at the merge gate.
+
+So the whole capability-calibration loop was observed end to end: a worker produced
+nothing twice, the declared-path refutation made that attributable, calibration rows were
+written, triage answered `escalate`, the ladder moved to a stronger implementer, the work
+came back correct, review passed it, and a human holds the merge. **`escalate` was the
+right call and `split` would have been the wrong one** - the leaf was not too big for the
+fleet, it was too big for that worker, which is exactly the distinction triage exists to
+draw.
+
+One thing to carry: escalating SKIPPED the pre-dispatch budget gate, and said so - "No
+context window is known for opencode/glm-4.7 ... Skipping the pre-dispatch context budget
+gate." That is the designed behaviour for an unknown window, but the escalation rung is
+where a bigger task meets an unmeasured one. Declare the escalation models under
+`context_windows` in `config/praxis.yaml`.
