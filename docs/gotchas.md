@@ -3472,3 +3472,66 @@ The remaining option is structural rather than a threshold: have the decomposer 
 the plan heading each leaf came from, which makes the section resolvable by construction
 and makes the declaration itself checkable against the plan's real headings. That is a
 `LeafTask` schema change and so a `LEAF_SCHEMA_VERSION` bump with fixture regeneration.
+
+## The route that reaches triage for a big leaf argues against `split`
+
+`07583d2` made the verify-gate route reachable for a leaf whose declared check restates
+the project command, and that fix is sound: measured on 2026-08-27,
+`restates_project_command` returns True for exactly that leaf shape, so the
+`FAILED_DIFFERENTLY` arm is configured and live. **It is not the arm the leaf reaches.**
+
+### The final leaf of a dependent chain reaches the NO-CHANGE route instead
+
+Measured on a fresh plan (`2f34bc32`, three leaves, Hindley-Milner engine), reproducing
+what plan `4eb8ed70` did a day earlier:
+
+| leaf | declared path on the base | route | attributable? | recorded |
+|---|---|---|---|---|
+| 1 | `hm.py` **absent** | no_changes, path refuted | yes | `no_output` row |
+| 2 | `hm.py` present | no_changes | closed as satisfied | - |
+| 3 | `hm.py` **present** | no_changes, path passes, project command red on base, leaf's own check restates it | **no** | **nothing** |
+
+Leaf 3: three attempts, `triage_decision` NULL, zero `task_outcomes` rows, then terminally
+failed.
+
+The declared-path refutation is the one discriminator that does not depend on the project
+command, and it is available only when the declared path is ABSENT from the base. On a
+dependent chain every leaf after the first edits a file an earlier leaf created, so **the
+refutation is structurally unavailable to every non-first leaf of a dependent chain** -
+which is exactly the population where splitting matters. The earlier wording, "a no-diff
+worker is never attributable on a red-base repo", is too broad: leaf 1 above WAS
+attributable on the same repo, on the same day, against the same red base.
+
+The worker reliably produces nothing for that leaf, too, because earlier leaves
+over-deliver into the same file. So the final leaf is simultaneously the one that declares
+the project command as its acceptance, the one whose declared path already exists, and the
+one most likely to report `no_changes`. All three push it into the non-attributable route.
+
+### And when it DOES reach triage, the evidence argues for `escalate`
+
+A single dispatched task off the base, declaring a path that does not exist there, reaches
+triage cleanly: attempt 1 refuted and recorded, attempt 2 triaged. Measured (task
+`be9c6eed`, the whole engine in one leaf): triage answered **`escalate`**, escalation fired,
+and the leaf was re-dispatched to the ladder's next rung.
+
+**That answer is correct, and it is the finding.** The evidence pack carried
+`files_touched=0`, `loc_delta=0` and an empty diff, twice. "The worker produced nothing at
+all" argues for a stronger worker; it carries no signal about SIZE. `split` is for a leaf
+that is too large or mixes independent concerns, and that is inferred from PARTIAL
+progress. So the two routes that can reach triage carry structurally different evidence:
+
+- **no-output** (declared path absent): zero files, empty diff -> supports `escalate`.
+- **verify gate with a real diff**: a diff plus two differing exit codes -> can support
+  `split`.
+
+The no-output route is the only one currently reachable for a big leaf, and it supplies
+evidence that argues against splitting. This is neither a prompt defect nor a plumbing
+defect. **Do not "fix" the triage prompt to prefer `split` on zero output**: that would
+have it recommend cutting up a leaf nothing has shown to be too big.
+
+Observing `split` needs both halves at once - a leaf that reaches triage AND produced a
+partial diff that fails differently from its base. Triage is bounded to one call per leaf
+lifetime, so a leaf that has already escalated cannot later produce one.
+
+Triage is otherwise live and healthy: it also answered `retry` on a three-line leaf, with
+calibration rows written for both of that leaf's attempts.
