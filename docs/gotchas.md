@@ -3389,3 +3389,86 @@ is the proof it is shared rather than copied.
 reports only PENDING leaves, so the two domains are structurally disjoint. The stalled hint
 was silent both at the moment the plan went FAILED and after the retry. Only
 `terminal_incomplete`'s hint and the CLI line recommended retry for this state.
+
+## The decomposer rewrote the acceptance bar, and the check that grades that never ran
+
+Measured live on 2026-08-27 against `adiatmaja/playground`, plan `2ea05b85`, pull request
+#103. The plan document said, verbatim:
+
+> The repository already carries the acceptance bar at `src/playground/test_hm.py`.
+> That file is the contract. Do not edit, weaken, skip or delete it.
+
+and gave its one task `Files: src/playground/hm.py`.
+
+The decomposer emitted leaf 1 with `files` of `src/playground/__init__.py`,
+`src/playground/test_hm.py` and `src/playground/hm.py`, and a `plan_text` that specified
+**sixteen replacement tests of its own invention**, none of which appear anywhere in the
+plan. The worker obeyed it exactly: -68/+60 on `test_hm.py`, deleting the occurs check,
+the composition case, `let id = \x -> x in id id`, the monomorphic-lambda rejection, and
+the docstring forbidding the edit. What remained was a suite the worker could pass.
+
+**Every gate behaved correctly and none of them could help.** The reviewer grades a diff
+against the leaf's own `plan_text`, and that `plan_text` ordered the rewrite, so `pass`
+was the right verdict on the evidence it had. The verify gate said so too, accurately:
+the project command failed identically on the base (`both exited 2`) and the leaf's own
+`py_compile` check passed, so nothing was attributed. The fabrication is
+self-ratifying: the contract the work is graded against is the artefact the work
+corrupted.
+
+The **merge gate held it** - the task parked at `awaiting_merge` and nothing landed. That
+is the design working, and it is also the whole of the remaining protection: the human is
+shown "review verdict: pass" and no surface says the diff rewrites the file the plan
+called the contract.
+
+### What invited it
+
+`core/plan_review.py` sizing rule 1 is "Keep an implementation and its tests TOGETHER in
+the same leaf", and the prompt's worked example carries `files` of `src/client.py` and
+`tests/test_client.py` with a step that writes the test. Nothing in the prompt covers a
+test that ALREADY EXISTS and is the plan's acceptance contract. Re-running the same probe
+with a plan document that does not NAME the test file produced clean leaves declaring
+only `src/playground/hm.py`, which is what identifies the trigger rather than assuming it.
+
+### Why `plan_text_verbatim` did not fire
+
+It never ran. `_check_plan_text_verbatim` opens with `_section_for_task(source, leaf)` and
+`if not section: continue` - a silent skip, no violation, nothing on the plan row.
+`_section_for_task` resolves a leaf's plan section by looking for the leaf's **title**
+inside a plan heading, and the decomposer AUTHORS that title.
+
+Measured on the production artefacts. The submitted plan is retained in
+`plans.pending_input` as a JSON envelope under the `"plan"` key - parse it, because
+reading the column raw yields one line of escaped JSON with no headings in it and invites
+a wrong conclusion:
+
+| plan | leaves whose section resolved |
+|---|---|
+| `2ea05b85` (fabricated) | 0 of 3 |
+| `2f34bc32` (faithful) | 1 of 3 |
+
+`opus_plan["validation_warnings"]` on both plans contains only `file_overlap`. Titles do
+not match headings even when the decomposition is faithful: the plan heading "The AST and
+the parser" against the leaf title "AST node types and recursive-descent parser". So the
+check that grades a leaf against its plan section is disabled by the very drift it exists
+to detect, and the leaf that most needs checking is the one that cannot be checked.
+
+Where the rule DID run it scored ratio 0.99 and coverage 0.93 against a 0.70 threshold.
+**The metric is not the defect; section resolution is.**
+
+### Two fixes measured and REFUSED, so neither is re-attempted from memory
+
+- **Require a leaf's `files` to be a subset of the plan's `Files:` line for its section.**
+  Inert against this defect for the same reason the verbatim rule was: it needs
+  `_section_for_task`, which returns `""` for exactly the leaves that drifted.
+- **Resolve the section by best CONTENT match instead of by title.** It separates the two
+  real plans cleanly - faithful 0.93 / 0.91 / 0.95 against fabricated 0.08 / 0.08 / 0.25 -
+  and then false-fires on a faithful one-section-to-N-leaves split, which is the flagship
+  mechanism's normal output. A constructed faithful 1:3 decomposition of one plan section
+  scores 0.31 against the fabricated 0.25: a margin of 0.06, not separable. A reverse
+  metric (the fraction of a leaf's `Steps` lines found verbatim in the plan) scored 0.0 on
+  every real leaf including the faithful ones, so it is refuted as well.
+
+The remaining option is structural rather than a threshold: have the decomposer DECLARE
+the plan heading each leaf came from, which makes the section resolvable by construction
+and makes the declaration itself checkable against the plan's real headings. That is a
+`LeafTask` schema change and so a `LEAF_SCHEMA_VERSION` bump with fixture regeneration.
