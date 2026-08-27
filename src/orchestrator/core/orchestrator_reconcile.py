@@ -175,10 +175,92 @@ TERMINAL_PLAN_STATUSES: frozenset[str] = frozenset(
     }
 )
 
-# Ledger keys carrying the two "do not delete this" signals. Their absence is
+# Ledger keys carrying the "do not delete this" signals. Their absence is
 # treated as an inability to establish that anything is dead, not as an empty
-# veto set: see the refusal in sweep_dead_branches.
-_REQUIRED_LEDGER_KEYS: tuple[str, ...] = ("live_branches", "protected_branches")
+# veto set: see the refusal in sweep_dead_branches. The dead-side keys
+# (open_pr_branches / terminal_failed / merged_plan) are deliberately NOT here,
+# because their absence spares rather than deletes.
+_REQUIRED_LEDGER_KEYS: tuple[str, ...] = (
+    "live_branches",
+    "protected_branches",
+    "carrying_merged_work",
+)
+
+
+def _report_branches_spared_by_merged_work(
+    repo_url: str,
+    remote_branches: list[str],
+    ledger: dict[str, set[str]],
+    dead: list[str],
+    spared_warnings: set[tuple[str, str]],
+    merged_work_plan_ids: dict[str, list[str]],
+) -> None:
+    """Tell the operator once about each branch the merged-work veto kept.
+
+    A branch that is silently kept forever is its own defect: after a plan
+    fails, the operator's question is "is the leaf I approved still there?",
+    and nothing else in the system volunteers the answer. The plan is terminal,
+    so it will never open an integration PR, and no gate lists it.
+
+    Args:
+        repo_url: The remote being swept, named in the report.
+        remote_branches: Every branch on that remote, in listing order.
+        ledger: The same ledger the decision was taken from.
+        dead: What the decision actually condemned.
+        spared_warnings: Cross-pass ``(repo_url, branch)`` memo, mutated here.
+        merged_work_plan_ids: ``branch -> plan id(s)``, cosmetic only.
+    """
+    veto = ledger["carrying_merged_work"]
+    if not veto:
+        # A veto naming nothing can have spared nothing, so the second
+        # classification below would return exactly ``dead``.
+        return
+    # The SAME classifier, deliberately handed an EMPTY veto set, so the report
+    # is a DIFFERENCE against the real decision instead of a second opinion
+    # about it. Re-deriving "which of these would have died" by hand here would
+    # be a second copy of dead_branches' precedence rules, free to drift from
+    # them and to credit this veto with a branch that protection or liveness
+    # actually saved. NEVER copy this call to the decision site: an empty
+    # carrying_merged_work THERE is the work-destroying defect itself.
+    would_delete_unguarded = branch_sweeper.dead_branches(
+        remote_branches,
+        open_pr_branches=ledger.get("open_pr_branches", set()),
+        terminal_failed=ledger.get("terminal_failed", set()),
+        merged_plan=ledger.get("merged_plan", set()),
+        live_branches=ledger["live_branches"],
+        protected_branches=ledger["protected_branches"],
+        carrying_merged_work=set(),
+    )
+    condemned = set(dead)
+    spared = [b for b in would_delete_unguarded if b not in condemned]
+
+    # Drop the latch for anything no longer being spared on this remote (it was
+    # deleted out of band, or its plan finally integrated), so a later episode
+    # on the same branch name gets its own report rather than permanent
+    # silence. Same recovery discipline as RepoProbeState.warned.
+    still_spared = {(repo_url, branch) for branch in spared}
+    for stale in [
+        key for key in spared_warnings if key[0] == repo_url and key not in still_spared
+    ]:
+        spared_warnings.discard(stale)
+
+    for branch in spared:
+        key = (repo_url, branch)
+        if key in spared_warnings:
+            continue
+        spared_warnings.add(key)
+        owners = merged_work_plan_ids.get(branch) or []
+        who = f" of plan(s) {', '.join(owners)}" if owners else ""
+        logger.warning(
+            "Keeping branch %s on %s instead of reclaiming it: merged work%s "
+            "is on it and has not been shown to have reached the base branch, "
+            "so deleting it would destroy work a merge already accepted. It "
+            "stays until that work is integrated, or until you delete the "
+            "branch by hand once you have taken the work off it.",
+            branch,
+            repo_url,
+            who,
+        )
 
 
 async def sweep_dead_branches(
@@ -189,6 +271,8 @@ async def sweep_dead_branches(
     failure_counts: dict[tuple[str, str], int] | None = None,
     repo_probe_state: dict[str, RepoProbeState] | None = None,
     project_ids: Sequence[str] = (),
+    spared_warnings: set[tuple[str, str]] | None = None,
+    merged_work_plan_ids: dict[str, list[str]] | None = None,
 ) -> SweepOutcome:
     """Sweep dead branches on repo_url using ledger sets best-effort.
 
@@ -197,11 +281,13 @@ async def sweep_dead_branches(
         list_remote_branches: Awaitable returning every branch on the remote.
         delete_remote_branch: Awaitable that deletes one remote branch.
         ledger: ``open_pr_branches`` / ``terminal_failed`` / ``merged_plan`` /
-            ``live_branches`` / ``protected_branches`` branch-name sets used by
-            ``branch_sweeper.dead_branches`` to decide reclaimability. The two
-            veto sets are mandatory: a ledger missing either is refused
-            outright (logged, nothing deleted) rather than swept as though
-            nothing were live, because that reading deletes work.
+            ``live_branches`` / ``protected_branches`` /
+            ``carrying_merged_work`` branch-name sets used by
+            ``branch_sweeper.dead_branches`` to decide reclaimability. The
+            three veto sets are mandatory: a ledger missing any of them is
+            refused outright (logged, nothing deleted) rather than swept as
+            though nothing were live, protected or already merged onto,
+            because those readings delete work.
         failure_counts: Mutable ``(repo_url, branch) -> consecutive failure
             count`` map, shared by the caller across sweep passes (the
             caller, e.g. ``ReconcileMixin.reconcile_runs``, owns an
@@ -224,6 +310,18 @@ async def sweep_dead_branches(
             name the project in the one quarantine warning. Cosmetic: an
             empty sequence still quarantines correctly, it just cannot name
             a project in the log line.
+        spared_warnings: Mutable ``(repo_url, branch)`` set of branches whose
+            "kept because it carries merged work" report has already been
+            made, shared by the caller across sweep passes exactly like
+            ``failure_counts``. A branch that stops being spared (it was
+            deleted out of band, or its plan finally integrated) is dropped
+            from the set, so a LATER episode on the same name reports again
+            rather than staying silent forever. Pass ``None`` (the default)
+            for a call with no cross-pass memory, which reports every pass.
+        merged_work_plan_ids: ``branch -> plan id(s)`` whose merged work sits
+            on that branch, used only to name the plan in that report.
+            Cosmetic in exactly the sense ``project_ids`` is: the branch is
+            spared whether or not this is supplied.
 
     Returns:
         ``"refused"`` when the ledger was incomplete (nothing attempted),
@@ -334,6 +432,16 @@ async def sweep_dead_branches(
         merged_plan=ledger.get("merged_plan", set()),
         live_branches=ledger["live_branches"],
         protected_branches=ledger["protected_branches"],
+        carrying_merged_work=ledger["carrying_merged_work"],
+    )
+
+    _report_branches_spared_by_merged_work(
+        repo_url,
+        remote_branches,
+        ledger,
+        dead,
+        spared_warnings if spared_warnings is not None else set(),
+        merged_work_plan_ids or {},
     )
 
     for branch in dead:
@@ -386,6 +494,7 @@ class ReconcileMixin:
         _branch_delete_failures: dict[tuple[str, str], int]
         _repo_probe_failures: dict[str, RepoProbeState]
         _merge_gate_probe_state: dict[str, RepoProbeState]
+        _spared_branch_warnings: set[tuple[str, str]]
 
     def _safe_logs(self, container_id: str) -> str:
         """Fetch full container logs, swallowing any backend errors."""
@@ -531,13 +640,14 @@ class ReconcileMixin:
                 # another repository is not that knowledge.
                 task_rows = await self._tq._db.fetch_all(
                     "SELECT p.repo_url AS repo_url, t.branch_name AS branch_name, "
-                    "t.status AS status, t.pr_url AS pr_url "
+                    "t.status AS status, t.pr_url AS pr_url, "
+                    "t.plan_id AS plan_id "
                     "FROM tasks t "
                     "LEFT JOIN plans pl ON t.plan_id = pl.id "
                     "LEFT JOIN projects p ON pl.project_id = p.id"
                 )
                 plan_rows = await self._tq._db.fetch_all(
-                    "SELECT p.repo_url AS repo_url, "
+                    "SELECT p.repo_url AS repo_url, pl.id AS plan_id, "
                     "pl.plan_branch_name AS plan_branch_name, "
                     "pl.status AS status, "
                     "pl.integration_pr_url AS integration_pr_url, "
@@ -550,6 +660,8 @@ class ReconcileMixin:
                 terminal_failed_by_repo: dict[str, set[str]] = {}
                 merged_plan_by_repo: dict[str, set[str]] = {}
                 live_by_repo: dict[str, set[str]] = {}
+                carrying_merged_work_by_repo: dict[str, set[str]] = {}
+                merged_work_plan_ids_by_repo: dict[str, dict[str, list[str]]] = {}
                 # A row whose repository cannot be resolved (a LEFT JOIN that
                 # found nothing) can only ever SPARE a branch, never condemn
                 # one: it joins every repo's live set and none of the dead sets.
@@ -558,6 +670,22 @@ class ReconcileMixin:
 
                 def _bucket(store: dict[str, set[str]], repo: str) -> set[str]:
                     return store.setdefault(repo, set())
+
+                # Which plans have had a task MERGED. Its OWN loop, not folded
+                # into the one below, because that loop skips a row before
+                # reading its status (an empty branch_name) and this fact is
+                # about the row's PLAN, not about the row's branch: a task
+                # whose branch_name is blank still merged its work onto the
+                # plan branch. MERGED alone, deliberately -- NO_CHANGES put no
+                # commits anywhere by definition, and SUPERSEDED handed the
+                # work to child rows that appear here in their own right.
+                plans_with_merged_work: set[str] = set()
+                for row in task_rows:
+                    if row.get("status") != TaskStatus.MERGED.value:
+                        continue
+                    merged_plan_id = str(row.get("plan_id") or "")
+                    if merged_plan_id:
+                        plans_with_merged_work.add(merged_plan_id)
 
                 for row in task_rows:
                     branch = (row.get("branch_name") or "").strip()
@@ -634,6 +762,28 @@ class ReconcileMixin:
                         _bucket(merged_plan_by_repo, repo).add(branch)
                     if status not in TERMINAL_PLAN_STATUSES:
                         _bucket(live_by_repo, repo).add(branch)
+                    # The veto that was missing on 2026-08-26. A two-tier task
+                    # PR merges agent/<slug> INTO the plan branch and the
+                    # provider deletes the head, so those commits exist on the
+                    # plan branch and NOWHERE else until integration lands on
+                    # base. The plan then failing is a reason to stop working,
+                    # not a reason to destroy what already landed -- and the
+                    # FAILED arm is defined by never opening the integration PR
+                    # that would otherwise have vetoed the delete, so a plan in
+                    # exactly this state has no other veto left.
+                    #
+                    # ``integration_merged_at`` is the release condition and it
+                    # is a FACT rather than an inference: once stamped, the work
+                    # is on the base branch and ordinary cleanup must resume, or
+                    # every plan ever completed leaves a permanent ref behind.
+                    owning_plan_id = str(row.get("plan_id") or "")
+                    merged_onto = owning_plan_id in plans_with_merged_work
+                    already_integrated = bool(row.get("integration_merged_at"))
+                    if merged_onto and not already_integrated:
+                        _bucket(carrying_merged_work_by_repo, repo).add(branch)
+                        merged_work_plan_ids_by_repo.setdefault(repo, {}).setdefault(
+                            branch, []
+                        ).append(owning_plan_id)
 
                 # Per-branch delete-failure streaks, kept for the process's
                 # lifetime (an in-memory dict on the instance, lazily
@@ -660,6 +810,16 @@ class ReconcileMixin:
                     repo_probe_failures = {}
                     self._repo_probe_failures = repo_probe_failures
 
+                # Which "kept because it carries merged work" reports have
+                # already been made, kept the same way and for the same reason
+                # as the two maps above. Reconcile runs every ~5s forever, so
+                # without this the report becomes the noise it is meant to
+                # stand out from.
+                spared_warnings = getattr(self, "_spared_branch_warnings", None)
+                if spared_warnings is None:
+                    spared_warnings = set()
+                    self._spared_branch_warnings = spared_warnings
+
                 for repo_url, repo_defaults in default_branch_by_repo.items():
                     # A plan with no plan_branch_name dispatches straight onto
                     # project["default_branch"], so that branch reaches
@@ -680,10 +840,17 @@ class ReconcileMixin:
                             "live_branches": live_by_repo.get(repo_url, set())
                             | unresolved_live,
                             "protected_branches": repo_defaults,
+                            "carrying_merged_work": carrying_merged_work_by_repo.get(
+                                repo_url, set()
+                            ),
                         },
                         failure_counts=branch_delete_failures,
                         repo_probe_state=repo_probe_failures,
                         project_ids=project_ids_by_repo.get(repo_url, ()),
+                        spared_warnings=spared_warnings,
+                        merged_work_plan_ids=merged_work_plan_ids_by_repo.get(
+                            repo_url, {}
+                        ),
                     )
         except Exception:  # noqa: BLE001 - sweeper call is best-effort
             logger.exception("Failed to sweep dead branches during reconcile pass")

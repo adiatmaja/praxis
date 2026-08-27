@@ -23,6 +23,7 @@ def test_keeps_protected_and_live() -> None:
         merged_plan=merged_plan,
         live_branches=set(),
         protected_branches=set(),
+        carrying_merged_work=set(),
     )
 
     assert result == ["agent/failed", "plan/merged"]
@@ -37,6 +38,7 @@ def test_never_touches_unknown_branches() -> None:
         merged_plan=set(),
         live_branches=set(),
         protected_branches=set(),
+        carrying_merged_work=set(),
     )
 
     assert result == []
@@ -56,6 +58,7 @@ def test_a_branch_something_is_still_using_is_never_dead() -> None:
         merged_plan=set(),
         live_branches={"daily/dev-session"},
         protected_branches=set(),
+        carrying_merged_work=set(),
     )
 
     assert result == []
@@ -74,6 +77,7 @@ def test_a_live_signal_beats_a_merged_plan_signal_too() -> None:
         merged_plan={"daily/dev-session"},
         live_branches={"daily/dev-session"},
         protected_branches=set(),
+        carrying_merged_work=set(),
     )
 
     assert result == []
@@ -93,6 +97,7 @@ def test_the_repositorys_real_default_branch_is_protected() -> None:
         merged_plan=set(),
         live_branches=set(),
         protected_branches={"develop"},
+        carrying_merged_work=set(),
     )
 
     assert result == ["agent/failed"]
@@ -111,6 +116,7 @@ def test_a_genuinely_dead_agent_branch_is_still_reclaimed() -> None:
         merged_plan=set(),
         live_branches={"daily/dev-session"},
         protected_branches={"develop"},
+        carrying_merged_work=set(),
     )
 
     assert result == ["agent/genuinely-dead"]

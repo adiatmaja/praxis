@@ -2,8 +2,10 @@
 
 The asymmetry here is total and the code is written around it. Deleting a
 branch something is still using destroys work that exists only in a container
-or only on that remote ref, and no part of the system can put it back. Failing
-to delete a branch that really is dead leaves one stale ref on a remote. So
+or only on that remote ref -- including work a merge already ACCEPTED, which
+on a plan branch lives nowhere else until the integration PR lands -- and no
+part of the system can put it back. Failing to delete a branch that really is
+dead leaves one stale ref on a remote. So
 every signal in this module is read in the fail-safe direction: a branch is
 deleted only when it is POSITIVELY known to be finished with, and any signal
 that something might still be using it wins outright.
@@ -36,12 +38,14 @@ def dead_branches(
     merged_plan: set[str],
     live_branches: set[str],
     protected_branches: set[str],
+    carrying_merged_work: set[str],
 ) -> list[str]:
     """Return a list of branch names that are provably dead and safe to prune.
 
     A branch is dead only if it is in ``terminal_failed`` or ``merged_plan``
-    AND nothing objects: it is not protected, bears no open PR, and is not in
-    use by anything still running.
+    AND nothing objects: it is not protected, bears no open PR, is not in use
+    by anything still running, and does not carry work that already merged
+    onto it and has not reached the base branch yet.
 
     Args:
         branches: Every branch currently on the remote.
@@ -60,19 +64,34 @@ def dead_branches(
             A plan with no plan branch runs directly on the project default,
             so without this a single failed task nominates the repository's
             trunk for deletion.
+        carrying_merged_work: Branches that other work was MERGED onto and
+            which have not been shown to have reached the base branch. Deleting
+            one of these destroys work that a merge already accepted, which is
+            not a stale ref but a loss. Measured live on 2026-08-26: a two-tier
+            plan whose first leaf was merged onto the plan branch by a human,
+            and whose second leaf then spent its attempts, put that plan branch
+            into ``terminal_failed`` with every other veto absent, and the
+            sweep deleted the merged leaf's only copy. It vetoes BOTH terminal
+            sets for the same reason ``live_branches`` does: the caller derives
+            it from "this work has not reached base", and the ``merged_plan``
+            arm can be reached by a legacy plan status without that ever having
+            been established.
 
     Returns:
         The subset of ``branches`` that is safe to delete, in input order.
 
-    Both liveness arguments are REQUIRED rather than defaulting to empty: an
-    omitted signal must never be readable as "nothing is live" or "nothing is
-    protected", because that reading is the one that deletes work.
+    All three veto arguments are REQUIRED rather than defaulting to empty: an
+    omitted signal must never be readable as "nothing is live", "nothing is
+    protected" or "nothing merged here", because those readings are the ones
+    that delete work.
     """
     dead: list[str] = []
     for b in branches:
         if _is_protected(b, protected_branches):
             continue
         if b in open_pr_branches or b in live_branches:
+            continue
+        if b in carrying_merged_work:
             continue
         if b in terminal_failed or b in merged_plan:
             dead.append(b)

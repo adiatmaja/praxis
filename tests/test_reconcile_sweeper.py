@@ -136,6 +136,7 @@ async def test_sweep_deletes_only_dead() -> None:
         "merged_plan": {"plan/merged"},
         "live_branches": set(),
         "protected_branches": set(),
+        "carrying_merged_work": set(),
     }
 
     await rec.sweep_dead_branches(
@@ -167,6 +168,7 @@ async def test_sweep_swallows_per_branch_errors() -> None:
         "merged_plan": set(),
         "live_branches": set(),
         "protected_branches": set(),
+        "carrying_merged_work": set(),
     }
 
     await rec.sweep_dead_branches(
@@ -194,6 +196,7 @@ async def test_sweep_handles_list_failure() -> None:
         "merged_plan": set(),
         "live_branches": set(),
         "protected_branches": set(),
+        "carrying_merged_work": set(),
     }
 
     # Should not raise exception
@@ -231,6 +234,7 @@ async def test_sweep_caps_repeated_branch_failures_and_gives_up_once(
         "merged_plan": set(),
         "live_branches": set(),
         "protected_branches": set(),
+        "carrying_merged_work": set(),
     }
     failure_counts: dict[tuple[str, str], int] = {}
     cap = rec.BRANCH_DELETE_FAILURE_CAP
@@ -280,6 +284,7 @@ async def test_sweep_resets_failure_count_after_a_successful_delete() -> None:
         "merged_plan": set(),
         "live_branches": set(),
         "protected_branches": set(),
+        "carrying_merged_work": set(),
     }
     failure_counts: dict[tuple[str, str], int] = {}
 
@@ -525,6 +530,7 @@ async def test_repo_probe_quarantines_on_httpx_connect_errors_too(
         "merged_plan": set(),
         "live_branches": set(),
         "protected_branches": set(),
+        "carrying_merged_work": set(),
     }
     repo_probe_state: dict[str, rec.RepoProbeState] = {}
     threshold = rec.REPO_PROBE_FAILURE_QUARANTINE_THRESHOLD
@@ -577,6 +583,7 @@ async def test_repo_probe_quarantines_after_n_consecutive_failures_one_warning(
         "merged_plan": set(),
         "live_branches": set(),
         "protected_branches": set(),
+        "carrying_merged_work": set(),
     }
     repo_probe_state: dict[str, rec.RepoProbeState] = {}
     threshold = rec.REPO_PROBE_FAILURE_QUARANTINE_THRESHOLD
@@ -622,6 +629,7 @@ async def test_quarantined_repo_is_not_probed_on_the_next_tick() -> None:
         "merged_plan": set(),
         "live_branches": set(),
         "protected_branches": set(),
+        "carrying_merged_work": set(),
     }
     repo_probe_state: dict[str, rec.RepoProbeState] = {}
     threshold = rec.REPO_PROBE_FAILURE_QUARANTINE_THRESHOLD
@@ -672,6 +680,7 @@ async def test_recovered_repo_is_swept_again() -> None:
         "merged_plan": set(),
         "live_branches": set(),
         "protected_branches": set(),
+        "carrying_merged_work": set(),
     }
     repo_probe_state: dict[str, rec.RepoProbeState] = {}
     threshold = rec.REPO_PROBE_FAILURE_QUARANTINE_THRESHOLD
@@ -749,6 +758,7 @@ async def test_still_dead_repo_gets_no_second_warning_after_a_failed_reprobe(
         "merged_plan": set(),
         "live_branches": set(),
         "protected_branches": set(),
+        "carrying_merged_work": set(),
     }
     repo_probe_state: dict[str, rec.RepoProbeState] = {}
     threshold = rec.REPO_PROBE_FAILURE_QUARANTINE_THRESHOLD
@@ -839,6 +849,7 @@ async def test_the_quarantine_backoff_schedule_is_bounded_at_both_ends(
             "merged_plan": set(),
             "live_branches": set(),
             "protected_branches": set(),
+            "carrying_merged_work": set(),
         },
         repo_probe_state={repo_url: state},
     )
@@ -860,6 +871,7 @@ async def test_unreadable_repo_and_readable_empty_repo_are_distinguishable() -> 
         "merged_plan": set(),
         "live_branches": set(),
         "protected_branches": set(),
+        "carrying_merged_work": set(),
     }
 
     async def fake_delete_remote_branch(url: str, branch: str) -> None:
@@ -927,6 +939,7 @@ async def test_expected_probe_failure_logs_no_traceback(
         "merged_plan": set(),
         "live_branches": set(),
         "protected_branches": set(),
+        "carrying_merged_work": set(),
     }
     repo_probe_state: dict[str, rec.RepoProbeState] = {}
     threshold = rec.REPO_PROBE_FAILURE_QUARANTINE_THRESHOLD
