@@ -1591,7 +1591,10 @@ def pending() -> None:
         for task in tasks:
             # `Text` per the note on `_check`. `_scope_glance` returns one of
             # this module's own fixed phrases, so it stays a plain string.
-            row = [
+            # Annotated: a bare literal of mixed `str` and `Text` infers as
+            # `list[object]`, which `add_row` rejects. Both member types are
+            # deliberate - see the note above on which cells take `Text`.
+            row: list[str | Text] = [
                 f"{int(task['age_hours'])}h",
                 Text(task["title"] or task["task_id"]),
                 Text(task["branch"] or ""),

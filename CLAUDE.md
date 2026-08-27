@@ -188,12 +188,22 @@ uv run pytest -q -k "<subject>"
 # trust. Not after every edit, and never twice for the same tree.
 uv run pytest --cov=orchestrator --cov-report=term-missing -v
 
-# Lint & format
+# Lint & format. CI's SCOPE IS WIDER THAN THIS - it adds bench/, and its mypy
+# takes src/ (which is src/orchestrator + src/cli + src/mcp_server), not just
+# the orchestrator. The narrow forms below are fine mid-edit; before a push run
+# the CI forms underneath them, or a red lands on main from a directory you
+# never checked. That is exactly how 1f155c7 went red: a mypy error in
+# src/cli/main.py, on a run where the orchestrator and mcp_server were clean.
 uv run ruff format src/ tests/
 uv run ruff check --fix src/ tests/
-
-# Type check
 uv run mypy src/orchestrator/ --ignore-missing-imports
+
+# What CI actually runs (.github/workflows/ci.yml, `lint`). Mypy reports the
+# file COUNT it checked - 117 at the time of writing - so a narrower scope is
+# visible in the output if you look.
+uv run ruff format --check src/ tests/ bench/
+uv run ruff check src/ tests/ bench/
+uv run mypy src/ bench/ --ignore-missing-imports
 ```
 
 ## CI/CD (GitHub Actions)
@@ -219,8 +229,13 @@ Workflows in `.github/workflows/` (added 2026-07-02, verified green on runners):
   **`# noqa: S608` is RUFF's code and does NOTHING here**: bandit never reads `noqa`, and
   this repo's `[tool.ruff.lint] select` has no `"S"`, so that directive silences neither
   tool while looking like a suppression.
-- **RUN THE CI COMMANDS, NOT YOUR OWN.** Both CI reds of 2026-08-26 were local checks that
-  passed for a reason CI does not share. `uv run bandit` exits `program not found` (bandit
+- **RUN THE CI COMMANDS, NOT YOUR OWN.** Three CI reds now. The 2026-08-27 one was the
+  SCOPE, not the command: CI's mypy is `src/ bench/` and this file's own type-check line
+  was `src/orchestrator/`, so a `src/cli/` error was invisible to a local run that reported
+  "Success: no issues found" - the most convincing possible green. **A narrower scope is
+  not a weaker check, it is a DIFFERENT check.** Mypy prints the file count it checked;
+  compare it (117) before believing a clean run. Both reds of 2026-08-26 were local checks
+  that passed for a reason CI does not share. `uv run bandit` exits `program not found` (bandit
   is NOT a dev dependency; CI uses `uvx`), and grepping that error for findings looks
   exactly like a clean scan - run `uvx bandit -r src/ -c pyproject.toml` and read the
   `Total issues (by severity)` block. And CI has NO `.env`, so anything resolved from the
