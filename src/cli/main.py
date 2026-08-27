@@ -1032,6 +1032,18 @@ def task(task_id: str = typer.Argument(..., help="Task ID")) -> None:
     )
     if task_data["pr_url"]:
         console.print(Text(f"PR: {task_data['pr_url']}"))
+    # BEFORE the feedback, and unconditionally when there is something to say:
+    # this is the fact the feedback structurally cannot carry, because the
+    # reviewer grades the diff against the LEAF's plan_text. A human inspecting
+    # one task is exactly who needs it, and putting it under a long model
+    # prose block is the same as not printing it.
+    #
+    # `praxis pending` renders this too. Both, on purpose: pending is the queue
+    # and this is the detail view, and a fact that only appears in the queue is
+    # invisible to anyone who went straight to the task.
+    drift_line = _drift_line(task_data.get("contract_drift"))
+    if drift_line:
+        console.print(Text(drift_line))
     if task_data["review_feedback"]:
         console.print("[yellow]Feedback:[/yellow]", Text(task_data["review_feedback"]))
     for run in data["runs"]:
