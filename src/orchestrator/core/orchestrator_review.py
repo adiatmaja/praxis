@@ -59,6 +59,7 @@ from orchestrator.core.leaf_triage import TriageEvidence, triage_leaf
 from orchestrator.core.leaf_validator import (
     Violation,
     discriminating_leaf_command,
+    restates_project_command,
     validate_split_children,
 )
 from orchestrator.core.llm_router import ProviderRateLimitError
@@ -77,10 +78,16 @@ from orchestrator.core.plan_graph import (
 )
 from orchestrator.core.status_vocab import GATED_STATUSES
 from orchestrator.core.verify_gate import (
+    LEAF_CHECK_NONDISCRIMINATING,
+    LEAF_CHECK_NONE,
     SCOPE_VERIFY_PASSED,
     SCOPE_VERIFY_UNATTRIBUTED,
+    FailureComparison,
     base_comparison_unavailable,
+    base_failure_clause,
+    compare_failures,
     normalize_verify_cmd,
+    run_exit_code,
     run_verify,
 )
 from orchestrator.models.schemas import TaskStatus, TriageDecision
@@ -285,14 +292,31 @@ async def _blast_radius_for_review(
 class _UnattributedVerify:
     """A project verify failure that was NOT charged to the task under review.
 
-    Carries the two facts a human needs to act on it, rather than encoding them
-    into ``verify_state``: which branch the same command already fails on, and
-    what the leaf's OWN verification did in its place. A state string that
-    embedded a branch name could not be compared, logged or grepped as a state.
+    Carries the facts a human needs to act on it, rather than encoding them
+    into ``verify_state``: which branch the same command already fails on, HOW
+    the two failures compared, and what the leaf's OWN verification did in its
+    place. A state string that embedded a branch name could not be compared,
+    logged or grepped as a state.
+
+    ``comparison`` and the two codes are REQUIRED rather than defaulted, on the
+    same ground the sweeper's ``carrying_merged_work`` veto is: the sentence
+    this feeds says whether the base failed the same way, and a default would
+    let a construction site quietly assert the strongest of the three answers
+    by saying nothing.
+
+    ``nondiscriminating`` splits the ``leaf_check is None`` case in two. The
+    leaf declared nothing runnable, or it declared the project command itself
+    -- one remedy is "write a check", the other is "your leaf's acceptance and
+    your project's verify command are the same string", and rendering them
+    identically sent operators to do the first when they needed the second.
     """
 
     base_branch: str
     leaf_check: str | None
+    comparison: FailureComparison
+    head_code: int | None
+    base_code: int | None
+    nondiscriminating: bool = False
 
 
 def _unattributed_clause(
@@ -306,21 +330,30 @@ def _unattributed_clause(
     approval on a repository whose configured verification is red.
 
     Args:
-        unattributed: The base branch and the leaf's own check, if any.
+        unattributed: The base branch, how the two failures compared, and the
+            leaf's own check if it had a usable one.
         verify_cmd: The project command, named because it is the thing failing.
 
     Returns:
         One clause for ``_review_scope_statement``.
     """
-    instead = (
-        f"this task's own verification passed instead (`{unattributed.leaf_check}`)"
-        if unattributed.leaf_check
-        else "this task declared no runnable verification of its own"
+    if unattributed.leaf_check:
+        instead = (
+            f"this task's own verification passed instead (`{unattributed.leaf_check}`)"
+        )
+    elif unattributed.nondiscriminating:
+        instead = LEAF_CHECK_NONDISCRIMINATING
+    else:
+        instead = LEAF_CHECK_NONE
+    compared = base_failure_clause(
+        unattributed.comparison,
+        unattributed.base_branch,
+        unattributed.head_code,
+        unattributed.base_code,
     )
     return (
-        f"verify gate FAILED (`{verify_cmd}`) but fails identically on "
-        f"{unattributed.base_branch}, so it was {SCOPE_VERIFY_UNATTRIBUTED}; "
-        f"{instead}"
+        f"verify gate FAILED (`{verify_cmd}`) but {compared}, so it was "
+        f"{SCOPE_VERIFY_UNATTRIBUTED}; {instead}"
     )
 
 
@@ -591,6 +624,13 @@ class _PlanVerifyResult:
     project command did not fail -- three different absences that all mean "this
     settles nothing", which is why the caller may only ever act on a PRESENT
     answer.
+
+    ``returncode`` is the runner's OWN classification of a failure, carried so
+    that two red runs can be compared on HOW they failed rather than merely on
+    the fact that both did. ``None`` means no classification is available -- a
+    skip, an error, a timeout, or a caller that never ran a command -- and
+    every one of those routes the comparison to ``INCOMPARABLE``, which
+    licenses exactly what it licensed before the comparison existed.
     """
 
     status: str
@@ -598,6 +638,7 @@ class _PlanVerifyResult:
     reason: str = ""
     paths: _DeclaredPathCheck | None = None
     leaf: _LeafVerifyRun | None = None
+    returncode: int | None = None
 
 
 @dataclass(frozen=True)
@@ -780,6 +821,7 @@ def _verify_outcome(
     plan_branch: str,
     verify_cmd: str,
     paths: _DeclaredPathCheck | None = None,
+    returncode: int | None = None,
 ) -> _PlanVerifyResult:
     """Turn a ``run_verify`` result into a gate verdict, and log it.
 
@@ -801,6 +843,10 @@ def _verify_outcome(
             status: a branch can verify clean AND be missing a file the leaf
             declared, and those are the two facts that together produced the
             false success this argument exists for.
+        returncode: The runner's own exit code, carried so a red base branch
+            can be compared with a red head on HOW each failed. Defaulted to
+            None so a caller that cannot supply one gets the pre-existing
+            answer rather than a fabricated classification.
 
     Returns:
         A ``passed`` or ``failed`` result carrying truncated output.
@@ -815,7 +861,10 @@ def _verify_outcome(
             _log_excerpt(output),
         )
     return _PlanVerifyResult(
-        "passed" if passed else "failed", output[:_VERIFY_OUTPUT_MAX], paths=paths
+        "passed" if passed else "failed",
+        output[:_VERIFY_OUTPUT_MAX],
+        paths=paths,
+        returncode=returncode,
     )
 
 
@@ -866,8 +915,11 @@ async def _inspect_branch_tree(
     if verify_cmd is None:
         logger.info("verify gate skipped: %s (branch=%s)", skip_reason, plan_branch)
         return _PlanVerifyResult("skipped", reason=skip_reason, paths=paths)
-    passed, output = await run_verify(checkout_dir, verify_cmd)
-    result = _verify_outcome(passed, output, plan_branch, verify_cmd, paths)
+    run = await run_verify(checkout_dir, verify_cmd)
+    passed, output = run
+    result = _verify_outcome(
+        passed, output, plan_branch, verify_cmd, paths, run_exit_code(run)
+    )
     if result.status != "failed" or leaf_verify_cmd is None:
         return result
     leaf_passed, leaf_output = await run_verify(checkout_dir, leaf_verify_cmd)
@@ -903,7 +955,7 @@ class _PlanVerifyAttribution:
 
 
 def attribute_plan_verify_failure(
-    base: _PlanVerifyResult, base_branch: str
+    head: _PlanVerifyResult, base: _PlanVerifyResult, base_branch: str
 ) -> _PlanVerifyAttribution:
     """Decide whether a red COMPLETED PLAN BRANCH is a regression this plan caused.
 
@@ -932,7 +984,22 @@ def attribute_plan_verify_failure(
     there is no verdict to attribute and asking the base could only buy a second
     full clone and test run to compare against nothing.
 
+    **A red base is no longer one answer.** Until 2026-08-27 the whole
+    comparison was ``base.status == "failed"``, so a base that could not even
+    COMPILE and a head that failed three assertions counted as the same
+    failure. ``compare_failures`` asks the runner's own exit code instead, and
+    the third arm below is what a changed failure MODE now buys.
+
+    This seat ALARMS on ``FAILED_DIFFERENTLY``, and the wave gate one layer
+    down deliberately does not park on it. The asymmetry is the point: this
+    event is advisory and the integration PR opens on every arm, so the cost of
+    alarming is an operator's attention, while the wave gate's action is a
+    MEMOIZED park that nothing can ever clear.
+
     Args:
+        head: What the command did on the accumulated plan branch, for the
+            comparison. Its verdict is already known to be ``failed``; what is
+            read here is HOW.
         base: What the same command did on the branch the plan was cut from.
         base_branch: Its name, for the sentence a human reads.
 
@@ -951,17 +1018,30 @@ def attribute_plan_verify_failure(
             ),
         )
     if base.status == "failed":
-        # Not a regression this plan caused. No event, and a WARNING log line
-        # instead: ``plan_verify_failed`` means "a cross-task regression was
-        # found" to every reader it has ever had, and publishing it for a
-        # repository that was already red is the same untrue claim this removes.
+        comparison = compare_failures(head.returncode, base.returncode)
+        clause = base_failure_clause(
+            comparison, base_branch, head.returncode, base.returncode
+        )
+        if comparison is FailureComparison.FAILED_DIFFERENTLY:
+            # The plan branch is red, the base is red, and they are not red for
+            # the same reason. Something this plan merged changed the failure
+            # mode, which is the claim ``plan_verify_failed`` has always made.
+            return _PlanVerifyAttribution(
+                alarm=True,
+                reported_status="failed",
+                detail=f"CROSS-LEAF REGRESSION: {clause}.",
+            )
+        # Not shown to be a regression this plan caused. No event, and a
+        # WARNING log line instead: ``plan_verify_failed`` means "a cross-task
+        # regression was found" to every reader it has ever had, and publishing
+        # it for a repository that was already red the same way is the untrue
+        # claim this removes. ``INCOMPARABLE`` lands here too and must: an
+        # unanswered question buys no alarm, and the clause says so in words
+        # rather than claiming an identity nobody established.
         return _PlanVerifyAttribution(
             alarm=False,
             reported_status=_PLAN_VERIFY_UNATTRIBUTED,
-            detail=(
-                f"the same command fails identically on {base_branch}, so it is "
-                f"not a regression this plan caused."
-            ),
+            detail=f"{clause}, so it is not a regression this plan caused.",
         )
     # ``error`` and every skip: no ANSWER about the base branch. Fail closed,
     # exactly as before the comparison existed, and NAME the comparison that is
@@ -1664,7 +1744,8 @@ class ReviewMixin:
             unattributed: _UnattributedVerify | None = None
             radius: BlastRadius | None = None
             if verify_cmd and checkout is not None:
-                passed, gate_output = await run_verify(checkout, verify_cmd)
+                head_run = await run_verify(checkout, verify_cmd)
+                passed, gate_output = head_run
                 verify_state = _GATE_PASSED if passed else _GATE_FAILED
                 if passed:
                     log.info("verify gate passed (`%s`)", verify_cmd)
@@ -1686,6 +1767,7 @@ class ReviewMixin:
                         checkout=checkout,
                         verify_cmd=verify_cmd,
                         gate_output=gate_output,
+                        head_code=run_exit_code(head_run),
                         leaf_verification=leaf_verification,
                         log=log,
                     )
@@ -3227,12 +3309,29 @@ class ReviewMixin:
                     f"{_log_excerpt(verdict.leaf.output)}"
                 )
             elif verdict.status == "failed":
+                # Two states, and until 2026-08-27 both read as "declared
+                # nothing". A leaf that declared the project command DID
+                # declare a check; telling its author to write one sends them
+                # to do the one thing that cannot help, and hides the fact they
+                # could act on. Same phrases as the review seat, from
+                # ``core/verify_gate``, so the two cannot drift.
+                # NOT named ``declared``: that name is already bound in this
+                # scope to the leaf's declared PATHS, and reusing it made two
+                # unrelated facts share one word in a method whose whole
+                # subject is telling facts apart.
+                leaf_check_state = (
+                    LEAF_CHECK_NONDISCRIMINATING
+                    if restates_project_command(
+                        (entry or {}).get("verification"), verify_cmd
+                    )
+                    else LEAF_CHECK_NONE
+                )
                 why = (
                     f"the project verify command is red on the branch it was cut "
                     f"from ({base_branch}), which is the tree this task was handed "
-                    "and says nothing about the work it was asked to do; the task "
-                    "declares no runnable verification of its own, so the no-op "
-                    "could not be established either way"
+                    f"and says nothing about the work it was asked to do; "
+                    f"{leaf_check_state}, so the no-op could not be established "
+                    f"either way"
                 )
             elif verdict.status == "error":
                 why = (
@@ -3597,6 +3696,7 @@ class ReviewMixin:
         checkout: str,
         verify_cmd: str,
         gate_output: str,
+        head_code: int | None,
         leaf_verification: Any,
         log: Any,
     ) -> _VerifyAttribution:
@@ -3617,12 +3717,25 @@ class ReviewMixin:
 
         Three questions, in this order, and the order is the argument:
 
-        1. **Does the same command fail on the base branch?** If it PASSES
-           there, the failure is NEW and this task is the only thing that
-           changed, so the old behaviour stands unaltered. If the comparison
-           could not be MADE (``error``, or a configured gate that could not
-           reach the repository), this FAILS CLOSED and says why: an unanswered
-           question must never buy a task a pass.
+        1. **Does the same command fail on the base branch, and does it fail
+           the same WAY?** If it PASSES there, the failure is NEW and this task
+           is the only thing that changed, so the old behaviour stands
+           unaltered. If the comparison could not be MADE (``error``, or a
+           configured gate that could not reach the repository), this FAILS
+           CLOSED and says why: an unanswered question must never buy a task a
+           pass.
+
+           Until 2026-08-27 a red base ended the question, because the whole
+           comparison was ``base.status != "failed"`` -- status equality and
+           nothing else. Measured live on plan ``4eb8ed70``: the head RAN the
+           suite and three assertions failed, the base never ran a test at all
+           (a collection ``ImportError``), and those two counted as identical,
+           so a genuine leaf regression was excused as pre-existing.
+           ``compare_failures`` asks the runner's OWN exit code, which is the
+           only signal here that distinguishes two failures without parsing
+           text -- see its docstring for the six measured noise sources that
+           rule text comparison out, and for why an unknown runner degrades to
+           ``INCOMPARABLE`` rather than to a wrong answer.
         2. **What did the leaf's OWN declared verification do?** The
            decomposer emits one, the standard hard-requires it and F3 validates
            that it is runnable -- and nothing ever ran it; it was a
@@ -3634,6 +3747,26 @@ class ReviewMixin:
            by step 1 alone. The ABSENCE of a leaf check must not reinstate an
            attribution that was just shown to be false, and declaring nothing is
            the norm on every path but decomposition.
+
+           With ONE exception, and it is the whole reason adaptive ``split``
+           had never once been observed on a live run. A leaf whose declared
+           check IS the project command reaches this step too, and it is not a
+           leaf that declared nothing: it declared the WHOLE SUITE as its
+           acceptance, which the decomposition standard WANTS from the final
+           leaf of a dependent chain. Such a leaf had no positive signal, so
+           every failure was non-attributable, so no ``task_outcomes`` row was
+           written and triage -- where ``split`` is decided -- was never
+           called. The largest leaf in every plan was structurally
+           un-splittable and invisible to calibration. When step 1 shows the
+           base failed a DIFFERENT way, that leaf is held to the bar IT named,
+           and the bar is its own rather than one Praxis imposed.
+
+           The bound matters as much as the arm. A leaf that declared nothing
+           has made no acceptance claim, so nothing here may be held against
+           it; and a leaf with a check that CAN discriminate never reaches this
+           step, because that check is better evidence and keeps priority. So
+           the population this arm can charge is exactly the population that
+           named the project command itself.
 
         Not failing is NOT the same as passing, and nothing here treats it as
         such: the brain still reviews the diff, the human still gates the merge,
@@ -3648,6 +3781,10 @@ class ReviewMixin:
             checkout: The PR-head checkout the head command just ran in.
             verify_cmd: The normalized project command that just failed.
             gate_output: What it printed, already the caller's evidence.
+            head_code: The exit code the head run reported, or None when it
+                carries no classification (a timeout). Threaded from the caller
+                rather than re-derived, because a second run of the command
+                could observe a different state of the branch.
             leaf_verification: The leaf's raw ``verification`` from the plan
                 graph, untrusted brain output of any shape.
             log: The task-scoped logger.
@@ -3698,6 +3835,15 @@ class ReviewMixin:
                 base_comparison_unavailable(base_branch, base.status, base.reason),
             )
 
+        # HOW the two failed, not merely THAT both did. Computed once, here,
+        # and threaded into every sentence below, so the log line, the stored
+        # feedback and the merge-gate scope statement cannot disagree about a
+        # comparison that was made exactly once.
+        comparison = compare_failures(head_code, base.returncode)
+        compared = base_failure_clause(
+            comparison, base_branch, head_code, base.returncode
+        )
+
         # Absent covers TWO shapes and the second is the one that composed into
         # a hole: a leaf declaring nothing runnable, and a leaf whose declared
         # check IS ``verify_cmd`` -- the command the two branches above have
@@ -3705,19 +3851,61 @@ class ReviewMixin:
         # discriminate, so it must not license an attribution.
         leaf_check = discriminating_leaf_command(leaf_verification, verify_cmd)
         if leaf_check is None:
+            # The two shapes told apart. ``restates_project_command`` derives it
+            # by CALLING the same two functions the line above did, so the two
+            # answers cannot drift.
+            nondiscriminating = restates_project_command(leaf_verification, verify_cmd)
+            if nondiscriminating and comparison is FailureComparison.FAILED_DIFFERENTLY:
+                # THE arm this fix exists for. The leaf itself named the project
+                # command as its acceptance, and the base branch has now been
+                # shown to fail a DIFFERENT way, so there is no pre-existing
+                # failure here to inherit the excuse. Charging it is what makes
+                # the whole-suite leaf reachable by calibration and by triage,
+                # which is where ``split`` is decided.
+                log.warning(
+                    "verify gate failure IS attributed to task %s: `%s` is also "
+                    "this leaf's own declared acceptance, and %s",
+                    task_id,
+                    verify_cmd,
+                    compared,
+                )
+                return _VerifyAttribution(
+                    review={
+                        "verdict": "fail",
+                        "feedback": (
+                            f"{_VERIFY_FAIL_MARKER} before review "
+                            f"(`{verify_cmd}`), which this task declared as its "
+                            f"OWN acceptance check. {compared[0].upper()}"
+                            f"{compared[1:]}, so this failure is not the one "
+                            f"already on {base_branch}:\n\n{gate_output}"
+                        ),
+                    },
+                    verify_state=_GATE_FAILED,
+                )
             log.warning(
-                "verify gate failed for task %s (`%s`) but fails identically on "
-                "%s, and the task declares no runnable verification of its own, "
-                "so the failure is NOT attributed to it; the review continues "
-                "and the merge gate is told",
+                "verify gate failed for task %s (`%s`) but %s, and %s, so the "
+                "failure is NOT attributed to it; the review continues and the "
+                "merge gate is told",
                 task_id,
                 verify_cmd,
-                base_branch,
+                compared,
+                (
+                    LEAF_CHECK_NONDISCRIMINATING
+                    if nondiscriminating
+                    else LEAF_CHECK_NONE
+                ),
             )
             return _VerifyAttribution(
                 review=None,
                 verify_state=_GATE_UNATTRIBUTED,
-                unattributed=_UnattributedVerify(base_branch, None),
+                unattributed=_UnattributedVerify(
+                    base_branch,
+                    None,
+                    comparison,
+                    head_code,
+                    base.returncode,
+                    nondiscriminating=nondiscriminating,
+                ),
             )
 
         leaf_passed, leaf_output = await run_verify(checkout, leaf_check)
@@ -3734,29 +3922,33 @@ class ReviewMixin:
                     "verdict": "fail",
                     "feedback": (
                         f"{_VERIFY_FAIL_MARKER} before review. The project "
-                        f"command (`{verify_cmd}`) fails identically on "
-                        f"{base_branch}, so it was not held against this task. "
-                        "This task's OWN declared verification "
-                        f"(`{leaf_check}`) was run instead, and it "
-                        f"failed:\n\n{leaf_output}"
+                        f"command (`{verify_cmd}`) also fails on {base_branch}, "
+                        "so it was not held against this task. This task's OWN "
+                        f"declared verification (`{leaf_check}`) was run "
+                        f"instead, and it failed:\n\n{leaf_output}"
                     ),
                 },
                 verify_state=_GATE_FAILED,
             )
         log.warning(
-            "verify gate failed for task %s (`%s`) but fails identically on %s, "
-            "and the task's own verification (`%s`) passed, so the failure is "
-            "NOT attributed to it; the review continues and the merge gate is "
-            "told",
+            "verify gate failed for task %s (`%s`) but %s, and the task's own "
+            "verification (`%s`) passed, so the failure is NOT attributed to "
+            "it; the review continues and the merge gate is told",
             task_id,
             verify_cmd,
-            base_branch,
+            compared,
             leaf_check,
         )
         return _VerifyAttribution(
             review=None,
             verify_state=_GATE_UNATTRIBUTED,
-            unattributed=_UnattributedVerify(base_branch, leaf_check),
+            unattributed=_UnattributedVerify(
+                base_branch,
+                leaf_check,
+                comparison,
+                head_code,
+                base.returncode,
+            ),
         )
 
     @staticmethod
@@ -4331,7 +4523,9 @@ class ReviewMixin:
             attribution: _PlanVerifyAttribution | None = None
             if verify_status.status == "failed":
                 base_verdict = await self._verify_plan_branch(repo_url, base, gate_cmd)
-                attribution = attribute_plan_verify_failure(base_verdict, base)
+                attribution = attribute_plan_verify_failure(
+                    verify_status, base_verdict, base
+                )
                 if not attribution.alarm:
                     log.warning(
                         "Plan verify gate is RED on plan %s's branch %s, but %s",

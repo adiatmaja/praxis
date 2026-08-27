@@ -48,6 +48,10 @@ from orchestrator.core.leaf_validator import (
     shell_command_for_verification,
 )
 from orchestrator.core.orchestrator_review import _PlanVerifyResult
+from orchestrator.core.verify_gate import (
+    LEAF_CHECK_NONDISCRIMINATING,
+    LEAF_CHECK_NONE,
+)
 from orchestrator.models.schemas import TaskStatus
 
 
@@ -325,9 +329,16 @@ async def test_review_seat_does_not_charge_a_leaf_for_the_project_command(
     assert updated["status"] == TaskStatus.PASSED
     stored = updated["review_feedback"] or ""
     assert "not attributed to this task" in stored
-    # It took the "declares none" arm, not the "its own check failed" arm.
-    assert "declared no runnable verification of its own" in stored
+    # It took the no-usable-check arm, not the "its own check failed" arm.
     assert "was run instead" not in stored
+    # And it says WHICH of the two no-usable-check states this is. Until
+    # 2026-08-27 both rendered as "declared no runnable verification of its
+    # own", so an operator whose leaf DID declare one was sent to write a check
+    # the plan already contained, and the fact they could act on -- that their
+    # leaf's acceptance and their project's verify command are one string --
+    # never reached them.
+    assert LEAF_CHECK_NONDISCRIMINATING in stored
+    assert LEAF_CHECK_NONE not in stored
     # One run: the head. The identical command is never shelled a second time.
     assert verify.await_count == 1
 

@@ -398,6 +398,43 @@ async def test_an_unattributed_wave_is_memoized_so_it_is_not_re_run(
 
 
 @pytest.mark.integration
+async def test_the_wave_gate_says_how_the_base_failed_not_merely_that_it_did(
+    db: Database, caplog: pytest.LogCaptureFixture
+) -> None:
+    """This seat's adoption of the shared comparison, pinned in its OWN file.
+
+    A changed failure mode does NOT change what this gate DOES -- a memoized
+    park is permanent and nothing could ever clear it, so the licence stays
+    ``park=False``. That makes the SENTENCE the only observable difference
+    here, and without an assertion on it a mutation of the shared rule would
+    leave this file entirely green while reddening the review seat's. A seat
+    whose tests stay green has not been shown to have adopted anything.
+
+    Both runs are red. The plan branch RAN the suite and an assertion failed
+    (exit 1); the base never collected a test (exit 2). "Fails identically" is
+    a claim, and here it is false.
+    """
+    orch, plan_id, plan, project, _events = await _seed_stub_plan(db)
+    _stub_two_branch_verify(
+        orch,
+        head=_PlanVerifyResult("failed", "E   AssertionError: 3 failed", returncode=1),
+        base=_PlanVerifyResult("failed", "E   ImportError: infer_type", returncode=2),
+    )
+
+    with caplog.at_level(logging.WARNING, logger=_DISPATCH_LOGGER):
+        assert await orch._wave_verify_gate(plan_id, plan, project, 1) is True
+
+    assert "fails identically" not in caplog.text, (
+        "the base failed a DIFFERENT way and the gate said it failed the same way"
+    )
+    assert "but DIFFERENTLY" in caplog.text
+    # The evidence, not just the verdict: an operator reading plans.error can
+    # only judge the claim if the two codes are in it.
+    assert "exited 1" in caplog.text
+    assert "exited 2" in caplog.text
+
+
+@pytest.mark.integration
 async def test_the_stored_reason_is_not_rewritten_every_tick(db: Database) -> None:
     """The stored string IS the latch, exactly as ``_reconcile_parked_plan``'s is.
 
@@ -437,17 +474,26 @@ async def test_the_stored_reason_is_not_rewritten_every_tick(db: Database) -> No
 
 
 @pytest.mark.parametrize(
-    ("base_status", "held_against_the_plan"),
+    ("base_status", "base_code", "held_against_the_plan"),
     [
-        ("passed", True),
-        ("failed", False),
-        ("error", True),
-        ("skipped", True),
+        ("passed", 0, True),
+        # Red on both, and red the same way: the measured Hindley-Milner shape.
+        ("failed", 1, False),
+        # Red on both and red DIFFERENTLY (1 = tests failed, 2 = never
+        # collected). Added 2026-08-27 with the failure comparison, and the
+        # answer is still "neither seat holds it against anyone" because this
+        # leaf declared NO verification -- so it has made no acceptance claim,
+        # and the arm that can charge a differently-failing base is bounded to
+        # the leaf that named the project command as its own bar. Pinning it
+        # HERE is what stops that bound being widened at one seat only.
+        ("failed", 2, False),
+        ("error", None, True),
+        ("skipped", None, True),
     ],
 )
 @pytest.mark.integration
 async def test_both_seats_attribute_a_red_command_the_same_way(
-    db: Database, base_status: str, held_against_the_plan: bool
+    db: Database, base_status: str, base_code: int | None, held_against_the_plan: bool
 ) -> None:
     """The wave gate and the review gate must answer one question identically.
 
@@ -463,8 +509,8 @@ async def test_both_seats_attribute_a_red_command_the_same_way(
     orch, plan_id, plan, project, _events = await _seed_stub_plan(db)
     _stub_two_branch_verify(
         orch,
-        head=_PlanVerifyResult("failed", "E   ImportError: infer_type"),
-        base=_PlanVerifyResult(base_status, reason="stubbed"),
+        head=_PlanVerifyResult("failed", "E   ImportError: infer_type", returncode=1),
+        base=_PlanVerifyResult(base_status, reason="stubbed", returncode=base_code),
     )
 
     # Seat 1: the wave gate.  Parking IS holding it against the plan.
@@ -472,7 +518,9 @@ async def test_both_seats_attribute_a_red_command_the_same_way(
 
     # Seat 2: the review gate.  A non-None ``review`` IS holding it against the
     # task.  ``leaf_verification=None`` keeps the leaf-check arm out of the way
-    # so both seats are answering the base-branch question alone.
+    # so both seats are answering the base-branch question alone.  ``head_code``
+    # matches the head result the wave gate is handed, or the two seats would be
+    # comparing different runs and the agreement would prove nothing.
     attribution = await orch._attribute_head_verify_failure(
         task={"id": "t1"},
         project=project,
@@ -481,6 +529,7 @@ async def test_both_seats_attribute_a_red_command_the_same_way(
         checkout="/nonexistent",
         verify_cmd="pytest -q",
         gate_output="E   ImportError: infer_type",
+        head_code=1,
         leaf_verification=None,
         log=logging.getLogger(_DISPATCH_LOGGER),
     )

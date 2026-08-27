@@ -36,6 +36,7 @@ from orchestrator.core.leaf_validator import (
     shell_command_for_verification,
 )
 from orchestrator.core.orchestrator_review import _PlanVerifyResult
+from orchestrator.core.verify_gate import VerifyRun
 from orchestrator.models.schemas import TaskStatus
 
 
@@ -247,14 +248,22 @@ async def test_a_failure_that_pre_exists_on_the_base_is_not_charged_to_the_task(
     therefore establishes nothing about this task, the review proceeds to the
     brain, and the human at the merge gate is TOLD -- in the stored feedback,
     which is what ``praxis task``, MCP ``poll_task`` and the dashboard render.
+
+    Both runs carry exit code 1 because "identically" became a comparison on
+    2026-08-27 rather than an assumption drawn from ``base.status``. A fixture
+    supplying no codes lands in the third answer, ``INCOMPARABLE``, which is
+    the honest report for a run nobody classified -- and would make this test
+    assert an identity it never created.
     """
     orch, task_id, project = orchestrator_fixture
     orch._resolve_backend = lambda _repo_url: _backend()
     orch._opus.review_diff.return_value = {"verdict": "pass", "feedback": "looks right"}
     monkeypatch.setattr(
-        review_mod, "run_verify", AsyncMock(return_value=(False, "E   ImportError"))
+        review_mod,
+        "run_verify",
+        AsyncMock(return_value=VerifyRun(False, "E   ImportError", 1)),
     )
-    _base_verify(orch, _PlanVerifyResult("failed", "E   ImportError"))
+    _base_verify(orch, _PlanVerifyResult("failed", "E   ImportError", returncode=1))
 
     await _review(orch, task_id, _gated(project))
 

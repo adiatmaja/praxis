@@ -11,6 +11,10 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+from collections.abc import Iterator
+from dataclasses import dataclass
+from enum import Enum
+from typing import Any
 
 
 logger = logging.getLogger(__name__)
@@ -33,7 +37,201 @@ logger = logging.getLogger(__name__)
 SCOPE_VERIFY_PASSED = "verify gate passed"
 SCOPE_VERIFY_UNATTRIBUTED = "not attributed to this task"
 
+# Why the leaf's OWN declared verification did not settle the attribution.
+# Two facts with two different remedies, rendered identically until
+# 2026-08-27 -- so an operator whose leaf DID declare a check was told it had
+# declared none, and sent to write one the plan already contained.
+#
+# Here rather than at either producer because there are TWO of them (the merge
+# gate's scope sentence and the no-change decline) spelling near-identical
+# prose about one fact, which is the drift this module already exists to stop.
+LEAF_CHECK_NONE = "this task declared no runnable verification of its own"
+LEAF_CHECK_NONDISCRIMINATING = (
+    "this task's declared verification is the project command itself, so "
+    "re-running it could only restate a result already shown to be about the "
+    "repository"
+)
+
 _MAX_OUTPUT = 8000
+
+
+class FailureComparison(Enum):
+    """How a failing head run compared with a failing base-branch run.
+
+    Three values, not two, because "the two failed the same way" and "nobody
+    could tell whether they failed the same way" are opposite facts that had
+    been sharing one arm. Both decline to attribute, so the DIFFERENCE is not
+    in what they license but in what they may be said to have established --
+    the same rule :func:`base_comparison_unavailable` states one level up.
+    """
+
+    FAILED_ALIKE = "failed_alike"
+    FAILED_DIFFERENTLY = "failed_differently"
+    INCOMPARABLE = "incomparable"
+
+
+@dataclass(frozen=True)
+class VerifyRun:
+    """A verify command's verdict, its output, and the runner's own exit code.
+
+    ``returncode`` is the third fact and the reason this is a class rather than
+    the tuple it replaced. It is the ONLY signal available at this seam that
+    distinguishes two failures without parsing their text, and it is the
+    runner's own classification rather than an inference drawn over one.
+
+    ``None`` means the runner never classified this run -- today only a
+    TIMEOUT, where the process was killed. That distinction is load-bearing and
+    was measured: on Windows a killed process reports returncode 1, which is
+    exactly what ``pytest`` reports for "the tests failed". Passing it on would
+    make a hung base branch and a failing head look like one failure, and a
+    hung base against a collection error look like two.
+
+    Iterating yields exactly ``(passed, output)``, so every ``passed, output =
+    await run_verify(...)`` call site keeps working unchanged, and so does
+    every test that mocks this seam with a plain 2-tuple. Those mocks then
+    carry no exit code, :func:`run_exit_code` reports ``None``, and the
+    comparison degrades to ``INCOMPARABLE`` -- which is precisely the behaviour
+    that predates it, so a fixture that never thought about exit codes keeps
+    asserting what it always asserted.
+    """
+
+    passed: bool
+    output: str
+    returncode: int | None = None
+
+    def __iter__(self) -> Iterator[Any]:
+        """Yield ``(passed, output)`` for the existing 2-tuple call sites."""
+        yield self.passed
+        yield self.output
+
+
+def run_exit_code(run: Any) -> int | None:
+    """The runner's own exit code for a verify run, or None when unknown.
+
+    Tolerant on purpose, and the tolerance is the contract rather than a
+    convenience: this seam is mocked with plain 2-tuples across the suite, and
+    a tuple carries no code. Reporting ``None`` there routes those fixtures to
+    ``INCOMPARABLE``, the answer that changes nothing.
+
+    The hazard that tolerance creates is real and is guarded elsewhere: were
+    :func:`run_verify` to stop carrying the code, every comparison would
+    silently become ``INCOMPARABLE`` for ever, the arm that depends on it would
+    never fire in production, and every hand-fed test would stay green.
+    ``tests/test_verify_failure_comparison.py`` runs a REAL subprocess against
+    a known exit code for exactly that reason.
+
+    Args:
+        run: A :class:`VerifyRun`, or any 2-tuple standing in for one.
+
+    Returns:
+        The exit code, or ``None`` when the run carries no classification.
+    """
+    return getattr(run, "returncode", None)
+
+
+def compare_failures(head_code: int | None, base_code: int | None) -> FailureComparison:
+    """Say whether two FAILING runs of one command failed the same way.
+
+    Measured live on 2026-08-27: a review's head run and base run of the same
+    ``python -m pytest src/playground -q``. The head RAN the suite and three
+    assertions failed; the base never ran a test at all, interrupted by a
+    collection ``ImportError``. The whole comparison at the time was
+    ``base.status != "failed"``, so those two counted as identical and a
+    genuine leaf regression was excused as pre-existing.
+
+    **Why this compares exit codes and nothing else.** Output equality fails in
+    the DANGEROUS direction, and six noise sources were measured on one runner
+    on one platform before this was written: durations, first-run environment
+    lines, progress lines that lengthen when a worker adds PASSING tests, count
+    lines that move for the same reason, absolute checkout paths (the base run
+    happens in a fresh temporary directory and the head run in the pull-request
+    checkout, so they differ for an identical tree), and traceback traversals
+    whose ``../`` depth follows that directory's depth. Any one of them makes
+    two runs of one unchanged tree read as different failures, which would
+    charge a worker for repository health -- the error this repository has
+    already made once, and the worse of the two.
+
+    **Why an exit code is a mechanism and not a special case.** It is the
+    runner's OWN classification, so it needs no parser and knows no language.
+    Where a runner draws the distinction the answer is real: ``pytest`` returns
+    1 for "tests failed" and 2 for "interrupted during collection", which is
+    exactly the measured case, and a shell ``A && B`` chain reports whichever
+    stage fell over. Where a runner does NOT draw it -- ``go test`` and ``cargo
+    test`` return one code for a build error and a test failure alike -- the
+    two codes are equal and this answers ``FAILED_ALIKE``, costing a signal
+    rather than inventing one. It degrades to a weaker answer for an unknown
+    runner, never to a wrong one.
+
+    Args:
+        head_code: The head run's exit code, or None when it has no
+            classification (a timeout, or a caller that could not supply one).
+        base_code: The base-branch run's exit code, on the same terms.
+
+    Returns:
+        ``FAILED_DIFFERENTLY`` only on a positive, measured difference between
+        two real non-zero codes. ``FAILED_ALIKE`` when they match.
+        ``INCOMPARABLE`` whenever either side is missing -- and for a ZERO,
+        which means the run PASSED and this function was asked the wrong
+        question. That last case degrades rather than raising: every caller is
+        mid-review, where an exception would fail a task on a bug in Praxis,
+        and ``INCOMPARABLE`` is the behaviour that predates this comparison.
+    """
+    if head_code is None or base_code is None:
+        return FailureComparison.INCOMPARABLE
+    if head_code == 0 or base_code == 0:
+        logger.warning(
+            "compare_failures was asked about a run that PASSED "
+            "(head=%s, base=%s); reporting the comparison as unavailable",
+            head_code,
+            base_code,
+        )
+        return FailureComparison.INCOMPARABLE
+    if head_code == base_code:
+        return FailureComparison.FAILED_ALIKE
+    return FailureComparison.FAILED_DIFFERENTLY
+
+
+def base_failure_clause(
+    comparison: FailureComparison,
+    base_branch: str,
+    head_code: int | None,
+    base_code: int | None,
+) -> str:
+    """Name what the base branch did, in words that claim only what was shown.
+
+    One function for all three sentences, on the same ground
+    :func:`base_comparison_unavailable` is one function for its seat: "the same
+    command fails identically on X" is a CLAIM, and until 2026-08-27 it was
+    printed for every red base including the ones nobody had compared. The
+    seats that print it live in two modules and reach it by different routes,
+    so a second copy is how they come to disagree about one fact.
+
+    Args:
+        comparison: What :func:`compare_failures` decided.
+        base_branch: The branch the head was compared against.
+        head_code: The head run's exit code, for the evidence in the sentence.
+        base_code: The base run's exit code, likewise.
+
+    Returns:
+        A clause, not a sentence: each seat embeds it in wording naming what
+        the failure would have been attributed TO (this task, this plan).
+    """
+    if comparison is FailureComparison.FAILED_ALIKE:
+        return (
+            f"the same command fails identically on {base_branch} "
+            f"(both exited {head_code})"
+        )
+    if comparison is FailureComparison.FAILED_DIFFERENTLY:
+        return (
+            f"the same command also fails on {base_branch}, but DIFFERENTLY: "
+            f"the head exited {head_code} and {base_branch} exited {base_code}, "
+            f"so the redness there is not the redness here"
+        )
+    return (
+        f"the same command also fails on {base_branch}, but the two failures "
+        f"could not be told apart (head exit={head_code if head_code is not None else '-'}, "
+        f"{base_branch} exit={base_code if base_code is not None else '-'})"
+    )
 
 
 def base_comparison_unavailable(
@@ -136,8 +334,8 @@ def normalize_verify_cmd(value: str | None) -> str | None:
 
 async def run_verify(
     checkout_dir: str, verify_cmd: str, timeout: float = 600.0
-) -> tuple[bool, str]:
-    """Run ``verify_cmd`` in ``checkout_dir``; return (passed, combined_output).
+) -> VerifyRun:
+    """Run ``verify_cmd`` in ``checkout_dir``; report verdict, output and code.
 
     Args:
         checkout_dir: Working directory (a checked-out PR head).
@@ -145,7 +343,12 @@ async def run_verify(
         timeout: Seconds before the command is killed and reported as failed.
 
     Returns:
-        (True, output) on exit 0; (False, output) on non-zero exit or timeout.
+        A :class:`VerifyRun`. It still unpacks as ``(passed, output)``, so no
+        existing call site or mock changes; ``returncode`` is the addition, and
+        it is the runner's own classification of the failure that
+        :func:`compare_failures` needs. It is ``None`` for a TIMEOUT, because a
+        killed process's exit status is not a classification -- measured on
+        Windows, where a kill yields 1, indistinguishable from "tests failed".
 
     Raises:
         ValueError: If ``verify_cmd`` is blank or whitespace-only. Unreachable
@@ -186,15 +389,21 @@ async def run_verify(
         proc.kill()
         await proc.wait()
         logger.warning("verify command timed out after %.0fs: %s", timeout, verify_cmd)
-        return False, f"verify command timed out after {timeout:.0f}s"
+        # ``returncode`` is deliberately NOT reported here. The process was
+        # killed, so whatever it now carries describes the kill and not the
+        # work: on Windows that is 1, the very code pytest returns for "the
+        # tests failed". Passing it on would let a hung branch compare equal to
+        # a failing one, and unequal to a branch that could not even collect.
+        return VerifyRun(False, f"verify command timed out after {timeout:.0f}s")
     raw = out.decode(errors="replace")
     text = _truncate(raw)
-    if proc.returncode == 0:
-        return True, text
-    if proc.returncode == _PYTEST_NO_TESTS_EXIT and _PYTEST_NO_TESTS_SIGNAL.search(raw):
+    code = proc.returncode
+    if code == 0:
+        return VerifyRun(True, text, code)
+    if code == _PYTEST_NO_TESTS_EXIT and _PYTEST_NO_TESTS_SIGNAL.search(raw):
         logger.info(
             "verify command exited 5 with no tests collected; treating as a pass: %s",
             verify_cmd,
         )
-        return True, text
-    return False, text
+        return VerifyRun(True, text, code)
+    return VerifyRun(False, text, code)

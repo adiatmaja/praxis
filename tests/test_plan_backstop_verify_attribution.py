@@ -166,12 +166,21 @@ async def test_a_base_branch_red_identically_publishes_no_alarm(
     calls a pre-existing repository failure a cross-task regression, and on a
     repository whose default branch is red by design it does so for every plan
     that ever completes.
+
+    Both runs carry exit code 1 because this test's NAME is "identically", and
+    since 2026-08-27 that word is a comparison rather than an assumption. A
+    fixture supplying no codes at all would land in ``INCOMPARABLE`` and assert
+    an identity it never created.
     """
     with caplog.at_level(logging.WARNING, logger=_REVIEW_LOGGER):
         published, gate = await _complete(
             db,
-            head=_PlanVerifyResult("failed", "E   ImportError: no module named a"),
-            base=_PlanVerifyResult("failed", "E   ImportError: no module named a"),
+            head=_PlanVerifyResult(
+                "failed", "E   ImportError: no module named a", returncode=1
+            ),
+            base=_PlanVerifyResult(
+                "failed", "E   ImportError: no module named a", returncode=1
+            ),
         )
 
     assert [e["type"] for e in published].count("plan_verify_failed") == 0, (
@@ -185,6 +194,37 @@ async def test_a_base_branch_red_identically_publishes_no_alarm(
     assert f"fails identically on {_BASE_BRANCH}" in caplog.text, (
         "a red plan branch left no trace anywhere"
     )
+
+
+@pytest.mark.unit
+async def test_a_base_branch_red_a_different_way_does_publish_the_alarm(
+    db: Database,
+) -> None:
+    """A red base is not one answer, and status equality never said which.
+
+    Both branches are red, and they are red for different reasons: the plan
+    branch RAN the suite and an assertion failed (exit 1), the base never
+    collected a test (exit 2). Something this plan merged changed the failure
+    mode, which is precisely the claim ``plan_verify_failed`` has always made.
+    Before 2026-08-27 the whole comparison was ``base.status == "failed"``, so
+    this was silently filed with the case above and the alarm was suppressed.
+
+    This seat alarms where the wave gate deliberately does not park: the
+    integration PR is opened on every arm here, so the cost is an operator's
+    attention rather than a plan wedged forever.
+    """
+    published, gate = await _complete(
+        db,
+        head=_PlanVerifyResult("failed", "E   AssertionError: 3 failed", returncode=1),
+        base=_PlanVerifyResult(
+            "failed", "E   ImportError while importing test module", returncode=2
+        ),
+    )
+
+    assert gate.await_count == 2, "the base branch was never asked"
+    assert [e["type"] for e in published].count("plan_verify_failed") == 1
+    ready = next(e for e in published if e["type"] == "plan_integration_ready")
+    assert ready["verify_status"] == "failed"
 
 
 @pytest.mark.unit

@@ -737,6 +737,47 @@ def discriminating_leaf_command(
     return command
 
 
+def restates_project_command(verification: Any, project_verify_cmd: str | None) -> bool:
+    """True when the leaf declared a runnable check that IS the project command.
+
+    :func:`discriminating_leaf_command` collapses TWO facts onto ``None``: the
+    leaf declared nothing Praxis may shell, and the leaf declared the very
+    command that has already been asked. Both mean "no second opinion is
+    available", which is why one return value served -- but they are different
+    facts with different remedies, and rendering them identically told an
+    operator whose leaf DID declare a check that it had declared none, sending
+    them to write one the plan already contained.
+
+    They also license different things. A leaf that declared the project
+    command has ITSELF named the whole suite as its acceptance, which the
+    decomposition standard WANTS from the final leaf of a dependent chain; when
+    the base branch is shown to have failed a DIFFERENT way, holding that leaf
+    to its own declared bar is the leaf's standard rather than one Praxis
+    imposed. A leaf that declared nothing has made no such claim, so nothing
+    here may be held against it.
+
+    Defined by CALLING the two functions it is about rather than restating
+    their rules, so it cannot drift from either: an edit to
+    :func:`discriminating_leaf_command`'s equality, or to what
+    :func:`shell_command_for_verification` will unwrap, moves this answer in
+    the same commit and turns this predicate's tests red with theirs.
+
+    Args:
+        verification: The leaf's raw ``verification``, untrusted brain output
+            of any shape.
+        project_verify_cmd: The raw ``projects.verify_cmd`` column.
+
+    Returns:
+        True only when the leaf declared something shellable AND that something
+        was refused for being the project command restated. False both when the
+        leaf declared nothing runnable and when its check can discriminate.
+    """
+    return (
+        shell_command_for_verification(verification) is not None
+        and discriminating_leaf_command(verification, project_verify_cmd) is None
+    )
+
+
 def _check_verification(
     leaves: list[LeafTask],
     result: ValidationResult,

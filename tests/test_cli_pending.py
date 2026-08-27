@@ -15,6 +15,7 @@ from orchestrator.core.orchestrator_review import (
     _review_scope_statement,
     _UnattributedVerify,
 )
+from orchestrator.core.verify_gate import FailureComparison
 from tests.cli_text import on_one_line, plain
 
 
@@ -297,7 +298,13 @@ def test_a_red_but_unattributed_gate_is_not_glanced_at_as_no_gate() -> None:
         verify_state=_GATE_UNATTRIBUTED,
         verify_cmd="pytest -q",
         radius=None,
-        unattributed=_UnattributedVerify("main", "python -c 'import hm'"),
+        unattributed=_UnattributedVerify(
+            "main",
+            "python -c 'import hm'",
+            FailureComparison.FAILED_ALIKE,
+            1,
+            1,
+        ),
     )
 
     glance = _scope_glance(_review_scope_from_feedback(f"looks fine\n\n{scope}"))
