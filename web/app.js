@@ -731,6 +731,34 @@
               (stalledBlockers.length ? "Retry a blocker to release them:" : "")) +
           (stalledBlockers.length ? ' ' + stalledBlockers.map(mono).join(", ") : "") +
         '</span></div>' : "";
+      // Where this plan's work actually IS. `PlanResponse` has carried
+      // `integration_pr_url` / `integration_merged_at` since migration 9 and
+      // this card rendered neither, so the dashboard could not tell "landed on
+      // the base branch" from "sitting on the plan branch behind an unapproved
+      // PR" -- the exact distinction those columns were added for, and the one
+      // `praxis plans` already draws. Same three-way reading as the CLI's
+      // `_status_cell`, deliberately, so the two surfaces cannot disagree.
+      const integrationHref = plan.integration_pr_url ? safeHref(plan.integration_pr_url) : "";
+      const prLink = integrationHref ?
+        '<a href="' + integrationHref + '" target="_blank" rel="noopener">' + esc(plan.integration_pr_url) + '</a>' : "";
+      let integrationText;
+      if (plan.integration_merged_at) {
+        integrationText = esc("merged at " + plan.integration_merged_at + ", so this work is on the base branch: ");
+      } else if (plan.integration_pr_url) {
+        integrationText = esc("open, so this work is still on the plan branch: ");
+      } else if (plan.status === "completed") {
+        // `plans.error` is a ONE-WAY signal: a recorded reason means the PR
+        // could not be opened and the work is stranded, an absent one proves
+        // nothing, so both readings are named rather than either asserted.
+        integrationText = plan.error ?
+          esc("no integration PR. The server recorded: " + plan.error) :
+          esc("no integration PR, and no reason was recorded. Either the work already reached the base branch (its task PRs were merged, or every task was a no-op), or it is on the plan branch and did not.");
+      } else {
+        integrationText = esc("no integration PR: it is opened when a plan completes, and this plan is " + (plan.status || "in an unreported state") + ".");
+      }
+      const integrationRow =
+        '<div class="detail-field"><span class="field-label">Integration</span><span class="field-value">' +
+        integrationText + prLink + '</span></div>';
       const approveReject = (plan.status === "pending" && plan.source === "autonomous") ?
         '<button class="btn btn-primary" type="button" onclick="approvePlan(\'' + esc(plan.id) + '\')">Approve</button>' +
         '<button class="btn btn-danger" type="button" onclick="rejectPlan(\'' + esc(plan.id) + '\')">Reject</button>' : "";
@@ -759,6 +787,7 @@
           '<div class="detail-field"><span class="field-label">Status</span><span class="field-value">' + badge(plan.status) + '</span></div>' +
           '<div class="detail-field"><span class="field-label">Branch</span><span class="field-value">' + mono(plan.plan_branch_name) + '</span></div>' +
           '<div class="detail-field"><span class="field-label">Created</span><span class="field-value">' + esc(plan.created_at) + '</span></div>' +
+          integrationRow +
           stalledRow +
           '</div></div></div>' +
           (approveReject ? '<div class="detail-actions">' + approveReject + '</div>' : "");

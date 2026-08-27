@@ -181,18 +181,25 @@ def test_terminal_incomplete_some_failed_some_merged() -> None:
         {"id": "t1", "status": "merged"},
         {"id": "t2", "status": "failed"},
     ]
-    result = server.derive_terminal_incomplete_state("active", tasks)
+    result = server.derive_terminal_incomplete_state(
+        "active", tasks, integration_pr_url=None, integration_merged_at=None
+    )
     assert result["terminal_incomplete"] is True
     assert result["failed_count"] == 1
     assert result["merged_count"] == 1
     assert result["hint"] is not None
-    assert "integration PR" in result["hint"]
+    # Stated, not hedged. `integration_pr_url=None` was passed in, so the only
+    # honest sentence is that none was opened; "may have opened an integration
+    # PR" would also contain the substring "integration PR".
+    assert "No integration PR was opened" in result["hint"]
 
 
 def test_terminal_incomplete_all_merged_is_false() -> None:
     """All-merged plan is complete, not terminal-incomplete."""
     tasks = [{"id": "t1", "status": "merged"}, {"id": "t2", "status": "merged"}]
-    result = server.derive_terminal_incomplete_state("completed", tasks)
+    result = server.derive_terminal_incomplete_state(
+        "completed", tasks, integration_pr_url=None, integration_merged_at=None
+    )
     assert result["terminal_incomplete"] is False
     assert result["hint"] is None
 
@@ -204,7 +211,9 @@ def test_terminal_incomplete_in_progress_not_terminal() -> None:
         {"id": "t2", "status": "merged"},
         {"id": "t3", "status": "failed"},
     ]
-    result = server.derive_terminal_incomplete_state("active", tasks)
+    result = server.derive_terminal_incomplete_state(
+        "active", tasks, integration_pr_url=None, integration_merged_at=None
+    )
     assert result["terminal_incomplete"] is False
 
 
@@ -219,22 +228,28 @@ def test_terminal_incomplete_only_failed_no_merged() -> None:
     with no terminal signal anywhere in the payload.
     """
     tasks = [{"id": "t1", "status": "failed"}, {"id": "t2", "status": "failed"}]
-    result = server.derive_terminal_incomplete_state("failed", tasks)
+    result = server.derive_terminal_incomplete_state(
+        "failed", tasks, integration_pr_url=None, integration_merged_at=None
+    )
     assert result["terminal_incomplete"] is True
     assert result["merged_count"] == 0
     # The hint must not send a caller off to collect partial progress that does
-    # not exist: the orchestrator refuses to open an integration PR when a task
-    # exhausted its retries, so following that advice finds nothing and reads
-    # as a second bug. Asserted on the ADVICE, not on the words "integration
-    # PR", which this branch legitimately uses to say there is none.
+    # not exist. That claim no longer rests on a belief about what the
+    # orchestrator refuses to do: the plan's integration columns are passed in,
+    # so the sentence is built from the row. Asserted on the ADVICE, not on the
+    # words "integration PR", which this branch legitimately uses to say there
+    # is none.
     hint = result["hint"] or ""
     assert "partial progress" not in hint
     assert "Check the dashboard_url" not in hint
+    assert "nothing for one to carry" in hint
 
 
 def test_terminal_incomplete_empty_tasks() -> None:
     """Empty task list returns safe defaults."""
-    result = server.derive_terminal_incomplete_state("pending", [])
+    result = server.derive_terminal_incomplete_state(
+        "pending", [], integration_pr_url=None, integration_merged_at=None
+    )
     assert result["terminal_incomplete"] is False
     assert result["failed_count"] == 0
     assert result["merged_count"] == 0

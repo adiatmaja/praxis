@@ -252,7 +252,10 @@ truth-testing them is always true. Read the inner field, not the dict:
   plan is not lost: `retry_task(task_id)` on a failed row puts it back to pending and the wave
   runs again. Report the stall rather than continuing to poll.
 - `terminal_incomplete["terminal_incomplete"]` - nothing will advance this plan again; read
-  its `hint` for whether any work landed.
+  its `hint` for whether any work landed. The hint STATES this plan's integration PR: it
+  gives the url when there is one, and when there is not it gives the reason, or says the
+  reason cannot be established. Relay that sentence rather than sending anyone to go
+  looking, and never contradict it with `integration_pr_url` in the same payload.
 
 ## 5. Reading statuses
 

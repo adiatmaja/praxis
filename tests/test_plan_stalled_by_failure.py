@@ -106,7 +106,9 @@ def test_the_observed_shape_is_no_longer_reported_as_still_making_progress() -> 
     graph = _graph(("build", []), ("test", ["build"]))
     rows = [_row("build", "failed"), _row("test", "pending")]
 
-    state = server.derive_terminal_incomplete_state("active", rows, graph)
+    state = server.derive_terminal_incomplete_state(
+        "active", rows, graph, integration_pr_url=None, integration_merged_at=None
+    )
 
     assert state["terminal_incomplete"] is True
 
@@ -127,7 +129,9 @@ def test_a_plan_where_every_leaf_failed_is_terminal_incomplete() -> None:
     """
     rows = [_row("build", "failed"), _row("test", "failed")]
 
-    state = server.derive_terminal_incomplete_state("failed", rows, None)
+    state = server.derive_terminal_incomplete_state(
+        "failed", rows, None, integration_pr_url=None, integration_merged_at=None
+    )
 
     assert state["terminal_incomplete"] is True
     assert state["merged_count"] == 0
@@ -140,16 +144,32 @@ def test_a_plan_where_every_leaf_failed_is_terminal_incomplete() -> None:
 
 
 @pytest.mark.unit
-def test_a_partly_merged_stalled_plan_keeps_the_partial_progress_hint() -> None:
-    """The other hint branch, so widening the flag cannot flatten the advice."""
+def test_a_partly_merged_stalled_plan_says_what_landed_and_where_it_is() -> None:
+    """The other hint branch, so widening the flag cannot flatten the advice.
+
+    This test used to assert the literal phrase "partial progress", which was
+    part of the hedge it now has to exclude: "consider merging partial
+    progress" was advice to go find an integration PR the same payload proved
+    absent. A guard written against a defect has to be rewritten when the
+    defect is fixed, not merely re-run, so what is asserted now is the pair of
+    facts that make the two branches tell apart: something merged, and where
+    that merged work actually is.
+    """
     rows = [_row("build", "merged"), _row("test", "failed")]
 
-    state = server.derive_terminal_incomplete_state("failed", rows, None)
+    state = server.derive_terminal_incomplete_state(
+        "failed", rows, None, integration_pr_url=None, integration_merged_at=None
+    )
 
     assert state["terminal_incomplete"] is True
     assert state["merged_count"] == 1
     hint = state["hint"] or ""
-    assert "partial progress" in hint
+    assert "1 task(s) merged" in hint
+    assert "plan branch" in hint
+    # And the advice that made it wrong: no speculating about a PR the plan row
+    # settles either way.
+    assert "may have opened" not in hint
+    assert "Check the dashboard_url for the integration PR" not in hint
 
 
 # --------------------------------------------------------------------------
@@ -211,7 +231,9 @@ def test_a_pending_leaf_behind_merged_work_is_the_only_thing_holding_the_plan() 
         _row("test", "pending"),
     ]
 
-    state = server.derive_terminal_incomplete_state("active", rows, graph)
+    state = server.derive_terminal_incomplete_state(
+        "active", rows, graph, integration_pr_url=None, integration_merged_at=None
+    )
 
     assert state["terminal_incomplete"] is False
 
@@ -225,7 +247,9 @@ def test_a_gated_leaf_alone_is_not_a_plan_to_abandon() -> None:
     """
     rows = [_row("build", "failed"), _row("docs", "passed")]
 
-    state = server.derive_terminal_incomplete_state("active", rows, None)
+    state = server.derive_terminal_incomplete_state(
+        "active", rows, None, integration_pr_url=None, integration_merged_at=None
+    )
 
     assert state["terminal_incomplete"] is False
 
@@ -247,7 +271,9 @@ def test_a_pending_leaf_with_no_graph_is_never_called_unreachable() -> None:
 
     for graph in (None, "", "{not json", json.dumps({"tasks": "add-tests"})):
         stalled = server.derive_stalled_by_failure_state(graph, rows)
-        state = server.derive_terminal_incomplete_state("active", rows, graph)
+        state = server.derive_terminal_incomplete_state(
+            "active", rows, graph, integration_pr_url=None, integration_merged_at=None
+        )
         assert stalled["blocked_by_failure"] == [], graph
         assert stalled["action_required"] is None, graph
         assert state["terminal_incomplete"] is False, graph

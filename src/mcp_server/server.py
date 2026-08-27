@@ -445,10 +445,91 @@ def derive_plan_blocked_state(
     }
 
 
+def _integration_clause(
+    plan_status: str | None,
+    merged_count: int,
+    integration_pr_url: str | None,
+    integration_merged_at: str | None,
+) -> tuple[str, str]:
+    """Say what is true of this plan's integration PR, and what to do about it.
+
+    Split out because the two halves have different sources: the fact comes off
+    the plan row, the action comes off the fact. Keeping them together in one
+    branch is how the shipped sentence ended up asserting an action ("check the
+    dashboard for the integration PR") that its own payload contradicted.
+
+    Nothing here guesses. An absent url is reported as "no PR was opened" only
+    where the reason is establishable from the counts or the plan status;
+    otherwise the surface says it cannot establish which cause applies, which
+    this repository permits where guessing is not.
+
+    Args:
+        plan_status: The plan's own status string, or None when the server did
+            not send one. None is NOT read as "not completed": a missing field
+            establishes nothing.
+        merged_count: How many of the plan's tasks reached ``merged``.
+        integration_pr_url: ``plans.integration_pr_url``.
+        integration_merged_at: ``plans.integration_merged_at``.
+
+    Returns:
+        ``(fact, action)``, both already punctuated sentences.
+    """
+    retry_action = (
+        "Nothing is waiting on the orchestrator. Re-plan the failed tasks, or "
+        "retry them individually with POST /api/tasks/{task_id}/retry."
+    )
+    if integration_pr_url and integration_merged_at:
+        return (
+            f"The integration PR was merged at {integration_merged_at}, so that "
+            "work is on the base branch.",
+            f"{retry_action} Integration PR: {integration_pr_url}",
+        )
+    if integration_pr_url:
+        return (
+            "An integration PR is open for this plan.",
+            "Merge it to land what did land, then re-plan the failed tasks. "
+            f"Integration PR: {integration_pr_url}",
+        )
+    if not merged_count:
+        return (
+            "No integration PR was opened, and with nothing merged there would "
+            "be nothing for one to carry.",
+            retry_action,
+        )
+    if plan_status and plan_status.lower() != "completed":
+        return (
+            "No integration PR was opened: the integration PR is opened when a "
+            f"plan COMPLETES and this plan is {plan_status}, so the merged work "
+            "is still on the plan branch.",
+            retry_action,
+        )
+    # Either the plan IS completed and no PR was recorded, or the server sent no
+    # status at all. Integration attempted and failed, and nothing to integrate,
+    # are opposite outcomes that look identical from here, so neither is named.
+    #
+    # The reader is pointed at this payload's own `error`, NOT at the dashboard.
+    # The wording being replaced said "check the dashboard_url for the
+    # integration PR", and the dashboard's plan detail renders no integration
+    # field at all, so that clause sent a human to a screen that cannot answer.
+    # `plans.error` is the field the CLI reads for exactly this case, and it is
+    # a ONE-WAY signal: present means a real recorded reason, absent proves
+    # nothing, which is why it is offered rather than promised.
+    return (
+        "No integration PR is recorded for this plan. Whether integration was "
+        "attempted and failed, or there was nothing to integrate, cannot be "
+        "established from this payload.",
+        f"{retry_action} This payload's `error` field carries the recorded "
+        "reason if one was recorded; an empty one settles nothing either way.",
+    )
+
+
 def derive_terminal_incomplete_state(
     plan_status: str | None,
     tasks: list[dict[str, Any]],
     opus_plan_json: str | None = None,
+    *,
+    integration_pr_url: str | None,
+    integration_merged_at: str | None,
 ) -> dict[str, Any]:
     """Detect when nothing will advance this plan again, and whether work landed.
 
@@ -485,6 +566,15 @@ def derive_terminal_incomplete_state(
             judged reachable. Omitted or unreadable means reachability cannot
             be established, and every pending leaf is then treated as
             reachable: that is the polarity that never abandons a live plan.
+        integration_pr_url: ``plans.integration_pr_url``. Keyword-only and
+            REQUIRED, with no default, and that is the point. A default of
+            ``None`` would let a caller that never looked produce the sentence
+            "no integration PR was opened", which is the exact class of false
+            report this argument exists to end. A caller that cannot supply it
+            should fail loudly instead.
+        integration_merged_at: ``plans.integration_merged_at``, required for
+            the same reason. It separates "merge this" from "this already
+            landed", which are opposite instructions.
 
     Returns:
         A dict with:
@@ -493,9 +583,20 @@ def derive_terminal_incomplete_state(
           the engine owns can still move.
         - ``failed_count``: number of tasks with ``status="failed"``.
         - ``merged_count``: number of tasks with ``status="merged"``.
-        - ``hint``: human-readable explanation, or ``None``. It differs by
-          whether anything landed: partial progress is worth integrating and
-          an all-failed plan has no integration PR to go looking for.
+        - ``hint``: human-readable explanation, or ``None``. It STATES the
+          plan's integration PR rather than speculating about it: the url when
+          there is one, and when there is not, the establishable reason, or an
+          explicit "cannot be established" when there is no establishable one.
+
+    The hint used to read "the orchestrator MAY have opened an integration PR
+    for the merged tasks. Check the dashboard_url for the integration PR",
+    inside a payload that carried ``integration_pr_url: null``. The response
+    hedged about something it could see, and the fix was one hop away:
+    ``poll_plan_impl`` holds the plan row and simply never passed the columns
+    down. ``plan_status`` had been an accepted-and-unused parameter since this
+    function was written; it is load-bearing now, because "the plan is not
+    completed, so integration was never attempted" is the difference between a
+    reader waiting and a reader retrying.
     """
     if not tasks:
         return {
@@ -531,24 +632,21 @@ def derive_terminal_incomplete_state(
     terminal_incomplete = failed_count > 0 and advanceable == 0
 
     hint: str | None = None
-    if terminal_incomplete and merged_count:
-        hint = (
-            f"{failed_count} task(s) failed; {merged_count} task(s) merged. "
-            "The orchestrator may have opened an integration PR for the merged tasks. "
-            "Check the dashboard_url for the integration PR and consider merging partial "
-            "progress, then re-plan the failed tasks."
+    if terminal_incomplete:
+        # One lead clause per shape of what landed, then the integration PR
+        # stated as fact and the action that fact implies. The lead used to be
+        # the only thing that branched, and the integration sentence beneath it
+        # was a single hedge that fitted neither shape.
+        if merged_count:
+            lead = f"{failed_count} task(s) failed; {merged_count} task(s) merged."
+        else:
+            lead = (
+                f"{failed_count} task(s) failed and no task merged, so nothing landed."
+            )
+        fact, action = _integration_clause(
+            plan_status, merged_count, integration_pr_url, integration_merged_at
         )
-    elif terminal_incomplete:
-        # Deliberately NOT the partial-progress wording. There is no
-        # integration PR for an all-failed plan (the orchestrator refuses to
-        # open one when a task exhausted its retries), so sending a caller to
-        # look for one has them find nothing and read that as a second bug.
-        hint = (
-            f"{failed_count} task(s) failed and no task merged, so nothing "
-            "landed and there is no integration PR to merge. Nothing is "
-            "waiting on the orchestrator. Re-plan the failed tasks, or retry "
-            "them individually with POST /api/tasks/{task_id}/retry."
-        )
+        hint = f"{lead} {fact} {action}"
 
     return {
         "terminal_incomplete": terminal_incomplete,
@@ -626,9 +724,12 @@ async def poll_plan_impl(client: Any, plan_id: str) -> dict[str, Any]:
       merged_count, hint}``. The boolean is True when some task failed and
       nothing the orchestrator owns can still move it -- including a plan
       where EVERY task failed, and a plan whose only pending tasks are the
-      unreachable ones ``stalled`` names. The hint differs by whether anything
-      merged: partial progress is worth going to integrate, an all-failed plan
-      has no integration PR to look for.
+      unreachable ones ``stalled`` names. The hint STATES this plan's
+      integration PR rather than speculating about it: the url when there is
+      one, the establishable reason when there is not, and an explicit "cannot
+      be established" when there is no establishable one. It is built from the
+      same ``integration_pr_url`` / ``integration_merged_at`` this payload
+      carries, so the two can never disagree.
 
     - ``approvals``: a one-line digest of ANY work parked at any gate across
       the whole deployment (not just this plan). A failure fetching that digest
@@ -658,8 +759,16 @@ async def poll_plan_impl(client: Any, plan_id: str) -> dict[str, Any]:
     opus_plan_json: str | None = plan_data.get("opus_plan")
     merge_gate = derive_plan_blocked_state(opus_plan_json, tasks)
     stalled = derive_stalled_by_failure_state(opus_plan_json, tasks)
+    # The integration columns go DOWN into the hint as well as out on the
+    # payload. Reporting them side by side is what produced the defect: the
+    # sentence speculated about a pull request the response beside it had
+    # already settled.
     term = derive_terminal_incomplete_state(
-        plan_data.get("status"), tasks, opus_plan_json
+        plan_data.get("status"),
+        tasks,
+        opus_plan_json,
+        integration_pr_url=plan_data.get("integration_pr_url"),
+        integration_merged_at=plan_data.get("integration_merged_at"),
     )
     approvals = await _approvals_digest_line(client)
     return {

@@ -92,6 +92,8 @@ def test_a_pending_leaf_is_not_called_terminally_incomplete() -> None:
     state = server.derive_terminal_incomplete_state(
         "active",
         [_task("merged"), _task("failed"), _task("passed"), _task("pending")],
+        integration_pr_url=None,
+        integration_merged_at=None,
     )
     assert state["terminal_incomplete"] is False
     assert state["hint"] is None
@@ -101,7 +103,10 @@ def test_a_pending_leaf_is_not_called_terminally_incomplete() -> None:
 def test_a_genuinely_stalled_plan_is_still_called_terminally_incomplete() -> None:
     """The other branch, so including `pending` cannot silence the signal."""
     state = server.derive_terminal_incomplete_state(
-        "active", [_task("merged"), _task("failed")]
+        "active",
+        [_task("merged"), _task("failed")],
+        integration_pr_url=None,
+        integration_merged_at=None,
     )
     assert state["terminal_incomplete"] is True
     assert state["hint"]
@@ -345,7 +350,9 @@ def test_the_two_diagnostic_dicts_are_documented_as_always_present() -> None:
     ...") invites -- fires on every poll of every healthy plan.
     """
     empty_gate = server.derive_plan_blocked_state(None, [])
-    empty_term = server.derive_terminal_incomplete_state("active", [])
+    empty_term = server.derive_terminal_incomplete_state(
+        "active", [], integration_pr_url=None, integration_merged_at=None
+    )
     assert empty_gate, "still truthy, which is why the docstring has to say so"
     assert empty_term
     assert empty_gate["action_required"] is None

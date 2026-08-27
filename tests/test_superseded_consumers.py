@@ -69,7 +69,9 @@ def test_mcp_terminal_incomplete_ignores_a_superseded_parent() -> None:
         {"id": "3", "title": "B1", "status": "merged"},
     ]
 
-    result = derive_terminal_incomplete_state("completed", tasks)
+    result = derive_terminal_incomplete_state(
+        "completed", tasks, integration_pr_url=None, integration_merged_at=None
+    )
 
     assert result["terminal_incomplete"] is False
     assert result["failed_count"] == 0
