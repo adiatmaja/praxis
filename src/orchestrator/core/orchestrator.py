@@ -67,6 +67,18 @@ _ACTIVATABLE_PLAN_STATUSES: frozenset[str] = frozenset(
     {PlanStatus.PENDING.value, PlanStatus.ACTIVE.value}
 )
 
+# Statuses a PLANNING FAILURE must not write over, on either arm: the terminal
+# one (``_fail_plan``) and the transient one (``_charge_planning_attempt``,
+# which writes ``plans.error`` and bumps the counter without touching the
+# status). Both go through ``_planning_outcome_still_applies``.
+#
+# NOT the complement of the set above: FAILED is absent on purpose, because
+# re-failing a failed plan is idempotent and the newest reason is the useful
+# one. See ``_planning_outcome_still_applies``.
+_UNFAILABLE_PLAN_STATUSES: frozenset[str] = frozenset(
+    {PlanStatus.REJECTED.value, PlanStatus.COMPLETED.value}
+)
+
 # How many times planning may fail transiently before the plan goes terminal.
 # The number is small on purpose: a planner that has produced unparseable JSON
 # three passes running is not warming up, and every extra attempt is another
@@ -606,6 +618,48 @@ class Orchestrator(DispatchMixin, ReviewMixin, ReconcileMixin, ImprovementMixin)
         )
         return False
 
+    async def _planning_outcome_still_applies(self, plan_id: str, reason: str) -> bool:
+        """Report whether a planning failure may still be written to this plan.
+
+        Both failure arms need this, not just the terminal one, and that is the
+        part the first fix got wrong. A permanent failure goes straight to
+        ``_fail_plan``; a transient one goes to ``_charge_planning_attempt``,
+        which bumps ``plan_attempts`` and writes ``plans.error`` WITHOUT
+        touching the status. Guarding only the terminal arm left a rejected
+        plan reading REJECTED with an engine-authored error against it and its
+        attempt counter climbing, which is a quieter version of the same lie.
+        The live incident took the permanent arm; a test of the transient one
+        found the other half.
+
+        Args:
+            plan_id: The plan whose planning just failed.
+            reason: The reason, named in the log line when it is discarded so
+                the failure is never dropped without a trace.
+
+        Returns:
+            True when the caller should record the failure.
+        """
+        current = await self._tq.get_plan(plan_id)
+        status = None if current is None else str(current["status"])
+        if status not in _UNFAILABLE_PLAN_STATUSES:
+            return True
+        logger.warning(
+            "Discarding a planning failure for plan %s: it became %s while "
+            "planning was running, so that status stands. The failure was: %s",
+            plan_id,
+            status,
+            reason,
+        )
+        self._bus.publish(
+            {
+                "type": "plan_failure_discarded",
+                "plan_id": plan_id,
+                "status": status,
+                "reason": reason,
+            }
+        )
+        return False
+
     async def _fail_plan(self, plan_id: str, reason: str) -> None:
         """Take a plan terminal with a reason an operator can act on.
 
@@ -613,10 +667,31 @@ class Orchestrator(DispatchMixin, ReviewMixin, ReconcileMixin, ImprovementMixin)
         the same silence as no verdict at all, and an ``error`` on a plan still
         reported PENDING is a note nobody reads.
 
+        Re-reads the status first, for the same reason ``_still_activatable``
+        does. Both activation paths await a brain call that runs for minutes,
+        and a ``POST /api/plans/{id}/reject`` landing in that window used to be
+        honored on the SUCCESS arm and silently overwritten on the FAILURE one:
+        the decomposition came back unparseable, this method wrote FAILED with
+        an engine-authored reason over the human's REJECTED, and the dashboard
+        then rendered "This plan failed before any task was recorded" for a plan
+        somebody had cancelled on purpose. Observed live on 2026-08-28 (plan
+        ``7efdbcb9``). ``plans.error`` is a one-way column, so the
+        misattribution was permanent.
+
+        REJECTED and COMPLETED are the two statuses refused, and each for its
+        own reason rather than as a blanket terminal check: REJECTED is a
+        human's decision, which a planner's failure has no standing to
+        overturn, and COMPLETED has landed, so a late failure from an
+        already-superseded attempt would deny work that is in the tree. FAILED
+        is deliberately NOT refused: re-failing an already-failed plan is
+        idempotent, and the newest reason is the useful one.
+
         Args:
             plan_id: The plan to fail.
             reason: What happened, why, and what to do about it.
         """
+        if not await self._planning_outcome_still_applies(plan_id, reason):
+            return
         logger.error("Planning failed for plan %s: %s", plan_id, reason)
         await self._tq.set_plan_error(plan_id, reason)
         await self._tq.update_plan_status(plan_id, PlanStatus.FAILED)
@@ -651,6 +726,11 @@ class Orchestrator(DispatchMixin, ReviewMixin, ReconcileMixin, ImprovementMixin)
         # exception's own text names the provider but the remedy is the only
         # part an operator can act on.
         detail = _login_required_reason(exc) if _needs_login(exc) else str(exc)
+        # Checked BEFORE the counter moves: bumping it is itself a write against
+        # the row, and an attempt charged to a plan a person cancelled is a
+        # number nobody can explain.
+        if not await self._planning_outcome_still_applies(plan_id, detail):
+            return
         attempts = await self._tq.bump_plan_attempts(plan_id)
         if attempts >= MAX_PLANNING_ATTEMPTS:
             await self._fail_plan(
