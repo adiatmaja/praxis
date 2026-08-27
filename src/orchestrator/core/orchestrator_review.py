@@ -3093,6 +3093,80 @@ class ReviewMixin:
             failure_class=FailureClass.NO_OUTPUT.value,
         )
 
+    async def _work_sits_unmerged_on_the_task_branch(
+        self,
+        task_id: str,
+        project: dict[str, Any],
+        base_branch: str,
+    ) -> str | None:
+        """Return the task branch when it carries commits ``base`` does not.
+
+        The question "does the repository already satisfy this leaf" is asked
+        about the BASE branch. A task whose own branch is ahead of base has an
+        answer to it that no verify command can see: the work is not in the
+        repository, it is on a branch, unmerged - and on this path it is
+        usually the task's OWN earlier attempt, sitting in a pull request a
+        reviewer already rejected.
+
+        Measured live on 2026-08-27 (walk of plan ``8a2f4349``, playground PR
+        #107). Attempt 1 wrote ``guard.py`` and ``test_guard.py``; the review
+        FAILED it on real defects. The retry ran on the same agent branch, the
+        worker saw its own work already there and changed nothing, and this
+        method then asked the base branch whether the leaf was satisfied. Both
+        declared paths existed there - they are pre-existing files - and the
+        leaf's own declared check (``pytest src/playground/test_guard.py -q``)
+        passed there, because the tests the leaf was asked to ADD to that file
+        did not exist yet and the 22 that were already in it pass. So the leaf
+        closed ``no_changes`` - terminal, and in ``SATISFIED_STATUSES`` - the
+        plan reported COMPLETED with **zero commits** on its branch, and the
+        actual implementation was left in an open, review-rejected pull request
+        that no gate would ever show a human again.
+
+        ``discriminating_leaf_command`` cannot catch that shape. It refuses a
+        leaf check that RESTATES the project command, and this one did not:
+        ``pytest test_guard.py -q`` is a different command from
+        ``pytest src/playground -q``. It is non-discriminating for an unrelated
+        reason - the suite it runs is one the leaf itself was told to extend,
+        so it passes before the work exists. There is no way to see that from
+        the command string, and this fact needs no string analysis at all.
+
+        Tri-state throughout, and only a definite NO refutes: ``head_sha``
+        answers None for a branch that was never pushed (the ordinary shape of
+        a genuine first-attempt no-op, and not a refutation), and
+        ``base_contains`` answers None whenever it could not ask. Anything but
+        an explicit ``False`` leaves the decision exactly where it was.
+
+        Args:
+            task_id: The task whose run produced no diff.
+            project: Project dict, for ``repo_url``.
+            base_branch: The branch the leaf was cut from.
+
+        Returns:
+            The task's branch name when it carries unmerged commits, else None.
+        """
+        try:
+            task = await self._tq.get_task(task_id)
+            repo_url = project.get("repo_url")
+            branch = (task or {}).get("branch_name")
+            if not task or not repo_url or not branch or branch == base_branch:
+                return None
+            backend = self._resolve_backend(str(repo_url))
+            head = await backend.head_sha(str(branch))
+            if not isinstance(head, str) or not head:
+                return None
+            contained = await backend.base_contains(base_branch, head)
+            return str(branch) if contained is False else None
+        except Exception:  # noqa: BLE001 - one more fact, never a new failure
+            # This method only ever REFUSES to close a leaf. Raising out of it
+            # would turn a missing extra check into a failed review, which is a
+            # worse outcome than the false success it exists to prevent.
+            logger.exception(
+                "could not establish whether task %s has unmerged work on its "
+                "own branch; leaving the no-change decision unchanged",
+                task_id,
+            )
+            return None
+
     async def no_change_outcome(
         self,
         task_id: str,
@@ -3323,6 +3397,37 @@ class ReviewMixin:
                 f"edit locations this task declared ({named}), so the work is "
                 "genuinely missing whatever the verify command reports",
                 worker_attributable=True,
+            )
+        # Asked AFTER the declared paths, because a missing path is the more
+        # specific fact and names something the next worker can create, and
+        # BEFORE the gate verdict, because no verdict about the base branch can
+        # see work that is sitting on another branch.
+        unmerged_branch = await self._work_sits_unmerged_on_the_task_branch(
+            task_id, project, base_branch
+        )
+        if unmerged_branch is not None:
+            logger.warning(
+                "Task %s reported no changes, but its own branch %s carries "
+                "commits %s does not; refusing to close it as a no-op",
+                task_id,
+                unmerged_branch,
+                base_branch,
+            )
+            # NOT worker-attributable, deliberately. The worker was handed a
+            # branch on which the work already existed and produced no diff,
+            # which is a defensible reading of what it was shown; what went
+            # wrong is upstream of it. Not attributing is not passing - the
+            # leaf still fails closed and still retries, it is simply not
+            # charged in the column the capability loop reads and not offered a
+            # triage answer whose worst case is terminal.
+            return NoChangeDecision(
+                False,
+                f"its own branch ({unmerged_branch}) carries commits that "
+                f"{base_branch} does not, so this task's work exists but is "
+                "NOT in the repository - most often an earlier attempt whose "
+                "review failed, still open as a pull request. The repository "
+                "cannot have 'already satisfied' this task while that work is "
+                "unmerged",
             )
         evidence = _no_op_evidence(verdict, base_branch)
         if evidence is None:
