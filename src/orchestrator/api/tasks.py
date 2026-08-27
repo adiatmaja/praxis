@@ -116,9 +116,54 @@ async def stop_task(request: Request, task_id: str) -> dict[str, Any]:
     }
 
 
+def _announce_requeue(
+    request: Request, task_id: str, plan_id: str, reactivated: bool
+) -> None:
+    """Publish what a requeue did, including the plan transition it may carry.
+
+    A requeue on a ``failed`` plan takes the PLAN back to ``active`` as well
+    (``TaskQueue._reactivate_plan_for_requeue``), and that is a fact no reader
+    can derive from ``task_retry`` alone. The dashboard renders failed plans in
+    a "stopped" lane keyed on ``plan.status``, so without this the lane keeps
+    saying the plan is finished while its leaf is being dispatched.
+
+    Both events are published, never one instead of the other: ``task_retry``
+    is an existing contract with its own subscribers, and swapping it out on
+    the reactivating path would silently drop the task event exactly when the
+    most is happening.
+
+    Args:
+        request: The live request, carrying the event bus.
+        task_id: The requeued task.
+        plan_id: Its owning plan.
+        reactivated: What the queue reported, never re-derived from a second
+            read - two reads are how two surfaces come to disagree.
+    """
+    event_bus = request.app.state.event_bus
+    event_bus.publish({"type": "task_retry", "task_id": task_id})
+    if reactivated:
+        event_bus.publish(
+            {
+                "type": "plan_reactivated",
+                "plan_id": plan_id,
+                "task_id": task_id,
+                "reason": (
+                    "a task was requeued, and a failed plan is never returned "
+                    "by get_runnable_plans"
+                ),
+            }
+        )
+
+
 @router.post("/tasks/{task_id}/retry", response_model=TaskResponse)
 async def retry_task(request: Request, task_id: str) -> dict[str, Any]:
-    """Retry a failed task by resetting it to pending."""
+    """Retry a failed task by resetting it to pending.
+
+    When the owning plan is itself ``failed`` this also takes the plan back to
+    ``active``. That is not a courtesy: ``get_runnable_plans`` selects only
+    pending and active plans, so without it this endpoint answers 200, spends
+    an attempt, and requeues a leaf that no tick will ever look at again.
+    """
 
     queue = request.app.state.task_queue
     task = await queue.get_task(task_id)
@@ -131,10 +176,8 @@ async def retry_task(request: Request, task_id: str) -> dict[str, Any]:
             status_code=status.HTTP_409_CONFLICT,
             detail="Task is not failed - only failed tasks can be retried",
         )
-    await queue.retry_task(task_id)
-
-    event_bus = request.app.state.event_bus
-    event_bus.publish({"type": "task_retry", "task_id": task_id})
+    reactivated = await queue.retry_task(task_id)
+    _announce_requeue(request, task_id, str(task["plan_id"]), reactivated)
 
     updated = await queue.get_task(task_id)
     return cast(dict[str, Any], updated)
@@ -266,6 +309,12 @@ async def force_task_status(
             status_code=status.HTTP_404_NOT_FOUND, detail="Task not found"
         )
     reason = body.reason or f"Operator override to {body.status}"
+    # The ``pending`` arm is a REQUEUE, not a status write, and it goes through
+    # ``TaskQueue.retry_task`` for exactly that reason: an operator unsticking a
+    # leaf on a failed plan means the same thing the retry endpoint's caller
+    # means, and a second implementation here would be a second answer to
+    # "will anything ever dispatch this".
+    reactivated = False
     if body.status == "merged":
         await queue.mark_merged(task_id)
     elif body.status == "passed":
@@ -273,7 +322,7 @@ async def force_task_status(
     elif body.status == "failed":
         await queue.fail_task(task_id, reason)
     elif body.status == "pending":
-        await queue.retry_task(task_id)
+        reactivated = await queue.retry_task(task_id)
 
     event_bus = request.app.state.event_bus
     event_bus.publish(
@@ -284,6 +333,18 @@ async def force_task_status(
             "reason": reason,
         }
     )
+    if reactivated:
+        event_bus.publish(
+            {
+                "type": "plan_reactivated",
+                "plan_id": str(task["plan_id"]),
+                "task_id": task_id,
+                "reason": (
+                    "a task was forced back to pending, and a failed plan is "
+                    "never returned by get_runnable_plans"
+                ),
+            }
+        )
     updated = await queue.get_task(task_id)
     return {"task_id": task_id, "status": body.status, "task": updated}
 

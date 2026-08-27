@@ -596,7 +596,7 @@ class TaskQueue:
             ),
         )
 
-    async def retry_task(self, task_id: str) -> None:
+    async def retry_task(self, task_id: str) -> bool:
         """Requeue a task for a plain retry and drop any worker session handle.
 
         A retry always rebuilds the branch from base, so a stored
@@ -608,6 +608,31 @@ class TaskQueue:
         ``clarification_state`` is left untouched deliberately -- resetting
         it is a broader behavior change to the clarification flow that is
         out of scope here, and is not needed to prevent the resume bug.
+
+        The plan is reactivated HERE rather than at any endpoint, and that
+        placement is the point. Every caller of this method means one thing by
+        it -- this leaf is going to run again -- and a leaf that is going to run
+        again on a plan no tick will ever read is not going to run again. A copy
+        of that reasoning at one call site is this repository's most-repeated
+        defect, so there is one implementation and no caller can forget it.
+
+        No caller LIST is written down here on purpose. Derive it with
+        ``rg -n 'retry_task\\(' src/``, which is the only form of the claim that
+        cannot go stale; an enumeration in this repository has been wrong three
+        times in three days, and each time the enumeration was the thing that
+        made a missing route invisible.
+
+        Args:
+            task_id: The task to requeue.
+
+        Returns:
+            Whether the owning plan was taken back out of ``failed`` with it.
+            A caller that publishes events or renders a result needs to know,
+            and recomputing it from a second read of the row is how two
+            surfaces come to disagree about what just happened.
+
+        Raises:
+            ValueError: If the task does not exist.
         """
         task = await self.get_task(task_id)
         if task is None:
@@ -621,6 +646,94 @@ class TaskQueue:
                WHERE id = ?""",
             (TaskStatus.PENDING, int(task["attempt"]) + 1, now, task_id),
         )
+        return await self._reactivate_plan_for_requeue(str(task["plan_id"]), task_id)
+
+    async def _reactivate_plan_for_requeue(self, plan_id: str, task_id: str) -> bool:
+        """Put a plan back in the loop's reach when one of its leaves is requeued.
+
+        ``get_runnable_plans`` selects ``WHERE status IN (pending, active)``, so
+        a ``failed`` plan is never looked at again by any tick. Measured live on
+        2026-08-27 (plan ``4eb8ed70``): two leaves merged, the third spent its
+        attempts, ``process_plan_once``'s ``terminal_with_failures`` arm wrote
+        the plan ``failed``, and the operator then ran the recovery every
+        surface recommends. It answered 200, moved the row to ``pending``, spent
+        an attempt and told them to wait. Nothing could ever pick it up. The
+        only symptom was silence, which is the worst shape a defect can take on
+        a surface whose whole job is telling a human what to do next.
+
+        ``failed`` is the ONLY status this acts on, and each exclusion is a
+        different reason rather than an oversight:
+
+        * ``rejected`` is a human's decision. Overturning it from a task-level
+          verb would start spawning containers for a plan somebody cancelled.
+          It is a REACHABLE state with a failed leaf: rejecting acts on an
+          ACTIVE plan and leaves every task row untouched.
+        * ``completed`` has landed and re-running it would re-run
+          ``on_plan_completed``, re-open an integration PR and mint an
+          improvement proposal nobody asked for (the same reasoning
+          ``api/plans.py`` states for ``_APPROVABLE_PLAN_STATUSES``).
+        * ``pending`` and ``active`` are already in the loop's reach, and a
+          write there would be a status transition nobody asked for on the
+          commonest path through this method.
+
+        The plan must also already HAVE a task graph. ``process_plan_once``
+        sends an ACTIVE plan whose ``opus_plan`` is NULL to
+        ``plan_and_activate``, and ``activate_plan`` INSERTs a fresh row per
+        graph entry ON TOP of the rows already there; since dispatch pairs graph
+        entries to rows positionally, every existing row would be paired with a
+        different leaf's entry while the plan read as perfectly healthy. No
+        shipped path produces that combination today
+        (``rg -n 'update_plan_status\\(.*FAILED' src/`` finds three sites, and
+        the only one that runs after ``activate_plan`` is
+        ``terminal_with_failures``), so this is a guard against a state rather
+        than against an observed bug - one condition for one silent
+        catastrophe removed from the state space.
+
+        Deliberately does NOT clear ``plans.error``. That column is a ONE-WAY
+        signal by convention (``reset_plan_attempts`` leaves it alone for the
+        same reason): present means a reason really was recorded, absent proves
+        nothing. Erasing the recorded reason for the previous stop would delete
+        the only account of why the operator had to intervene.
+
+        The effect on the stale-branch sweeper is entirely in the SPARING
+        direction, which is what makes this safe to do automatically. The
+        reconcile ledger reads the plan row twice: ``status in ('failed',
+        'rejected')`` puts the plan branch in ``terminal_failed``, a DEAD
+        signal, and ``status not in TERMINAL_PLAN_STATUSES`` puts it in
+        ``live_branches``, a VETO. Moving ``failed`` -> ``active`` removes the
+        dead signal AND adds the veto. The ``carrying_merged_work`` veto that
+        saved a branch on 2026-08-26 is neither read nor weakened here.
+
+        Args:
+            plan_id: The plan owning the requeued task.
+            task_id: The task that was requeued, named in the log so the
+                transition is attributable to an action rather than to a tick.
+
+        Returns:
+            Whether the plan row was actually rewritten.
+        """
+        plan = await self.get_plan(plan_id)
+        if plan is None:
+            return False
+        if plan["status"] != PlanStatus.FAILED:
+            return False
+        if plan["opus_plan"] is None:
+            logger.warning(
+                "Plan %s is failed and carries no task graph, so requeuing "
+                "task %s cannot restart it; reactivating would re-plan it and "
+                "write a second set of task rows over the first",
+                plan_id,
+                task_id,
+            )
+            return False
+        await self.update_plan_status(plan_id, PlanStatus.ACTIVE)
+        logger.info(
+            "Plan %s was failed and is active again: task %s was requeued, and "
+            "a failed plan is never returned by get_runnable_plans",
+            plan_id,
+            task_id,
+        )
+        return True
 
     async def record_triage_decision(self, task_id: str, decision: str) -> None:
         """Stamp the triage decision so a leaf is never triaged twice.

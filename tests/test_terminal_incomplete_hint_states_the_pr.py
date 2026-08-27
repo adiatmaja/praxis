@@ -208,3 +208,68 @@ async def test_poll_plan_hands_the_builder_the_columns_it_already_holds() -> Non
     # The whole point of the defect: the payload knew the url and the sentence
     # did not say it.
     assert PR_URL in hint
+
+
+# --------------------------------------------------------------------------
+# The resume sentence must be conditional on the plan actually being stopped.
+# --------------------------------------------------------------------------
+
+#: The clause that only holds for a ``failed`` plan.
+RESUME_PHRASE = "puts the PLAN back to active"
+
+
+@pytest.mark.unit
+def test_a_stopped_plan_is_told_that_retrying_restarts_it() -> None:
+    """The recovery and its consequence, on the payload that reports the wedge.
+
+    ``get_runnable_plans`` selects only pending and active plans, so a reader
+    told "nothing will advance this plan again" has to be told that requeuing
+    a leaf is what takes the plan back out of ``failed``. Otherwise the correct
+    action reads like an action with no effect, which is what it was.
+    """
+    fact, action = server._integration_clause(
+        "failed", merged_count=2, integration_pr_url=None, integration_merged_at=None
+    )
+
+    assert RESUME_PHRASE in action
+    assert "retry_task(task_id)" in action
+    assert fact
+
+
+@pytest.mark.unit
+def test_a_completed_plan_is_never_told_that_retrying_reactivates_it() -> None:
+    """One string feeds four branches, and only one of them may claim this.
+
+    Requeuing reactivates a ``failed`` plan and NOTHING else - a rejected plan
+    is a human's decision and a completed one has landed
+    (``TaskQueue._reactivate_plan_for_requeue``). Asserting the reactivation
+    unconditionally would make this hint wrong in precisely the way the hedge
+    it replaced was wrong: a sentence the same payload contradicts.
+
+    The merged-integration branch is the sharpest case, because that plan is
+    finished and its work is already on the base branch.
+    """
+    for status in ("completed", "rejected", "active", None):
+        _fact, action = server._integration_clause(
+            status,
+            merged_count=2,
+            integration_pr_url=PR_URL,
+            integration_merged_at="2026-08-27T00:00:00Z",
+        )
+        assert RESUME_PHRASE not in action, f"claimed reactivation for {status!r}"
+
+
+@pytest.mark.unit
+def test_the_hint_names_the_tool_the_mcp_reader_actually_holds() -> None:
+    """This clause is rendered into an MCP payload, so it must not say only curl.
+
+    Asserted by looking the tool up in the LIVE registry rather than matching a
+    literal, so renaming the tool without correcting the hint fails here rather
+    than shipping an instruction a brain cannot follow.
+    """
+    _fact, action = server._integration_clause(
+        "failed", merged_count=0, integration_pr_url=None, integration_merged_at=None
+    )
+
+    named = [t.name for t in server.mcp._tool_manager.list_tools() if t.name in action]
+    assert "retry_task" in named

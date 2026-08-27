@@ -3307,3 +3307,85 @@ window resolved to `UNKNOWN_SOURCE` and `fit_sections(sections, None)` returns e
 section unbudgeted by design; and the entrypoint writes an OpenCode `limit` block pairing
 the probed context with an `output` reserve of 8192, so a probed 4096 hands its compaction
 math a reserve larger than the whole context.
+
+## The recovery every surface recommends did nothing, and reported success
+
+`POST /tasks/{id}/retry` wrote `tasks.status = pending` and stopped there. Dispatch reaches
+a task through TWO gates and both key on the PLAN: `get_runnable_plans` selects
+`WHERE status IN (pending, active)`, and `process_plan_once` returns early unless the plan
+is ACTIVE. So on a `failed` plan the retry answered 200, moved the row, SPENT AN ATTEMPT,
+printed "watch it leave pending and pick up again", and no tick could ever pick it up.
+
+Measured live 2026-08-27 on plan `4eb8ed70`, minutes after it went FAILED with two leaves
+merged and the third spent: the leaf sat at `pending` for over ten minutes and the
+orchestrator never once mentioned it.
+
+**The two halves of "requeued" lived in different rows and nothing checked they agreed.**
+That is the shape to look for, and it generalises past this seam: any verb that writes one
+row to satisfy a predicate evaluated over another.
+
+`terminal_incomplete`'s hint recommends this exact action for this exact state, so the
+product's documented recovery path was inert while three surfaces pointed at it.
+
+**A test asserting the endpoint returned 200 proves nothing here** - that was true
+throughout the defect's life. The guards assert at the seam that failed: that the plan
+appears in `get_runnable_plans`, and that a real `process_plan_once` pass offers the leaf
+through the genuine `get_dispatchable_tasks`.
+
+### Reactivate, not refuse - and the repo had already argued it
+
+`core/plan_reachability.py` says a wedged plan is deliberately left ACTIVE "because
+`POST /api/tasks/{id}/retry` puts the failed task back to PENDING, so a human can still
+recover it". Retry-as-recovery is the designed contract, so a 409 would make the only
+recovery verb inapplicable to the state that most needs it and strand merged work on a plan
+branch with no path to an integration PR.
+
+"Reactivate only when the retry makes work reachable" is a TAUTOLOGY - the leaf just reset
+to `pending` is non-terminal by construction. The meaningful variant, reactivate only if the
+retried leaf is DISPATCHABLE, is strictly worse: retry leaf B while leaf A is still failed
+ahead of it and the plan reads `failed` while carrying a `pending` leaf, a new
+invisible-wedge shape. As shipped, that case reactivates and `plan_reachability` names the
+real blocker, so reactivation converts an INVISIBLE wedge into a REPORTED one.
+
+### The sweeper moves entirely in the sparing direction
+
+This is what makes it safe to do automatically, and it is worth re-deriving rather than
+trusting: the reconcile ledger reads the plan row TWICE. `status in ('failed','rejected')`
+puts the branch in `terminal_failed`, a DEAD signal; `status not in TERMINAL_PLAN_STATUSES`
+puts it in `live_branches`, a VETO. Moving `failed -> active` REMOVES the dead signal AND
+ADDS the veto. `carrying_merged_work` is neither read nor weakened.
+
+Proven end to end through the real ledger SQL with every other veto absent: before the retry
+the sweep really deletes the branch, after it deletes nothing.
+
+### Why only `failed`
+
+Each exclusion is a different reason, not an oversight. `rejected` is a human's decision,
+and it is REACHABLE with a failed leaf because rejecting acts on an ACTIVE plan and leaves
+task rows untouched. `completed` would re-run `on_plan_completed`, re-open an integration PR
+and mint an improvement proposal nobody asked for. `pending` and `active` are already in
+reach.
+
+A further guard requires the plan to HAVE a graph: `process_plan_once` sends an ACTIVE plan
+whose `opus_plan` is NULL to `plan_and_activate`, and `activate_plan` INSERTs a fresh row
+per graph entry ON TOP of the rows already there - which positional pairing then
+mis-associates while the plan reads perfectly healthy. No shipped path produces that
+combination today, so it is a guard against a STATE rather than against an observed bug.
+
+`plans.error` is deliberately NOT cleared, following that column's one-way convention.
+Present means a reason really was recorded; erasing it would delete the only account of why
+the operator had to intervene. Consequence, stated rather than hidden: a reactivated plan
+may render a stale reason.
+
+### The seam, not the surface
+
+The rule lives in `TaskQueue.retry_task`, because `POST /tasks/{id}/force-status
+{"status":"pending"}` calls the same method and had the identical wedge
+(`rg -n 'retry_task\(' src/`). Deleting the reactivation reddens BOTH surfaces' tests, which
+is the proof it is shared rather than copied.
+
+**The STALLED hint needed no change**, and this was measured rather than assumed:
+`terminal_with_failures` requires `not pending` while `derive_stalled_by_failure_state`
+reports only PENDING leaves, so the two domains are structurally disjoint. The stalled hint
+was silent both at the moment the plan went FAILED and after the retry. Only
+`terminal_incomplete`'s hint and the CLI line recommended retry for this state.

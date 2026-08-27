@@ -616,6 +616,15 @@ story. New gotchas go in `docs/gotchas.md` first. (No count is quoted on purpose
   `RUN_FAILED` means the run itself ended in failure and nothing reached a review. The
   no-change route passes triage the measured `(0, 0, "")`; the run-failure route passes
   `(None, None, "")`, because nothing counted anything there.
+- **A requeue REACTIVATES a `failed` plan, or the recovery is inert** (fixed 2026-08-27):
+  dispatch reaches a task through two gates that both key on the PLAN
+  (`get_runnable_plans` selects `pending`/`active`; `process_plan_once` returns unless
+  ACTIVE), so writing only `tasks.status = pending` answered 200, spent an attempt and
+  wedged silently while `terminal_incomplete`'s hint recommended exactly that action. The
+  rule lives in `TaskQueue.retry_task`, shared with `force-status`, and acts on `failed`
+  ONLY. The sweeper effect is entirely SPARING (`failed -> active` removes the
+  `terminal_failed` signal and adds the `live_branches` veto). `plans.error` is NOT
+  cleared: it is a one-way column.
 - **A plan can be STALLED while it reads ACTIVE with a null `error`**: a PENDING leaf
   behind a terminally FAILED one is unreachable forever, transitively.
   `core/plan_reachability.py` derives it for every surface (`poll_plan`'s `stalled`,

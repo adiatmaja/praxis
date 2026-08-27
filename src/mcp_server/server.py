@@ -474,9 +474,29 @@ def _integration_clause(
     Returns:
         ``(fact, action)``, both already punctuated sentences.
     """
+    # Names the tool THIS reader holds, not only the REST route. The clause is
+    # rendered into an MCP payload, so the caller has ``retry_task`` in hand and
+    # being sent to curl is a worse instruction than a wrong one.
+    #
+    # The resume sentence is CONDITIONAL on the plan actually being ``failed``,
+    # and that is not caution for its own sake: this one string is rendered into
+    # all four branches below, including the branch whose integration PR has
+    # already MERGED. Requeuing only ever reactivates a ``failed`` plan
+    # (``TaskQueue._reactivate_plan_for_requeue`` refuses every other status, so
+    # that a rejected plan is not resurrected and a completed one does not
+    # re-run), so asserting it unconditionally here would make this hint wrong
+    # in exactly the way the hint it replaced was wrong.
+    resume_clause = (
+        " Requeuing a leaf on a plan the engine STOPPED also puts the PLAN "
+        "back to active, so it carries on from what already landed rather "
+        "than being re-planned from scratch."
+        if (plan_status or "").lower() == "failed"
+        else ""
+    )
     retry_action = (
-        "Nothing is waiting on the orchestrator. Re-plan the failed tasks, or "
-        "retry them individually with POST /api/tasks/{task_id}/retry."
+        "Nothing is waiting on the orchestrator. Retry the failed tasks - "
+        "retry_task(task_id) here, 'praxis retry <task-id>', or "
+        f"POST /api/tasks/{{task_id}}/retry.{resume_clause}"
     )
     if integration_pr_url and integration_merged_at:
         return (
@@ -951,6 +971,37 @@ async def cancel_task_impl(client: Any, task_id: str) -> dict[str, Any]:
     }
 
 
+async def _plan_status_read_back(client: Any, plan_id: Any) -> str | None:
+    """Read a requeued task's owning plan status back from the server.
+
+    READ BACK rather than assumed, the same discipline the CLI's
+    ``_refused_retry`` follows: the retry endpoint answers a TASK row, which
+    carries nothing about the plan, and a client must not decide for itself
+    what the server did. That matters here more than usual, because the fact
+    being reported is precisely the one that used to be missing - whether
+    anything will ever dispatch this leaf.
+
+    Args:
+        client: The Praxis client.
+        plan_id: The ``plan_id`` off the retry response, of unknown shape.
+
+    Returns:
+        The plan's status string, or None when the question could not be
+        asked at all. None is reported as None and never as "the plan is
+        fine": a caller that cannot establish the status has to poll.
+    """
+    if not isinstance(plan_id, str) or not plan_id:
+        return None
+    try:
+        plan = await client.get(f"/api/plans/{plan_id}")
+    except PraxisClientError:
+        return None
+    if not isinstance(plan, dict):
+        return None
+    status = plan.get("status")
+    return status if isinstance(status, str) else None
+
+
 async def retry_task_impl(client: Any, task_id: str) -> dict[str, Any]:
     """Reset a FAILED task to PENDING so the engine dispatches it again.
 
@@ -962,6 +1013,12 @@ async def retry_task_impl(client: Any, task_id: str) -> dict[str, Any]:
     reported as an error rather than read through: ``{}.get("status")`` is
     None, and a payload carrying ``status: null`` beside no error reads to a
     brain as "it worked, poll it" for a task that was never requeued.
+
+    The owning plan's status is reported alongside, because "the row says
+    pending" was never sufficient evidence that anything would run.
+    ``get_runnable_plans`` selects only pending and active plans, so a leaf
+    requeued onto a ``failed`` plan is a leaf nothing will ever look at - and
+    for a day that was exactly what this tool did while answering success.
     """
     try:
         data = await client.post(f"/api/tasks/{task_id}/retry")
@@ -979,12 +1036,26 @@ async def retry_task_impl(client: Any, task_id: str) -> dict[str, Any]:
         }
     status = data.get("status")
     attempt = data.get("attempt")
+    plan_status = await _plan_status_read_back(client, data.get("plan_id"))
+    summary = f"Retried {task_id}: now {status}, attempt {attempt}"
+    if plan_status == "failed":
+        # The wedge, stated rather than hidden behind a success line. Nothing
+        # here can fix it, so the caller is told to stop waiting.
+        summary += (
+            ". Its plan is still failed, so NOTHING will dispatch this leaf: "
+            "a failed plan is never returned by get_runnable_plans. Do not "
+            "poll it"
+        )
+    elif plan_status:
+        summary += f"; its plan is {plan_status}"
     return {
-        "summary": f"Retried {task_id}: now {status}, attempt {attempt}",
+        "summary": summary,
         "task_id": data.get("id") or task_id,
         "status": status,
         "attempt": attempt,
         "plan_id": data.get("plan_id"),
+        # None means the plan could not be read back, NOT that it is healthy.
+        "plan_status": plan_status,
     }
 
 
@@ -1372,6 +1443,13 @@ async def retry_task(task_id: str) -> dict[str, Any]:
     Retrying the failed leaf re-runs it, and once it reaches a satisfied
     status its dependents become dispatchable again on the next tick -- that
     is the whole point of the call, not a side effect.
+
+    Also call it when poll_plan reports ``terminal_incomplete`` on a plan whose
+    own status is ``failed``. A plan the engine stopped is NOT dead: retrying a
+    leaf on one puts the PLAN back to ``active`` along with the task, and it
+    carries on from whatever already merged. Poll it afterwards and the status
+    reads ``active`` again; if it still reads ``failed``, the retry did not
+    take and nothing will dispatch, so do not wait on it.
 
     The re-run starts CLEAN: the branch is rebuilt from base and the worker's
     stored session is dropped, so the worker does not continue where it left

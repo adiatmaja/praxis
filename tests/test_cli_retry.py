@@ -65,22 +65,41 @@ def _task_row(**overrides: Any) -> dict[str, Any]:
     return row
 
 
+def _plan_row(status: str = "active") -> httpx.Response:
+    """A ``GET /api/plans/{id}`` answer carrying just the status the CLI reads."""
+    return httpx.Response(200, json={"id": PLAN_ID, "status": status})
+
+
 def _routes(
     monkeypatch,
     *,
     retry: httpx.Response,
     detail: httpx.Response | None = None,
+    plan: httpx.Response | None = None,
     columns: str = "200",
 ) -> None:
-    """Point the CLI at a transport that answers the retry POST and the task GET.
+    """Point the CLI at a transport answering the retry POST and both GETs.
 
-    Two routes, because naming the task's ACTUAL status on a refused retry
-    means reading it back: the 409 body cannot supply it.
+    Three routes, each for a fact the response in hand cannot supply:
+
+    * the task GET, because naming the task's ACTUAL status on a refused retry
+      means reading it back and the 409 body cannot supply it;
+    * the plan GET, because whether anything will DISPATCH the requeued leaf is
+      a fact about its PLAN and the retry answers a task row. A leaf requeued
+      onto a ``failed`` plan is never returned by ``get_runnable_plans``, so
+      "now pending, attempt 4" was a true sentence about a leaf that would
+      never run.
+
+    The plan defaults to ACTIVE, the ordinary case, so every case written
+    before the plan route existed still measures what it was written to.
     """
+    plan_response = plan if plan is not None else _plan_row()
 
     def handler(request: httpx.Request) -> httpx.Response:
         if request.method == "POST":
             return retry
+        if request.url.path.startswith("/api/plans/"):
+            return plan_response
         if detail is None:
             msg = f"unexpected GET {request.url.path}"
             raise AssertionError(msg)
@@ -354,5 +373,156 @@ def test_a_closing_tag_in_the_read_back_status_does_not_crash(monkeypatch) -> No
     result = runner.invoke(app, ["retry", TASK_ID])
 
     assert result.exit_code == 1
+    assert result.exception is None or isinstance(result.exception, SystemExit)
+    assert CLOSING in flat(result)
+
+
+# --------------------------------------------------------------------------
+# Whether anything will actually dispatch the leaf. The fact the verb used to
+# assert without ever asking.
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_a_stopped_plan_is_reported_rather_than_promised(monkeypatch) -> None:
+    """The 2026-08-27 wedge, on the screen the operator was reading.
+
+    A leaf requeued onto a `failed` plan is never returned by
+    `get_runnable_plans`, so nothing will dispatch it. The verb still prints
+    "watch it leave pending and pick up again" because that line is a copyable
+    command rather than a promise, but the screen must not stop there: the
+    operator waited ten minutes on exactly this output.
+    """
+    _routes(
+        monkeypatch,
+        retry=httpx.Response(200, json=_task_row()),
+        plan=_plan_row("failed"),
+    )
+
+    result = runner.invoke(app, ["retry", TASK_ID])
+
+    out = flat(result)
+    assert "still failed" in out
+    assert "NOTHING will dispatch" in out
+
+
+@pytest.mark.unit
+def test_a_reactivated_plan_says_the_loop_will_pick_it_up(monkeypatch) -> None:
+    """The ordinary post-fix outcome, and it must be DISTINGUISHABLE.
+
+    A verb that printed the same thing whether or not the plan came back would
+    be exactly as uninformative as the one that printed nothing at all.
+    """
+    _routes(
+        monkeypatch,
+        retry=httpx.Response(200, json=_task_row()),
+        plan=_plan_row("active"),
+    )
+
+    result = runner.invoke(app, ["retry", TASK_ID])
+
+    out = flat(result)
+    assert "plan is active" in out
+    assert "will pick this up" in out
+    assert "NOTHING will dispatch" not in out
+
+
+@pytest.mark.unit
+def test_a_rejected_plan_is_named_as_a_decision_not_a_fault(monkeypatch) -> None:
+    """Not dispatching a cancelled plan is correct, and must not read as a bug."""
+    _routes(
+        monkeypatch,
+        retry=httpx.Response(200, json=_task_row()),
+        plan=_plan_row("rejected"),
+    )
+
+    result = runner.invoke(app, ["retry", TASK_ID])
+
+    out = flat(result)
+    assert "rejected" in out
+    assert "deliberate" in out
+
+
+@pytest.mark.unit
+def test_an_unreadable_plan_is_declined_rather_than_guessed(monkeypatch) -> None:
+    """The third state, kept distinct from both answers it is not.
+
+    Folding "could not ask" into "the loop will pick this up" puts a fabricated
+    fact on the screen an operator acts from; folding it into "nothing will
+    dispatch" abandons a live plan. Same polarity as the unknown context window.
+    """
+    _routes(
+        monkeypatch,
+        retry=httpx.Response(200, json=_task_row()),
+        plan=httpx.Response(502, json={"detail": "upstream"}),
+    )
+
+    result = runner.invoke(app, ["retry", TASK_ID])
+
+    out = flat(result)
+    assert "could not be read back" in out
+    assert "will pick this up" not in out
+    assert "NOTHING will dispatch" not in out
+
+
+@pytest.mark.unit
+def test_the_plan_state_line_does_not_break_the_copyable_lines(monkeypatch) -> None:
+    """The new line sits between the success line and the copyable ones.
+
+    Guarded because an extra `console.print` at 80 columns is exactly the kind
+    of edit that pushes a soft-wrapped copyable line across a fold, and a folded
+    line yields half a uuid that 404s.
+    """
+    _routes(
+        monkeypatch,
+        retry=httpx.Response(200, json=_task_row()),
+        plan=_plan_row("failed"),
+        columns="80",
+    )
+
+    result = runner.invoke(app, ["retry", TASK_ID])
+
+    assert len(TASK_LINE) > 80
+    assert on_one_line(result, TASK_LINE)
+    assert on_one_line(result, PLAN_LINE)
+
+
+@pytest.mark.unit
+def test_an_unrecognised_plan_status_is_rendered_as_data(monkeypatch) -> None:
+    """The plan status came off the wire, so rich must never read it as markup.
+
+    This verb reads the status back precisely because it refuses to decide what
+    the server's vocabulary is, and then rendering that string as markup makes
+    the refusal empty: rich DELETES ``[core]`` outright and raises
+    ``MarkupError`` on a closing-shaped token, out of whatever was printing.
+
+    The fixture opens with a LOWERCASE letter on purpose - rich treats ``[...]``
+    as a tag only when the first character is ``a-z # / @``, so a fixture like
+    ``[Odd]`` renders verbatim whatever the code does and proves nothing.
+    """
+    _routes(
+        monkeypatch,
+        retry=httpx.Response(200, json=_task_row()),
+        plan=_plan_row("active [core]"),
+    )
+
+    result = runner.invoke(app, ["retry", TASK_ID])
+
+    assert result.exit_code == 0
+    assert "active [core]" in flat(result)
+
+
+@pytest.mark.unit
+def test_a_closing_tag_in_the_plan_status_does_not_crash_the_verb(monkeypatch) -> None:
+    """The other half: a closing-shaped token raises rather than disappearing."""
+    _routes(
+        monkeypatch,
+        retry=httpx.Response(200, json=_task_row()),
+        plan=_plan_row(CLOSING),
+    )
+
+    result = runner.invoke(app, ["retry", TASK_ID])
+
+    assert result.exit_code == 0
     assert result.exception is None or isinstance(result.exception, SystemExit)
     assert CLOSING in flat(result)

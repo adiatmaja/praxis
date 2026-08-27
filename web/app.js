@@ -1868,7 +1868,12 @@
           if (currentView === "dashboard") void loadDashboard({ skipSseReconnect: true });
         });
       });
-      ["plan_activated", "agent_dispatched", "review_completed", "task_retry", "improvement_proposed"].forEach(type => {
+      // `plan_reactivated` is not redundant beside `task_retry`. It also fires
+      // for the force-status requeue, whose own event (`task_force_status`) is
+      // NOT in this list, so without it an operator unsticking a leaf on a
+      // failed plan leaves every open dashboard showing the plan in the stopped
+      // lane while the engine dispatches it.
+      ["plan_activated", "plan_reactivated", "agent_dispatched", "review_completed", "task_retry", "improvement_proposed"].forEach(type => {
         source.addEventListener(type, () => {
           if (currentView === "dashboard") void loadDashboard({ skipSseReconnect: true });
         });
@@ -2010,6 +2015,13 @@
         const planId = owningPlan[0];
         dashboardTasks[planId] = await api("GET", "/api/plans/" + planId + "/tasks");
       }
+      // The PLAN row has to be re-read too, not just its tasks. Retrying a leaf
+      // on a plan the engine wrote `failed` takes that plan back to `active`,
+      // and every lane on this screen is keyed on `plan.status`: without this
+      // the card moves to `pending` while its plan sits in the stopped lane
+      // labelled finished, which is the state the server no longer describes.
+      // `loadPlans` refreshes the shared `plans` array `visiblePlans` reads.
+      await loadPlans();
       renderDashboard();
     }
 

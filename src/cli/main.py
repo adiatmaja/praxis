@@ -1219,6 +1219,95 @@ def _read_back_status(client: httpx.Client, task_id: str) -> str | None:
     return status_value if isinstance(status_value, str) and status_value else None
 
 
+def _plan_state_after_retry(client: httpx.Client, plan_id: Any) -> str | None:
+    """Return the owning plan's status after a requeue, or None if unreadable.
+
+    Every failure mode collapses to None for the same reason
+    :func:`_read_back_status` does: this exists to make a claim on screen
+    honest, so a guess would defeat its whole purpose, and the caller has a
+    third phrasing for the unknown case.
+
+    Args:
+        client: The live HTTP client, inside the ``_client()`` context.
+        plan_id: ``plan_id`` off the retry response, of unknown shape.
+
+    Returns:
+        The plan status string, or None when it could not be established.
+    """
+    if not isinstance(plan_id, str) or not plan_id:
+        return None
+    try:
+        response = client.get(f"/api/plans/{plan_id}")
+    except httpx.RequestError:
+        return None
+    if response.status_code >= 400:
+        return None
+    try:
+        body = response.json()
+    except ValueError:
+        return None
+    if not isinstance(body, dict):
+        return None
+    status_value = body.get("status")
+    return status_value if isinstance(status_value, str) and status_value else None
+
+
+def _report_plan_state_after_retry(plan_status: str | None) -> None:
+    """Say whether anything will actually dispatch the leaf that was requeued.
+
+    The line the defect of 2026-08-27 needed and did not have. `praxis retry`
+    printed "watch it leave pending and pick up again" for a leaf on a plan
+    the engine had written `failed`, which `get_runnable_plans` never returns,
+    so the leaf sat pending forever and the only symptom was silence.
+
+    Three states, kept distinct, because folding the third into either of the
+    others is the same class of lie: the plan is back in the loop's reach, the
+    plan is still stopped and nothing will run, or the plan could not be read
+    back and this command declines to say.
+
+    Args:
+        plan_status: What :func:`_plan_state_after_retry` established.
+    """
+    if plan_status is None:
+        # Deliberately shares no phrase with either answer above it. An
+        # operator skims this line, and "the loop will pick this up" inside a
+        # sentence that means the opposite is read as the sentence it quotes.
+        console.print(
+            "  Its plan's status could not be read back, so whether anything "
+            "will dispatch this leaf is not stated here rather than guessed."
+        )
+        return
+    if plan_status == "failed":
+        console.print(
+            "[yellow]  Its plan is still failed, so NOTHING will dispatch "
+            "this leaf:[/yellow]",
+            Text(
+                "the loop only looks at pending and active plans. Requeuing "
+                "was supposed to reactivate it and did not."
+            ),
+        )
+        return
+    if plan_status in ("rejected", "completed"):
+        console.print(
+            "[yellow]  Its plan is[/yellow]",
+            Text(
+                f"{plan_status}, so the loop will not dispatch this leaf. That "
+                "is deliberate: reactivating would overturn a decision "
+                "somebody already made."
+            ),
+        )
+        return
+    # ``Text``, not an f-string, for the same reason the two branches above use
+    # it: ``plan_status`` came off the wire, and this client explicitly refuses
+    # to decide what the server's vocabulary is. rich reads a bare ``[`` as a
+    # style tag, so a status it does not recognise would be silently DELETED
+    # from the line, or raise ``MarkupError`` out of the verb.
+    console.print(
+        "  Its plan is",
+        Text(f"{plan_status}, so the loop will pick this up."),
+    )
+
+
 def _refused_retry(client: httpx.Client, task_id: str) -> NoReturn:
     """Explain a 409 from the retry endpoint by naming the task's real status.
 
@@ -1266,6 +1355,14 @@ def retry(
     time with no verb in front of it, so the hint named an action an operator
     could only take with curl.
 
+    It also restarts a plan the ENGINE stopped. When every leaf is terminal and
+    one of them failed, `process_plan_once` writes the PLAN `failed`, and
+    `get_runnable_plans` selects only pending and active plans - so a retry
+    there used to requeue a leaf that no tick would ever look at again, print
+    "watch it pick up again", and mean nothing. Requeuing now takes the plan
+    back to `active` with the task, and the line below reports the plan's real
+    status rather than promising one.
+
     This adds no precondition of its own. The only rule is the server's (a task
     must be `failed`), and the retry CAP is deliberately enforced on the review
     path alone: a second copy of it here would be a rule that can drift from
@@ -1278,6 +1375,11 @@ def retry(
         if response.status_code == httpx.codes.CONFLICT:
             _refused_retry(client, task_id)
         data = _check_dict(response)
+        # READ BACK, never assumed: the retry answers a TASK row, and whether
+        # anything will dispatch the leaf is a fact about its PLAN. Same
+        # discipline as `_refused_retry`, and for the sharper reason here that
+        # this is the exact fact the command used to get wrong.
+        plan_state = _plan_state_after_retry(client, data.get("plan_id"))
     console.print(
         "[green]Requeued:[/green]",
         Text(
@@ -1285,6 +1387,7 @@ def retry(
             f"(now {data.get('status')}, attempt {data.get('attempt')})"
         ),
     )
+    _report_plan_state_after_retry(plan_state)
     _copyable(f"praxis task {task_id}   # watch it leave pending and pick up again")
     plan_id = data.get("plan_id")
     if plan_id:
