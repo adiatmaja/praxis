@@ -810,6 +810,15 @@ story. New gotchas go in `docs/gotchas.md` first. (No count is quoted on purpose
   swim lane had none and showed it as an ordinary active lane; the stall was only in the
   plan detail. A guard that greps a function body for the marker CANNOT fail if the
   marker's declaration stays behind: pin the EMISSION.
+- **`soft_wrap=True` on EVERY pasteable line, and `cli/init.py` had none** (2026-08-28).
+  `grep -n soft_wrap src/cli/init.py` returned 0 while `init` is the one command whose
+  whole output is meant to be copied. Its MCP block folded mid-path INSIDE a JSON string
+  (invalid JSON, corrupted path, and it is the block the README's brief says to paste),
+  and its PowerShell export folded after the URL so pasting it set `ORCHESTRATOR_URL` and
+  silently dropped the token. **Assert LINE STRUCTURE with `cli_text.strip_ansi`, never
+  `plain`** (`plain` collapses whitespace and rejoins the fold), and **assert the fixture
+  is long enough to fold as an explicit precondition**: every existing test of this output
+  uses `Console(width=200)`, where nothing folds, which is why it shipped.
 - **An id belongs on its own line, never in a table column** (rich shrinks and folds
   it; a truncated id 404s). `pending`/`plans`/`tasks` print a copyable
   `praxis <verb> <id>` line below the table; assert contiguity on ONE line at 80

@@ -3969,3 +3969,56 @@ true: the plan is active, and nothing will ever move it.
 was deleted from the header, because the chip's DECLARATION is in the same function.
 Declaring is not rendering: the guard now pins the EMISSION, matching between
 `badge(plan.status)` and the spec preview.
+
+## `praxis init`'s paste blocks folded, and one of them produced invalid JSON
+
+`cli.main._copyable` already documents this defect class: rich's default wrapping inserts
+a REAL newline at the console width, breaking on whitespace, so a line wider than the
+terminal arrives as two rows and selecting either one yields half of it.
+
+That fix was applied across `cli/main.py` and never to `cli/init.py`:
+
+    grep -n "soft_wrap" src/cli/init.py     ->  0 matches
+
+`init` is the one command whose ENTIRE output exists to be copied somewhere else. Found on
+2026-08-28 by running a real cold install rather than reading the code. Two lines folded.
+
+**The MCP configuration block.** Its longest line is the absolute install path inside a
+JSON string, and it folded mid-path:
+
+    "C:\Users\...\C--working-space-pra
+    xis\...\coldinstall",
+
+That is not untidy output. It is invalid JSON carrying a corrupted path, and it is the
+exact block the README's agent setup brief instructs an assistant to paste into `.mcp.json`.
+
+**The PowerShell export line**, which carries BOTH assignments joined by `; `. It folded
+after the URL, so pasting it set `ORCHESTRATOR_URL` and silently dropped
+`ORCHESTRATOR_TOKEN`. This is the worse of the two because it HALF-SUCCEEDS: it does not
+fail at paste time, it fails later as an auth error against a URL the operator can see is
+correct, on the platform this project is primarily developed on.
+
+### Why it shipped
+
+Every existing test of this output builds `Console(file=buffer, width=200, no_color=True)`.
+Nothing folds at 200. A wide terminal and a test pinned to one are indistinguishable from a
+correct implementation, which is the same trap `_copyable`'s docstring already records for
+`praxis reject` and for init's own `--accept-preset-requirements` flag.
+
+### The guard needed three attempts, and every failure looked green
+
+Worth reading before writing any guard about line structure:
+
+1. It used `cli_text.plain`, which COLLAPSES whitespace and therefore rejoins the very rows
+   rich had folded apart. All three mutations survived. `cli_text` says so in `strip_ansi`'s
+   own docstring: "use this when LINE STRUCTURE matters". **Use `strip_ansi`, never `plain`,
+   for anything about wrapping.**
+2. The fixture install path was too SHORT. At 73 columns against an 80-column console
+   nothing folds, so the MCP mutation still survived a guard that now used the right helper.
+3. Correcting that by hand landed the longest line at exactly 80, one column short of
+   folding.
+
+The fixture length is therefore asserted as an explicit PRECONDITION inside the test, so a
+later edit that shortens the path fails loudly instead of going inert. Same lesson as the
+`praxis task <uuid>` needle that stayed green because the fold landed after it: **assert the
+width you depend on.**
