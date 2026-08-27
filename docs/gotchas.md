@@ -2296,10 +2296,37 @@ reading, and pointedly NOT by the enumeration whoever fixed the first one had in
   gate called a red plan branch a regression without ever asking the base".
 - **The empty-diff seat.** The same inference in the OPPOSITE direction, charging a worker
   for a repository it was handed red. See the section immediately below.
-- **`on_plan_completed`'s whole-plan backstop. REPORTED AND NOT FIXED.** It publishes
+- **`on_plan_completed`'s whole-plan backstop. Fixed 2026-08-27.** It published
   `plan_verify_failed` on a red plan branch with no base comparison at all. It blocks
-  nothing, since the integration PR is opened either way, so it is a false alarm rather
-  than a wedge, and that is exactly why it is the one that survived the session.
+  nothing, since the integration PR is opened either way, so it was a false alarm rather
+  than a wedge, and that is exactly why it survived the session that fixed the other three.
+
+  Two things the repair settled that the other seats did not.
+
+  **Only TWO of the three parts apply at PLAN scope.** The leaf's own declared
+  `verification` is the positive signal at leaf scope, and it has no meaning here: a
+  completed plan branch carries several leaves and none of their checks speaks for the
+  whole tree. `attribute_wave_verify_failure`'s docstring already argued this for the same
+  branch one wave earlier. ATTRIBUTION still means what it means everywhere else - was the
+  base already red - so the comparison belongs; the positive-signal step does not, and
+  inventing one here would be a guess dressed as evidence.
+
+  **The alarm was not the only field lying.** `plan_integration_ready.verify_status` read
+  `failed` on every completed plan in a repository whose base is red. Suppressing the
+  publish alone would have left that pairing broken in a subtler way, so an un-attributable
+  result takes a FIFTH value of its own. `failed` with no alarm silently breaks a pairing
+  every reader has relied on; `passed` is the larger lie. Note the reader-side hazard is
+  absent here for an unusual reason: `rg -n "plan_verify_failed|plan_integration_ready|
+  verify_status" web/ src/cli/ src/mcp_server/ src/orchestrator/api/` returns ZERO. This
+  event has never reached a rendered surface, only `GET /api/events` and the log - which is
+  why the attribution sentence is PREPENDED into the event `output` rather than added as a
+  field nobody reads.
+
+  **A pattern that is structural for this defect class, not incidental.** Every
+  pre-existing test that broke on this fix broke the same way: it asserted a difference it
+  did not create. Before the comparison existed, no fixture had any reason to distinguish
+  head from base, so `run_verify` was mocked with a single `return_value` and the branch
+  was red everywhere. Expect exactly this at the remaining adopters of the shared clause.
 
 Two second-order lessons the session paid for, both worth more than the individual fixes:
 
@@ -3067,3 +3094,163 @@ tasks, 11 plans), and a separately written second implementation of the rule nam
 branches carrying unintegrated merged work. One plan was ACTIVE at that moment with one
 merged leaf and one failed leaf, a single `terminal_with_failures` away from reproducing the
 incident on that very database.
+
+## A harness callback is retried, and the handler was not idempotent
+
+The disposal of one agent run - a `task_outcomes` calibration row, a triage decision, a
+spend of `max_retries`, a task status transition - must happen AT MOST ONCE. Nothing
+enforced that until 2026-08-27: `POST /internal/agent-done` re-entered from the top on
+every delivery, and both shipped entrypoints retry the POST up to `CALLBACK_MAX_ATTEMPTS`
+(default 5) until they read a 200 back.
+
+The retry is not an edge case, it is the normal case. `curl --max-time 10` reports
+`HTTP 000` the moment its deadline elapses, and this handler routinely takes MINUTES: a
+blocking Docker log read, a verify gate, a git fetch, and on the failure route a brain
+triage call. So the entrypoint gives up on a callback the server is still successfully
+processing, and sends it again.
+
+Measured live on task `54fa9978`, and the arithmetic closes exactly:
+
+```
+agent_runs   : 4 rows, finishing 02:18:34, 02:19:01, 02:19:21, 02:19:30
+task_outcomes: 5 rows at 02:18:34, 02:18:47, 02:19:01, 02:19:21, 02:19:30
+attempt col  : 1, 2, 2, 4, 4     <- attempt 3 never exists; 2 and 4 are doubled
+```
+
+First delivery processed at 02:18:47, curl gives up ten seconds later at 02:18:57, the
+entrypoint's `sleep $((attempt * 2))` waits four, the redelivery lands at 02:19:01 - the
+duplicate row's timestamp. Run 2's `finished_at` is 02:19:01 too, the REDELIVERY's time
+rather than 02:18:47: the duplicate overwrote the same row, which proves no new run
+existed in that window.
+
+**The double-counted calibration row is the LESSER consequence.** `task_outcomes` is the
+capability engine's only data source, so every rate over it was wrong - but each
+redelivery also spent a retry attempt, so `max_retries` was not what the operator
+configured, and the duplicate landed at attempt 2, which is exactly where the triage gate
+opens and where triage's worst answer (`human`) is terminal.
+
+The gate is `TaskQueue.claim_agent_run_completion`, the FIRST write in the handler:
+
+```sql
+UPDATE agent_runs SET status = ?, finished_at = ? WHERE id = ? AND finished_at IS NULL
+```
+
+Four things about it are load-bearing.
+
+**`finished_at IS NULL`, not `status = 'running'`.** `AgentDonePayload.status` is a bare
+`str` stored verbatim, so a harness reporting the word "running" would leave a closed row
+indistinguishable from an open one and hand every redelivery the claim. `rg 'finished_at'
+src/` returns exactly two writers, it is never cleared, and `create_agent_run` leaves it
+NULL.
+
+**One statement, never check-then-act.** Two deliveries can be in the same event loop at
+once, and any `await` between "is it finished?" and "mark it finished" is a window both
+fit through. Proved rather than asserted: de-duplicating by TASK instead of by RUN kills
+both the negative control and the concurrency test.
+
+**The claim precedes the Docker log read**, which is a synchronous blocking call inside an
+async handler (it stalls the whole event loop, and is part of why the ten-second deadline
+is missed at all). `complete_agent_run` was replaced at that one site by
+`update_agent_run_logs`, which leaves `finished_at` alone. `complete_agent_run` stays
+unconditional for callers that already OWN the run - reconcile, the stop endpoint.
+
+**A redelivery answers 200, not 409 or 404**, because the point is to stop the retry loop;
+a non-200 buys four more replays. But not a plain `ok` either, in body or in log: a
+redelivery indistinguishable from a fresh success is how this went unnoticed. The WARNING
+names the task's CURRENT status, and `in_progress` there is the alarm - see below.
+
+### `run_id` is dead in production, so every callback resolves via `runs[-1]`
+
+`grep -rn "RUN_ID" src/` returns ZERO hits. Both entrypoints serialise
+`escape_or_null "${RUN_ID:-}"`, so 100% of real callbacks send `"run_id": null`. The
+structural cause is ordering: `create_agent_run` runs AFTER `spawn_agent` returns, so the
+run id does not exist when the container env is built. A guard proved only with `run_id`
+present would guard a path no container has ever taken.
+
+The consequence is a hole idempotency CANNOT close, because it is about run IDENTITY: a
+redelivery arriving after a retry has spawned a new run resolves `runs[-1]` to that new,
+still-RUNNING run, wins the claim, and disposes a worker mid-execution. The fix is to
+pre-generate the run id and pass `RUN_ID` into the container.
+
+### At-most-once traded away an accidental at-least-once
+
+Stated because it is a real cost, not a hypothetical. If a delivery wins the claim and
+then raises before settling the task, the redelivery is now REFUSED, and reconcile cannot
+rescue it either: `get_running_runs` selects `status = 'running'` and this run no longer
+is. The task strands at `in_progress`. The old code closed the run before the work too, so
+this is not newly introduced - but the sloppy recovery it used to have is gone. The
+diagnostic is deliberate: the duplicate-callback WARNING names the task's current status,
+so `in_progress` there IS the alarm.
+
+The real fix is to ACK the callback immediately and dispose on the loop, so the ten-second
+deadline is never missed, plus teaching reconcile about claimed-but-unsettled runs.
+
+## A permanent misconfiguration is not a transient provider error
+
+`is_provider_error` returning True buys TWO things at once: the failure is not charged to
+the worker's capability record, and the task is re-queued WITHOUT consuming a retry. The
+first is right for a misconfiguration and the second is catastrophic for one, which is why
+"add the string to `_PROVIDER_SIGNALS`" is the wrong shape of fix even when the
+attribution complaint behind it is correct.
+
+The live case, and it is doubly Praxis's own doing: adaptive triage answered `escalate`
+and promoted a leaf to `glm-4.7`, rung 0 of the SHIPPED `implement_escalation` ladder in
+`config/praxis.yaml`, which this deployment's endpoint does not serve. The endpoint
+answered in milliseconds - `Error: Invalid model identifier "glm-4.7"` - and Praxis wrote
+two `run_failed` calibration rows against a model that never ran. Worse, the context probe
+had ALREADY logged `Model glm-4.7 not found in .../api/v0/models` before the spawn, and
+used that answer only to skip the budget gate.
+
+So there are THREE categories, not two, and `permanent_worker_config_error` is the third:
+the endpoint ANSWERED and refused by name something Praxis asked it for. Nothing about a
+retry changes it.
+
+**The predicate is anchored to line start and requires the quoted model name.** Praxis is
+dogfooded on itself, so a worker's container log routinely quotes this repository's own
+source, diffs and fixtures - all of which contain the phrase the moment this module does.
+An unanchored version of this mistake already shipped once: the protected-base check ANDed
+two substrings over a whole worker transcript and fired on a log where the two came from
+unrelated places. A diff line (`+Error: ...`) does not match, because `+` is not
+whitespace.
+
+### The uncapped consumer, which is a defect in its own right
+
+`PROVIDER_ERROR_RESPAWN_CAP` bounds the RECONCILE path. The CALLBACK path - the one both
+shipped entrypoints actually take - is bounded by NOTHING: `api/internal.py`'s
+`elif provider_error_run:` branch is a bare `UPDATE tasks SET status = PENDING` with no
+streak counter. Measured with twelve consecutive provider-error callbacks against
+`max_retries=3`: every one returned 200 with the task at `pending`/`attempt=1`. So a
+genuine long-lived gateway outage parks a task at attempt 1 forever, respawning a
+container every tick, while the plan reads ACTIVE with a null `error` - this repo's
+recurring "stalled but reads healthy" shape.
+
+### What `n_keep >= n_ctx` must NOT be reclassified as
+
+The endpoint's overflow message is tempting to sweep into either category above, and both
+would be wrong. It must stay attributable, because it is the single shape most likely to
+produce the `split` decision that has never once been observed on a real repository.
+Burying it removes the only evidence. What it should get is `FailureClass.CONTEXT_OVERFLOW`
+- which already exists and already counts against the worker, correctly, since "this leaf
+does not fit this worker's window" is a real leaf-sizing fact - rather than the current
+least-informative `RUN_FAILED`.
+
+### The budget gate sizes the Bible, not the prompt
+
+The reason that overflow reached the endpoint at all. `fit_sections`, via `build_bible`,
+measures ONLY the `Section` objects `build_bible` assembles. Everything else in the
+endpoint's token count is invisible to it: `TASK_PROMPT` (`core/agent_prompt.py`), the plan
+text, the entrypoint's own environment manifest prepended into the same file, OpenCode's
+built-in system prompt, its tool schemas, and the repo's own `AGENTS.md`.
+
+The numbers make it concrete. Against a 4096 window, `worker_budget(4096) = 1638` tokens
+is the entire allowance the gate hands out, and `agent_prompt._TEMPLATE`'s FIXED
+scaffolding alone - before any task text - is about 1359 of them, 83% of the budget,
+unmeasured. The endpoint counted 9997. Even when the gate runs and passes, the number it
+approves is off by roughly 6x in the direction that matters.
+
+Two adjacent facts worth checking before assuming a numeric bug: in the live case the gate
+probably never ran at all, because the escalated model was unknown to the probe so the
+window resolved to `UNKNOWN_SOURCE` and `fit_sections(sections, None)` returns every
+section unbudgeted by design; and the entrypoint writes an OpenCode `limit` block pairing
+the probed context with an `output` reserve of 8192, so a probed 4096 hands its compaction
+math a reserve larger than the whole context.

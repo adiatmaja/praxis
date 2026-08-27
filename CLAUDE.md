@@ -528,10 +528,16 @@ story. New gotchas go in `docs/gotchas.md` first. (No count is quoted on purpose
   takes it back out of `pending`.
 - **A fact about the REPOSITORY, the BASE BRANCH or a SIBLING leaf is not a fact about THIS
   leaf**, and that one class recurred at seat after seat: the review head gate, the wave
-  verify gate, the empty-diff seat (all fixed 2026-08-26), and `on_plan_completed`'s backstop,
-  which is REPORTED AND NOT FIXED (it publishes `plan_verify_failed` with no base
-  comparison, blocks nothing, so it is a false alarm rather than a wedge). Enumerate the
-  seats with `grep -rn "run_verify(\|_verify_plan_branch(\|verify_gate_disabled(" src/`.
+  verify gate, the empty-diff seat (all fixed 2026-08-26), and `on_plan_completed`'s
+  backstop (fixed 2026-08-27). Enumerate the seats with
+  `grep -rn "run_verify(\|_verify_plan_branch(\|verify_gate_disabled(" src/`, and sort the
+  hits into DECISION seats versus the shared funnel and status reporting; no count is
+  quoted on purpose. **Only TWO of the three parts apply at PLAN scope**: a completed
+  plan branch carries several leaves, so no single leaf's declared `verification` speaks
+  for the tree, and the positive-signal step must not be invented for it. The backstop
+  stays ADVISORY - the integration PR opens on every arm - and an un-attributable result
+  gets its own `verify_status` value, never `failed` (which lied) and never `passed`
+  (a larger lie).
 - **The project `verify_cmd` settles REGRESSION; the BASE BRANCH settles ATTRIBUTION; the
   leaf's own declared `verification` is the positive signal** (`review_task`, 2026-08-26).
   Every non-final leaf of a DEPENDENT chain used to be failed by a bar only the complete
