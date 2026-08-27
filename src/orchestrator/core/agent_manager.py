@@ -486,10 +486,18 @@ def build_spawn_env(
     context_limit: int | None = None,
     worker_session_id: str | None = None,
     reasoning_effort: str | None = None,
+    *,
+    run_id: str,
 ) -> dict[str, str]:
     """Build environment variables dictionary for spawned agent containers.
 
     Args:
+        run_id: The ``agent_runs`` row this container's work belongs to.
+            REQUIRED and keyword-only rather than defaulted, because an
+            omitted value reads as exactly the pre-fix behaviour: both shipped
+            entrypoints serialise ``escape_or_null "${RUN_ID:-}"``, so a
+            container that is not told its run reports ``"run_id": null`` and
+            the callback endpoint is left resolving the run by guesswork.
         reasoning_effort: The operator's configured worker thinking-effort
             level (``Settings.worker_reasoning_effort``), or None for no
             preference. Resolved through ``core.worker_effort.resolve_worker_effort``
@@ -500,7 +508,29 @@ def build_spawn_env(
             inverted; see ``core.thinking``); harnesses that bake
             effort into the model string (agy) get no env var at all, since a
             var they silently ignore would be a lie.
+
+    Raises:
+        SpawnConfigurationError: When ``run_id`` is blank or missing. An empty
+            string is indistinguishable from an absent one at the entrypoint
+            (``${RUN_ID:-}`` expands to nothing either way and
+            ``escape_or_null`` prints ``null``), so accepting it would put the
+            anonymous fallback back on the production path while every
+            signature in between still read as though a run had been named.
+            This type rather than ``ValueError`` so it lands in a clause the
+            dispatch loop already has: ``dispatch_pending_tasks`` catches
+            ``SpawnConfigurationError`` and fails the task permanently, which is
+            right for a condition no tick can change, while a ``ValueError``
+            would escape the loop entirely.
     """
+    if not (run_id or "").strip():
+        message = (
+            "run_id is blank, so this container would report its completion "
+            "against no run at all. The entrypoint expands ${RUN_ID:-} and "
+            "sends null for an empty value exactly as it does for an unset "
+            "one, which puts the callback endpoint back on the latest-run "
+            "guess this argument exists to remove."
+        )
+        raise SpawnConfigurationError(message)
     local_mode = is_local_repo_url(repo_url)
     environment: dict[str, str] = {
         "REPO_URL": LOCAL_REPO_MOUNT if local_mode else repo_url,
@@ -513,6 +543,13 @@ def build_spawn_env(
         "GH_TOKEN": _LOCAL_GH_TOKEN_PLACEHOLDER if local_mode else (gh_token or ""),
         "CALLBACK_URL": callback_url,
         "TASK_ID": task_id,
+        # In the harness-AGNOSTIC block beside TASK_ID, never in a per-harness
+        # branch below: both shipped entrypoints already read ${RUN_ID:-} and
+        # already serialise it into the callback body, and the harness contract
+        # is what a new harness is written against. A harness that did not get
+        # this variable would send an anonymous callback, which the endpoint
+        # refuses to resolve once the task has more than one run.
+        "RUN_ID": run_id,
         "GIT_BACKEND": "local" if local_mode else "github",
     }
     if git_author_name:
@@ -638,7 +675,33 @@ class AgentManager:
         single_branch: bool = False,
         worker_session_id: str | None = None,
         context_limit: int | None = None,
+        *,
+        run_id: str,
     ) -> str:
+        """Start a harness agent container for one attempt at one task.
+
+        Args:
+            run_id: The ``agent_runs`` row this container's work belongs to,
+                which the caller must therefore mint BEFORE asking for a
+                container. REQUIRED and keyword-only for the same reason it is
+                on :func:`build_spawn_env`: a caller that omits it gets a
+                container whose completion callback names no run, and the
+                endpoint then has to guess which of the task's runs is
+                reporting. That guess disposed of containers that were still
+                executing.
+
+        Returns:
+            The started container's id.
+
+        Raises:
+            SpawnConfigurationError: The deployment's configuration makes this
+                spawn impossible; no tick will change it. Also raised by
+                :func:`build_spawn_env` for a blank ``run_id``.
+            RuntimeError: A transient preflight (disk headroom, the concurrent
+                agent cap) refused. The caller is expected to leave the task
+                pending and try again on the next tick, which is why NOTHING
+                here may leave a durable record of a run that never started.
+        """
         harness_id = harness or default_harness_id()
         spec = REGISTRY[harness_id]
 
@@ -725,6 +788,7 @@ class AgentManager:
             gh_token=gh_token,
             callback_url=callback_url,
             task_id=task_id,
+            run_id=run_id,
             git_author_name=self._git_author_name,
             git_author_email=self._git_author_email,
             callback_token=callback_token,

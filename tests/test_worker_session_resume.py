@@ -429,6 +429,7 @@ def _base_env_kwargs(**overrides: object) -> dict:
         "gh_token": "tok",
         "callback_url": "http://host:12323/api/internal/agent-done",
         "task_id": "t-1",
+        "run_id": "run-under-test",
     }
     kwargs.update(overrides)
     return kwargs

@@ -509,9 +509,30 @@ class DispatchMixin:
             harness_id, worker_model = resolve_implementer(task, project)
             resume_session = resolve_resume_session(task, harness_id)
 
+            # The run's identity, minted BEFORE the container so the container
+            # can be told which run it is. Until 2026-08-27 nothing did: this
+            # call came before ``create_agent_run``, so there was no id to hand
+            # it, ``grep -rn "RUN_ID" src/`` returned ZERO hits while both
+            # entrypoints serialise ``escape_or_null "${RUN_ID:-}"``, and every
+            # real callback therefore arrived anonymous and was resolved as "the
+            # task's latest run" - which disposed of containers that were still
+            # executing.
+            #
+            # The ID is minted here and the ROW is created after the spawn
+            # returns, which is the whole reason this is not simply
+            # ``create_agent_run`` moved up. The refusals below leave the task
+            # PENDING with its attempt untouched so the next tick retries, and a
+            # row written before them would survive as a ``running`` run whose
+            # container id names nothing: ``reconcile_runs`` asks Docker, gets
+            # NotFound, and ``_fail_orphan``s it - spending the very attempt the
+            # deferral path exists to preserve. A spawn that did not happen
+            # leaves no trace at all.
+            run_id = self._tq.new_run_id()
+
             try:
                 container_id = await self._agents.spawn_agent(
                     task_id=task["id"],
+                    run_id=run_id,
                     repo_url=project["repo_url"],
                     branch=branch,
                     base_branch=base_branch,
@@ -584,6 +605,18 @@ class DispatchMixin:
                 )
                 continue
 
+            # The FIRST write after a container really exists, and it is first
+            # on purpose: that container may exit immediately (a hard-required
+            # env var missing, a clone that cannot authenticate) and its EXIT
+            # trap POSTs the callback within milliseconds. Everything between
+            # the spawn and this line is a window in which the callback names a
+            # run row that does not exist yet, which the endpoint answers 404 so
+            # the entrypoint's own retry closes the race. Keeping that window to
+            # a single statement is what keeps the race theoretical.
+            run_id = await self._tq.create_agent_run(
+                task["id"], container_id, run_id=run_id
+            )
+
             # Record the branch this task was ACTUALLY dispatched against. The
             # row is created holding ``agent/{slug}``, but single-branch
             # (auto-delegate) mode pushes to the shared caller-named work branch
@@ -598,7 +631,6 @@ class DispatchMixin:
                     (branch, datetime.now(UTC).isoformat(), task["id"]),
                 )
 
-            run_id = await self._tq.create_agent_run(task["id"], container_id)
             await self._tq.update_task_status(task["id"], TaskStatus.IN_PROGRESS)
             cast(Any, self)._start_monitor(run_id, task["id"], container_id)
             self._bus.publish(

@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 import logging
 import uuid
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import UTC, datetime
 from typing import Any
 
@@ -224,6 +226,58 @@ class TaskQueue:
 
     def __init__(self, db: Database) -> None:
         self._db = db
+        # Tasks whose agent-done disposal is running in THIS process right now,
+        # counted rather than flagged so overlapping disposals cannot clear each
+        # other's entry. See :meth:`disposing`.
+        self._disposals_in_flight: dict[str, int] = {}
+
+    @property
+    def disposals_in_flight(self) -> frozenset[str]:
+        """Task ids whose completion callback is being disposed of right now."""
+        return frozenset(self._disposals_in_flight)
+
+    @contextmanager
+    def disposing(self, task_id: str) -> Iterator[None]:
+        """Mark a task's callback disposal as in flight for its duration.
+
+        The correctness mechanism behind :meth:`stranded_claim_candidates`, and
+        it has to be a REGISTRY rather than a timer because no time bound is
+        sound here. The disposal's own legs have no common ceiling: the verify
+        gate's default timeout is 600s and the review path can run it twice in
+        sequence, and the adaptive-triage brain call has no timeout at all
+        (``llm_router`` awaits ``proc.communicate()`` unguarded). A sweep that
+        decided "stranded" purely on age would therefore fail-and-retry a leaf
+        whose verdict was still being computed, spawn a second container for it,
+        and then let the original disposal spend the attempt AGAIN off the stale
+        row it read before the claim - which is the doubled retry budget this
+        whole change exists to remove, rebuilt on the recovery side.
+
+        Being in-process is the point, not a limitation. A disposal running here
+        is registered; a disposal whose process DIED leaves nothing behind, and
+        that is exactly the case the sweep must act on.
+
+        ``app.state.task_queue`` and ``Orchestrator._tq`` are ONE object
+        (``main.py`` builds the queue once and passes it in), so the handler
+        registers and the sweep reads the same map.
+
+        Args:
+            task_id: The task being disposed of.
+
+        Yields:
+            None. The entry is removed on the way out, including on a raise, so
+            a settle that itself fails still releases the task to the sweep.
+        """
+        self._disposals_in_flight[task_id] = (
+            self._disposals_in_flight.get(task_id, 0) + 1
+        )
+        try:
+            yield
+        finally:
+            remaining = self._disposals_in_flight.get(task_id, 1) - 1
+            if remaining > 0:
+                self._disposals_in_flight[task_id] = remaining
+            else:
+                self._disposals_in_flight.pop(task_id, None)
 
     async def create_plan(
         self,
@@ -920,13 +974,42 @@ class TaskQueue:
             task["status"] in SATISFIED_STATUSES for task in tasks
         )
 
-    async def create_agent_run(self, task_id: str, container_id: str) -> str:
-        run_id = str(uuid.uuid4())
+    async def create_agent_run(
+        self, task_id: str, container_id: str, run_id: str | None = None
+    ) -> str:
+        """Record that an attempt at ``task_id`` is running in ``container_id``.
+
+        Args:
+            task_id: The task this attempt belongs to.
+            container_id: The container Docker actually started.
+            run_id: The id to use, when the caller minted one BEFORE the
+                container existed so it could hand it to the container as
+                ``RUN_ID``. That is the dispatch path: a container that is not
+                told its own run posts an anonymous callback, and the endpoint
+                is then left guessing which of the task's runs is reporting.
+                None keeps the historical behaviour of minting one here.
+
+        Returns:
+            The run id, whether it was minted here or supplied.
+        """
+        run_id = run_id or str(uuid.uuid4())
         await self._db.execute(
             "INSERT INTO agent_runs (id, task_id, container_id) VALUES (?, ?, ?)",
             (run_id, task_id, container_id),
         )
         return run_id
+
+    @staticmethod
+    def new_run_id() -> str:
+        """Mint a run id for a run whose row does not exist yet.
+
+        Separate from :meth:`create_agent_run` because the dispatch path needs
+        the id BEFORE the row: the container environment is built by
+        ``spawn_agent``, and a spawn that then fails must leave NO row behind
+        for reconcile or the callback's latest-run fallback to mistake for a
+        live run.
+        """
+        return str(uuid.uuid4())
 
     async def get_agent_run(self, run_id: str) -> dict[str, Any] | None:
         return await self._db.fetch_one(
@@ -941,13 +1024,25 @@ class TaskQueue:
         )
 
     async def get_running_runs(self) -> list[dict[str, Any]]:
-        """Return every agent run still marked as running.
+        """Return every agent run that has not been disposed of yet.
 
         Used by reconciliation to find orphaned runs whose containers no
         longer report completion (e.g. after an orchestrator restart).
+
+        Keyed on ``finished_at IS NULL``, the same predicate
+        :meth:`claim_agent_run_completion` uses and for the same reason: the
+        ``status`` column holds whatever string the harness reported, and
+        ``AgentDonePayload.status`` is a bare ``str``, so a harness answering
+        with the word "running" produced a row that was CLOSED and still
+        selected here - reconciled as an orphan and fail-and-retried after the
+        callback had already disposed of it. Equivalent for every well-behaved
+        row (``create_agent_run`` leaves ``finished_at`` NULL and only the two
+        closing statements set it), and it makes this query and
+        :meth:`stranded_claim_candidates` exact complements, so no run can be
+        claimed by both sweeps.
         """
         return await self._db.fetch_all(
-            "SELECT * FROM agent_runs WHERE status = 'running' ORDER BY rowid"
+            "SELECT * FROM agent_runs WHERE finished_at IS NULL ORDER BY rowid"
         )
 
     async def update_agent_run_logs(self, run_id: str, logs: str) -> None:
@@ -962,12 +1057,182 @@ class TaskQueue:
         )
 
     async def complete_agent_run(self, run_id: str, status: str, logs: str) -> None:
+        """Close a run unconditionally, overwriting any earlier verdict.
+
+        Used by callers that already OWN the disposal of the run they are
+        closing: ``reconcile_runs`` selects it from ``get_running_runs``, and
+        the stop endpoint is acting on a person's explicit instruction. A caller
+        that is merely being TOLD a run finished - the agent callback, which any
+        harness may redeliver - wants ``claim_agent_run_completion`` instead.
+        """
         now = datetime.now(UTC).isoformat()
         await self._db.execute(
             """UPDATE agent_runs
                SET status = ?, logs = ?, finished_at = ?
                WHERE id = ?""",
             (status, logs, now, run_id),
+        )
+
+    async def claim_agent_run_completion(self, run_id: str, status: str) -> bool:
+        """Close a run only if nothing has closed it yet, and say which happened.
+
+        The disposal of one agent run - a calibration row, a triage decision, a
+        spend of the retry budget - must happen AT MOST ONCE, and the only thing
+        standing between it and a redelivered callback is this statement. It is
+        a single conditional UPDATE rather than a read followed by a write
+        because the caller is an async request handler: two deliveries of the
+        same callback can be in the same event loop at once, and any ``await``
+        between "is it finished?" and "mark it finished" is a window both of
+        them fit through. SQLite settles the ``WHERE`` and the ``SET`` in one
+        statement, so exactly one caller can see ``rowcount == 1``.
+
+        The predicate is ``finished_at IS NULL``, not ``status = 'running'``.
+        ``status`` carries whatever string the harness reported and
+        ``AgentDonePayload.status`` is a bare ``str``, so a harness reporting
+        the word "running" would leave a closed row indistinguishable from an
+        open one and hand every redelivery the claim. ``finished_at`` is written
+        by exactly two statements, this one and ``complete_agent_run`` above
+        (``rg 'finished_at' src/``), is never cleared, and ``create_agent_run``
+        leaves it NULL - so it means "not yet disposed of" and nothing else.
+        ``update_agent_run_logs`` deliberately does not touch it.
+
+        Args:
+            run_id: The agent run being closed.
+            status: The status the caller was told, stored verbatim.
+
+        Returns:
+            True when this call closed the run and the caller therefore owns its
+            disposal; False when it was already closed, by an earlier delivery
+            of the same callback or by the reconcile sweep that finished it
+            first. A False result writes NOTHING: the run keeps the status the
+            winner recorded.
+        """
+        now = datetime.now(UTC).isoformat()
+        cursor = await self._db.execute(
+            """UPDATE agent_runs
+               SET status = ?, finished_at = ?
+               WHERE id = ? AND finished_at IS NULL""",
+            (status, now, run_id),
+        )
+        return int(cursor.rowcount) == 1
+
+    @staticmethod
+    def stranded_claim_reason(cause: str) -> str:
+        """Build what a task settled after a lost disposal tells its next worker.
+
+        Built here rather than at each recovery site because it is stored on
+        ``review_feedback``, which ``worker_bible`` hands to the NEXT worker as
+        the reason its predecessor failed. Two sites writing two sentences is
+        two things a floor model can be told about the same event, and the
+        register matters: an unexplained failure reason makes a worker try to
+        FIX something, and there is nothing here to fix.
+
+        It deliberately says nothing about what is on the branch, because that
+        depends on a mode this function cannot see. A two-tier retry cuts the
+        branch from base and pushes with ``--force``
+        (``docker/*/entrypoint.sh``, ``REUSING_BRANCH``), so the previous
+        attempt's commits are gone; under ``SINGLE_BRANCH`` the branch is
+        reused and they are still there. Telling a worker to look for work that
+        a force-push has erased is the same class of mistake as telling one to
+        fix a verification nobody ran.
+
+        Args:
+            cause: What interrupted the disposal, in a few words.
+
+        Returns:
+            The stored reason, which an operator also reads on ``praxis task``.
+        """
+        return (
+            "The last attempt was never judged. Its completion callback reached "
+            f"the orchestrator, which then failed to finish with it ({cause}). "
+            "Nothing is known to be wrong with the work that attempt produced - "
+            "its result was simply never read, so this is a repeat rather than a "
+            "correction. Do the task as given, against the branch as you find it."
+        )
+
+    async def settle_stranded_task(self, task_id: str, reason: str) -> str | None:
+        """Move a task out of IN_PROGRESS when its disposal never finished.
+
+        ``claim_agent_run_completion`` is the FIRST write of the callback, so
+        every write after it - the log, the token telemetry, the pull-request
+        url, the calibration row, the status transition - happens on a run that
+        is already closed. If any of them raises, or the process ends between
+        them, the task sits at IN_PROGRESS with a redelivery that will be
+        refused as a duplicate and a run that ``get_running_runs`` no longer
+        selects. Nothing else in the system can move it.
+
+        ONE implementation, called from both recovery paths (the handler's own
+        settle and the reconcile sweep), because they answer the same question
+        and a second copy would be a second opinion about what a legal state
+        is. Derive the callers with
+        ``rg 'settle_stranded_task\\(' src/``.
+
+        Deliberately does NOT write a ``task_outcomes`` row and does not
+        triage. The lost disposal may have written one already, and a rescue
+        cannot tell; inventing calibration data about a worker whose result
+        nobody read is worse than recording nothing. It DOES spend an attempt,
+        for a reason the provider-error path documents in the opposite
+        direction: an unbounded re-queue on a deterministic fault respawns a
+        container every tick forever while the plan reads ACTIVE with a null
+        ``error``, and a bounded budget is what turns that into something a
+        person is eventually shown.
+
+        Args:
+            task_id: The task whose disposal was lost.
+            reason: What to store as the review feedback, and therefore what
+                the next worker is told and what an operator reads.
+
+        Returns:
+            The status the task was left in, or None when it was not stranded
+            after all - which is the ordinary case and must stay silent, since
+            both callers race a disposal that may simply have finished.
+        """
+        task = await self.get_task(task_id)
+        if task is None or task["status"] != TaskStatus.IN_PROGRESS:
+            return None
+        plan = await self.get_plan(task["plan_id"])
+        project = (
+            await self.get_project(plan["project_id"]) if plan is not None else None
+        )
+        max_retries = int(project["max_retries"]) if project is not None else 0
+        await self.fail_task(task_id, reason)
+        if int(task["attempt"]) < max_retries:
+            await self.retry_task(task_id)
+            return str(TaskStatus.PENDING)
+        return str(TaskStatus.FAILED)
+
+    async def stranded_claim_candidates(self) -> list[dict[str, Any]]:
+        """Return tasks stuck IN_PROGRESS with every one of their runs closed.
+
+        The shape of a lost disposal, expressed as the only two facts that
+        distinguish it: the task still reads IN_PROGRESS, and there is no run
+        left that could still be producing the result it is waiting for.
+
+        The second condition is what makes this safe, and it is the whole
+        query. A task whose EARLIER run finished and whose CURRENT run is still
+        executing looks identical on the ``tasks`` row alone, and rescuing that
+        one would fail-and-retry a leaf with a live worker on it - a worse
+        version of the defect this recovery exists to close. So the HAVING
+        clause requires that no run of the task is still open.
+
+        Returns:
+            One row per candidate task carrying ``task_id`` and
+            ``last_finished_at``, the newest ``finished_at`` among its runs, so
+            the caller can apply its own grace period. The inner join also means
+            a task with NO runs is never a candidate, which costs nothing:
+            ``grep -rn "TaskStatus.IN_PROGRESS" src/`` returns one write, in
+            ``dispatch_pending_tasks``, and it happens only after that task's
+            run row exists. A task in this status with no run at all is
+            therefore not a state the engine can produce.
+        """
+        return await self._db.fetch_all(
+            """SELECT t.id AS task_id, MAX(r.finished_at) AS last_finished_at
+               FROM tasks t
+               JOIN agent_runs r ON r.task_id = t.id
+               WHERE t.status = ?
+               GROUP BY t.id
+               HAVING SUM(CASE WHEN r.finished_at IS NULL THEN 1 ELSE 0 END) = 0""",
+            (TaskStatus.IN_PROGRESS,),
         )
 
     async def record_run_tokens(

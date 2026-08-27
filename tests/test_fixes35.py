@@ -380,6 +380,7 @@ async def test_spawn_agent_raises_on_low_disk(monkeypatch: pytest.MonkeyPatch) -
     with pytest.raises(RuntimeError, match="Insufficient disk space on the filesystem"):
         await manager.spawn_agent(
             task_id="t1",
+            run_id="run-under-test",
             repo_url="https://github.com/u/r",
             branch="agent/t1",
             base_branch="main",
@@ -422,6 +423,7 @@ async def test_spawn_agent_raises_on_concurrency_cap(
     with pytest.raises(RuntimeError, match="Concurrent agent cap reached"):
         await manager.spawn_agent(
             task_id="t2",
+            run_id="run-under-test",
             repo_url="https://github.com/u/r",
             branch="agent/t2",
             base_branch="main",

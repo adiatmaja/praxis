@@ -28,6 +28,7 @@ def test_build_spawn_env_single_branch_true() -> None:
         gh_token="ghp_test",
         callback_url="http://cb/",
         task_id="t1",
+        run_id="run-under-test",
         single_branch=True,
     )
     assert env["SINGLE_BRANCH"] == "1"
@@ -47,6 +48,7 @@ def test_build_spawn_env_single_branch_false() -> None:
         gh_token="ghp_test",
         callback_url="http://cb/",
         task_id="t1",
+        run_id="run-under-test",
         single_branch=False,
     )
     assert "SINGLE_BRANCH" not in env
@@ -67,6 +69,7 @@ async def test_spawn_agent_passes_single_branch(mock_docker: MagicMock) -> None:
     )
     await manager.spawn_agent(
         task_id="t1",
+        run_id="run-under-test",
         repo_url="https://github.com/u/r.git",
         branch="feature/work",
         base_branch="main",

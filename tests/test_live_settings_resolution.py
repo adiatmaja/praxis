@@ -186,6 +186,7 @@ async def test_agent_manager_uses_effective_lm_studio_url(
     )
     await manager.spawn_agent(
         task_id="t-live",
+        run_id="run-under-test",
         repo_url="https://github.com/u/r.git",
         branch="agent/live",
         base_branch="main",
@@ -218,6 +219,7 @@ async def test_agent_manager_falls_back_to_static_url_without_effective_settings
     )
     await manager.spawn_agent(
         task_id="t-static",
+        run_id="run-under-test",
         repo_url="https://github.com/u/r.git",
         branch="agent/static",
         base_branch="main",

@@ -63,6 +63,7 @@ def _spawn_env(harness_id: str, **kwargs: object) -> dict[str, str]:
         gh_token="tok",
         callback_url="http://orchestrator:8080/internal/agent-done",
         task_id="task-1",
+        run_id="run-under-test",
         **kwargs,  # type: ignore[arg-type]
     )
 
@@ -118,6 +119,7 @@ async def test_spawn_agent_carries_configured_reasoning_effort_to_container(
     )
     await manager.spawn_agent(
         task_id="wire-1",
+        run_id="run-under-test",
         repo_url="https://github.com/o/r",
         branch="agent/x",
         base_branch="main",
@@ -143,6 +145,7 @@ async def test_spawn_agent_defaults_reasoning_effort_when_unconfigured(
     manager = AgentManager(lm_studio_url="http://localhost:1234", github_token="ghp_x")
     await manager.spawn_agent(
         task_id="wire-2",
+        run_id="run-under-test",
         repo_url="https://github.com/o/r",
         branch="agent/x",
         base_branch="main",
@@ -172,6 +175,7 @@ async def test_spawn_agent_agy_omits_effort_even_when_configured(
     )
     await manager.spawn_agent(
         task_id="wire-3",
+        run_id="run-under-test",
         repo_url="https://github.com/o/r",
         branch="agent/x",
         base_branch="main",

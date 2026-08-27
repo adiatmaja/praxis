@@ -84,6 +84,7 @@ async def test_spawn_agent(mock_docker: MagicMock) -> None:
     )
     result = await manager.spawn_agent(
         task_id="task-1",
+        run_id="run-under-test",
         repo_url="https://github.com/user/repo.git",
         branch="agent/login",
         base_branch="plan/2026-06-01-auth",
@@ -113,6 +114,7 @@ async def test_spawn_agent_sets_correct_env(mock_docker: MagicMock) -> None:
     )
     await manager.spawn_agent(
         task_id="task-2",
+        run_id="run-under-test",
         repo_url="git@github.com:user/repo.git",
         branch="agent/signup",
         base_branch="plan/2026-06-01-auth",
@@ -144,6 +146,7 @@ async def test_spawn_agent_defaults_to_opencode(mock_docker: MagicMock) -> None:
     manager = AgentManager(lm_studio_url="http://localhost:1234", github_token="ghp_x")
     await manager.spawn_agent(
         task_id="t3",
+        run_id="run-under-test",
         repo_url="https://github.com/u/r.git",
         branch="agent/x",
         base_branch="main",
@@ -170,6 +173,7 @@ async def test_spawn_agent_removes_stale_container(mock_docker: MagicMock) -> No
     manager = AgentManager(lm_studio_url="http://localhost:1234", github_token="ghp_x")
     await manager.spawn_agent(
         task_id="task-1xx",
+        run_id="run-under-test",
         repo_url="https://github.com/u/r.git",
         branch="agent/x",
         base_branch="main",
@@ -196,6 +200,7 @@ async def test_spawn_agent_no_stale_container(mock_docker: MagicMock) -> None:
     manager = AgentManager(lm_studio_url="http://localhost:1234", github_token="ghp_x")
     result = await manager.spawn_agent(
         task_id="task-zz",
+        run_id="run-under-test",
         repo_url="https://github.com/u/r.git",
         branch="agent/x",
         base_branch="main",
@@ -302,6 +307,7 @@ async def test_spawn_agent_sets_context_env(mock_docker: MagicMock) -> None:
     manager = AgentManager(lm_studio_url="http://localhost:1234", github_token="ghp_x")
     await manager.spawn_agent(
         task_id="abcd1234",
+        run_id="run-under-test",
         repo_url="https://github.com/o/r",
         branch="agent/x",
         base_branch="main",
@@ -368,6 +374,7 @@ async def test_spawn_sets_context_limit_env(
     manager = AgentManager(lm_studio_url="http://localhost:1234", github_token="ghp_x")
     await manager.spawn_agent(
         task_id="t9",
+        run_id="run-under-test",
         repo_url="https://github.com/o/r",
         branch="agent/x",
         base_branch="main",
@@ -394,6 +401,7 @@ async def test_spawn_agent_sets_bible_env(
     manager = AgentManager(lm_studio_url="http://localhost:1234", github_token="ghp_x")
     await manager.spawn_agent(
         task_id="abcd1234",
+        run_id="run-under-test",
         repo_url="https://github.com/o/r",
         branch="agent/x",
         base_branch="main",
@@ -425,6 +433,7 @@ async def test_spawn_agent_injects_git_author_identity(
     )
     await manager.spawn_agent(
         task_id="abcd1234",
+        run_id="run-under-test",
         repo_url="https://github.com/o/r",
         branch="agent/x",
         base_branch="main",
@@ -451,6 +460,7 @@ async def test_spawn_agent_omits_git_author_when_unset(
     manager = AgentManager(lm_studio_url="http://localhost:1234", github_token="ghp_x")
     await manager.spawn_agent(
         task_id="abcd1234",
+        run_id="run-under-test",
         repo_url="https://github.com/o/r",
         branch="agent/x",
         base_branch="main",
@@ -477,6 +487,7 @@ async def test_spawn_omits_context_limit_when_undetected(
     manager = AgentManager(lm_studio_url="http://localhost:1234", github_token="ghp_x")
     await manager.spawn_agent(
         task_id="t10",
+        run_id="run-under-test",
         repo_url="https://github.com/o/r",
         branch="agent/x",
         base_branch="main",
@@ -546,6 +557,7 @@ async def test_spawn_agent_uses_bridge_network_not_host(
     )
     await manager.spawn_agent(
         task_id="net-1",
+        run_id="run-under-test",
         repo_url="https://github.com/u/r.git",
         branch="agent/x",
         base_branch="plan/x",
@@ -572,6 +584,7 @@ async def test_spawn_agent_rewrites_localhost_lm_studio_url(
     manager = AgentManager(lm_studio_url="http://localhost:1234", github_token="ghp_x")
     await manager.spawn_agent(
         task_id="net-2",
+        run_id="run-under-test",
         repo_url="https://github.com/u/r.git",
         branch="agent/x",
         base_branch="plan/x",
@@ -659,6 +672,7 @@ async def test_spawn_agent_injects_freshly_minted_token(monkeypatch) -> None:
     )
     await manager.spawn_agent(
         task_id="task1234abcd",
+        run_id="run-under-test",
         repo_url="https://github.com/o/r",
         branch="agent/x",
         base_branch="main",
@@ -691,6 +705,7 @@ async def test_agy_mounts_gemini_creds_when_configured(
     )
     await manager.spawn_agent(
         task_id="agy-t1",
+        run_id="run-under-test",
         repo_url="https://github.com/u/r.git",
         branch="agent/agy-task",
         base_branch="plan/agy",
@@ -730,6 +745,7 @@ async def test_agy_skips_gemini_mount_when_unconfigured(
     # Should not raise even with no creds dir configured
     await manager.spawn_agent(
         task_id="agy-t2",
+        run_id="run-under-test",
         repo_url="https://github.com/u/r.git",
         branch="agent/agy-task2",
         base_branch="plan/agy",
@@ -765,6 +781,7 @@ async def test_agy_skips_context_limit_detection(
     )
     await manager.spawn_agent(
         task_id="agy-t3",
+        run_id="run-under-test",
         repo_url="https://github.com/u/r.git",
         branch="agent/agy-task3",
         base_branch="plan/agy",
@@ -801,6 +818,7 @@ async def test_a_caller_resolved_window_wins_and_skips_the_probe(
     manager = AgentManager(lm_studio_url="http://localhost:1234", github_token="ghp_x")
     await manager.spawn_agent(
         task_id="declared",
+        run_id="run-under-test",
         repo_url="https://github.com/u/r.git",
         branch="agent/t",
         base_branch="main",
@@ -837,6 +855,7 @@ async def test_no_worker_endpoint_means_no_context_probe(
     manager = AgentManager(lm_studio_url="", github_token="ghp_x")
     await manager.spawn_agent(
         task_id="no-endpoint",
+        run_id="run-under-test",
         repo_url="https://github.com/u/r.git",
         branch="agent/t",
         base_branch="main",
@@ -865,6 +884,7 @@ async def test_agy_uses_correct_image(mock_docker: MagicMock) -> None:
     )
     await manager.spawn_agent(
         task_id="agy-t4",
+        run_id="run-under-test",
         repo_url="https://github.com/u/r.git",
         branch="agent/agy-task4",
         base_branch="plan/agy",
@@ -944,6 +964,7 @@ async def test_opencode_mounts_sessions_volume_when_configured(
     )
     await manager.spawn_agent(
         task_id="oc-t1",
+        run_id="run-under-test",
         repo_url="https://github.com/u/r.git",
         branch="agent/oc-task",
         base_branch="plan/oc",
@@ -986,6 +1007,7 @@ async def test_opencode_skips_sessions_mount_when_unconfigured(
     )
     await manager.spawn_agent(
         task_id="oc-t2",
+        run_id="run-under-test",
         repo_url="https://github.com/u/r.git",
         branch="agent/oc-task2",
         base_branch="plan/oc",
@@ -1018,6 +1040,7 @@ async def test_agy_spawn_does_not_get_opencode_sessions_mount(
     )
     await manager.spawn_agent(
         task_id="agy-t5",
+        run_id="run-under-test",
         repo_url="https://github.com/u/r.git",
         branch="agent/agy-task5",
         base_branch="plan/agy",

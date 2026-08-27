@@ -59,6 +59,31 @@ BRANCH_DELETE_FAILURE_CAP: int = 3
 # quarantine.
 REPO_PROBE_FAILURE_QUARANTINE_THRESHOLD: int = 3
 
+#: A SECOND guard on the stranded-claim rescue, behind ``TaskQueue.disposing``,
+#: and deliberately NOT the thing that makes it safe.
+#:
+#: No time bound could be, and the numbers are worth stating rather than
+#: choosing a comfortable one: ``run_verify`` defaults to a 600s timeout and
+#: ``_verify_plan_branch`` can run it TWICE in sequence, while the adaptive
+#: triage call has no timeout at all (``llm_router`` awaits
+#: ``proc.communicate()`` unguarded). A disposal can therefore legitimately
+#: outlast any constant chosen here, and a rescue firing on one would
+#: fail-and-retry a leaf whose verdict was still being computed, spawn a SECOND
+#: container for it, and then let the original disposal spend the attempt again
+#: from the row it read before the claim - the doubled retry budget this whole
+#: change exists to remove, rebuilt on the recovery side.
+#:
+#: The in-process registry answers "is a disposal running" exactly; this only
+#: stops a rescue acting on a state that is seconds old, and covers the one case
+#: the registry cannot: a SECOND orchestrator process against the same database,
+#: which this repo already documents as a hazard. Fifteen minutes because the
+#: errors are not symmetric - rescuing early costs a verdict, rescuing late
+#: costs latency on a task nothing else was going to move.
+#:
+#: Module-level so a test can rebind it on this module - the mixin's instance
+#: attributes are set in ``Orchestrator.__init__``, which lives elsewhere.
+_STRANDED_CLAIM_GRACE_SECONDS: float = 900.0
+
 # Sweep passes to skip once quarantined, doubling on every re-probe that
 # still fails, capped at the ceiling. Chosen over a flat periodic re-probe
 # because it recovers a transient blip (a network hiccup, a momentarily
@@ -478,6 +503,35 @@ async def sweep_dead_branches(
     return "swept"
 
 
+def _seconds_since(timestamp: Any, now: datetime) -> float | None:
+    """Return how old an ISO-8601 timestamp column is, or None if it cannot say.
+
+    Every row this reads was written by ``datetime.now(UTC).isoformat()``, but
+    the column is TEXT and SQLite stores whatever it is given, so an
+    unparseable value is possible and a naive one is possible on rows older
+    than the move to timezone-aware writes. A naive value is read as UTC, which
+    is what wrote it; anything unreadable returns None, and every caller must
+    treat that as "do not act" rather than as an age of zero.
+
+    Args:
+        timestamp: The raw column value.
+        now: The reference instant, passed in so one sweep pass judges every
+            row against the same clock.
+
+    Returns:
+        Age in seconds, or None when the value could not be interpreted.
+    """
+    if not isinstance(timestamp, str) or not timestamp.strip():
+        return None
+    try:
+        parsed = datetime.fromisoformat(timestamp.strip())
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return (now - parsed).total_seconds()
+
+
 class ReconcileMixin:
     """Reconciliation half of the Orchestrator (see class Orchestrator)."""
 
@@ -856,6 +910,15 @@ class ReconcileMixin:
             logger.exception("Failed to sweep dead branches during reconcile pass")
 
         try:
+            # AFTER the sweep for the same reason the merge-gate pass below is:
+            # this can write a task FAILED, which moves its branch into the
+            # sweeper's terminal set, and being one pass late to delete a branch
+            # is the reversible direction.
+            await self.rescue_stranded_claims()
+        except Exception:  # noqa: BLE001 - recovery is best-effort
+            logger.exception("Failed to rescue stranded agent-done claims")
+
+        try:
             # AFTER the sweep, not before. This pass can mark a task merged or
             # failed, which moves its branch between the sweeper's live and
             # dead sets; letting the sweeper act on one-pass-stale facts errs
@@ -869,6 +932,95 @@ class ReconcileMixin:
             await self.reconcile_merge_gate()
         except Exception:  # noqa: BLE001 - reconciliation is best-effort
             logger.exception("Failed to reconcile the merge gate this pass")
+
+    async def rescue_stranded_claims(self) -> None:
+        """Settle tasks whose completion callback was accepted but never finished.
+
+        The cost of making the agent-done callback at-most-once. The claim is
+        the FIRST write of that handler, so a fault after it leaves the run
+        CLOSED and the task IN_PROGRESS - and neither of the two things that
+        would otherwise recover a task can see that state. The harness's
+        redelivery is refused as a duplicate, by design, and the sweep above
+        walks ``get_running_runs``, which selects ``status = 'running'``.
+
+        The handler settles its own faults inline, including the cancellation
+        that ``except Exception`` cannot catch. This exists for the one it
+        cannot: a process killed between the claim and the settle, where no
+        ``finally`` anywhere runs. That is not new with the claim - the
+        unconditional close it replaced closed the run before the work too -
+        but it was previously masked by a redelivery being accepted.
+
+        A LIVE disposal is spared by ``TaskQueue.disposing``, not by the age
+        below. It has to be, because the disposal has no ceiling to wait out;
+        see :data:`_STRANDED_CLAIM_GRACE_SECONDS`.
+
+        Deliberately NOT wired into ``plan_reachability``: a stranded task is
+        IN_PROGRESS, not a PENDING leaf behind a terminally failed one, so it is
+        not in that derivation's inputs.
+        """
+        candidates = await self._tq.stranded_claim_candidates()
+        if not candidates:
+            return
+        # Read ONCE for the pass, so a disposal that starts halfway through
+        # cannot be half-seen. Reading it late would be the more dangerous
+        # order anyway; this errs towards sparing a task.
+        in_flight = self._tq.disposals_in_flight
+        now = datetime.now(UTC)
+        for row in candidates:
+            task_id = str(row["task_id"])
+            # THE guard. A disposal running in this process is registered for
+            # its whole duration, so its task is busy and not stranded, however
+            # long it has taken. See _STRANDED_CLAIM_GRACE_SECONDS for why the
+            # age below cannot carry this on its own.
+            if task_id in in_flight:
+                continue
+            age = _seconds_since(row.get("last_finished_at"), now)
+            # None means the timestamp could not be read, which is a reason to
+            # do NOTHING rather than to treat it as old. The HAVING clause makes
+            # it unreachable today - it guarantees a non-NULL MAX, and both
+            # writers of the column use ``datetime.now(UTC).isoformat()`` - but
+            # the column is TEXT and SQLite stores whatever it is given, so the
+            # arm exists and is tested rather than assumed away.
+            if age is None or age < _STRANDED_CLAIM_GRACE_SECONDS:
+                continue
+            # The cause is stated as a disjunction on purpose. This fires for a
+            # process that died mid-callback, but it also fires when the
+            # handler's own settle failed and logged that this sweep would
+            # retry, so naming one of them would be a guess presented as a fact.
+            reason = self._tq.stranded_claim_reason(
+                "the orchestrator process ended mid-callback, or its own "
+                "recovery could not run either"
+            )
+            settled = await self._tq.settle_stranded_task(task_id, reason)
+            if settled is None:
+                continue
+            # A terminal settle is reported at ERROR, not WARNING, because of
+            # where it leads rather than how it reads: a FAILED leaf can take
+            # its whole plan to PlanStatus.FAILED, which puts the plan branch in
+            # the sweeper's terminal set. That path once deleted human-approved
+            # merged work. The `carrying_merged_work` veto stands in front of it
+            # and this rescue does not weaken it, but a leaf failed by the
+            # ENGINE rather than by a worker is exactly the shape that incident
+            # had, so it must not arrive quietly.
+            level = logging.ERROR if settled == TaskStatus.FAILED else logging.WARNING
+            logger.log(
+                level,
+                "Task %s was stranded in progress with every run closed for "
+                "%.0fs; settled as %s. Its completion callback was accepted and "
+                "then never finished - this is an orchestrator fault, not a "
+                "worker one, and the work that attempt produced was never read.",
+                task_id,
+                age,
+                settled,
+            )
+            self._bus.publish(
+                {
+                    "type": "task_disposal_lost",
+                    "task_id": task_id,
+                    "status": settled,
+                    "reason": reason,
+                }
+            )
 
     def _merge_gate_probes(self) -> dict[str, RepoProbeState]:
         """Return the per-pull-request probe state, creating it on first use.
@@ -1321,7 +1473,12 @@ class ReconcileMixin:
         """
         await asyncio.sleep(self._callback_grace)
         current = await self._tq.get_agent_run(run["id"])
-        if current is None or current["status"] != "running":
+        # ``finished_at``, not ``status``: the status column carries whatever
+        # string the harness reported, so one answering with the word "running"
+        # left a disposed run looking open here and got fail-and-retried on top
+        # of the callback that had already settled it. Same predicate as the
+        # claim and as ``get_running_runs``.
+        if current is None or current["finished_at"] is not None:
             return
         logs = self._safe_logs(run["container_id"]) or str(current["logs"] or "")
         if status is None:

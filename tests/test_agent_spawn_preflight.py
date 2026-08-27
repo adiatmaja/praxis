@@ -96,6 +96,7 @@ def _plenty_of_disk(monkeypatch: pytest.MonkeyPatch) -> None:
 async def _spawn(manager: AgentManager, **overrides: Any) -> str:
     kwargs: dict[str, Any] = {
         "task_id": "task-1234abcd",
+        "run_id": "run-under-test",
         "repo_url": "https://github.com/u/r",
         "branch": "agent/x",
         "base_branch": "main",

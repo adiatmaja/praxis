@@ -23,6 +23,7 @@ def _env(repo_url: str, **overrides) -> dict[str, str]:
         "gh_token": "",
         "callback_url": "http://host.docker.internal:8080/cb",
         "task_id": "t1",
+        "run_id": "run-under-test",
         "git_author_name": "praxis",
         "git_author_email": "praxis@example.com",
     }
@@ -105,6 +106,7 @@ async def test_spawn_agent_never_asks_for_a_github_token_in_local_mode(
     )
     await manager.spawn_agent(
         task_id="t-local",
+        run_id="run-under-test",
         repo_url="/srv/bench/a.git",
         branch="agent/x",
         base_branch="main",
