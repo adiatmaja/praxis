@@ -94,6 +94,27 @@ worker model is baked when the container is created. Escalation is a
 dispatch-time substitution instead. That is why `implement` looks different from
 `plan` and `review` throughout this document.
 
+**The ladder ships EMPTY, and that is deliberate.** An empty ladder means "never
+escalate": a triage `escalate` decision then falls through to `human`, which is
+loud and reversible. Before adding a rung, verify the endpoint actually serves
+the model you name:
+
+```bash
+curl -s "$LM_STUDIO_URL/v1/chat/completions" -H 'Content-Type: application/json' \
+  -d '{"model":"<rung>","messages":[{"role":"user","content":"hi"}],"max_tokens":2}' \
+  | jq -r .model
+```
+
+Compare that against the model you asked for. Measured on 2026-08-27 against the
+reference endpoint: **any** model string returns HTTP 200 and is served by
+whatever is currently loaded, with no 404 and no error. So an unverified rung is
+not a failure you find out about; it is a silent no-op that Praxis still records
+as the escalated model in `tasks.implement_model` and in `task_outcomes`,
+teaching the capability engine a stronger model's success rate from a weaker
+model's output. A stripped namespace prefix (`vendor/x` becoming `x`) or an added
+instance suffix (`x` becoming `x:2`) is benign; a different model is the fault.
+A rung Praxis cannot verify is worse than no rung.
+
 ## Harnesses
 
 The harness is what actually edits code inside the worker container. It is a

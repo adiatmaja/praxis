@@ -479,6 +479,21 @@ story. New gotchas go in `docs/gotchas.md` first. (No count is quoted on purpose
 - **An unrecognised key in `.env` is IGNORED, not rejected**: a typo in a real key is
   silent and `env_drift` cannot see keys that live only in `.env`. `AUTH_TOKEN` is the
   required exception.
+- **AN OPENAI-COMPATIBLE ENDPOINT MAY IGNORE `model` ENTIRELY, so a model string Praxis
+  never verified is a LIE IT RECORDS** (2026-08-27). Measured against the reference LM
+  Studio endpoint: `glm-4.7` AND `totally-made-up-model-xyz` both returned HTTP 200 with
+  `"model": "qwen3.8-27b"` - whatever was loaded. No 404, no error field. So a worker
+  preset or an escalation rung naming a model nobody serves is not a failure you find out
+  about: it is a SILENT no-op that still stamps `tasks.implement_model` and still writes
+  `task_outcomes` rows under that name, teaching the capability engine a stronger model's
+  success rate from a weaker model's output. `task_outcomes` is the one table the whole
+  calibration loop reads. **`implement_escalation` therefore ships EMPTY** (a supported
+  state: `escalate` falls through to `human`), and a rung Praxis cannot verify is worse
+  than no rung; `test_shipped_ladder_never_names_the_default_worker_as_a_rung` enforces the
+  file's own rule as far as equality can. **Verify a rung with the `model` field of the
+  RESPONSE, never the request** - the curl is in `config/praxis.yaml`. A stripped namespace
+  prefix (`vendor/x` -> `x`) or an added instance suffix (`x` -> `x:2`) is benign; a
+  DIFFERENT model is the fault. The model-LIST probe was authoritative all along.
 
 **The loop**
 
@@ -563,7 +578,9 @@ story. New gotchas go in `docs/gotchas.md` first. (No count is quoted on purpose
   project command (correct plan authorship), so its check is non-discriminating, so every
   failure was non-attributable, so no calibration row and no triage - and triage is where
   `split` is decided. Four correct rules composing. `split` is STILL UNOBSERVED; reachable
-  is not observed.
+  is not observed. **And the blocker MOVED rather than cleared** (2026-08-27): that arm is
+  sound and confirmed reachable, but the final leaf of a dependent chain never reaches it -
+  see the triage-route entry below. Do NOT re-fix the verify gate for `split`.
 - **The budget gate sized the BIBLE, not the prompt** (fixed 2026-08-27), scoring
   everything else zero: measured, it saw 445 tokens against a 1638 budget and PASSED while
   Praxis put 2152 in the window. `_build_worker_bible` now passes the EXACT prompt
@@ -572,9 +589,15 @@ story. New gotchas go in `docs/gotchas.md` first. (No count is quoted on purpose
   prompt, tool schemas, the repo's `AGENTS.md`): `WORKER_RESERVE_FRACTION` already holds
   back 60% for that envelope, so a reserve double-charges - the shortfall is NAMED in
   `token_budget.UNCOUNTED_CONTEXT` instead. Counting the prompt is a MEASUREMENT of a
-  string Praxis builds, so the never-guesses principle is untouched. `difficulty.py` scores
-  `context_ratio` against the FULL budget and is over-optimistic by the same amount:
-  same class, UNFIXED.
+  string Praxis builds, so the never-guesses principle is untouched. **`difficulty.py` had
+  the same shape and is FIXED too** (2026-08-27): `context_ratio` charged
+  `estimate_tokens(plan_text)` alone, while the text reaches the worker INSIDE the
+  implementer prompt. It now adds `agent_prompt.fixed_scaffolding_tokens()` - a FLOOR,
+  derived from the template on each call so a template edit moves it. Measured: 1344
+  tokens, **41% of the whole per-leaf budget on an 8192-token window**, the shipped
+  capability default, so the scorer was over-optimistic exactly for the small-window
+  workers the flag protects. Score impact 0.943 -> 0.903 at 8192 and 0.952 -> 0.951 at
+  131072, both clear of `flag_below` 0.55 and `reject_below` 0.35, so no re-calibration.
 - **A harness callback is RETRIED and the handler must be idempotent** (fixed 2026-08-27).
   Both entrypoints re-POST up to `CALLBACK_MAX_ATTEMPTS` on any non-200 including the
   `HTTP 000` curl reports when its `--max-time 10` elapses - and this handler takes
@@ -589,11 +612,13 @@ story. New gotchas go in `docs/gotchas.md` first. (No count is quoted on purpose
 - **A permanent misconfiguration is not a transient provider error**, and the callback
   path's re-queue was UNCAPPED (fixed 2026-08-27; the reconcile path had
   `PROVIDER_ERROR_RESPAWN_CAP`, this one had nothing - 12 respawns, attempt stays 1). The
-  cap is SHARED now. `permanent_worker_config_error` exists but is **deliberately UNWIRED
-  and its premise was REFUTED**: the model+endpoint that refused by name at 02:19 served
-  real work at 06:03, and the model-list probe is NOT authoritative about what the
-  completions endpoint accepts. Do not wire it without a test separating
-  permanently-absent from not-currently-loaded.
+  cap is SHARED now. `permanent_worker_config_error` exists but is **deliberately UNWIRED**,
+  and the round-6 reason for that ("its premise was REFUTED - the model that refused by
+  name at 02:19 served real work at 06:03") **was itself WRONG, corrected 2026-08-27**: the
+  endpoint was never serving that model at 06:03 either. See the model-substitution entry
+  under "Config and deployment". Its DETECTOR still cannot fire here - it greps the
+  container log for a refusal BY NAME, and a substituting endpoint never refuses - so
+  wiring it would need the pre-dispatch probe described there, not the log matcher.
 - **The wave verify gate makes the same comparison, or it parks a plan forever, invisibly**
   (2026-08-26): a plan branch red for a SIBLING's contract was called a regression, and
   since `merged_count` cannot advance while the wave is parked the verdict was permanent
@@ -821,6 +846,11 @@ story. New gotchas go in `docs/gotchas.md` first. (No count is quoted on purpose
 
 - **`LEAF_SCHEMA_VERSION` is 2**: any new `LeafTask` field changes `model_dump()` and
   breaks `tests/fixtures/decompose/expected_leaf_graph.json`; regenerate in the same commit.
+- **`tests/fixtures/decompose/plan_text_backing_cases.json` holds TWO REAL decompositions**
+  - one that fabricated an acceptance suite, one faithful, same decomposer and same day -
+  extracted programmatically from `plans.pending_input` and `plans.opus_plan`, never
+  retyped. It is what keeps the `plan_text_verbatim` threshold honest if anyone tunes it.
+  A rule that fires on both, or on neither, is worthless. Do not hand-edit it; re-extract.
 - **The status vocabulary is frozen in `core/status_vocab.py`**: add a value to the enum
   AND its exhaustive `test_schemas` assertion together.
 - **`core/leaf_templates.py` is the single source of per-`LeafType` section
