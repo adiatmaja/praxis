@@ -3616,6 +3616,17 @@ hint, and the guard `test_verbatim_rule_does_not_separate_on_the_wider_corpus`, 
 pins the measured false-positive count so that a future tuner has to re-measure here
 rather than on the two-plan fixture.
 
+**Disposition (2026-08-27): the rule STAYS ON, soft, as a labelled weak hint.** Removing
+it was the other live option and the case for it is real - a warning that fires on 19 of
+31 faithful leaves teaches an operator to skip the block it appears in. It stays for three
+reasons. It costs one line in `opus_plan["validation_warnings"]` and blocks nothing. It
+did fire on all three leaves of the one fabricating decomposition, so its recall on the
+shape it was built for is not in question - only its precision. And its message now tells
+the reader what it is worth, which is the honest version of a weak signal rather than the
+absence of one. **Revisit this the moment a second fabricating plan exists**: with two
+positives the precision question can be asked properly, and the answer may well be to
+delete it. The corpus and the guards make that a measurement rather than an argument.
+
 **The candidate that looked like it separated, and what the next sample did to it.** Grade
 a leaf's declared `files` against every path the plan's own `Files:` lines authorise,
 ANYWHERE in the document. (The section-scoped form was refused above for needing
