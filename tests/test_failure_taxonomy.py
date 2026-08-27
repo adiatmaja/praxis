@@ -28,6 +28,7 @@ class TestFailureClassValues:
             "worker_blocked",
             "provider_error",
             "no_output",
+            "run_failed",
         }
 
     def test_verify_fail(self) -> None:
@@ -53,6 +54,9 @@ class TestFailureClassValues:
 
     def test_no_output(self) -> None:
         assert FailureClass.NO_OUTPUT == "no_output"
+
+    def test_run_failed(self) -> None:
+        assert FailureClass.RUN_FAILED == "run_failed"
 
 
 class TestCountsAgainstWorker:
@@ -81,6 +85,14 @@ class TestCountsAgainstWorker:
             # denominator hole recording it was meant to close.
             (FailureClass.NO_OUTPUT, True),
             ("no_output", True),
+            # A worker that ran and did not finish is evidence about the worker
+            # too. The one cause that is NOT -- the model endpoint never
+            # answering -- is peeled off upstream by ``is_provider_error`` and
+            # never reaches this class, so flipping this to False would drop the
+            # commonest worker failure back out of every rate that reads
+            # ``task_outcomes``, which is the hole recording it just closed.
+            (FailureClass.RUN_FAILED, True),
+            ("run_failed", True),
         ],
     )
     def test_attribution(

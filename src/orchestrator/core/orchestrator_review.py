@@ -1306,30 +1306,16 @@ class ReviewMixin:
 
         The callback entry point, and it exists for one reason: triage's
         rate-limit branch DEFERS by leaving the task exactly where it is, and
-        "where it is" is not the same place on the two paths.
+        "where it is" is not the same place on the two paths. From a review that
+        is REVIEWING, an active state the next tick re-enters for free; from
+        this callback it is IN_PROGRESS with the agent run already completed,
+        which nothing ever looks at again. ``_settle_if_triage_deferred`` holds
+        the whole account and the one implementation, so the sibling route added
+        for a worker-reported ``failed`` cannot answer it differently.
 
-        From ``review_task`` the task is REVIEWING, which is the only state that
-        costs nothing to wait in -- no attempt consumed, no decision stamped,
-        and REVIEWING counts as ACTIVE so the plan neither completes short of
-        the leaf nor reports itself stalled. The next tick re-enters
-        ``review_task`` and triages it once the limit clears.
-
-        From the worker callback the task is IN_PROGRESS and its agent run has
-        ALREADY been completed one line earlier. Nothing re-enters it:
-        ``reconcile_runs`` walks RUNNING runs only, so a completed run is never
-        looked at again, and IN_PROGRESS counts as active, so the plan hangs
-        forever with no error and no stall event -- the exact permanent wedge
-        this file already fixes twice elsewhere. REVIEWING is not available as a
-        resting state either: a task with a NULL ``pr_url`` returns immediately
-        from ``review_task``, which is the same wedge one state over, and a
-        ``no_changes`` worker has no pull request by definition.
-
-        So the disposition is verified against the DATABASE rather than assumed
-        from a return value. A task still sitting in the status it arrived in
-        was deferred (or decided nothing), and takes the ordinary
-        fail-and-maybe-retry path instead. That costs one retry on a throttle;
-        the alternative is a plan that never finishes because a rate limit
-        cleared five minutes later and nobody was listening.
+        A ``no_changes`` worker has no pull request by definition, so REVIEWING
+        is not available as a resting state here either: ``review_task`` returns
+        immediately on a NULL ``pr_url``, which is the same wedge one state over.
 
         Args:
             task: The task row whose attempt just ended, read before this.
@@ -1339,11 +1325,123 @@ class ReviewMixin:
             feedback: Stored, published, and given to the next worker.
             task_type: The leaf's type from the plan graph.
         """
-        task_id = str(task["id"])
         status_before = task["status"]
         await self.handle_declined_no_change(
             task, project, plan, decision, feedback, task_type=task_type
         )
+        await self._settle_if_triage_deferred(task, project, feedback, status_before)
+
+    async def handle_worker_run_failure(
+        self,
+        task: dict[str, Any],
+        project: dict[str, Any],
+        plan: dict[str, Any] | None,
+        feedback: str,
+        *,
+        task_type: str | None,
+    ) -> None:
+        """Record and dispose of an attempt a WORKER-REPORTED failure just ended.
+
+        The third route into the shared gate, and the one that carries the most
+        traffic: ``failed`` is what both harness entrypoints report for every
+        non-zero exit, so it is the commonest way a leaf ends an attempt. Until
+        2026-08-26 it reached NEITHER half of the governance the other two
+        routes reach. Measured live on ``adiatmaja/playground`` (plan
+        ``c03b3ff6``, leaf 2): ``attempt`` 4 against ``max_retries`` 3,
+        ``triage_decision`` NULL the whole way, zero triage lines in the
+        orchestrator log for the plan, and no ``task_outcomes`` row at all.
+
+        That is why a ``split`` decision had never been observed on a real
+        repository across seven probes. The standing explanation was leaf
+        sizing; the actual cause is that the failure shape adaptive splitting
+        exists to answer could not reach the question.
+
+        Worker-attributable, and the derivation is the module's own line rather
+        than a new one. The reviewer-error and unparseable-``pr_url`` paths are
+        excluded because neither says anything about the LEAF: the worker's
+        output was never examined. A worker-reported failure is the opposite --
+        the worker was handed the leaf, ran, and did not complete it. The one
+        systematic cause that is about the endpoint instead of the worker is
+        peeled off by the caller's ``is_provider_error`` check over the container
+        log, exactly as it already is for the retry budget, and never arrives
+        here. What remains is uncertain in its WHY and certain in its subject.
+
+        The evidence passed to triage is ``(None, None, "")`` -- the OPPOSITE of
+        the no-change route's measured ``(0, 0, "")``. Nothing counted anything
+        on this path: no diff was fetched, ``agent_runs`` carries no file count,
+        and a run that failed may well have committed and pushed before a later
+        step aborted the script. ``leaf_triage._unknown`` reserves ``None`` for
+        exactly that, and a zero here would tell the triage brain the worker
+        wrote nothing, which is the strongest push it has toward ``escalate`` or
+        ``human``.
+
+        The calibration row is written on EVERY attempt, not only from the
+        second, matching the review path: the triage bound is about spending a
+        brain call, and a calibration set that only ever saw second attempts
+        would be the same denominator hole one attempt over.
+
+        Args:
+            task: The task row whose attempt just ended, read before this.
+            project: Its project row.
+            plan: The plan row, or None when the task has no plan graph.
+            feedback: Stored, published, and given to the next worker.
+            task_type: The leaf's type from the plan graph.
+        """
+        status_before = task["status"]
+        await self._record_task_outcome(
+            task,
+            project,
+            task_type=task_type,
+            files_touched=None,
+            loc_delta=None,
+            outcome="fail",
+            failure_class=FailureClass.RUN_FAILED.value,
+        )
+        await self._triage_then_fail(task, project, plan, feedback, None, None, "")
+        await self._settle_if_triage_deferred(task, project, feedback, status_before)
+
+    async def _settle_if_triage_deferred(
+        self,
+        task: dict[str, Any],
+        project: dict[str, Any],
+        feedback: str,
+        status_before: str,
+    ) -> None:
+        """Fail a callback-route task that triage left exactly where it was.
+
+        The one description of the hazard EVERY worker-callback route has and
+        the review route does not, held here rather than copied per route: the
+        second copy is how one of them comes to strand a task the other settles.
+
+        Triage's rate-limit branch DEFERS by deciding nothing and leaving the
+        task in place. From ``review_task`` that place is REVIEWING, the only
+        state that costs nothing to wait in -- no attempt consumed, no decision
+        stamped, and REVIEWING counts as ACTIVE so the plan neither completes
+        short of the leaf nor reports itself stalled. The next tick re-enters
+        ``review_task`` and triages it once the limit clears.
+
+        From a worker callback the task is IN_PROGRESS and its agent run was
+        completed a few lines earlier. Nothing re-enters it: ``reconcile_runs``
+        walks RUNNING runs only, so a completed run is never looked at again,
+        and IN_PROGRESS counts as active, so the plan hangs forever with no
+        error and no stall event. REVIEWING is not available as a resting state
+        either -- a task with a NULL ``pr_url`` returns immediately from
+        ``review_task``, which is the same wedge one state over.
+
+        So the disposition is verified against the DATABASE rather than assumed
+        from a return value. A task still sitting in the status it arrived in
+        was deferred (or decided nothing) and takes the ordinary
+        fail-and-maybe-retry path instead. That costs one retry on a throttle;
+        the alternative is a plan that never finishes because a rate limit
+        cleared five minutes later and nobody was listening.
+
+        Args:
+            task: The task row as it was read before the disposition.
+            project: Its project row, for ``max_retries``.
+            feedback: Stored, published, and given to the next worker.
+            status_before: The status the task arrived in.
+        """
+        task_id = str(task["id"])
         settled = await self._tq.get_task(task_id)
         if settled is not None and settled["status"] == status_before:
             logger.warning(

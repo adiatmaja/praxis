@@ -33,6 +33,24 @@ class FailureClass(StrEnum):
     # leave the table unable to separate "this model writes code that breaks the
     # build" from "this model writes no code at all".
     NO_OUTPUT = "no_output"
+    # The worker's own RUN ended in failure: it self-reported ``failed`` to
+    # ``api/internal.py`` and no change ever reached a review. Measured live on
+    # 2026-08-26 (plan c03b3ff6, leaf 2): four attempts, ``triage_decision``
+    # NULL throughout, and ``task_outcomes`` empty -- so the commonest failure a
+    # worker produces was the one shape the calibration set could never contain.
+    #
+    # Minted rather than folded into either neighbour, because both would state
+    # something false. ``NO_OUTPUT`` means the run SUCCEEDED and produced
+    # nothing, and it is written only once that emptiness has been REFUTED (a
+    # declared edit location absent, or the leaf's own verification failing);
+    # neither fact is in hand here, and a run that failed may well have
+    # committed and pushed before ``gh pr create`` aborted the script under
+    # ``set -euo pipefail``. ``FIXABLE_IN_PLACE`` means retry-with-feedback will
+    # probably work, which is a positive claim about a run whose output was
+    # never judged at all. Keeping them apart is what lets ``summarize_outcomes``
+    # separate "this model writes code that breaks the build" from "this model
+    # writes no code" from "this model's runs do not finish".
+    RUN_FAILED = "run_failed"
 
 
 _COUNTS_AGAINST_WORKER: frozenset[FailureClass] = frozenset(
@@ -48,6 +66,13 @@ _COUNTS_AGAINST_WORKER: frozenset[FailureClass] = frozenset(
         # a triage brain call whose worst answer is terminal. A fact strong
         # enough to end a leaf permanently is strong enough to count in a rate.
         FailureClass.NO_OUTPUT,
+        # Attributable for the reason the reviewer-error path is NOT: the worker
+        # was handed the leaf, ran, and did not complete it. What is uncertain is
+        # WHY, not whether the run is about the leaf. The one systematic cause
+        # that is not about the worker -- the model endpoint never answering --
+        # is peeled off upstream by ``is_provider_error`` over the container log
+        # and never reaches this class.
+        FailureClass.RUN_FAILED,
     }
 )
 

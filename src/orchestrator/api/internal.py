@@ -125,6 +125,89 @@ async def _resolved_as_no_op(
         )
 
 
+async def _safe_task_type(
+    orchestrator: object, task: dict, plan: dict | None
+) -> str | None:
+    """Resolve the leaf's plan-graph ``task_type``, or None if it cannot be read.
+
+    Shared by both disposal helpers below. ``summarize_outcomes`` groups the
+    calibration rows BY this column, so two routes resolving it two ways is two
+    ways for the same event to be filed under different shapes; and a lookup is
+    telemetry, so it must never be able to change a disposition.
+
+    Args:
+        orchestrator: The app-state orchestrator, already known non-None.
+        task: The task row whose leaf type is wanted.
+        plan: Its plan row, or None.
+
+    Returns:
+        The declared task type, or None when the graph does not say or the
+        lookup raised.
+    """
+    try:
+        task_type: str | None = await orchestrator.graph_task_type(  # type: ignore[attr-defined]
+            task["id"], plan
+        )
+        return task_type
+    except Exception:  # noqa: BLE001 - a lookup must not change the disposition
+        logger.exception(
+            "could not resolve the leaf type of task %s; recording without it",
+            _scrub(str(task["id"])),
+        )
+        return None
+
+
+async def _dispose_worker_run_failure(
+    request: Request,
+    task: dict,
+    project: dict | None,
+    plan: dict | None,
+    feedback: str,
+) -> bool:
+    """Hand a worker-reported ``failed`` to the orchestrator that owns the rules.
+
+    The sibling of ``_dispose_declined_no_change``, and it exists because the
+    enumeration that produced that one was incomplete. ``60a325e`` routed the
+    ``no_changes`` branch of this callback through the orchestrator on
+    2026-08-26 and left the ``else`` beside it reaching neither the
+    adaptive-triage gate nor the calibration recorder -- and ``failed`` is what
+    both harness entrypoints report for EVERY non-zero exit, so it is the
+    commonest way a leaf ends an attempt. Measured live the next day: four
+    attempts on one leaf, ``triage_decision`` NULL throughout, ``task_outcomes``
+    empty, and zero triage lines in the log for the whole plan.
+
+    Delegation, not duplication, for the same reason as its sibling: the router
+    supplies the facts and the mixin makes every decision, so the
+    ``attempt >= 2 and not already_triaged`` bound stays in ``_triage_then_fail``
+    alone and a leaf cannot buy a second brain call by failing through a
+    different route.
+
+    Fails OPEN in the safe direction. Anything that stops the delegation from
+    happening at all returns False, and the caller's own retry/fail chain runs
+    exactly as it did before, which is the behaviour this endpoint has always
+    had.
+
+    Args:
+        request: For ``app.state.orchestrator``.
+        task: The task row whose attempt just ended.
+        project: Its project row, or None when it could not be resolved.
+        plan: Its plan row, for the leaf's ``task_type``.
+        feedback: What to store, publish, and give the next worker.
+
+    Returns:
+        True when the orchestrator took ownership of the task's next state, so
+        the caller must not touch it again.
+    """
+    orchestrator = getattr(request.app.state, "orchestrator", None)
+    if orchestrator is None or project is None:
+        return False
+    task_type = await _safe_task_type(orchestrator, task, plan)
+    await orchestrator.handle_worker_run_failure(
+        task, project, plan, feedback, task_type=task_type
+    )
+    return True
+
+
 async def _dispose_declined_no_change(
     request: Request,
     task: dict,
@@ -165,14 +248,7 @@ async def _dispose_declined_no_change(
     orchestrator = getattr(request.app.state, "orchestrator", None)
     if orchestrator is None or project is None:
         return False
-    try:
-        task_type = await orchestrator.graph_task_type(task["id"], plan)
-    except Exception:  # noqa: BLE001 - a lookup must not change the disposition
-        logger.exception(
-            "could not resolve the leaf type of task %s; recording without it",
-            _scrub(str(task["id"])),
-        )
-        task_type = None
+    task_type = await _safe_task_type(orchestrator, task, plan)
     await orchestrator.handle_worker_no_change(
         task, project, plan, decision, feedback, task_type=task_type
     )
@@ -340,8 +416,12 @@ async def agent_done(request: Request, body: AgentDonePayload) -> dict[str, str]
 
         max_retries = int(project["max_retries"]) if project else 0
         # Set when the orchestrator took ownership of this task's next state, so
-        # the chain below must not touch it a second time. Only the declined
-        # ``no_changes`` arm can set it; every other shape is still decided here.
+        # the chain below must not touch it a second time. Two arms can set it,
+        # and they are exactly the two worker-ATTRIBUTABLE shapes: a declined
+        # ``no_changes`` and a worker-reported ``failed``. Everything else that
+        # lands in this block -- a ``completed`` whose pull-request url was lost,
+        # a status outside the callback contract, and either of those two under
+        # a provider error -- is still decided here, unchanged.
         handled_by_orchestrator = False
         if completed_without_pr:
             feedback = (
@@ -384,13 +464,55 @@ async def agent_done(request: Request, body: AgentDonePayload) -> dict[str, str]
                 )
         else:
             feedback = body.question or f"Agent finished with status {body.status}"
+            # ``failed`` is what BOTH harness entrypoints report for every
+            # non-zero exit, so this is the commonest way a leaf ends an
+            # attempt, and until now it reached neither the calibration
+            # recorder nor the adaptive-triage gate. Measured live on
+            # 2026-08-26: attempt 4 against max_retries 3 with
+            # ``triage_decision`` NULL throughout, no ``task_outcomes`` row,
+            # and zero triage lines in the log for the whole plan. That is why
+            # a ``split`` decision had never been observed on a real
+            # repository: the failure shape adaptive splitting exists to answer
+            # could not reach the question.
+            #
+            # ATTRIBUTABLE, on the module's own line rather than a new one. The
+            # reviewer-error and unparseable-``pr_url`` paths are excluded
+            # because neither says anything about the LEAF -- the worker's
+            # output was never examined. This is the opposite: the worker was
+            # handed the leaf, ran, and did not complete it. Uncertain in its
+            # WHY, certain in its subject.
+            #
+            # The status is compared EXACTLY, and the other two shapes that
+            # reach this block are deliberately not included.
+            # ``completed_without_pr`` takes its own arm above and is
+            # infrastructure by construction (the worker claims success; a
+            # ``gh pr create`` that exits 0 printing nothing loses the url).
+            # Any other string is a harness that is not speaking this callback's
+            # contract, and inferring a model's capability from a status nobody
+            # defined would be inventing evidence.
+            #
+            # ``body.question`` cannot arrive here from either shipped
+            # entrypoint (``QUESTION`` is assigned only inside the
+            # BLOCKED/NEEDS_CONTEXT block, which exits 0 with the trap cleared),
+            # but the endpoint is reachable by any harness, so it is left as the
+            # feedback TEXT and given no say in routing: rerouting a failure to
+            # NEEDS_CLARIFICATION would trade a bounded failure for an
+            # indefinite wait on a person.
+            #
+            # A provider error is excluded outright, exactly as it is from the
+            # retry budget below: the model never answered, so the empty result
+            # belongs to the endpoint and not to the worker.
+            if body.status == "failed" and not provider_error_run:
+                handled_by_orchestrator = await _dispose_worker_run_failure(
+                    request, task, project, plan, feedback
+                )
 
         # Transient provider/gateway errors (403/429/5xx/connection) must not
         # consume the task's retry budget. Reset to PENDING without touching attempt.
         if handled_by_orchestrator:
             logger.info(
-                "Task %s's declined no-change was recorded and disposed of by "
-                "the orchestrator (triage gate included)",
+                "Task %s's ended attempt was recorded and disposed of by the "
+                "orchestrator (calibration row and triage gate included)",
                 task_id,
             )
         elif provider_error_run:
