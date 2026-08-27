@@ -8,11 +8,26 @@ compliance). Capability is asymmetric: a frontier model loses nothing from
 this style, a floor model loses the whole task without it. Keep any edit in
 that register, and keep the ``Status:`` / ``Concerns`` labels at line start:
 both entrypoints grep them (``^Status:``, ``^Concerns`` .. ``====``).
+
+This prompt is not free, and until 2026-08-27 nothing charged it. It travels to
+the container as ``TASK_PROMPT``, which BOTH entrypoints hard-require
+(``: "${TASK_PROMPT:?TASK_PROMPT is required}"``) and both put in front of the
+same model that receives the Static Bible - OpenCode as the run prompt beside a
+Bible loaded through its ``instructions`` config, agy by prepending the Bible to
+the prompt. The pre-dispatch budget gate measured only the Bible, so the
+template below was invisible to it: against a 4096-token window
+``token_budget.worker_budget`` hands out 1638 tokens and the fixed scaffolding
+here is over 1300 of them. :func:`fixed_scaffolding_tokens` is what the gate
+charges when the caller has not handed it the real prompt, and it is DERIVED
+from the template rather than written down, so an edit above cannot leave a
+stale number behind it.
 """
 
 from __future__ import annotations
 
 from typing import Any
+
+from orchestrator.core.token_budget import estimate_tokens
 
 
 # ---------------------------------------------------------------------------
@@ -151,9 +166,46 @@ CRITICAL RULES - RE-READ BEFORE YOU FINISH (these override anything above)
 """
 
 
+#: The placeholders substituted into :data:`_TEMPLATE`. Removed rather than
+#: filled when sizing the scaffolding, so the figure counts only text every
+#: prompt carries and never the marker literals, which are not sent.
+_PLACEHOLDERS = (
+    "%%PROJECT_NAME%%",
+    "%%REPO_URL%%",
+    "%%TASK_TITLE%%",
+    "%%TASK_DESCRIPTION%%",
+)
+
+
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
+
+
+def fixed_scaffolding_tokens() -> int:
+    """Return the tokens every implementer prompt costs before any task text.
+
+    This is a LOWER BOUND on ``TASK_PROMPT``, not an estimate of it: the real
+    prompt is this template with a title and a description substituted in, so
+    it is always at least this large and usually larger. The budget gate uses
+    it only when the caller has not handed over the real prompt, which is the
+    honest shape for a floor - it can under-charge, never over-charge, and
+    over-charging is the direction that refuses real work with "split the
+    task".
+
+    Computed on each call from :data:`_TEMPLATE` rather than frozen at import,
+    so a test can shrink the template and watch the charge move with it. A
+    module-level constant would survive that and drift silently the first time
+    the template was edited.
+
+    Returns:
+        The scaffolding cost in tokens, at ``token_budget``'s chars/token
+        ratio, so this figure and the Bible's are on the same scale.
+    """
+    fixed = _TEMPLATE
+    for placeholder in _PLACEHOLDERS:
+        fixed = fixed.replace(placeholder, "")
+    return estimate_tokens(fixed)
 
 
 def build_implementer_prompt(task: dict[str, Any], project: dict[str, Any]) -> str:

@@ -206,6 +206,58 @@ def test_the_budget_is_never_negative():
 
 
 @pytest.mark.unit
+def test_out_of_band_tokens_are_spent_before_the_sections_are():
+    """The gate charges the prompt Praxis sends beside the sections.
+
+    ``fit_sections`` used to score everything that was not a ``Section`` at
+    zero, so a dispatch could be approved at 445 tok while Praxis actually put
+    over 2000 in the window. Here the same two sections fit an unmodified
+    budget and stop fitting once 300 tok of it is already spent, which is the
+    only difference between the two calls.
+    """
+    sections = [
+        Section("goal", "g" * 400, priority=0, floor=True),  # 100 tok
+        Section("docs", "d" * 800, priority=9),  # 200 tok
+    ]
+
+    unspent = fit_sections(sections, context_window=1000, reserve_fraction=0.6)
+    assert [s.name for s in unspent] == ["goal", "docs"]
+
+    # 400 tok budget, 300 of it already gone: the floor still fits in the 100
+    # left, the droppable no longer does.
+    spent = fit_sections(
+        sections, context_window=1000, reserve_fraction=0.6, out_of_band_tokens=300
+    )
+    assert [s.name for s in spent] == ["goal"]
+
+
+@pytest.mark.unit
+def test_out_of_band_tokens_bigger_than_the_budget_blame_the_prompt_not_the_leaf():
+    """The two refusals are different diagnoses and must read differently.
+
+    Nothing a human does to the task shrinks the prompt wrapped around every
+    task, so this refusal must not read as a size problem. The floor refusal
+    below is a size problem and must not carry the window advice, or the
+    message says the same thing whatever the cause.
+    """
+    tiny_floor = [Section("goal", "g" * 4, priority=0, floor=True)]
+
+    with pytest.raises(ContextBudgetExceeded) as prompt_exc:
+        fit_sections(
+            tiny_floor,
+            context_window=1000,
+            reserve_fraction=0.6,
+            out_of_band_tokens=500,  # over the 400 tok budget on its own
+        )
+    assert "raise the worker's context window" in str(prompt_exc.value)
+
+    huge_floor = [Section("goal", "g" * 4000, priority=0, floor=True)]
+    with pytest.raises(ContextBudgetExceeded) as floor_exc:
+        fit_sections(huge_floor, context_window=1000, reserve_fraction=0.6)
+    assert "raise the worker's context window" not in str(floor_exc.value)
+
+
+@pytest.mark.unit
 def test_an_unknown_window_keeps_every_section_and_raises_nothing():
     """None is a THIRD state: no gate, not a lenient one.
 

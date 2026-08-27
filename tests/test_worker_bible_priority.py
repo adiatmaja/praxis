@@ -21,6 +21,15 @@ precedence line, which is why they cost 26 rather than 14.
 Every window here was shifted by the scope briefing's 143 tok / 0.4 when that
 briefing joined the floors, so each ``r`` below, and therefore each boundary
 these tests actually turn on, is unchanged from before it existed.
+
+Every ``BibleSources`` here passes ``companion_prompt=""``, which is a CLAIM
+and not a convenience: it states that nothing accompanies the Bible in this
+file, so the arithmetic above is the whole of what the gate charges. A real
+dispatch never looks like this - it also carries the implementer prompt, which
+is over 1300 tokens of fixed scaffolding on its own and which
+``tests/test_budget_gate_counts_the_whole_prompt.py`` is what covers. These
+tests exercise the PACKER, using the window as a dial, and would otherwise be
+refused at every window small enough to make a packing decision visible.
 """
 
 import pytest
@@ -43,6 +52,8 @@ def _sources(context_window: int, filler: int = 200) -> BibleSources:
         repo_memory=f"This repo pins chromadb 0.5.0.\n{blob}",
         review_feedback="Review FAILED: tests/test_widget.py::test_make_widget errored.",
         verify_cmd="uv run pytest",
+        # Nothing accompanies the Bible here; see the module docstring.
+        companion_prompt="",
     )
 
 
@@ -179,6 +190,8 @@ def test_a_large_high_priority_section_can_lose_to_a_smaller_low_priority_one():
         neighbor_contracts="def make_widget(name: str) -> Widget: ...\n" + "n" * 1000,
         caller_context="The user asked for a widget.\n" + "c" * 900,
         repo_memory="pins chromadb 0.5.0.\n" + "r" * 700,
+        # Nothing accompanies the Bible here; see the module docstring.
+        companion_prompt="",
     )
 
     bible = build_bible(src)

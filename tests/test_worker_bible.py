@@ -57,6 +57,7 @@ def test_low_priority_repo_memory_dropped_when_tight():
         caller_context="c" * 400,
         repo_memory="d" * 40000,
         context_window=1358,
+        companion_prompt="",  # packer in isolation; see ``_bare``
     )
     bible = build_bible(src)
     assert "# GOAL" in bible
@@ -207,6 +208,7 @@ def test_oversized_repo_memory_is_dropped_while_acceptance_is_kept():
         context_window=2000,
         verify_cmd="uv run pytest",
         repo_memory="r" * 40000,
+        companion_prompt="",  # packer in isolation; see ``_bare``
     )
     out = build_bible(src)
     assert "# ACCEPTANCE" in out
@@ -250,9 +252,21 @@ _BRIEFING = (
 
 
 def _bare(context_window: int = 8192) -> BibleSources:
-    """The default dispatch shape: every optional source unset."""
+    """The default dispatch shape: every optional source unset.
+
+    ``companion_prompt=""`` is a CLAIM, not a convenience: it states that
+    nothing accompanies the Bible, so the token arithmetic these tests turn on
+    is the whole of what the gate charges. A real dispatch also carries the
+    implementer prompt, over 1300 tokens of fixed scaffolding on its own, which
+    is what ``tests/test_budget_gate_counts_the_whole_prompt.py`` covers. These
+    tests exercise the packer with the window as a dial and would otherwise be
+    refused at every window small enough to make a packing decision visible.
+    """
     return BibleSources(
-        goal="do it", handover="# PROGRESS", context_window=context_window
+        goal="do it",
+        handover="# PROGRESS",
+        context_window=context_window,
+        companion_prompt="",
     )
 
 

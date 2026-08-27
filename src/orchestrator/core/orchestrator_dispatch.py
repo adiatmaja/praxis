@@ -52,7 +52,12 @@ from orchestrator.core.progress_handover import (
 from orchestrator.core.session_resume import resolve_resume_session
 from orchestrator.core.settings_file import config_file_path
 from orchestrator.core.token_budget import ContextBudgetExceeded
-from orchestrator.core.verify_gate import normalize_verify_cmd
+from orchestrator.core.verify_gate import (
+    base_comparison_unavailable,
+    base_failure_clause,
+    compare_failures,
+    normalize_verify_cmd,
+)
 from orchestrator.core.worker_bible import BibleSources, build_bible
 from orchestrator.models.schemas import TaskStatus
 
@@ -136,7 +141,7 @@ class _WaveAttribution:
 
 
 def attribute_wave_verify_failure(
-    base: _PlanVerifyResult, base_branch: str
+    head: _PlanVerifyResult, base: _PlanVerifyResult, base_branch: str
 ) -> _WaveAttribution:
     """Decide whether a red plan branch is a regression THIS plan caused.
 
@@ -161,7 +166,16 @@ def attribute_wave_verify_failure(
     ``tests/test_wave_verify_gate.py`` drives BOTH seats over the same base
     statuses and asserts they agree, because nothing else holds them together.
 
+    **A red base stopped being one answer on 2026-08-27.** The comparison was
+    ``base.status == "failed"`` -- status equality -- so a base that could not
+    even collect and a head that failed three assertions counted as the same
+    failure. ``compare_failures`` asks the runner's own exit code instead. What
+    that buys HERE is a truthful sentence and not a park; see the arm below for
+    why this seat takes the narrowest of the three licences.
+
     Args:
+        head: What the command did on the plan branch, for the comparison. Its
+            verdict is already known to be ``failed``; what is read here is HOW.
         base: What the same command did on the base branch.
         base_branch: Its name, for the sentence a human reads.
 
@@ -181,17 +195,37 @@ def attribute_wave_verify_failure(
             ),
         )
     if base.status == "failed":
-        # Not a regression this plan caused. Memoized as a real answer from a
-        # real double run, on the same ground a clean pass is: without it the
-        # gate re-clones and re-runs the suite TWICE per loop tick for the whole
-        # life of exactly the plan shape this exists for.
+        # HOW each failed, not merely that both did. The same rule the review
+        # seat and the plan backstop apply, from the same function, because
+        # three copies of "are these two failures the same" is how three seats
+        # come to answer one question three ways.
+        comparison = compare_failures(head.returncode, base.returncode)
+        clause = base_failure_clause(
+            comparison, base_branch, head.returncode, base.returncode
+        )
+        # **A changed failure MODE deliberately does not park here**, and this
+        # is the one place the three seats' licences diverge. A memoized park is
+        # PERMANENT: ``merged_count`` cannot advance while the wave is parked,
+        # so nothing can ever clear it, every leaf stays a healthy PENDING and
+        # the plan reads ACTIVE with a null ``error``. That is the exact shape
+        # this gate was already burned by. The review seat can charge a
+        # differently-failing base because a LEAF is there to answer for it, and
+        # it charges only the leaf that named the project command as its own
+        # acceptance; at plan scope no such claim exists, which is the same
+        # reason there is no step appealing to a leaf's own check here. So the
+        # difference buys a truthful SENTENCE and nothing more.
+        #
+        # Memoized on the same ground a clean pass is: without it the gate
+        # re-clones and re-runs the suite TWICE per loop tick for the whole life
+        # of exactly the plan shape this exists for. ``INCOMPARABLE`` is
+        # memoized too -- both runs answered, and re-running them would produce
+        # the same two unanswerable codes.
         return _WaveAttribution(
             park=False,
             memoize=True,
             detail=(
-                f"the same command fails identically on {base_branch}, so it is "
-                f"not a regression this plan caused and the wave is not parked "
-                f"on it."
+                f"{clause}, so it is not established as a regression this plan "
+                f"caused and the wave is not parked on it."
             ),
         )
     # ``error`` and every skip: the gate produced no ANSWER about the base
@@ -199,14 +233,19 @@ def attribute_wave_verify_failure(
     # comparison is missing rather than implying it was made. NOT memoized: a
     # transient clone/network fault on the base must not wedge a plan forever,
     # which is the same reason a head ``error`` is not memoized either.
+    #
+    # The clause is ``verify_gate.base_comparison_unavailable``'s, adopted
+    # 2026-08-27. It was spelled out by hand here, byte-identically, from the
+    # day the function was written -- so nothing could have detected the two
+    # drifting apart, and the function's own docstring named this seat as the
+    # un-adopted one.
     return _WaveAttribution(
         park=True,
         memoize=False,
         detail=(
             f"whether this failure pre-dates the plan could NOT be established, "
-            f"because the same command could not be run on {base_branch} "
-            f"(status={base.status}, reason={base.reason or '-'}), so it is "
-            f"reported as-is."
+            f"because {base_comparison_unavailable(base_branch, base.status, base.reason)}"
+            f", so it is reported as-is."
         ),
     )
 
@@ -1026,7 +1065,7 @@ class DispatchMixin:
             else _PlanVerifyResult("skipped", reason=_SKIP_NO_BASE_BRANCH)
         )
         attribution = attribute_wave_verify_failure(
-            base, base_branch or "the base branch"
+            result, base, base_branch or "the base branch"
         )
         detail = f"{attribution.detail}\n\n{result.output}".strip()
 
@@ -1361,6 +1400,16 @@ class DispatchMixin:
                 itemized_checklist=bool(
                     plan_task.get("checklist") or task.get("checklist")
                 ),
+                # The EXACT prompt this worker will be handed, charged against
+                # the same budget as the Bible because both land in the same
+                # window. Passing it beats the derived floor `build_bible`
+                # falls back to: that floor is `_TEMPLATE`'s fixed scaffolding
+                # alone, and the task title and description substituted into it
+                # are caller data with no bound. Measured 2026-08-27 on one
+                # realistic small leaf: 1427 actual against a 1344 floor, and
+                # the gap grows with the description, always in the
+                # under-counting direction.
+                companion_prompt=self._task_prompt(task, project),
             )
         )
         return bible, resolved

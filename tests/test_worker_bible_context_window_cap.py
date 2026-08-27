@@ -56,12 +56,19 @@ def test_a_typical_local_window_still_truncates_exactly_as_before():
     12 000-character boundary AND assembles without raising, because the
     floor cost (goal + handover + scope briefing + truncated plan, ~3207
     tok) fits comfortably under the 3276-token budget an 8192 window gives.
+
+    ``companion_prompt=""`` states that nothing accompanies the Bible, which
+    is what makes that 3276 figure the whole budget. This file is about the
+    per-section SCRUB CAP, not the whole-Bible gate; a real dispatch also
+    carries the implementer prompt, and
+    ``tests/test_budget_gate_counts_the_whole_prompt.py`` is what covers that.
     """
     src = BibleSources(
         goal="Ship the widget.",
         handover="# PROGRESS: nothing done yet.",
         plan_slice=_OVERSIZED_PLAN,
         context_window=8192,
+        companion_prompt="",
     )
     bible = build_bible(src)
     assert "TAILMARK" not in bible

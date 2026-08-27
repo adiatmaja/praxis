@@ -9,19 +9,37 @@ into what is left greedily in the priority order of
 ``docs/decomposition-standard.md`` section 4, so priority is the preference for
 what to keep, not a strict drop order: a section that does not fit is skipped
 and a smaller lower-priority one may still be kept.
+
+**The Bible is not the only thing that lands in the worker's window, and the
+budget gate used to behave as though it were.** Every dispatch also carries
+``TASK_PROMPT`` (``core/agent_prompt``); both entrypoints hard-require it and
+both put it in front of the same model as the Bible. This module is the seat
+that knows a Bible is being assembled FOR a dispatch, so it is the seat that
+charges that prompt: ``BibleSources.companion_prompt`` when the caller hands
+over the real text, and ``agent_prompt.fixed_scaffolding_tokens()`` - a derived
+lower bound - when it does not. What Praxis cannot measure is named rather than
+reserved for; see ``token_budget.UNCOUNTED_CONTEXT`` for that argument.
 """
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 
+from orchestrator.core import agent_prompt
 from orchestrator.core.context_scrub import resolve_scrub_cap, scrub_context
 from orchestrator.core.leaf_validator import is_runnable_verification
 from orchestrator.core.token_budget import (
     WORKER_RESERVE_FRACTION,
     Section,
+    describe_uncounted_context,
+    estimate_tokens,
     fit_sections,
+    worker_budget,
 )
+
+
+logger = logging.getLogger(__name__)
 
 
 # The per-item commit rule is CONDITIONAL, because the mechanism behind it is.
@@ -108,6 +126,21 @@ class BibleSources:
     review_feedback: str | None = None
     verify_cmd: str | None = None
     reserve_fraction: float = WORKER_RESERVE_FRACTION
+    #: Everything else Praxis will put in THIS worker's window beside the
+    #: Bible: the implementer prompt (``core/agent_prompt``), and any plan text
+    #: sent with it. Charged against the same budget, because the endpoint
+    #: charges it too.
+    #:
+    #: The three values mean three different things and none of them is a
+    #: fallback for another. ``None`` is "the caller did not say", and is
+    #: charged ``agent_prompt.fixed_scaffolding_tokens()`` - a derived LOWER
+    #: BOUND, because a prompt of some size is sent on every dispatch and
+    #: scoring it zero is the defect this field exists to close. A string is
+    #: the real text, charged in full and replacing the estimate rather than
+    #: adding to it (the string already contains the scaffolding). ``""`` is
+    #: the caller stating that nothing accompanies the Bible - true only for a
+    #: test exercising the packer in isolation, never for a dispatch.
+    companion_prompt: str | None = None
     #: True when the leaf declared a real, multi-item checklist. False for the
     #: synthesised single item holding the whole description, where the
     #: per-item commit rule cannot be followed. Defaults False so a caller that
@@ -268,5 +301,67 @@ def build_bible(src: BibleSources) -> str:
     for s in raw_sections:
         s.text = scrub_context(s.text, cap.max_chars, cap_reason=cap.reason) or s.text
 
-    kept = fit_sections(raw_sections, src.context_window, src.reserve_fraction)
-    return "\n\n".join(s.text for s in kept)
+    out_of_band = _companion_tokens(src.companion_prompt)
+    kept = fit_sections(
+        raw_sections,
+        src.context_window,
+        src.reserve_fraction,
+        out_of_band_tokens=out_of_band,
+    )
+    bible = "\n\n".join(s.text for s in kept)
+    _report_accounting(src, bible, out_of_band)
+    return bible
+
+
+def _companion_tokens(companion_prompt: str | None) -> int:
+    """Return the tokens Praxis sends beside the Bible into the same window.
+
+    Args:
+        companion_prompt: ``BibleSources.companion_prompt``. See that field for
+            why None, a string, and the empty string are three distinct
+            answers rather than two.
+
+    Returns:
+        The charge in tokens: the derived scaffolding floor when the caller did
+        not say, otherwise the measured cost of what it handed over.
+    """
+    if companion_prompt is None:
+        return agent_prompt.fixed_scaffolding_tokens()
+    return estimate_tokens(companion_prompt)
+
+
+def _report_accounting(src: BibleSources, bible: str, out_of_band: int) -> None:
+    """Log what the gate counted, and state what it could not.
+
+    A passing verdict is a statement about the tokens Praxis puts in the
+    window, never a promise the request will fit at the endpoint. Saying so on
+    every assembly is the alternative this module chose instead of holding back
+    a guessed reserve for the harness's own preamble
+    (``token_budget.UNCOUNTED_CONTEXT``).
+
+    Args:
+        src: The sources the Bible was assembled from.
+        bible: The assembled markdown.
+        out_of_band: The charge applied for everything sent beside it.
+    """
+    if src.context_window is None:
+        # The third state. Nothing was gated, so there is no accounting to
+        # report - only the skip, which the dispatcher also logs.
+        logger.info(
+            "Worker context budget NOT gated: the worker's context window is "
+            "unknown, so no section was trimmed and nothing was refused"
+        )
+        return
+    counted = estimate_tokens(bible) + out_of_band
+    budget = worker_budget(src.context_window, src.reserve_fraction)
+    logger.info(
+        "Worker context budget: %d tok counted of %d allowed by a %d-token "
+        "window (%d Bible, %d prompt Praxis sends beside it). This is a floor, "
+        "not the request size: not counted are %s",
+        counted,
+        budget,
+        src.context_window,
+        counted - out_of_band,
+        out_of_band,
+        describe_uncounted_context(),
+    )

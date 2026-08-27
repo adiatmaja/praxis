@@ -12,6 +12,22 @@ lower-priority one is admitted after it. The docstring here used to say "drop
 the lowest-priority sections until the rest fit", which describes a different
 algorithm, and a reader who believed it would have concluded the packer was
 broken. See ``fit_sections`` for why best-fit is the one that ships.
+
+**Sections are not the whole prompt, and treating them as the whole prompt is
+what this module got wrong until 2026-08-27.** Every dispatch also carries
+``TASK_PROMPT`` (``core/agent_prompt``) into the same window, and may carry a
+plan slice with it. Those are not ``Section`` objects, so the gate scored them
+at zero: against a 4096-token window the budget is 1638 tokens and the fixed
+scaffolding of the implementer prompt alone is over 1300 of them. The gate
+therefore passed dispatches the serving endpoint then refused, and the engine
+charged that refusal to the worker - a fact about the DEPLOYMENT recorded as a
+fact about the worker's capability. ``out_of_band_tokens`` is how a caller
+states that cost; ``worker_bible.build_bible`` supplies it on every assembly.
+
+**What is charged is measured, and what is not measurable is NAMED rather than
+reserved for.** See :data:`UNCOUNTED_CONTEXT`. The deliberate decision not to
+hold back a guessed reserve for the harness's own system prompt is argued
+there, because the argument is the load-bearing part.
 """
 
 from __future__ import annotations
@@ -36,6 +52,47 @@ WORKER_RESERVE_FRACTION: float = 0.6
 # at or below 54 613 tokens (0.6 x 54 613 = 32 768) is budgeted exactly as it
 # was before this cap existed and only genuinely large windows change.
 WORKER_RESERVE_CAP_TOKENS: int = 32_768
+
+
+#: Context that reaches the worker's window but that Praxis cannot measure, and
+#: therefore states instead of scoring. A passing verdict from this module is a
+#: statement about the tokens PRAXIS puts in the window, never a promise that
+#: the request will fit at the endpoint.
+#:
+#: **Why these are named and not reserved for.** The obvious move is to hold
+#: back a fixed allowance for them. It was rejected, for three reasons that
+#: point the same way. First, a reserve has no source of truth: the harness's
+#: system prompt and tool schemas are the harness's business and change with
+#: its version, and agy's differ from OpenCode's, so any figure written here
+#: would be a guess that rots silently and that no field observation could
+#: falsify. Second, a reserve charges in the direction that REFUSES work, and a
+#: gate that fails a correctly-sized leaf with "split the task" is the exact
+#: false signal ``core/context_window`` exists to have removed. Third, the
+#: window already carries a reserve: ``WORKER_RESERVE_FRACTION`` holds back
+#: room for the agent's own reasoning, its tool output and the diffs it writes,
+#: which is the same envelope a harness preamble lives in, so a second reserve
+#: would charge that region twice.
+#:
+#: The entrypoint manifest is here for a different reason: it is Praxis's own
+#: text, but it is ASSEMBLED IN THE CONTAINER from ``command -v`` probes, so
+#: the orchestrator has the shell source and not the output. Copying that text
+#: into Python to score it would create a pair that drifts the moment the shell
+#: changes, with nothing failing when it does.
+UNCOUNTED_CONTEXT: tuple[str, ...] = (
+    "the harness's own system prompt and tool schemas",
+    "the target repository's AGENTS.md, which the harness combines with ours",
+    "the agent entrypoint's runtime environment manifest",
+)
+
+
+def describe_uncounted_context() -> str:
+    """Return a one-line statement of what a passing verdict does not cover.
+
+    Returns:
+        The members of :data:`UNCOUNTED_CONTEXT` joined for a log line or an
+        operator-facing message.
+    """
+    return "; ".join(UNCOUNTED_CONTEXT)
 
 
 class ContextBudgetExceeded(Exception):  # noqa: N818
@@ -106,6 +163,8 @@ def fit_sections(
     sections: list[Section],
     context_window: int | None,
     reserve_fraction: float = WORKER_RESERVE_FRACTION,
+    *,
+    out_of_band_tokens: int = 0,
 ) -> list[Section]:
     """Return the floor sections plus a best-fit pack of the rest.
 
@@ -144,19 +203,48 @@ def fit_sections(
             so out loud (see ``orchestrator_dispatch._build_worker_bible``).
         reserve_fraction: Fraction of the window reserved for the agent's own
             reasoning and edits, capped at ``WORKER_RESERVE_CAP_TOKENS``.
+        out_of_band_tokens: Tokens Praxis will put in the SAME window that are
+            not ``Section`` objects - the implementer prompt above all, plus any
+            plan text sent with it. Charged against the budget before the floors
+            are checked, because the endpoint charges them too. Zero means the
+            caller is stating that nothing else is sent, which is a claim, not a
+            default to fall back on: the seat that assembles the Bible supplies
+            a real figure (see ``worker_bible.build_bible``).
 
     Returns:
         The kept sections, original order preserved.
 
     Raises:
-        ContextBudgetExceeded: If the floor sections alone exceed the budget.
+        ContextBudgetExceeded: If ``out_of_band_tokens`` alone exceeds the
+            budget, or if the floor sections do not fit what is left of it.
+            The two carry different messages on purpose: only the second is a
+            task-size problem a human could act on by splitting the task.
     """
     if context_window is None:
         return list(sections)
     budget = worker_budget(context_window, reserve_fraction)
+    out_of_band = max(out_of_band_tokens, 0)
+    if out_of_band > budget:
+        # Deliberately NOT phrased as a size problem. No decomposition makes a
+        # leaf smaller than the prompt wrapped around every leaf, so the only
+        # action that helps is raising the worker's window, and the dispatcher's
+        # own wording already tells a human to split the task.
+        msg = (
+            f"the prompt Praxis sends beside the Bible is {out_of_band} tok, "
+            f"which alone exceeds the {budget} tok that this worker's "
+            f"{context_window}-token context window allows. Splitting the task "
+            "cannot shrink it; raise the worker's context window instead. Not "
+            f"counted on top of this: {describe_uncounted_context()}"
+        )
+        raise ContextBudgetExceeded(msg)
+    budget -= out_of_band
     floor_cost = sum(estimate_tokens(s.text) for s in sections if s.floor)
     if floor_cost > budget:
-        msg = f"floor context {floor_cost} tok exceeds budget {budget} tok"
+        msg = (
+            f"floor context {floor_cost} tok exceeds budget {budget} tok "
+            f"(the window's allowance less {out_of_band} tok of prompt Praxis "
+            "sends beside the Bible)"
+        )
         raise ContextBudgetExceeded(msg)
 
     kept = [s for s in sections if s.floor]
