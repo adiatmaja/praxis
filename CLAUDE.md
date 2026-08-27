@@ -763,6 +763,28 @@ story. New gotchas go in `docs/gotchas.md` first. (No count is quoted on purpose
   (the labels, with the source lines under `Steps`). Edit either side and re-read the
   other. `_section_for_task` returns `""` when it cannot find a leaf's section, never the
   whole document: a guess there is a guaranteed violation.
+- **`plan_text_verbatim` almost never RUNS, and the decomposer rewrote an acceptance bar
+  under cover of it** (2026-08-27). `_section_for_task` resolves a leaf's section by
+  looking for the DECOMPOSER-AUTHORED `title` inside a plan heading, so the check that
+  grades drift is disabled BY drifting, and titles do not match headings even on a
+  faithful decomposition. Measured on production artefacts: 0 of 3 sections resolved on a
+  plan whose leaf deleted the contract test file and specified sixteen replacement tests
+  of its own invention, 1 of 3 on a faithful one; `validation_warnings` carried only
+  `file_overlap` on both. Where the rule DID run it scored 0.99/0.93 against a 0.70
+  threshold, so the METRIC is sound and SECTION RESOLUTION is the defect. **Two fixes are
+  measured and REFUTED in `docs/gotchas.md` - a `files`-subset rule (inert for the same
+  reason) and content-based section resolution (false-fires on a faithful
+  one-section-to-N-leaves split, 0.31 against 0.25).** Read them before proposing either.
+  The plan the leaves are graded against is in `plans.pending_input`, as a JSON envelope
+  under `"plan"`.
+- **The route that reaches triage for a BIG leaf argues against `split`** (2026-08-27).
+  `07583d2`'s verify-gate arm is sound and reachable, but the final leaf of a dependent
+  chain reaches the NO-CHANGE route instead: its declared path exists precisely because an
+  earlier leaf created it, so the one discriminator independent of the project command is
+  unavailable. Reaching triage at all needs a leaf whose declared path is ABSENT from its
+  base, and then the evidence pack is `files_touched=0` with an empty diff, which argues
+  for `escalate` - observed live, and CORRECT, since `split` is inferred from PARTIAL
+  progress. **Do not tune the triage prompt to prefer `split` on zero output.**
 - **The ADAPTIVE SPLIT is governed too** (2026-08-26): `validate_leaves` had ONE call
   site, so every child a split produced bypassed every F3 rule while the standard makes
   adaptive splitting policy #1. `validate_split_children` shares the same rule
