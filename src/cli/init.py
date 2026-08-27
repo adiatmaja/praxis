@@ -504,7 +504,7 @@ def merge_env(existing: str, values: Mapping[str, str | None]) -> str:
     return "\n".join(out).rstrip("\n") + "\n"
 
 
-def mcp_snippet(api_url: str, token: str) -> str:
+def mcp_snippet(api_url: str, token: str, praxis_root: Path | None = None) -> str:
     """Return the MCP client configuration for this installation.
 
     The env var names here are the ones ``mcp_server.client.PraxisClient``
@@ -512,18 +512,29 @@ def mcp_snippet(api_url: str, token: str) -> str:
     snippet: the operator pastes it and the server silently falls back to its
     built-in default URL with no token.
 
+    The command is ``uv run --directory <praxis_root> praxis-mcp``, never the
+    bare console script: ``praxis`` is not put on the PATH, so an MCP client
+    spawning ``praxis-mcp`` from any other project - the normal place to use
+    it - fails with command-not-found.  ``--directory`` makes the invocation
+    cwd-independent.
+
     Args:
         api_url: Base URL the MCP server should call.
         token: Value of ``AUTH_TOKEN`` for this installation.
+        praxis_root: Absolute path of the Praxis checkout.  Defaults to the
+            CWD, which ``_require_repo_root`` has already proven is the root
+            on every path that prints this.
 
     Returns:
         Pretty-printed JSON, ready to paste into an MCP client config.
     """
+    root = praxis_root if praxis_root is not None else Path.cwd()
     return json.dumps(
         {
             "mcpServers": {
                 "praxis": {
-                    "command": "praxis-mcp",
+                    "command": "uv",
+                    "args": ["run", "--directory", str(root.resolve()), "praxis-mcp"],
                     "env": {
                         "PRAXIS_BASE_URL": api_url,
                         "PRAXIS_AUTH_TOKEN": token,
@@ -1047,7 +1058,8 @@ def _print_next_steps(
     console.print(f"  Dashboard: {api_url}")
 
     console.print("\nAdd it to your MCP client with this configuration:\n")
-    console.print(mcp_snippet(api_url, token))
+    # markup=False: the snippet's JSON list brackets are data, not rich tags.
+    console.print(mcp_snippet(api_url, token), markup=False)
 
     # The CLI reads a DIFFERENT pair of env vars than the MCP server. Both
     # forms below come from `cli_env_exports` so they cannot drift from each

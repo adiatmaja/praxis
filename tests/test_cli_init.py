@@ -433,17 +433,41 @@ def test_the_mcp_snippet_is_valid_json_naming_the_praxis_server():
     snippet = mcp_snippet(api_url="http://127.0.0.1:12323", token="tok")
     parsed = json.loads(snippet)
     assert "praxis" in parsed["mcpServers"]
-    assert parsed["mcpServers"]["praxis"]["command"] == "praxis-mcp"
+    assert parsed["mcpServers"]["praxis"]["command"] == "uv"
 
 
 @pytest.mark.unit
 def test_the_mcp_snippet_names_a_console_script_that_actually_exists():
     """A snippet naming a command that is not installed fails at paste time."""
     scripts = tomllib.loads((REPO / "pyproject.toml").read_text(encoding="utf-8"))
-    command = json.loads(mcp_snippet("http://x", "t"))["mcpServers"]["praxis"][
-        "command"
+    entry = json.loads(mcp_snippet("http://x", "t"))["mcpServers"]["praxis"]
+    assert entry["args"][-1] in scripts["project"]["scripts"]
+
+
+@pytest.mark.unit
+def test_the_mcp_snippet_invocation_is_cwd_independent():
+    """The MCP client spawns this from OTHER projects, where `praxis-mcp` is
+    not on the PATH.  The invocation must therefore carry the Praxis checkout
+    as an absolute `uv run --directory` argument rather than relying on the
+    spawn CWD or the PATH.
+    """
+    entry = json.loads(mcp_snippet("http://x", "t", praxis_root=REPO))["mcpServers"][
+        "praxis"
     ]
-    assert command in scripts["project"]["scripts"]
+    args = entry["args"]
+    directory = Path(args[args.index("--directory") + 1])
+    assert directory.is_absolute()
+    assert (directory / "pyproject.toml").is_file()
+
+
+@pytest.mark.unit
+def test_the_mcp_snippet_defaults_its_root_to_the_cwd(tmp_path, monkeypatch):
+    """`init` proves the CWD is the repo root before printing; the default
+    must embed that CWD, not wherever the module happens to live."""
+    monkeypatch.chdir(tmp_path)
+    entry = json.loads(mcp_snippet("http://x", "t"))["mcpServers"]["praxis"]
+    args = entry["args"]
+    assert Path(args[args.index("--directory") + 1]) == tmp_path.resolve()
 
 
 @pytest.mark.unit
