@@ -776,7 +776,15 @@ story. New gotchas go in `docs/gotchas.md` first. (No count is quoted on purpose
   reason) and content-based section resolution (false-fires on a faithful
   one-section-to-N-leaves split, 0.31 against 0.25).** Read them before proposing either.
   The plan the leaves are graded against is in `plans.pending_input`, as a JSON envelope
-  under `"plan"`.
+  under `"plan"`. **FIXED** by replacing the silent `continue` with a DOCUMENT-backed
+  fallback (`_plan_backed`): are the leaf's OWN lines in the plan, whitespace-collapsed
+  because a decomposer UNWRAPS the plan's hard-wrapped bullets (a line-exact compare
+  scores 0.0 on faithful leaves - it was tried). Gated on the plan HAVING headings, or it
+  fires on every three-word brief, which an existing fixture caught. Section resolution is
+  unchanged and still preferred. Validated on the real artefacts, kept as
+  `tests/fixtures/decompose/plan_text_backing_cases.json`: 3/3 fabricated, 0/3 faithful.
+  The rule stays SOFT and the 0.35 threshold rests on TWO real plans - the separation is
+  the finding, the number is provisional.
 - **The route that reaches triage for a BIG leaf argues against `split`** (2026-08-27).
   `07583d2`'s verify-gate arm is sound and reachable, but the final leaf of a dependent
   chain reaches the NO-CHANGE route instead: its declared path exists precisely because an

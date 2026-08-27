@@ -3476,10 +3476,44 @@ Where the rule DID run it scored ratio 0.99 and coverage 0.93 against a 0.70 thr
   metric (the fraction of a leaf's `Steps` lines found verbatim in the plan) scored 0.0 on
   every real leaf including the faithful ones, so it is refuted as well.
 
-The remaining option is structural rather than a threshold: have the decomposer DECLARE
-the plan heading each leaf came from, which makes the section resolvable by construction
-and makes the declaration itself checkable against the plan's real headings. That is a
-`LeafTask` schema change and so a `LEAF_SCHEMA_VERSION` bump with fixture regeneration.
+### The fix that survived measurement: grade against the DOCUMENT, not the section
+
+Both refutations above share a cause - they kept asking "how much of the SECTION did this
+leaf reproduce", which needs the section resolved and breaks on 1:N. The question that
+survives is the reverse, and it needs neither: **are this leaf's OWN lines in the plan?**
+A faithful sub-copy scores high however many siblings share its section; invented content
+scores low however short it is.
+
+Two details are load-bearing and were both found by measurement, not reasoning:
+
+- **Collapse whitespace on both sides.** A plan is hard-wrapped; a decomposer emits each
+  bullet UNWRAPPED onto one long line. A faithful leaf's line is therefore the
+  concatenation of two or three source lines and appears verbatim nowhere in the source as
+  written. A line-exact comparison scores 0.0 on FAITHFUL leaves - it was tried, and that
+  is exactly what it returned.
+- **Only grade a plan that HAS headings.** A plan with headings was supposed to resolve a
+  section and did not, which is the drift being caught. A three-word brief never had
+  sections, and a decomposer necessarily elaborates beyond it; warning there fires on
+  every short plan and teaches an operator to ignore the rule. This was caught by an
+  existing test whose plan is the literal string "build a thing".
+
+The section path is UNCHANGED and still preferred - it is the precise question when it can
+be asked. This only replaces the silent `continue`.
+
+Validated against the production artefacts, which is the check that matters: the
+fabricating decomposition now fires on **3 of 3** leaves where it previously fired on none,
+and the faithful one fires on **0 of 3**.
+
+The threshold (0.35) sits in a measured gap - fabricated leaves scored 0.04/0.20/0.12,
+faithful ones 0.86/0.80/0.88, and a constructed faithful 1:3 split 0.50. **Two real plans
+is the whole evidence base. The SEPARATION is the finding; the NUMBER is provisional.**
+The rule stays SOFT deliberately: it annotates `validation_warnings` and blocks nothing, so
+a false warning costs a line in an audit trail while a missed one costs an ungraded rewrite
+of the user's acceptance criteria. Promoting it to HARD needs more evidence than this.
+
+The decompose prompt gained the other half, as prevention at source: a test file that
+already exists is the acceptance contract and never belongs in a leaf's `files`, and no
+path may be added that the plan does not authorise for that task.
 
 ## The route that reaches triage for a big leaf argues against `split`
 

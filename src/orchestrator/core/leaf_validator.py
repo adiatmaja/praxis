@@ -215,6 +215,104 @@ def _verbatim_coverage(section: str, plan_text: str) -> float:
     return sum(1 for line in lines if line in plan_text) / len(lines)
 
 
+#: Fraction of a leaf's own substantive lines that must be present in the plan
+#: when no section could be resolved for it.  MEASURED, not chosen: on the two
+#: real decompositions available on 2026-08-27, a fabricating leaf scored 0.04,
+#: 0.20 and 0.12 while faithful leaves scored 0.86, 0.80 and 0.88, and a
+#: constructed faithful one-section-to-three-leaves split - the shape that
+#: defeated a whole-section coverage metric - scored 0.50. This sits in that
+#: gap, nearer the fabricated end, because the rule is SOFT: it annotates
+#: ``opus_plan["validation_warnings"]`` and blocks nothing, so a false warning
+#: costs a line in an audit trail while a missed one costs an ungraded rewrite
+#: of the user's acceptance criteria.
+#:
+#: The evidence is two real plans. Treat the NUMBER as provisional and the
+#: SEPARATION as the finding; promoting this rule to HARD needs more of both.
+_PLAN_BACKED_THRESHOLD = 0.35
+
+#: Lines shorter than this are labels and fragments ("Steps:", "Files: x.py")
+#: whose presence says nothing either way, and they are the majority of a short
+#: leaf.  Counting them lets scaffolding alone carry a fabricated leaf over the
+#: threshold.
+_SUBSTANTIVE_LINE_CHARS = 25
+
+
+#: A markdown heading at the start of a line -- the same shape
+#: :func:`_section_for_task` searches for, so "this plan has sections" and
+#: "this leaf's section could not be found" are asked about the same thing.
+_HEADING_RE = re.compile(r"^#{1,6}\s+\S", re.MULTILINE)
+
+
+def _has_headings(source: str) -> bool:
+    """Return True when the plan document carries at least one heading.
+
+    The gate on the document-backed fallback. A plan WITH headings was supposed
+    to yield a section for every leaf, so a leaf that resolved none has drifted
+    from a document that had something to drift from. A plan WITHOUT headings
+    never had sections at all, and a decomposer necessarily elaborates beyond a
+    three-word brief -- grading that as unfaithful would fire on every short
+    plan and train an operator to ignore the warning.
+
+    Args:
+        source: The externally-authored plan document.
+
+    Returns:
+        True when at least one line starts a markdown heading.
+    """
+    return _HEADING_RE.search(source or "") is not None
+
+
+def _collapse_whitespace(text: str) -> str:
+    """Return *text* with every run of whitespace reduced to one space.
+
+    Load-bearing, and the reason a line-exact comparison fails here. A plan
+    document is hard-wrapped; a decomposer emits each of its bullets UNWRAPPED
+    onto a single long line. So a faithful leaf's line is the concatenation of
+    two or three consecutive source lines and appears verbatim nowhere in the
+    source as written. Collapsing both sides makes the containment test ask
+    what it means to ask - is this text in the plan - rather than whether the
+    decomposer happened to preserve the wrapping.
+    """
+    return " ".join(text.split())
+
+
+def _plan_backed(plan_text: str, source: str) -> bool:
+    """Return True when most of a leaf's own substantive lines are in the plan.
+
+    The reverse of :func:`_verbatim_coverage`, and deliberately so. Coverage
+    asks "how much of the SECTION did this leaf reproduce", which is the right
+    question for one leaf cut from one section and the wrong one the moment a
+    single plan section is decomposed into N leaves - each faithful leaf then
+    covers about 1/N of it and scores as a mismatch. That is not a hypothetical:
+    capability-aware decomposition producing N leaves from one plan task is the
+    flagship mechanism's normal output, and a whole-section coverage metric was
+    measured false-firing on exactly that shape.
+
+    This asks the question that survives 1:N: are the leaf's OWN lines from the
+    plan? A faithful sub-copy scores high however many siblings share its
+    section; invented content scores low however short it is.
+
+    Args:
+        plan_text: The leaf's contract text.
+        source: The externally-authored plan document.
+
+    Returns:
+        True when the leaf carries no substantive lines to judge (nothing was
+        claimed, so nothing is refuted), or when the backed fraction reaches
+        :data:`_PLAN_BACKED_THRESHOLD`.
+    """
+    collapsed_source = _collapse_whitespace(source)
+    lines = [
+        collapsed
+        for line in (plan_text or "").splitlines()
+        if len(collapsed := _collapse_whitespace(line)) > _SUBSTANTIVE_LINE_CHARS
+    ]
+    if not lines:
+        return True
+    backed = sum(1 for line in lines if line in collapsed_source)
+    return backed / len(lines) >= _PLAN_BACKED_THRESHOLD
+
+
 def _section_for_task(source: str, leaf: LeafTask) -> str:
     """Extract the section of the source plan that corresponds to *leaf*.
 
@@ -896,6 +994,41 @@ def _check_plan_text_verbatim(
     for leaf in leaves:
         section = _section_for_task(source, leaf)
         if not section:
+            # The silent skip is where a fabricating decomposition walked
+            # through, and it is the COMMON case, not the exception: the title
+            # this resolution keys on is written BY the decomposer, for the
+            # worker, not for matching. Measured on production artefacts
+            # (2026-08-27): 0 of 3 sections resolved on a plan whose leaf
+            # deleted the repository's acceptance test and specified sixteen
+            # replacement tests of its own invention, and 1 of 3 on a faithful
+            # decomposition of a well-formed three-task plan. The check that
+            # grades drift was disabled BY drifting.
+            #
+            # Fall back to the DOCUMENT, which needs no section resolution and
+            # no title: are this leaf's own lines in the plan at all? The
+            # section path above is still preferred and unchanged, because it
+            # is the precise question when it can be asked.
+            #
+            # Only for a plan that HAS headings, and the bound is the argument.
+            # A plan with headings was supposed to resolve a section here and
+            # did not, which is the drift this exists to catch. A plan with no
+            # headings at all -- "build a thing" -- never had a section to
+            # resolve, and a decomposer turning it into leaves MUST elaborate
+            # beyond its text. Warning there would fire on every short plan and
+            # teach an operator to ignore the rule, which costs more than the
+            # rule is worth.
+            if _has_headings(source) and not _plan_backed(leaf.plan_text, source):
+                result.add(
+                    Violation(
+                        rule="plan_text_verbatim",
+                        task_id=leaf.id,
+                        severity="soft",
+                        message=(
+                            "plan_text is largely not present in the source "
+                            "plan, and no plan heading names this leaf"
+                        ),
+                    )
+                )
             continue
         # Two ways to be faithful, because plan_text is a labelled SKELETON
         # that carries the source lines, not a bare excerpt (see the decompose

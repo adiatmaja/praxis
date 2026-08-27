@@ -80,6 +80,16 @@ Sizing rules (apply in order):
 4. Only split when a unit genuinely exceeds the token budget, exceeds the
    model's max complexity, or when parts are truly independent (different
    subsystems, no shared state).
+5. Rule 1 is about tests the plan asks you to WRITE. A test file that ALREADY
+   EXISTS is the acceptance contract, not scaffolding: never put it in a leaf's
+   "files", and never restate, replace or "modernise" the cases in it. If the
+   plan says a file is the contract, or says not to edit it, that is binding.
+   A leaf that rewrites the bar it is graded against passes review by
+   construction and tells you nothing.
+6. Never put a path in "files" that the plan does not authorise for that task.
+   When the plan gives a task its own "Files:" line, that line is the whole
+   list. Needing a path the plan never named means the plan is incomplete: say
+   so in that leaf's "description" rather than quietly widening its scope.
 
 Write every leaf's "description" and checklist for the WEAKEST model that
 might implement it. A stronger model loses nothing from this style; a weaker

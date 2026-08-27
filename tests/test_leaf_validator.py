@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 import pytest
 
 from orchestrator.core.leaf_validator import (
@@ -1136,3 +1139,131 @@ def test_leaf_template_violation_is_hard_not_soft():
     assert any(v.rule == "leaf_template" for v in result.hard)
     assert not any(v.rule == "leaf_template" for v in result.soft)
     assert result.dispatchable is False
+
+
+@pytest.mark.unit
+def test_verbatim_rule_grades_a_leaf_whose_title_names_no_heading():
+    """The silent skip is where a fabricating decomposition walked through.
+
+    ``_section_for_task`` resolves a leaf's section by looking for the
+    DECOMPOSER-AUTHORED title inside a plan heading, and the decomposer writes
+    that title for the worker, not for matching. Measured on production
+    artefacts on 2026-08-27: 0 of 3 sections resolved on the plan whose leaf
+    deleted the repository's acceptance test and specified sixteen replacement
+    tests of its own invention, and 1 of 3 on a faithful decomposition of a
+    well-formed three-task plan. ``validation_warnings`` on both carried only
+    ``file_overlap``. So the check that grades drift was disabled BY drifting,
+    and the leaf that most needed grading was the one that could not be graded.
+
+    The section path is unchanged and still preferred, because it is precise
+    when it resolves. This covers the FALLBACK: when no heading names the leaf,
+    grade its plan_text against the whole document instead of skipping.
+
+    Both leaves below carry the same unresolvable title, so the only difference
+    between firing and not firing is whether the text came from the plan.
+    """
+    source = (
+        "# Plan\n\n"
+        "## Task 1: Ship the loader\n\n"
+        "Goal: `src/loader.py` exposes `load_config`.\n"
+        "Files: `src/loader.py`\n"
+        "Steps:\n"
+        "- Add `load_config(path: str) -> dict` to `src/loader.py`, raising\n"
+        "  `ConfigError` when the file is absent.\n"
+        "- Parse TOML only; reject every other extension by suffix.\n"
+        "Acceptance: `pytest tests/test_loader.py` passes.\n"
+    )
+    profile = _profile()
+    unresolvable_title = "Loader scaffolding and config parsing"
+
+    # Control: the title genuinely resolves no section, so the OLD code skipped.
+    assert (
+        _section_for_task(
+            source, LeafTask(id="c", title=unresolvable_title, plan_text="x")
+        )
+        == ""
+    )
+
+    # A faithful leaf UNWRAPS the plan's hard-wrapped lines onto one line, which
+    # is what a real decomposer emits; it must not be warned about.
+    faithful = LeafTask(
+        id="t1",
+        title=unresolvable_title,
+        plan_text=(
+            "Goal: `src/loader.py` exposes `load_config`.\n"
+            "Files: src/loader.py\n"
+            "Steps:\n"
+            "- Add `load_config(path: str) -> dict` to `src/loader.py`, raising "
+            "`ConfigError` when the file is absent.\n"
+            "- Parse TOML only; reject every other extension by suffix.\n"
+            "Acceptance: `pytest tests/test_loader.py` passes."
+        ),
+    )
+    clean = validate_leaves({}, profile, source, [faithful])
+    assert [v.rule for v in clean.soft if v.rule == "plan_text_verbatim"] == []
+
+    # A fabricating leaf: same unresolvable title, content the plan never named.
+    fabricated = LeafTask(
+        id="t1",
+        title=unresolvable_title,
+        plan_text=(
+            "Goal: `src/loader.py` and its tests exist.\n"
+            "Files: src/loader.py, tests/test_loader.py\n"
+            "Steps:\n"
+            "- Rewrite `tests/test_loader.py` to contain these three tests: "
+            "test_reads_toml, test_missing_file, test_bad_suffix.\n"
+            "- Each test asserts only that the call returns without raising.\n"
+            "Acceptance: `pytest tests/test_loader.py` passes."
+        ),
+    )
+    fired = validate_leaves({}, profile, source, [fabricated])
+    assert [v.rule for v in fired.soft if v.rule == "plan_text_verbatim"] == [
+        "plan_text_verbatim"
+    ]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("case", "expect_fires"),
+    [("fabricated", True), ("faithful", False)],
+)
+def test_verbatim_rule_on_the_real_decompositions(case: str, expect_fires: bool):
+    """Regression fixture: the two REAL decompositions this rule was built from.
+
+    Extracted programmatically from ``plans.pending_input`` and
+    ``plans.opus_plan`` on 2026-08-27, never retyped from a report - a
+    sanitized fixture shipped an inert guard once already, and a fixture that
+    looks too clean is the tell.
+
+    ``fabricated`` is the decomposition whose leaf deleted the repository's
+    acceptance test and specified sixteen replacement tests of its own
+    invention (playground PR #103). Under the old code it scored ZERO
+    violations, because ``_section_for_task`` resolved no section for any of
+    its three leaves and the rule silently skipped them all.
+
+    ``faithful`` is the same decomposer, the same repository and the same day,
+    on a plan that did not name the test file. It must stay silent: a rule that
+    fires on both is worthless, and this pair is what keeps the threshold
+    honest if anyone tunes it.
+    """
+    cases = json.loads(
+        (
+            Path(__file__).parent
+            / "fixtures"
+            / "decompose"
+            / "plan_text_backing_cases.json"
+        ).read_text(encoding="utf-8")
+    )
+    fixture = cases[case]
+    leaves = [
+        LeafTask(id=leaf["id"], title=leaf["title"], plan_text=leaf["plan_text"])
+        for leaf in fixture["leaves"]
+    ]
+
+    result = validate_leaves({}, _profile(), fixture["source_plan"], leaves)
+    fired = [v for v in result.soft if v.rule == "plan_text_verbatim"]
+
+    if expect_fires:
+        assert len(fired) == len(leaves), fixture["note"]
+    else:
+        assert fired == [], fixture["note"]
