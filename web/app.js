@@ -1426,9 +1426,24 @@
         '<button class="btn btn-compact btn-danger" type="button" onclick="dashboardReject(\'' + esc(plan.id) + '\')">Reject</button>' : "";
       const taskCards = tasks.length ? tasks.map(renderTaskCard).join("") :
         '<div class="card-meta" style="padding:2px 0;">' + emptyLaneMessage(plan) + '</div>';
+      // A stalled plan reads `active` and carries a null `error`, both
+      // deliberately (writing it FAILED would feed its branch to the stale
+      // branch sweeper). That makes the status badge alone indistinguishable
+      // from a plan that is genuinely still working, so the lane needs its own
+      // marker: `praxis plans` prints "(stalled; N tasks blocked by a
+      // failure)" beside the status and MCP poll_plan sets
+      // stalled.action_required, and until this existed the dashboard was the
+      // only one of the four surfaces where the state was invisible without
+      // opening the plan detail. The detail's own Stalled row carries the
+      // blocker ids and the retry wording; this is the glance.
+      const stalledCount = (plan.stalled_task_ids || []).length;
+      const stalledChip = stalledCount ?
+        '<span class="lane-stalled" title="Nothing is waiting on the orchestrator. Open the plan and retry a blocker to release these.">stalled: ' +
+        esc(stalledCount + (stalledCount === 1 ? " task blocked" : " tasks blocked")) + '</span>' : "";
       return '<section class="swim-lane">' +
         '<div class="lane-header">' +
           badge(plan.status) +
+          stalledChip +
           '<div class="lane-spec">' + specPreview + '</div>' +
           '<div class="lane-meta">' + esc(plan.projectName || "unknown") + " - " + esc(plan.plan_branch_name || "-") + '</div>' +
           '<button class="btn btn-compact" type="button" onclick="toggleSpec(\'' + esc(plan.id) + '\')">' + (isSpecExpanded ? "Hide Spec" : "View Spec") + '</button>' +
@@ -1549,9 +1564,28 @@
       '</section>';
     }
 
+    // The API serves SQLite's naive UTC ("2026-08-27 21:13:33"): a space, no
+    // "T", no offset, no "Z". `new Date` sends a string in that shape down the
+    // implementation-defined branch of the spec, and V8 reads it as LOCAL
+    // time, so every age here was wrong by exactly the viewer's UTC offset.
+    // Measured in the browser on 2026-08-28 from UTC+7: a plan that completed
+    // 20 minutes earlier rendered "7h ago". East of UTC it over-reports; WEST
+    // of UTC it UNDER-reports, and `Math.max(0, ...)` below then clamps a
+    // still-future timestamp to "0s ago", so hours-old work reads as "just
+    // now" -- the more dangerous direction of the same bug.
+    //
+    // Strings that DO carry a zone (agent_runs.finished_at is a full ISO
+    // instant with "+00:00") must be left alone, or they would be shifted a
+    // second time.
+    function toInstant(isoString) {
+      const raw = String(isoString).trim();
+      const hasZone = /(?:[Zz]|[+-]\d{2}:?\d{2})$/.test(raw);
+      return new Date(hasZone ? raw : raw.replace(" ", "T") + "Z");
+    }
+
     function timeAgo(isoString) {
       if (!isoString) return "-";
-      const then = new Date(isoString).getTime();
+      const then = toInstant(isoString).getTime();
       if (Number.isNaN(then)) return "-";
       const seconds = Math.max(0, Math.floor((Date.now() - then) / 1000));
       if (seconds < 60) return seconds + "s ago";

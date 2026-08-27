@@ -472,6 +472,26 @@
     }
     .lane-spec { font-size: 13px; font-weight: 700; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
     .lane-meta { color: var(--text-faint); font-size: 11px; font-family: "Cascadia Mono", "SF Mono", Consolas, monospace; white-space: nowrap; }
+    /* A stalled plan's status badge says ACTIVE, which is correct and is also
+       exactly what a healthy plan says. This sits beside the badge rather than
+       replacing it, because both facts are true: the plan is active, and
+       nothing will ever move it. Borrows the failed palette; it is the same
+       "needs a person" register, and reusing the token keeps it correct in
+       both themes. */
+    .lane-stalled {
+      height: 20px;
+      display: inline-flex;
+      align-items: center;
+      border-radius: 4px;
+      padding: 0 7px;
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: .03em;
+      text-transform: uppercase;
+      white-space: nowrap;
+      background: var(--badge-failed-bg);
+      color: var(--badge-failed-text);
+    }
     /* The expanded "View Spec" box now holds a MARKDOWN DOCUMENT read back
        from the repository (plans.spec was dropped in Spec 2), wrapped in a
        .detail-card so it inherits the rendered-markdown rules above rather
