@@ -720,6 +720,15 @@ story. New gotchas go in `docs/gotchas.md` first. (No count is quoted on purpose
   that needs no string analysis - **work on a branch base does not contain is not in the
   repository** (`_work_sits_unmerged_on_the_task_branch`, tri-state, only an explicit
   `base_contains is False` refutes, NOT attributable, and it may only ever refuse to close).
+  **A DECLINE REASON IS WORKER-FACING GUIDANCE, NOT A DIAGNOSIS** - the same fix got this
+  wrong first: the callback writes the reason to `tasks.review_feedback` and the Bible
+  injects that column into the NEXT attempt's prompt, REPLACING the review that rejected
+  the work. A sentence about branch topology names no action and displaces the reviewer's
+  concrete objections, so the worker has nothing to do and burns the attempt.
+  `_unmerged_work_reason` states the ACTION first, names the PR for the human reading the
+  same column, and quotes the prior review last, skipping the quote when the stored
+  feedback is already one of its own messages (or attempt 3 quotes attempt 2 quoting
+  attempt 1). **Grep for what writes `review_feedback` before adding a message to it.**
 - **Adaptive triage is reached by WORKER-ATTRIBUTABLE failures only, and the RULE is the
   contract, never a caller list**: a failure may reach `_triage_then_fail` when the worker
   was handed the leaf and its own output is what fell short. Everything else calls

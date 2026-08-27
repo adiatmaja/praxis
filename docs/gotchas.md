@@ -2453,6 +2453,32 @@ Validated against the production artefact through the fact the backend computes:
 never fire, plus one pinning the measured BENIGN case (leaf 1 wrote leaf 2's file, branch
 never pushed) still closing.
 
+**And then the refusal itself was wrong in a second way, which is worth more than the
+first.** A decline reason is NOT a log line: the callback writes it to
+`tasks.review_feedback` and `worker_bible` injects that column into the next attempt's
+prompt, REPLACING what was there - which on this path is the review that rejected the work
+now sitting on the branch. The first version said "its own branch carries commits that
+<base> does not, so this task's work exists but is NOT in the repository": true, and
+useless. It described git topology, named no action, and displaced the two concrete
+defects the reviewer had listed. A worker handed that has nothing to do, produces no diff
+again, and spends the attempt arriving back at the same place.
+
+`_unmerged_work_reason` now states the ACTION first (change the files on that branch, do
+not start again, do not report no changes), names the pull request for the human reading
+the same column, and quotes the prior review last. The quote is skipped when the stored
+feedback is already one of these messages (`_UNMERGED_WORK_SENTINEL`), or attempt 3 quotes
+attempt 2's quotation of attempt 1 and buries the actionable part under its own history.
+
+**The general rule, and it is easy to break again: any string that reaches
+`tasks.review_feedback` is worker-facing guidance, not a diagnosis.** Grep for what writes
+that column before adding a message to it.
+
+It still fails and RETRIES rather than going terminal, deliberately. Retrying is not inert
+here - the worker is being asked to fix its own rejected work on that branch, which is a
+thing it can do, and it now has the instruction and the objections to do it with. If it
+declines again the task fails terminally and `plan_reachability` surfaces it with the pull
+request named.
+
 Not every decline is worker-attributable, so `no_change_outcome` now returns a frozen
 `NoChangeDecision(closed, why, worker_attributable)` - still iterable as `(closed, why)`
 for its two out-of-module callers, the worker callback in `api/internal.py` and the
