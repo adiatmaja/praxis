@@ -23,9 +23,16 @@ beside it.
 Capability-aware task decomposition is the flagship MECHANISM (unique in the landscape);
 role separation is the supporting architecture; cost is a consequence. **The exact public
 copy - README headline ("Govern any coding harness from inside the one you already
-use."), GitHub About, README opener - is frozen in `docs/positioning.md` ("Canonical
-copy (2026-08-24)"): copy it verbatim, never re-derive it.** SSoT: `docs/positioning.md`
-("The framing"). Flagship mechanism under development: the **Capability Calibration
+use."), GitHub About (revised 2026-08-28: the "govern other coding agents" clause), and
+the README opener - is frozen in `docs/positioning.md` ("Canonical copy (2026-08-24)",
+plus its dated amendments): copy it verbatim, never re-derive it.** Since 2026-08-28
+(owner direction) the README opener is PROBLEM-FIRST - the no-safety-net handoff hook
+leads, the definition lives in the About and `pyproject.toml` only, and the old "Why
+Praxis exists" section is gone, absorbed by the hook. The README also carries a
+paste-able agent setup brief (Quick Start, "Set it up with your agent") with STOP points
+at the interactive logins; keep it in sync with `praxis init --non-interactive` and the
+init-printed MCP snippet. **No em dashes anywhere in the README or docs prose** (owner
+rule; use comma/colon/semicolon). SSoT: `docs/positioning.md` ("The framing"). Flagship mechanism under development: the **Capability Calibration
 Loop** - `docs/superpowers/specs/2026-07-11-capability-engine-roadmap.md` (F1-F15, S1-S11).
 
 **WHERE ENGINEERING EFFORT GOES (2026-08-26, owner's direction). Read this before
