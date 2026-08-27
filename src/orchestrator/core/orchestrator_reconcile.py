@@ -10,7 +10,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Literal, cast
@@ -20,6 +20,7 @@ import httpx
 from orchestrator.core import branch_sweeper
 from orchestrator.core.approvals import fetch_pending_approvals
 from orchestrator.core.git_backend import PullRequestRef
+from orchestrator.core.provider_errors import is_provider_error
 from orchestrator.core.status_vocab import GATED_STATUSES, TERMINAL_STATUSES
 from orchestrator.models.schemas import PlanStatus, TaskStatus
 
@@ -106,6 +107,175 @@ _QUARANTINE_MAX_COOLDOWN_PASSES: int = 120
 _QUARANTINE_MAX_COOLDOWN_DOUBLINGS: int = (
     _QUARANTINE_MAX_COOLDOWN_PASSES // _QUARANTINE_INITIAL_COOLDOWN_PASSES
 ).bit_length()
+
+# --- The provider-error respawn bound, shared by BOTH paths ---------------
+#
+# ``is_provider_error`` returning True buys TWO things at once: the failure is
+# not charged to the worker's capability record, and the task is re-queued
+# WITHOUT consuming a retry. The second is unbounded by construction, so a
+# PERMANENT block - VPN down, endpoint offline, a WAF that is not going to
+# relent - re-queues a task at attempt 1 forever, respawning a container every
+# loop tick, while the plan reads ACTIVE with a null ``error``.
+#
+# TWO paths reach that re-queue and only ONE of them was bounded.
+# ``_resolve_failed_run_or_pause`` below is the reconcile path;
+# ``POST /api/internal/agent-done`` is the CALLBACK path, the one both shipped
+# harness entrypoints actually take, and until 2026-08-27 its
+# ``elif provider_error_run:`` branch was a bare ``UPDATE tasks SET status =
+# PENDING`` with no streak counter at all. Measured with a throwaway probe:
+# twelve consecutive provider-error callbacks against ``max_retries=3``
+# returned 200 every time with the task at ``pending``/``attempt=1``.
+#
+# The three functions below are the WHOLE of the rule, and both paths call
+# them, so the bound exists ONCE. A second copy is the drift this repository
+# has now recorded at seat after seat; the proof that this is shared rather
+# than copied is that mutating any one of them turns BOTH paths' tests red
+# (``tests/test_callback_provider_error_is_capped.py``).
+#
+# What is deliberately NOT shared is the backoff. The reconcile path sleeps
+# before re-queuing so it does not hammer a blocked gateway; the callback path
+# must not, because it is an HTTP handler behind the entrypoint's
+# ``curl --max-time 10`` and a sleep there buys a redelivery storm on top of
+# an outage. The bound is the shared decision; the pacing is each path's own.
+
+
+def provider_error_streak(
+    runs: Sequence[Mapping[str, Any]],
+    *,
+    provider_error_run_ids: frozenset[str] = frozenset(),
+) -> int:
+    """Count the trailing consecutive provider-error runs of one task.
+
+    Walks newest-first and stops at the first run that says something about
+    the WORKER rather than about the endpoint, so a single transient blip
+    after real progress does not accumulate toward the cap.
+
+    Args:
+        runs: Every agent run for the task, oldest first (the order
+            ``TaskQueue.get_runs_for_task`` returns). The run being disposed
+            of now is expected to be last and to have had its logs written
+            already, so it counts itself.
+        provider_error_run_ids: Runs the CALLER has already classified as
+            provider errors. Load-bearing on the callback path and not a
+            convenience: ``agent_runs.status`` there holds whatever string the
+            harness reported (``AgentDonePayload.status`` is a bare ``str``),
+            so deriving this run's verdict from its own row would let a
+            harness's choice of word silently disable the cap - the same
+            reason ``claim_agent_run_completion`` keys on ``finished_at IS
+            NULL`` rather than on ``status``. The reconcile path passes
+            nothing, because it forces ``status = 'failed'`` and writes the
+            logs before it counts.
+
+    One residual is stated rather than hidden. The ``completed`` break is
+    checked before the log scan and deliberately so (see below), which means a
+    task whose provider errors are REPEATEDLY reported under a ``completed``
+    status never accumulates past 1: the override counts the current run and
+    the previous run's stored ``completed`` breaks the streak behind it. Both
+    shipped entrypoints run under ``set -euo pipefail`` with an EXIT trap that
+    rewrites the status to ``failed`` on any non-zero exit, so reaching this
+    branch under ``completed`` at all requires a harness that swallowed a
+    gateway refusal, exited 0 AND lost its pull-request url - and repeating it
+    requires that every time. The alternative, letting a provider signal in the
+    log override the ``completed`` break, is worse and measurably so: Praxis is
+    dogfooded on itself, a worker's transcript routinely quotes this
+    repository's own ``_PROVIDER_SIGNALS`` list, and joining two streaks across
+    a SUCCESSFUL run is the exact bug the break was added to fix.
+
+    Returns:
+        How many consecutive runs at the end of the list ended in a
+        provider/gateway error.
+    """
+    streak = 0
+    for run in reversed(runs):
+        if str(run["id"]) in provider_error_run_ids:
+            streak += 1
+            continue
+        if str(run["status"]) == "completed":
+            # A completed run PROVED the endpoint reachable, so no streak can
+            # span it, and this check comes before the log scan for that
+            # reason. Skipping every non-failed run instead counted two
+            # provider errors either side of a successful call as consecutive,
+            # and at the cap told the operator the worker endpoint was
+            # unreachable with a successful call to it sitting in the same
+            # task's run history.
+            break
+        if is_provider_error(str(run["logs"] or "")):
+            streak += 1
+            continue
+        if str(run["status"]) == "failed":
+            # The endpoint answered and the worker fell short on its own: a
+            # real failure, and the end of any provider streak.
+            break
+        # ``stopped`` and anything else is abandoned work. It neither proves
+        # nor disproves reachability, so it is passed over rather than counted.
+    return streak
+
+
+#: The cap to obey when no orchestrator is reachable to declare one.
+#:
+#: ``Orchestrator.PROVIDER_ERROR_RESPAWN_CAP`` is the SSoT and both paths read
+#: it off the live object. This exists only because the CALLBACK path can run
+#: with ``app.state.orchestrator`` unset (Docker unavailable at startup), and a
+#: missing orchestrator must still leave the re-queue BOUNDED rather than
+#: restoring the unbounded loop these functions exist to end.
+_RESPAWN_CAP_FALLBACK: int = 5
+
+
+def provider_error_respawn_cap(owner: Any) -> int:
+    """Return the respawn cap ``owner`` declares, or the bounded fallback.
+
+    Args:
+        owner: The orchestrator, or None when there is not one to ask.
+
+    Returns:
+        A positive cap. A non-integer or non-positive declaration is refused
+        rather than honoured, because zero or a negative would fail every task
+        on its first gateway blip.
+    """
+    cap = getattr(owner, "PROVIDER_ERROR_RESPAWN_CAP", None)
+    if isinstance(cap, int) and not isinstance(cap, bool) and cap > 0:
+        return cap
+    return _RESPAWN_CAP_FALLBACK
+
+
+def respawn_cap_reached(streak: int, cap: int) -> bool:
+    """Return True when a provider-error streak has spent its respawn budget.
+
+    Args:
+        streak: Consecutive provider errors, the run being disposed of
+            included.
+        cap: The bound from :func:`provider_error_respawn_cap`.
+
+    Returns:
+        True when respawning must stop and the task be failed terminally.
+    """
+    return streak >= cap
+
+
+def worker_endpoint_unreachable_reason(streak: int, original: str) -> str:
+    """Build the terminal reason both paths store when respawns halt.
+
+    Every clause is true on both paths. The streak is counted by
+    :func:`provider_error_streak` over the same rows; "halting respawns" holds
+    because ``fail_task`` leaves the task FAILED and dispatch selects PENDING
+    only, so no further container is spawned by either route; and the original
+    reason is kept because an operator told only "unreachable" has lost what
+    the worker actually reported.
+
+    Args:
+        streak: Consecutive provider errors that exhausted the cap.
+        original: The reason the caller would otherwise have stored.
+
+    Returns:
+        The sentence stored on ``tasks.review_feedback`` and published on the
+        ``worker_endpoint_unreachable`` event.
+    """
+    return (
+        f"Worker endpoint unreachable: {streak} consecutive provider/gateway "
+        "errors (e.g. Cloudflare/WAF 403, VPN down, or endpoint offline). "
+        f"Halting respawns; check the worker endpoint. Original: {original}"
+    )
+
 
 # --- Merge-gate reconciliation ------------------------------------------
 #
@@ -1700,9 +1870,7 @@ class ReconcileMixin:
         Returns:
             True when the logs reveal a provider/gateway error, False otherwise.
         """
-        from orchestrator.core.provider_errors import is_provider_error as _shared
-
-        return _shared(logs)
+        return is_provider_error(logs)
 
     async def _resolve_failed_run_or_pause(
         self,
@@ -1733,15 +1901,10 @@ class ReconcileMixin:
             task = await self._tq.get_task(run["task_id"])
             if task is not None:
                 streak = await self._provider_error_streak(run["task_id"])
-                cap = cast(int, cast(Any, self).PROVIDER_ERROR_RESPAWN_CAP)
-                if streak >= cap:
+                cap = provider_error_respawn_cap(self)
+                if respawn_cap_reached(streak, cap):
                     # Persistent block, not a transient blip: stop respawning.
-                    terminal = (
-                        f"Worker endpoint unreachable: {streak} consecutive "
-                        "provider/gateway errors (e.g. Cloudflare/WAF 403, VPN "
-                        "down, or endpoint offline). Halting respawns; check the "
-                        f"worker endpoint. Original: {reason}"
-                    )
+                    terminal = worker_endpoint_unreachable_reason(streak, reason)
                     await self._tq.fail_task(run["task_id"], terminal)
                     self._bus.publish(
                         {
@@ -1789,29 +1952,12 @@ class ReconcileMixin:
         await self._resolve_failed_run(run, reason, can_retry=can_retry, logs=log_text)
 
     async def _provider_error_streak(self, task_id: str) -> int:
-        """Count trailing consecutive failed provider-error runs for a task.
+        """Count trailing consecutive provider-error runs for a task.
 
-        The current run (just marked ``failed``) is included. A non-provider
-        failed run breaks the streak, so a single transient blip after real
-        progress does not accumulate toward the cap.
+        The current run (just marked ``failed`` with its logs written by
+        ``complete_agent_run`` above) is included. The RULE itself lives in the
+        module-level :func:`provider_error_streak`, because the callback path
+        in ``api/internal.py`` has to reach the same answer and a second copy
+        of it would drift; this is the DB read in front of it.
         """
-        runs = await self._tq.get_runs_for_task(task_id)
-        streak = 0
-        for run in reversed(runs):
-            if run["status"] == "completed":
-                # A completed run PROVED the endpoint reachable, so the streak
-                # cannot span it. Skipping every non-failed run counted two
-                # provider errors either side of a successful call as
-                # consecutive, and at the cap told the operator the worker
-                # endpoint was unreachable with a successful call to it sitting
-                # in the same task's run history.
-                break
-            if run["status"] != "failed":
-                # ``stopped`` is abandoned work: it neither proves nor disproves
-                # reachability, so it is passed over rather than counted.
-                continue
-            if self.is_provider_error(str(run["logs"] or "")):
-                streak += 1
-            else:
-                break
-        return streak
+        return provider_error_streak(await self._tq.get_runs_for_task(task_id))

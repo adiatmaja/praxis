@@ -256,6 +256,79 @@ async def _dispose_declined_no_change(
     return True
 
 
+def _disposal_summary(
+    *,
+    attributable: bool,
+    why: str,
+    triage_before: str | None,
+    triage_after: str | None,
+) -> str:
+    """Say what the disposal DID, never what the route it took is for.
+
+    The line this feeds used to read "recorded and disposed of by the
+    orchestrator (calibration row and triage gate included)" on every disposal,
+    unconditionally. It is emitted when ``_dispose_*`` returns True, and that
+    means "the orchestrator took ownership of this task's next state" - NOT "a
+    row was written and triage ran". Measured on 2026-08-27, leaf ``2312ade8``,
+    attempts 2 and 3: the decline was non-attributable, so by design NO
+    ``task_outcomes`` row was written and NO triage call was spent, and the
+    database agreed - one outcome row across three attempts, ``triage_decision``
+    NULL. An operator grepping the line to audit calibration coverage would have
+    concluded the exact opposite of the truth.
+
+    Two facts drive the wording, and neither is assumed:
+
+    - ``NoChangeDecision.worker_attributable`` is what DECIDES whether a
+      calibration row is owed, so it is what gets reported. It is not a new
+      vocabulary: the decision already carried it, and the router already had
+      it in hand.
+    - ``tasks.triage_decision`` is OBSERVED across the disposal. Presence alone
+      would be wrong, because presence is the durable enforcement of "one
+      triage call per leaf lifetime": a leaf triaged on attempt 2 still carries
+      that answer on attempt 3, so a single after-the-fact read would re-claim
+      the same brain call on every later attempt.
+
+    What this CANNOT distinguish, stated rather than papered over: an
+    attributable disposal whose triage call was DEFERRED (a rate-limited brain)
+    looks identical here to one where the ``attempt >= 2`` gate simply had not
+    opened. Both leave the column untouched, and the deferral is known only
+    inside ``orchestrator_review``, which returns None. So this reports the
+    absence and refuses to explain it, which is the honest shape.
+
+    Args:
+        attributable: Whether the ended attempt was worker-attributable, which
+            is what the orchestrator's recorder keys on.
+        why: The fact that declined attribution, from ``NoChangeDecision.why``.
+            Ignored when ``attributable``.
+        triage_before: ``tasks.triage_decision`` read BEFORE the disposal.
+        triage_after: The same column read after it.
+
+    Returns:
+        A clause naming what happened, for interpolation into the disposal log
+        line.
+    """
+    if not attributable:
+        tail = f" ({why})" if why else ""
+        return (
+            "NO calibration row and NO triage call were owed, deliberately - "
+            f"the failure was not attributable to the worker{tail}"
+        )
+    if triage_after and triage_after != triage_before:
+        return (
+            "recorded as worker-attributable, and the triage gate answered "
+            f"{triage_after!r} on this attempt"
+        )
+    if triage_before:
+        return (
+            "recorded as worker-attributable; no triage call was made, the leaf "
+            f"was already triaged as {triage_before!r}"
+        )
+    return (
+        "recorded as worker-attributable; NO triage decision was taken on this "
+        "attempt, so this line is not evidence that triage ran"
+    )
+
+
 def _best_effort_logs(agent_manager: object, container_id: str, task_id: str) -> str:
     """Fetch the container log, or "" if Docker cannot answer right now.
 
@@ -662,7 +735,13 @@ async def agent_done(request: Request, body: AgentDonePayload) -> dict[str, str]
                     "Task %s closed as a no-op (no changes were needed)", task_id
                 )
             else:
-                from orchestrator.core.orchestrator_reconcile import ReconcileMixin
+                from orchestrator.core.orchestrator_reconcile import (
+                    ReconcileMixin,
+                    provider_error_respawn_cap,
+                    provider_error_streak,
+                    respawn_cap_reached,
+                    worker_endpoint_unreachable_reason,
+                )
 
                 # Hoisted out of the retry chain below because a SECOND decision reads
                 # it now. A transient provider/gateway error is not the worker failing;
@@ -681,6 +760,12 @@ async def agent_done(request: Request, body: AgentDonePayload) -> dict[str, str]
                 # a status outside the callback contract, and either of those two under
                 # a provider error -- is still decided here, unchanged.
                 handled_by_orchestrator = False
+                # Whether the ended attempt was WORKER-ATTRIBUTABLE, which is
+                # the fact the orchestrator's recorder keys on and therefore the
+                # fact the disposal log line has to report. Carried out of the
+                # arms rather than re-derived below: only the arm that disposed
+                # knows which question was answered.
+                disposal_attributable = False
                 if completed_without_pr:
                     feedback = (
                         "Worker reported the task completed but no pull-request URL "
@@ -719,6 +804,13 @@ async def agent_done(request: Request, body: AgentDonePayload) -> dict[str, str]
                     if not provider_error_run:
                         handled_by_orchestrator = await _dispose_declined_no_change(
                             request, task, project, plan, no_op, feedback
+                        )
+                        # The decision's OWN answer, not this route's identity:
+                        # a decline is attributable only when the check that
+                        # refuted the no-op was about THIS leaf, and there are
+                        # at least six ways it can decline without being.
+                        disposal_attributable = (
+                            handled_by_orchestrator and no_op.worker_attributable
                         )
                 else:
                     feedback = (
@@ -766,38 +858,111 @@ async def agent_done(request: Request, body: AgentDonePayload) -> dict[str, str]
                         handled_by_orchestrator = await _dispose_worker_run_failure(
                             request, task, project, plan, feedback
                         )
+                        # Attributable by CONSTRUCTION on this route, on the
+                        # module's own line above: the worker was handed the
+                        # leaf, ran, and did not complete it. Uncertain in its
+                        # WHY, certain in its subject.
+                        disposal_attributable = handled_by_orchestrator
 
-                # Transient provider/gateway errors (403/429/5xx/connection) must not
-                # consume the task's retry budget. Reset to PENDING without touching attempt.
                 if handled_by_orchestrator:
+                    # ``task`` was read at the TOP of this request, before the
+                    # claim and before any disposal, so its ``triage_decision``
+                    # is the BEFORE value and this read is the AFTER one. The
+                    # pair is what distinguishes a triage call made on THIS
+                    # attempt from the durable stamp of one made on an earlier
+                    # one; a single read cannot, and the old line did not try.
+                    disposed = await queue.get_task(body.task_id)
                     logger.info(
-                        "Task %s's ended attempt was recorded and disposed of by the "
-                        "orchestrator (calibration row and triage gate included)",
+                        "Task %s's ended attempt was disposed of by the "
+                        "orchestrator: %s",
                         task_id,
+                        # Scrubbed for the same reason ``feedback`` is below:
+                        # ``no_op.why`` can carry an excerpt of the worker's own
+                        # verify output, which is attacker-influenced text.
+                        _scrub(
+                            _disposal_summary(
+                                attributable=disposal_attributable,
+                                why=no_op.why,
+                                triage_before=task.get("triage_decision"),
+                                triage_after=(disposed or {}).get("triage_decision"),
+                            )
+                        ),
                     )
                 elif provider_error_run:
                     from datetime import UTC as _UTC
                     from datetime import datetime as _datetime
 
-                    now = _datetime.now(_UTC).isoformat()
-                    await queue._db.execute(
-                        "UPDATE tasks SET status = ?, review_feedback = ?, updated_at = ? "
-                        "WHERE id = ?",
-                        (TaskStatus.PENDING, feedback, now, body.task_id),
+                    # BOUNDED, by the same rule the reconcile path obeys and by
+                    # the same three functions. Until 2026-08-27 this branch was
+                    # the bare UPDATE below with no streak counter at all, and
+                    # the free re-queue it grants was therefore unbounded: a
+                    # permanent block (VPN down, endpoint offline, a WAF that is
+                    # not going to relent) parked the task at attempt 1 forever,
+                    # respawning a container every loop tick, while the plan read
+                    # ACTIVE with a null ``error``. Measured with a throwaway
+                    # probe: twelve consecutive provider-error callbacks against
+                    # ``max_retries=3`` returned 200 every time with the task at
+                    # ``pending``/``attempt=1``.
+                    #
+                    # THIS run is passed in by id rather than re-derived from its
+                    # row. ``claim_agent_run_completion`` stored whatever status
+                    # string the harness reported, so a provider error arriving
+                    # under any word but ``failed`` would not be counted by a
+                    # row-only rule and the cap would be silently inert for it.
+                    # The endpoint already established the verdict above; the
+                    # streak function is told, not asked.
+                    #
+                    # No backoff sleep here, deliberately, and it is the one
+                    # thing NOT shared with the reconcile path: this is an HTTP
+                    # handler behind the entrypoint's ``curl --max-time 10``, so
+                    # sleeping buys a redelivery storm on top of an outage.
+                    streak = provider_error_streak(
+                        await queue.get_runs_for_task(body.task_id),
+                        provider_error_run_ids=frozenset({str(run["id"])}),
                     )
-                    request.app.state.event_bus.publish(
-                        {
-                            "type": "worker_provider_error",
-                            "task_id": body.task_id,
-                            "reason": feedback,
-                        }
+                    cap = provider_error_respawn_cap(
+                        getattr(request.app.state, "orchestrator", None)
                     )
-                    logger.warning(
-                        "Task %s worker provider/gateway error; re-queued without "
-                        "consuming a retry attempt: %s",
-                        task_id,
-                        _scrub(feedback),
-                    )
+                    if respawn_cap_reached(streak, cap):
+                        terminal = worker_endpoint_unreachable_reason(streak, feedback)
+                        await queue.fail_task(body.task_id, terminal)
+                        request.app.state.event_bus.publish(
+                            {
+                                "type": "worker_endpoint_unreachable",
+                                "task_id": body.task_id,
+                                "reason": terminal,
+                                "consecutive_errors": streak,
+                            }
+                        )
+                        logger.error(
+                            "Worker endpoint unreachable for task %s after %d "
+                            "consecutive provider errors; halting respawns.",
+                            task_id,
+                            streak,
+                        )
+                    else:
+                        now = _datetime.now(_UTC).isoformat()
+                        await queue._db.execute(
+                            "UPDATE tasks SET status = ?, review_feedback = ?, "
+                            "updated_at = ? WHERE id = ?",
+                            (TaskStatus.PENDING, feedback, now, body.task_id),
+                        )
+                        request.app.state.event_bus.publish(
+                            {
+                                "type": "worker_provider_error",
+                                "task_id": body.task_id,
+                                "reason": feedback,
+                                "consecutive_errors": streak,
+                            }
+                        )
+                        logger.warning(
+                            "Task %s worker provider/gateway error (streak %d/%d); "
+                            "re-queued without consuming a retry attempt: %s",
+                            task_id,
+                            streak,
+                            cap,
+                            _scrub(feedback),
+                        )
                 elif int(task["attempt"]) < max_retries:
                     # Normal failure: consume a retry, and STORE THE REASON FIRST.
                     #

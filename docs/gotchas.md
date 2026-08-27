@@ -3213,16 +3213,69 @@ two substrings over a whole worker transcript and fired on a log where the two c
 unrelated places. A diff line (`+Error: ...`) does not match, because `+` is not
 whitespace.
 
-### The uncapped consumer, which is a defect in its own right
+### The uncapped consumer (fixed 2026-08-27, same day it was found)
 
-`PROVIDER_ERROR_RESPAWN_CAP` bounds the RECONCILE path. The CALLBACK path - the one both
-shipped entrypoints actually take - is bounded by NOTHING: `api/internal.py`'s
-`elif provider_error_run:` branch is a bare `UPDATE tasks SET status = PENDING` with no
+`PROVIDER_ERROR_RESPAWN_CAP` bounded the RECONCILE path. The CALLBACK path - the one both
+shipped entrypoints actually take - was bounded by NOTHING: `api/internal.py`'s
+`elif provider_error_run:` branch was a bare `UPDATE tasks SET status = PENDING` with no
 streak counter. Measured with twelve consecutive provider-error callbacks against
 `max_retries=3`: every one returned 200 with the task at `pending`/`attempt=1`. So a
-genuine long-lived gateway outage parks a task at attempt 1 forever, respawning a
-container every tick, while the plan reads ACTIVE with a null `error` - this repo's
+genuine long-lived gateway outage parked a task at attempt 1 forever, respawning a
+container every tick, while the plan read ACTIVE with a null `error` - this repo's
 recurring "stalled but reads healthy" shape.
+
+The cap is SHARED now, not copied: the rule lives in module-level functions in
+`orchestrator_reconcile` and both paths call them. Proved by cross-module mutation - one
+edit to `streak >= cap` reddens the callback endpoint's tests AND a pre-existing
+reconcile-only test nobody wrote for this change.
+
+**Sharing exposed a latent hole in the rule it inherited.** The reconcile version keyed on
+`run["status"] != "failed" -> continue`, harmless there because reconcile forces
+`status='failed'` before counting. On the callback path `agent_runs.status` holds whatever
+word the harness sent (`AgentDonePayload.status` is a bare `str`), so a row-status rule
+would let a harness's word choice silently disable the cap - the same reason
+`claim_agent_run_completion` keys on `finished_at IS NULL` rather than on a status string.
+The shared rule counts on the log predicate and takes an explicit run-id override for the
+verdict the caller already established.
+
+**The backoff sleep is deliberately NOT shared.** This is an HTTP handler behind
+`curl --max-time 10`; sleeping in it buys a redelivery storm on top of the outage.
+
+One residual, documented rather than hidden: a provider error reported repeatedly under a
+`completed` status never accumulates past streak 1, because the `completed` break sits
+ahead of the log scan. Letting a provider signal override that break would re-open a
+measured bug, since Praxis is dogfooded on itself and worker transcripts quote
+`_PROVIDER_SIGNALS` verbatim.
+
+### A disposal log line asserted work that was deliberately skipped
+
+Same file, same day, and the same shape as the cap: a fact only one path establishes,
+asserted by a second that never checked it.
+
+```
+Task 2312ade8 reported no changes, but plan/... did not establish it (status=failed,
+  reason=-); treating as a failure
+Task 2312ade8's ended attempt was recorded and disposed of by the orchestrator
+  (calibration row and triage gate included)
+```
+
+Neither happened, correctly: the decline was non-attributable, which by design records no
+`task_outcomes` row and spends no triage call. Measured on that leaf - three attempts, ONE
+outcome row, `triage_decision` NULL. The line was emitted on `_dispose_*` returning True,
+which means only "the orchestrator took ownership of this task's next state".
+
+`rg -n "disposed of by the orchestrator|calibration row" src/` returns exactly ONE emission
+site, and BOTH disposal routes set the bool that guards it - so the run-failure route made
+the same false claim, on the commonest ending of all, a first-attempt `failed` where the
+triage gate has not even opened. There was no second line to fix; there was one line making
+the claim twice as often as it looked.
+
+The honest replacement observes `tasks.triage_decision` before and after the disposal,
+which separates "triage answered X on this attempt" from "no call was made because the leaf
+was already triaged as X" from "no decision was taken at all". That last bucket still
+merges "the gate had not opened" with "a rate limit deferred it", and the line SAYS so
+rather than guessing: both handlers return `None`, so the router has no channel for the
+distinction. Splitting it needs the handlers to return a disposition object.
 
 ### What `n_keep >= n_ctx` must NOT be reclassified as
 

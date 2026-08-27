@@ -16,21 +16,38 @@ The third category exists because the first one's remedy is actively wrong for
 it. ``is_provider_error`` returning True buys two things at once: the failure
 is not charged to the worker's capability record (correct for a
 misconfiguration), and the task is re-queued without consuming a retry
-(catastrophic for one). On the reconcile path that re-queue is bounded by
-``PROVIDER_ERROR_RESPAWN_CAP``; on the CALLBACK path in ``api/internal.py`` -
-the path both shipped harness entrypoints actually take - it is bounded by
-nothing. Measured 2026-08-27: twelve consecutive provider-error callbacks
-against ``max_retries=3`` left the task at ``pending``/``attempt=1`` every
-time. So a permanent condition classified as a transient one turns a task that
-fails in three attempts into one that respawns a container every loop tick
-forever, while the plan reads ACTIVE with a null ``error``.
+(catastrophic for one). BOTH paths are now bounded by the shared respawn cap in
+``orchestrator_reconcile`` - the callback path was bounded by nothing until
+2026-08-27, when twelve consecutive provider-error callbacks against
+``max_retries=3`` were measured leaving the task at ``pending``/``attempt=1``
+every time. Being bounded makes a misclassification survivable; it does not make
+it right, because the cap's terminal message names an endpoint that is
+*unreachable*, which is a false statement about one that answered.
 
-**``permanent_worker_config_error`` is not wired yet.** It is a pure classifier
-awaiting two call sites that this change deliberately did not touch:
-``api/internal.py`` (the ``provider_error_run`` decision, which must consult it
-BEFORE ``is_provider_error`` and fail the task terminally) and
-``orchestrator_reconcile._resolve_failed_run_or_pause`` (same order, same
-verdict). Until then the condition still charges the worker.
+**``permanent_worker_config_error`` is NOT wired, and its premise was REFUTED
+the day it was written. Do not wire it without new evidence.** It reads
+``Error: Invalid model identifier "<model>"`` as PERMANENT. Measured hours later
+on the same rig: the same model and the same endpoint that produced that line at
+02:19 served real agentic work at 06:03. The model is absent from BOTH
+``/api/v0/models`` and ``/v1/models`` and yet the completions endpoint accepts
+it, so the model-list probe is not authoritative about what the endpoint will
+serve and the refusal is a transient not-currently-loaded state.
+
+(That endpoint is named in prose here rather than by its path on purpose:
+``tests/test_thinking_explicit.py`` scans every ``.py`` file for the path and
+requires an explicit ``reasoning_effort`` nearby. It strips ``#`` comments but
+not docstrings, so writing the literal path in prose reports this module as a
+payload site that never states its thinking level. The detector is right to err
+that way - a false positive is loud, a false negative is silent - so prose gives
+way, not the guard.)
+
+Wiring it as written would fail tasks TERMINALLY on a transient condition, which
+is strictly worse than the mis-attribution it was built to fix. What it would
+need first is a test that distinguishes a permanently-absent model from a
+not-currently-loaded one, and this module has no such signal today. The
+attribution complaint behind it remains valid and unaddressed: a model the
+endpoint refused by name never ran, so charging its capability record is wrong
+whatever the duration.
 """
 
 import re
