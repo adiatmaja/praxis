@@ -201,6 +201,7 @@ verifies the install with the doctor.
 ```bash
 uv run praxis doctor          # read-only check; every red points at its fix
 uv run praxis env             # which URL and token the CLI resolved, and why
+uv run praxis mcp             # re-print the MCP client config block for this install
 uv run praxis logs <task-id>  # what the worker actually did, container gone
 ```
 
@@ -232,13 +233,17 @@ Set up Praxis (https://github.com/adiatmaja/praxis) on this machine:
      needs for staleness detection.
    - If the doctor's planner check is red, STOP: I must log into the planner
      CLI myself, because that login is interactive and yours would not
-     persist.
+     persist. Same rule for any other red that needs a credential I hold or a
+     service only I can start, such as the worker endpoint: report it and
+     stop, do not try to work around it.
 5. `praxis init` printed an MCP configuration block, just above the doctor
-   table, with the path, URL, and auth token already filled in. Ask me which
-   project Praxis should drive if I have not named one, then add the block to
-   that project's MCP config (for Claude Code, `.mcp.json` at its root; any
-   MCP client takes the same command and env). The token must never be
-   committed: check the file is gitignored, and warn me if it is not.
+   table, with the path, URL, and auth token already filled in. If it has
+   scrolled out of your context, run: uv run praxis mcp, which re-prints the
+   same block and needs no running orchestrator. Ask me which project Praxis
+   should drive if I have not named one, then add the block to that project's
+   MCP config (for Claude Code, `.mcp.json` at its root; any MCP client takes
+   the same command and env). The token must never be committed: check the
+   file is gitignored, and warn me if it is not.
 6. Ask me to reload or restart the MCP client (you cannot do that yourself),
    then call the praxis `list_providers` tool to confirm the connection
    works, and report the dashboard URL and the doctor result.

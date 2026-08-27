@@ -2139,6 +2139,66 @@ def env() -> None:
     )
 
 
+@app.command("mcp")
+def mcp() -> None:
+    """Re-print the MCP client configuration block for this install.
+
+    ``praxis init`` prints this block ONCE, in the middle of an output that is
+    mostly Docker build progress and that takes minutes to produce. Until this
+    verb existed there was no second way to see it: ``mcp_snippet`` had exactly
+    one caller, inside ``init``, so an operator whose scrollback had rolled had
+    to re-run the whole install to recover it.
+
+    That is not hypothetical. It was measured on 2026-08-28, when an assistant
+    following the README's own agent setup brief lost the block to output
+    truncation and reported that its only route was to run ``init`` again. The
+    brief's step 5 depends on this block, so that step was effectively
+    un-completable from a long transcript.
+
+    The snippet itself comes from ``cli.init.mcp_snippet``, never a second copy
+    here: the env var names in it are the ones ``mcp_server.client`` actually
+    reads, and a block with plausible-but-wrong names is worse than no block,
+    because it is pasted and then silently falls back to a default URL with no
+    token.
+
+    Works with the orchestrator DOWN, like ``praxis presets``: this reads
+    ``.env``, not the API, and the commonest moment to want it is while setting
+    the client up.
+    """
+    from cli.init import mcp_snippet
+
+    path, _values = _env_file_values()
+    if path is None:
+        console.print(
+            "[yellow]No .env found[/yellow] walking up from the current "
+            "directory. Run this from your Praxis install directory, or run "
+            "[cyan]praxis init[/cyan] there first."
+        )
+        raise typer.Exit(1)
+
+    # The install root is the directory holding `.env`, which is what the
+    # snippet's `--directory` has to point at. Deliberately NOT `Path.cwd()`
+    # (`mcp_snippet`'s own default, correct for `init` because `init` has
+    # already proven the cwd is the root): this verb is meant to be runnable
+    # from a subdirectory, and a `--directory` pointing at one would give the
+    # client a `uv run` that cannot find the project.
+    root = path.parent
+    console.print(f"MCP configuration for the install at {root}:\n")
+    # soft_wrap=True, markup=False: same reasoning as `init`'s copy, and the
+    # same defect. The longest line here is the absolute install path INSIDE a
+    # JSON string, so a fold does not merely look untidy, it emits invalid JSON
+    # carrying a broken path. `markup=False` because the JSON's own brackets
+    # are data, not rich tags.
+    console.print(
+        mcp_snippet(_api_url(), _auth_token(), root), markup=False, soft_wrap=True
+    )
+    console.print(
+        "\n[dim]The token is a credential: put this in a gitignored file "
+        "(for Claude Code, `.mcp.json` at the target project's root) and "
+        "never commit it.[/dim]"
+    )
+
+
 @app.command()
 def onboard() -> None:
     """First-run helper: report what is configured and name the next verb.
