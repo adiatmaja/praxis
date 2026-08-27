@@ -79,6 +79,7 @@ from orchestrator.core.status_vocab import GATED_STATUSES
 from orchestrator.core.verify_gate import (
     SCOPE_VERIFY_PASSED,
     SCOPE_VERIFY_UNATTRIBUTED,
+    base_comparison_unavailable,
     normalize_verify_cmd,
     run_verify,
 )
@@ -138,6 +139,19 @@ _GATE_UNATTRIBUTED = "failed on the PR head and identically on the base branch"
 # this never reaches ``_review_scope_statement``: it always carries a failing
 # verdict, and that path is only walked under ``verdict == "pass"``.
 _GATE_UNCOMPARED = "failed on the PR head with no base comparison available"
+
+# The PLAN-scope twin of ``_GATE_UNATTRIBUTED``, and the value
+# ``plan_integration_ready`` carries for the one outcome that has no older
+# spelling: the whole-plan gate RAN, went RED, and the same command is red
+# identically on the branch the plan was cut from.
+#
+# A distinct value rather than ``"failed"`` because ``verify_status in
+# ("failed", "error")`` and "``plan_verify_failed`` was published" have been the
+# same fact at every reader this event has ever had. Reporting ``"failed"`` with
+# no alarm silently breaks that pairing; reporting ``"passed"`` would be the
+# larger lie, since the gate did run and did go red. Not attributing is not
+# passing -- the same rule the per-task seat states with ``_GATE_UNATTRIBUTED``.
+_PLAN_VERIFY_UNATTRIBUTED = "unattributed"
 
 # The marker ``review_task`` classifies a failure by. Shared between the two
 # places that write it and the one that reads it, because a feedback string
@@ -868,6 +882,97 @@ async def _inspect_branch_tree(
         result,
         leaf=_LeafVerifyRun(
             leaf_verify_cmd, leaf_passed, leaf_output[:_VERIFY_OUTPUT_MAX]
+        ),
+    )
+
+
+@dataclass(frozen=True)
+class _PlanVerifyAttribution:
+    """What a RED plan branch turned out to mean at the whole-plan backstop.
+
+    ``alarm`` is the decision, ``reported_status`` is what
+    ``plan_integration_ready`` carries, and ``detail`` is the sentence that has
+    to reach a human. Returned together because the caller needs all three in
+    one breath, and because deriving ``alarm`` from ``reported_status`` at the
+    call site is precisely how "red" and "this plan broke it" became one fact.
+    """
+
+    alarm: bool
+    reported_status: str
+    detail: str
+
+
+def attribute_plan_verify_failure(
+    base: _PlanVerifyResult, base_branch: str
+) -> _PlanVerifyAttribution:
+    """Decide whether a red COMPLETED PLAN BRANCH is a regression this plan caused.
+
+    The fourth and last seat of the class fixed at three others on 2026-08-26: a
+    fact about the REPOSITORY or the BASE BRANCH reasoned about as a fact about
+    THIS plan. ``on_plan_completed`` ran the project's verify command against the
+    accumulated plan branch and, on red, published ``plan_verify_failed``
+    describing a cross-task regression with no base comparison at all. On a
+    repository whose default branch is red by design -- this project's own live
+    rig is one -- that verdict fired on every completed plan and meant nothing.
+
+    Two of the three parts of the shared rule apply here, and the missing one is
+    the argument for why this is not a copy of the review seat. The project
+    ``verify_cmd`` settles REGRESSION and the BASE BRANCH settles ATTRIBUTION,
+    exactly as one layer up. There is no third step appealing to a leaf's OWN
+    declared verification, because a completed plan branch carries several leaves
+    and no single leaf's check speaks for the whole tree -- the same call
+    ``attribute_wave_verify_failure`` makes for the same reason, one wave
+    earlier. Step 1 settles it or nothing does.
+
+    This stays ADVISORY. The integration PR is opened on every arm, before this
+    existed and after: an operator who has learned that this event does not block
+    integration must not one day find that it does.
+
+    Deliberately NOT reached for a head ``error``. There the gate did not RUN, so
+    there is no verdict to attribute and asking the base could only buy a second
+    full clone and test run to compare against nothing.
+
+    Args:
+        base: What the same command did on the branch the plan was cut from.
+        base_branch: Its name, for the sentence a human reads.
+
+    Returns:
+        The decision, in full.
+    """
+    if base.status == "passed":
+        # The one arm that is byte-for-byte the old behaviour: green on the base
+        # and red here, so work this plan merged is what broke it.
+        return _PlanVerifyAttribution(
+            alarm=True,
+            reported_status="failed",
+            detail=(
+                f"CROSS-LEAF REGRESSION: the same command PASSES on "
+                f"{base_branch}, so work this plan merged is what broke it."
+            ),
+        )
+    if base.status == "failed":
+        # Not a regression this plan caused. No event, and a WARNING log line
+        # instead: ``plan_verify_failed`` means "a cross-task regression was
+        # found" to every reader it has ever had, and publishing it for a
+        # repository that was already red is the same untrue claim this removes.
+        return _PlanVerifyAttribution(
+            alarm=False,
+            reported_status=_PLAN_VERIFY_UNATTRIBUTED,
+            detail=(
+                f"the same command fails identically on {base_branch}, so it is "
+                f"not a regression this plan caused."
+            ),
+        )
+    # ``error`` and every skip: no ANSWER about the base branch. Fail closed,
+    # exactly as before the comparison existed, and NAME the comparison that is
+    # missing rather than implying it was made.
+    why = base_comparison_unavailable(base_branch, base.status, base.reason)
+    return _PlanVerifyAttribution(
+        alarm=True,
+        reported_status="failed",
+        detail=(
+            f"whether this failure pre-dates the plan could NOT be established, "
+            f"because {why}, so it is reported as-is."
         ),
     )
 
@@ -3590,8 +3695,7 @@ class ReviewMixin:
             return self._verify_failure_stands(
                 verify_cmd,
                 gate_output,
-                f"the same command could not be run on {base_branch} "
-                f"(status={base.status}, reason={base.reason or '-'})",
+                base_comparison_unavailable(base_branch, base.status, base.reason),
             )
 
         # Absent covers TWO shapes and the second is the one that composed into
@@ -4205,14 +4309,36 @@ class ReviewMixin:
             # Bench condition C disables the mechanical gate at every level;
             # see core/bench_mode.py.
             plan_gate_disabled = verify_gate_disabled()
+            gate_cmd = None if plan_gate_disabled else project.get("verify_cmd")
             verify_status = await self._verify_plan_branch(
                 repo_url,
                 plan_branch,
-                None if plan_gate_disabled else project.get("verify_cmd"),
+                gate_cmd,
                 disabled_reason=(
                     _SKIP_BENCH_MODE_DISABLED if plan_gate_disabled else None
                 ),
             )
+
+            # A red plan branch is only evidence that this plan broke something
+            # when the SAME command is green on the branch the plan was cut
+            # from; see ``attribute_plan_verify_failure``. Asked here, next to
+            # the run it is about, and with the SAME command the head ran, so
+            # the two verdicts can never be about two different commands.
+            #
+            # Only a ``failed`` head reaches it. An ``error`` means the gate did
+            # not run, so there is no verdict to attribute, and the arms below
+            # keep their old behaviour for it exactly.
+            attribution: _PlanVerifyAttribution | None = None
+            if verify_status.status == "failed":
+                base_verdict = await self._verify_plan_branch(repo_url, base, gate_cmd)
+                attribution = attribute_plan_verify_failure(base_verdict, base)
+                if not attribution.alarm:
+                    log.warning(
+                        "Plan verify gate is RED on plan %s's branch %s, but %s",
+                        plan_id,
+                        plan_branch,
+                        attribution.detail,
+                    )
 
             pr_url: str | None = None
             # WHICH of the four outcomes this plan got, and why. Two of them
@@ -4328,13 +4454,48 @@ class ReviewMixin:
                         exc,
                     )
 
-            if verify_status.status in ("failed", "error"):
+            # What this event REPORTS, which since the base comparison exists is
+            # no longer the same fact as what the head gate DID. ``failed`` and
+            # ``unattributed`` are both a red gate; only the first is this
+            # plan's doing.
+            reported_status = (
+                attribution.reported_status
+                if attribution is not None
+                else verify_status.status
+            )
+            # Stated by the attribution, never re-derived from
+            # ``reported_status``. Collapsing the two back into one membership
+            # test is exactly the inference this fix removes.
+            #
+            # Honest caveat: across today's arms ``reported_status in
+            # ("failed", "error")`` is still EQUIVALENT to ``attribution.alarm``,
+            # so no test can currently distinguish the two and any guard
+            # claiming to pin the separation would be inert. The separation is
+            # future-proofing against the next arm, not a live discriminator.
+            publish_alarm = (
+                attribution.alarm
+                if attribution is not None
+                else verify_status.status in ("failed", "error")
+            )
+            if publish_alarm:
                 # Fail closed: surface both a real verify failure AND an
                 # infra error (clone/checkout/verify raised) on its own event so
                 # the plan does not silently advance. Previously an ``error`` was
                 # swallowed as a warning, which made the whole-plan backstop a
                 # no-op whenever the plan-branch checkout failed. The integration
                 # PR is still opened above so the failure is visible on a real PR.
+                gate_output = verify_status.output or (
+                    # Keyed on the STATUS, not on the emptiness of the output. A
+                    # verify command is free to print nothing and exit non-zero
+                    # (`test -f dist/bundle.js`), and that is a real cross-task
+                    # regression; saying the gate RAISED sends the reader to a
+                    # different fault with a different remedy.
+                    "plan verify gate errored (clone/checkout/verify "
+                    "raised); see orchestrator logs"
+                    if verify_status.status == "error"
+                    else "plan verify gate FAILED and the command "
+                    "printed nothing; the exit status is the verdict"
+                )
                 self._bus.publish(
                     {
                         "type": "plan_verify_failed",
@@ -4342,20 +4503,17 @@ class ReviewMixin:
                         "plan_id": plan_id,
                         "plan_branch": plan_branch,
                         "base_branch": base,
-                        # Keyed on the STATUS, not on the emptiness of the
-                        # output. A verify command is free to print nothing and
-                        # exit non-zero (`test -f dist/bundle.js`), and that is
-                        # a real cross-task regression; saying the gate RAISED
-                        # sends the reader to a different fault with a
-                        # different remedy.
-                        "status": verify_status.status,
-                        "output": verify_status.output
-                        or (
-                            "plan verify gate errored (clone/checkout/verify "
-                            "raised); see orchestrator logs"
-                            if verify_status.status == "error"
-                            else "plan verify gate FAILED and the command "
-                            "printed nothing; the exit status is the verdict"
+                        "status": reported_status,
+                        # The attribution sentence FIRST, then what the command
+                        # printed: the sentence says whose failure it is, the
+                        # output says what failed, and an operator needs both.
+                        # Prepended rather than carried in a new field so the
+                        # one surface that renders this event -- the raw SSE
+                        # stream -- cannot show the verdict without the reason.
+                        "output": (
+                            f"{attribution.detail}\n\n{gate_output}".strip()
+                            if attribution is not None
+                            else gate_output
                         ),
                         "pr_url": pr_url,
                     }
@@ -4380,7 +4538,13 @@ class ReviewMixin:
                     # the whole answer.
                     "integration_detail": integration_detail,
                     "compare_url": compare_url(repo_url, base, plan_branch),
-                    "verify_status": verify_status.status,
+                    # ``_PLAN_VERIFY_UNATTRIBUTED`` is the one value of this
+                    # field where the gate RAN, went RED, and no
+                    # ``plan_verify_failed`` accompanies it. Neither of the
+                    # obvious alternatives is honest: ``failed`` with no alarm
+                    # silently breaks a pairing every reader relies on, and
+                    # ``passed`` is the larger lie.
+                    "verify_status": reported_status,
                 }
             )
 

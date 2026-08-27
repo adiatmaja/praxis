@@ -1325,7 +1325,17 @@ class TestContextSyncOnPlanCompletion:
     async def test_on_plan_completed_verify_fail(
         self, db: Database, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """verify FAIL: plan_verify_failed published, integration_ready == 'failed'."""
+        """verify FAIL: plan_verify_failed published, integration_ready == 'failed'.
+
+        ``side_effect`` rather than ``return_value`` since 2026-08-27: the
+        backstop now PROVES a regression before crying one, and a command that
+        fails on every branch is not a regression at all. A single
+        ``return_value`` made this test assert a difference it did not create,
+        exactly as ``test_the_wave_gate_parks_a_local_plan_on_a_real_regression``
+        did one layer up. Red on the plan branch, green on ``main``, is one.
+        The unattributed case has its own test in
+        ``tests/test_plan_backstop_verify_attribution.py``.
+        """
         task_queue, plan_id, task_id = await _setup(db)
         await task_queue.update_task_status(task_id, TaskStatus.MERGED)
         await db.execute(
@@ -1354,7 +1364,8 @@ class TestContextSyncOnPlanCompletion:
         monkeypatch.setattr(
             mod,
             "run_verify",
-            AsyncMock(return_value=(False, "1 failed test")),
+            # First call = the plan branch, second = the base branch.
+            AsyncMock(side_effect=[(False, "1 failed test"), (True, "all green")]),
             raising=True,
         )
 

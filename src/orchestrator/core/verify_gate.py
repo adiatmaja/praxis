@@ -35,6 +35,61 @@ SCOPE_VERIFY_UNATTRIBUTED = "not attributed to this task"
 
 _MAX_OUTPUT = 8000
 
+
+def base_comparison_unavailable(
+    base_branch: str, status: str, reason: str | None
+) -> str:
+    """Name the base-branch comparison that could NOT be made, and why.
+
+    Several seats run the project's verify command on a head (a pull-request
+    head, a plan branch mid-wave, a completed plan branch) and then ask the
+    BASE BRANCH whether the redness pre-dates the work, because a red command
+    is only evidence about the work when the same command is green on the
+    branch the work was cut from. When that second run produces no ANSWER --
+    an ``error``, or any skip -- every one of them fails closed, and every one
+    has to say the comparison is missing rather than implying one was made. The
+    sentence reaches a human at the merge gate, is injected verbatim into the
+    next worker's prompt by ``core/worker_bible``, and rides the
+    ``plan_verify_failed`` event, so a seat that quietly rephrased it would
+    have near-identical claims drifting apart with nothing to grep.
+
+    **Not every seat has adopted it yet, and the un-adopted one is invisible to
+    a grep for this function.** ``attribute_wave_verify_failure`` in
+    ``core/orchestrator_dispatch.py`` still spells the clause out by hand; the
+    text is byte-identical today, so nothing can detect it drifting. Derive the
+    real adopter list with ``rg -n "base_comparison_unavailable" src/`` and the
+    candidate seats with
+    ``rg -n "run_verify|_verify_plan_branch|verify_gate_disabled" src/``,
+    rather than trusting a count here. Proving the sharing needs a CROSS-MODULE
+    mutation: one edit to the returned string must turn every adopter's tests
+    red, and a seat whose tests stay green has not adopted it.
+
+    Lives here, beside ``normalize_verify_cmd``, on the same ground the two
+    ``SCOPE_*`` phrases do: this module already owns the vocabulary of the
+    verify gate, imports nothing but the standard library, and is already
+    imported by every seat that needs this (``orchestrator_review`` and
+    ``orchestrator_dispatch`` both import ``normalize_verify_cmd`` from it),
+    so adopting it is a one-line change and can never be circular.
+
+    Args:
+        base_branch: The branch that could not answer.
+        status: The base run's ``_PlanVerifyResult.status`` -- ``"error"`` or
+            ``"skipped"``. Never ``"passed"`` or ``"failed"``: those ARE
+            answers and their seats take other arms entirely.
+        reason: The skip reason, when there was one. ``None`` and ``""`` both
+            render as ``-`` rather than as an empty parenthesis, so the reader
+            can tell "no reason was recorded" from a truncated sentence.
+
+    Returns:
+        A clause, not a sentence: each seat embeds it in wording naming what
+        the failure would have been attributed TO (this task, this plan).
+    """
+    return (
+        f"the same command could not be run on {base_branch} "
+        f"(status={status}, reason={reason or '-'})"
+    )
+
+
 # pytest returns exit code 5 when it collected no tests. For docs-only or
 # config-only leaves this is expected, not a failure: a verify_cmd ending in
 # ``pytest`` would otherwise doom every no-test change into a re-dispatch loop.

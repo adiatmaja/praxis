@@ -438,7 +438,13 @@ async def test_a_silent_verify_failure_is_not_reported_as_an_infra_error(
     monkeypatch.setattr(mod, "clone_with_token", MagicMock(), raising=True)
     monkeypatch.setattr(mod, "checkout_branch", MagicMock(), raising=True)
     # Exit status is the verdict; the output is incidental and may be empty.
-    monkeypatch.setattr(mod, "run_verify", AsyncMock(return_value=(False, "")))
+    # Two calls since 2026-08-27: the plan branch, then the base branch the
+    # backstop compares it against. Green on the base, so the silent failure is
+    # attributed to this plan and still reaches the event under test -- a single
+    # ``return_value`` would make it red on both and correctly publish nothing.
+    monkeypatch.setattr(
+        mod, "run_verify", AsyncMock(side_effect=[(False, ""), (True, "")])
+    )
 
     orch = Orchestrator(
         task_queue=task_queue,

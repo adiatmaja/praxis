@@ -346,8 +346,16 @@ async def test_on_plan_completed_publishes_a_real_local_verdict(
     Before the fix ``verify_status`` was ``skipped`` on every local plan and
     ``plan_verify_failed`` never fired, so a cross-leaf break reached the
     integration step unnoticed.
+
+    ``_VERIFY_SEES_MAIN`` rather than ``_VERIFY_FAILS`` since 2026-08-27, for
+    the same reason the wave-gate test above was corrected a day earlier: the
+    backstop now PROVES a regression against the base branch before publishing
+    one, and a command that fails on every branch is not a regression. This is
+    the only test in the suite that drives a REAL local repository through both
+    runs, so it is what proves the comparison is a second real checkout rather
+    than a second look at the same tree.
     """
-    plan_id = await _seed_plan(db, str(bare_repo), _VERIFY_FAILS)
+    plan_id = await _seed_plan(db, str(bare_repo), _VERIFY_SEES_MAIN)
     bus = EventBus()
     events = _drain(bus)
     # ``open_integration_pr`` is deliberately NOT mocked here any more. It used
@@ -369,6 +377,39 @@ async def test_on_plan_completed_publishes_a_real_local_verdict(
     assert ready["verify_status"] == "failed"
     failed = next(e for e in published if e["type"] == "plan_verify_failed")
     assert "CROSS-LEAF REGRESSION" in failed["output"]
+    # Both halves, because the sentence alone would now pass for a backstop that
+    # never checked out the plan branch: the command prints the source it read,
+    # so ``return 2`` is what says WHICH tree went red.
+    assert "PASSES on main" in failed["output"]
+    assert "return 2" in failed["output"]
+
+
+@pytest.mark.integration
+async def test_on_plan_completed_does_not_cry_regression_over_a_red_base(
+    db: Database, bare_repo: Any, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The backstop's half of the fix, on a real local repository.
+
+    ``_VERIFY_FAILS`` is red on the plan branch AND on ``main``, which is the
+    shape this project's own live rig has: a default branch that is red by
+    design. Publishing ``plan_verify_failed`` there called a pre-existing
+    repository failure a cross-task regression on every plan that completed.
+    """
+    plan_id = await _seed_plan(db, str(bare_repo), _VERIFY_FAILS)
+    bus = EventBus()
+    events = _drain(bus)
+    git = AsyncMock()
+    git._provider = PatCredentialProvider("")
+    orch = _orchestrator(db, bus=bus, git=git)
+
+    with caplog.at_level(logging.WARNING, logger=_REVIEW_LOGGER):
+        await orch.on_plan_completed(plan_id)
+
+    published = events()
+    assert [e for e in published if e["type"] == "plan_verify_failed"] == []
+    ready = next(e for e in published if e["type"] == "plan_integration_ready")
+    assert ready["verify_status"] == "unattributed"
+    assert "fails identically on main" in caplog.text
 
 
 # ---------------------------------------------------------------------------

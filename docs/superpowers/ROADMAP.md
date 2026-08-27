@@ -70,6 +70,10 @@ dispatched sonnet agents; the 3 harness agent images were rebuilt after the entr
   PR (language-agnostic: whatever the project configured; skipped when unset). On failure it
   still opens the PR but publishes `plan_verify_failed` and tags `plan_integration_ready` with
   `verify_status="failed"`. Built-in loop stage, not a droppable leaf.
+  **Amended 2026-08-27:** a red head is no longer automatically `"failed"`. The base branch is
+  asked first, and a plan branch red for a reason that pre-dates the plan publishes NO alarm and
+  reports `verify_status="unattributed"`. The gate stays advisory either way - the integration PR
+  opens on every arm.
 - [x] **#3 MED — protect terminal leaves from decompose drop.** `decompose_plan` now counts the
   authored `### Task N` headers and, when leaves < authored count, logs a warning, sets
   `opus_plan["decompose_warning"]`, and emits `plan_decompose_dropped_leaf`. `drop_verification_only_leaves`

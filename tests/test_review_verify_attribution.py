@@ -361,13 +361,21 @@ async def test_a_comparison_that_could_not_be_made_fails_closed_and_says_so(
     base branch. The old behaviour stands, and the feedback says the comparison
     is missing rather than implying it was made -- that string is injected
     verbatim into the next worker's prompt.
+
+    The clause NAMING the missing comparison is spelled out below rather than
+    obtained by calling ``verify_gate.base_comparison_unavailable``, which is
+    what produces it. Deriving the expectation from the code under test would
+    move both sides of the assertion together under any edit to that function --
+    measured, on the first draft of this pair of tests -- and the point of that
+    function living in ``verify_gate`` is that ONE edit to it turns this file
+    and ``tests/test_plan_backstop_verify_attribution.py`` red together.
     """
     orch, task_id, project = orchestrator_fixture
     orch._resolve_backend = lambda _repo_url: _backend()
     monkeypatch.setattr(
         review_mod, "run_verify", AsyncMock(return_value=(False, "E   ImportError"))
     )
-    _base_verify(orch, verdict)
+    calls = _base_verify(orch, verdict)
 
     await _review(orch, task_id, _gated(project))
 
@@ -377,6 +385,14 @@ async def test_a_comparison_that_could_not_be_made_fails_closed_and_says_so(
     stored = updated["review_feedback"] or ""
     assert "ImportError" in stored
     assert "could NOT be established" in stored
+    # The BRANCH is taken from the call the seat actually made, so the test
+    # creates that operand rather than hardcoding one that could silently stop
+    # matching what the seat resolves. The SENTENCE is not: see the docstring.
+    assert calls, "the base branch was never asked"
+    assert (
+        f"the same command could not be run on {calls[0][1]} "
+        f"(status={verdict.status}, reason={verdict.reason or '-'})"
+    ) in stored
 
 
 @pytest.mark.unit
