@@ -99,16 +99,33 @@ than re-deriving; they were argued word by word.
   gate rather than the sending ("orchestrate" is category-generic and
   duplicates the About's noun; "pilot" collides with "pilot program";
   "command" is the blind one-shot the product opposes).
-- **GitHub About, and `pyproject.toml` description:** "Provider-agnostic
-  orchestrator for the execution phase of spec-driven development: plans
+- **GitHub About, and `pyproject.toml` description** (revised 2026-08-28):
+  "Provider-agnostic orchestrator that lets your AI assistant govern other
+  coding agents through the execution phase of spec-driven development: plans
   decomposed to fit the worker model that implements them, every change
   gated and delivered as a PR you approve." A definition, deliberately NOT
   the headline restated: on the repo page the About sits beside the banner,
-  so an echo wastes one of the two surfaces. "For the execution phase of
+  so an echo wastes one of the two surfaces. "Through the execution phase of
   spec-driven development" is a twice-qualified category, not the bare
   "orchestrator" framing the guidance below cautions against, and it names
   the slot: brainstorm, spec, and plan happen wherever the user likes;
   Praxis takes the plan from there.
+  **The governing clause was ADDED on 2026-08-28 because the old form never
+  said what Praxis governs.** "Provider-agnostic" claims multi-VENDOR, which a
+  reader hears as "works with any model", not multi-AGENT; the identity in
+  "The framing" above is a tool for agentic AI to govern other coding
+  harnesses, and the About was the one public surface that omitted it
+  entirely. The clause sits in the MAIN clause rather than after the colon on
+  purpose: measured over 176 top-starred repos, the median About is 74
+  characters and p90 is 180, so at 258 this one is past p95 and its tail is
+  what gets clipped in repo-list and search rows. The identity therefore has
+  to complete early, and it does, by character 86. Length is the deliberate
+  cost of the clause; do not "fix" it by trimming the decomposition or gate
+  half, which are the two differentiators. **"Coding agents", not "coding
+  harnesses", is the one loose word here and it is deliberate:** *harness* is
+  the accurate noun and is what the README and this document use, but the
+  About is read by strangers scanning a sidebar, where "agents" parses
+  instantly. A one-word swap if that judgement changes.
 - **README opening paragraph:** leads PLAIN ("you did the planning with a strong
   model; Praxis takes it from there"), then the mechanism chain (decompose to the
   worker model's capability, dispatch, verify, review, PR parked for approval),
