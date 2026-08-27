@@ -365,7 +365,8 @@ belongs among the everyday traps.
   `single_branch=True` → `SINGLE_BRANCH=1` into the container, so both harness entrypoints
   REUSE the existing remote `BRANCH` with a non-force push instead of cutting a fresh
   `agent/{slug}` (changing that behavior needs an agent IMAGE REBUILD). Dead work branches
-  (no open PR, no live run, never protected) are reclaimed by
+  (no open PR, no live run, never protected, and carrying no merged work that has
+  not reached base) are reclaimed by
   `core/branch_sweeper.dead_branches` via `orchestrator_reconcile.sweep_dead_branches` on
   the reconcile loop, which swallows its own errors so a sweep failure never wedges the
   loop. That sweeper is a MODULE-LEVEL function, not a `ReconcileMixin` method:
@@ -843,29 +844,45 @@ belongs among the everyday traps.
   triage at all; they take the respawn-cap path and burn no retry.
 - **The review verdict is NOT triage's only entry point, and treating it as one
   is what let a whole failure class die untriaged.** The gate is the helper
-  `_triage_then_fail`, and what may reach it is a WORKER-ATTRIBUTABLE failure:
-  the review verdict, and a worker-attributable no-change decline wherever it is
-  decided - the review path's empty diff, the worker callback in
-  `api/internal.py`, and the micro-edit lane. The reviewer-error path and the
-  unparseable-`pr_url` path still call `_fail_and_maybe_retry` directly. It
-  matters in both directions: an un-triaged worker failure is invisible until the
-  plan dies at attempt 3, and an over-triaged infrastructure fault spends a brain
-  call reasoning about evidence that says nothing about the leaf, whose worst
-  answer (`human`) is terminal.
+  `_triage_then_fail`, and the RULE for what may reach it is: a failure that is
+  evidence about the LEAF, meaning the worker was handed the leaf and its own
+  output is what fell short. Everything else calls `_fail_and_maybe_retry`
+  directly, because a fault that says nothing about the leaf would spend a brain
+  call reasoning about noise and triage's worst answer (`human`) is terminal.
+  The reviewer-error path and the unparseable-`pr_url` path are the standing
+  exclusions on exactly that ground, as are provider errors, peeled off upstream
+  because the model never answered. It matters in both directions: an un-triaged
+  worker failure is invisible until the plan dies with its attempts spent.
 
-  **This entry read "exactly TWO callers by design" for one day, and that is the
-  cautionary tale.** The gate was extracted with the two call sites its author
-  had enumerated, and the enumeration was done by reading `review_task`. A worker
-  that SELF-REPORTS `no_changes` and is refused by the declared-edit-locations
-  check fails through the callback ROUTER, which never enters `review_task` at
-  all, so it reached neither the gate nor the calibration recorder. Measured live
-  the same day the "fix" landed: `attempt` went 1 → 2 → 3 with `triage_decision`
-  NULL and zero triage log lines in the whole process; triage only fired at
-  attempt 3, when the failure happened to come back through the review verdict.
-  A structural constraint ("only these callers may do X") is a claim about the
-  paths you ENUMERATED, not about the paths that EXIST. The query that would have
-  found it in seconds is "what else can fail a task", not "what calls this
-  function".
+  **Do not read this entry for a list of callers. Derive it, every time, with
+  the query "what else can fail a task"** (`rg '_fail_and_maybe_retry\(|_triage_then_fail\('
+  src/`, plus the callback router's own status arms). A structural constraint
+  ("only these callers may do X") is a claim about the paths you ENUMERATED, not
+  about the paths that EXIST, and this entry has now been WRONG TWICE in two
+  days for precisely that reason:
+
+  - It read "exactly TWO callers by design" for one day. The gate had been
+    extracted with the two call sites its author found by reading `review_task`.
+    A worker that SELF-REPORTS `no_changes` and is refused by the
+    declared-edit-locations check fails through the callback ROUTER, which never
+    enters `review_task` at all, so it reached neither the gate nor the
+    calibration recorder. Measured live the same day the "fix" landed: `attempt`
+    went 1 to 2 to 3 with `triage_decision` NULL and zero triage log lines.
+  - It then read "the review verdict, and a worker-attributable no-change
+    decline wherever it is decided" for one more day, and the correction was
+    still hand-derived: it enumerated the no-change DECLINE at each of its
+    seats and never asked what ELSE ends an attempt. A worker that RAN and
+    self-reported `failed`, which is what both entrypoints report for every
+    non-zero exit and therefore the commonest ending of all, fell through the
+    `else` beside the branch that had just been fixed. Measured on plan
+    `c03b3ff6`, leaf 2: four attempts, `triage_decision` NULL, `task_outcomes`
+    empty. Full account: "The commonest worker failure reached neither triage
+    nor calibration".
+
+  Attribution is a FACT computed where the evidence is in hand, never recovered
+  afterwards by matching the reason text: `NoChangeDecision.worker_attributable`
+  on the no-change routes, and the route's own identity on the run-failure
+  route.
 
   The gate is now SHARED rather than copied - the router supplies facts and the
   mixin decides, so `attempt >= 2 and not already_triaged` exists exactly once.
@@ -1557,7 +1574,14 @@ belongs among the everyday traps.
   BEFORE consulting `terminal_failed`, so an ACTIVE sibling is protected, but a
   COMPLETED plan with no integration PR open yet is neither live nor vetoed, and a
   sibling going terminal nominates the shared name for a real `git push --delete`.
-  The branch is now `plan/{today}-improve-{plan_id[:8]}`.
+  The branch is now `plan/{today}-improve-{plan_id[:8]}`. Since 2026-08-26 a
+  FURTHER veto, `carrying_merged_work`, additionally covers that shape once
+  anything has merged onto the shared branch, so the sentence above describes the
+  sweeper as it was when this was verified rather than as it stands. The naming
+  fix is what makes the two plans distinguishable at all and still carries this
+  entry; the veto is the independent backstop, and it went in because the same
+  un-vetoed shape destroyed approved work on a two-tier plan. See "An autonomous
+  sweep deleted a branch a human had merged work onto".
 
 - **Proposed slugs were never uniqued, at the one producer whose slugs come
   verbatim out of a model's JSON.** A slug is an IDENTITY here: `activate_plan`
@@ -2250,6 +2274,46 @@ Intake now applies only a fixed, window-independent abuse guard against a pathol
 (`INTAKE_ABUSE_CEILING_CHARS`) and does not resolve or reference any context window at all.
 `build_bible` remains the sole seam that enforces a real, window-sized budget.
 
+## A fact about the repository is not a fact about THIS leaf
+
+2026-08-26 found one defect over and over, at seats that never referenced each other. In
+each of them something true about the REPOSITORY, the BASE BRANCH or a SIBLING leaf was
+recorded or reasoned about as though it were true of THIS leaf or THIS worker. The shape is
+always the same: a real signal is read for a question it does not answer, and because the
+signal is real the result never looks like a bug. It looks like a strict product.
+
+The seats, derived by the query
+`grep -rn "run_verify(\|_verify_plan_branch(\|verify_gate_disabled(" src/` rather than by
+reading, and pointedly NOT by the enumeration whoever fixed the first one had in mind:
+
+- **The review head gate.** A project `verify_cmd` failing on a PR head failed the task
+  before the brain ever reviewed it, and on a dependent chain that command is routinely red
+  for a SIBLING's contract. Fixed by asking the base branch. Full account: "The project
+  verify command is the bar for a REGRESSION, and it was used as the bar for a LEAF".
+- **The wave verify gate.** The identical un-compared inference one layer up, at a seat
+  judging a branch several leaves share. Reachable only AFTER the review seat was fixed,
+  because before that no leaf of such a chain ever merged in the first place. See "The wave
+  gate called a red plan branch a regression without ever asking the base".
+- **The empty-diff seat.** The same inference in the OPPOSITE direction, charging a worker
+  for a repository it was handed red. See the section immediately below.
+- **`on_plan_completed`'s whole-plan backstop. REPORTED AND NOT FIXED.** It publishes
+  `plan_verify_failed` on a red plan branch with no base comparison at all. It blocks
+  nothing, since the integration PR is opened either way, so it is a false alarm rather
+  than a wedge, and that is exactly why it is the one that survived the session.
+
+Two second-order lessons the session paid for, both worth more than the individual fixes:
+
+- **A fix whose correctness depends on two values DIFFERING has to compare them.** The
+  review and empty-diff seats were repaired by appointing the leaf's own declared
+  verification as the discriminating evidence. A separate, individually correct commit then
+  widened what counts as that command until it could BE the project command, byte for byte,
+  silently reopening the defect that had just been closed. Neither author could see the
+  pair.
+- **Repairing a producer creates a READER problem.** A gate that ran and went red without
+  being charged to anyone is a NEW state, and every surface that rendered the old two
+  states rendered it wrong the moment it existed. See "The merge-gate glance called a gate
+  that ran and went RED 'no gate'".
+
 ## An empty worker diff verified against the base branch is not evidence the work was done
 
 `no_change_outcome` decides what an empty diff MEANS, and until 2026-08-26 the only
@@ -2306,6 +2370,13 @@ throughout, plan FAILED. Never split, never escalated, never handed to a human w
 reason. The gate lived only on the review-verdict path; this branch called
 `_fail_and_maybe_retry` directly, so the most common repeated-failure shape on this path
 could not be triaged at all.
+
+**"That is why a split was never found" was too strong, and the next day proved it.** This
+route was one untriaged shape, not the untriaged shape. A worker that RAN and self-reported
+`failed`, the commonest ending of all, was still bypassing the gate entirely, and it stayed
+that way for another day because the enumeration behind this fix was hand-derived from the
+same file. Both had to be closed before the split question could be said to have been ASKED
+at all. See "The commonest worker failure reached neither triage nor calibration".
 
 Not every decline is worker-attributable, so `no_change_outcome` now returns a frozen
 `NoChangeDecision(closed, why, worker_attributable)` - still iterable as `(closed, why)`
@@ -2818,3 +2889,181 @@ uses for this class is NOT available here - `praxis config add-model` wraps the 
 response in `_check_list`, which exits non-zero on a non-list body, and `config show`
 iterates the roles response AS the chains map, so an added status key renders as a bogus
 role row. Either would need the CLI changed in the same commit.
+
+## The wave gate called a red plan branch a regression without ever asking the base
+
+Measured live 2026-08-26 on a two-leaf dependent plan. Leaf 1 merged, and then:
+
+```
+Wave verify gate FAILED for plan c03b3ff6-... after 1 merged leaves;
+parking the next wave.
+```
+
+Leaf 2 could never dispatch. `merged_count` advances only when something MERGES, nothing
+can merge while the wave is parked, and `state[plan_id] = (merged_count, False)` makes that
+verdict permanent for that count. No leaf was FAILED, so `plan_reachability` saw a perfectly
+healthy graph and the plan read ACTIVE with a null `error` on every read-only surface. The
+project command is red on `main` because the repository's acceptance file imports
+`infer_type`, which is LEAF 2's contract, so the plan branch was red for a reason the plan
+did not cause.
+
+`cd0c127` is what made this reachable: before it, leaf 1 of a dependent chain failed review
+and nothing ever merged, so this gate never fired at all. Fixing the review path exposed the
+identical inference one layer up, which is the whole argument for the class section above.
+
+The same three-part rule, adapted to a seat that judges a branch several leaves SHARE and so
+has no single leaf check to fall through to. A red plan branch goes to
+`attribute_wave_verify_failure` before anything is parked. Base GREEN with head RED is
+byte-for-byte the old behaviour: park, memoized. Base RED identically is not a regression
+this plan caused, so the wave is NOT parked, and that verdict IS memoized, because without
+the memo the gate re-clones and re-runs the whole suite twice per loop tick for the entire
+life of exactly the plan shape this exists for. A base `error`, or any skip, fails closed
+and names the missing comparison, and is deliberately NOT memoized: an unanswered question
+must never buy a pass, and must not wedge a plan on a transient fault either. A head `error`
+never reaches the comparison at all, because the gate did not run and there is no verdict to
+attribute.
+
+The base here is `projects.default_branch` and nothing else can stand in for it. The review
+seat's `plans.plan_branch_name` fallback would compare a branch to ITSELF, since the plan
+branch is the head at this seat.
+
+**The worse half was that a permanently parked wave was INVISIBLE**: one log line and an SSE
+event nobody had subscribed. `plan_reachability` is the SSoT for "this plan can never
+advance" and is deliberately NOT extended to cover it. It is pure over `(opus_plan, task
+rows)`, and a parked wave leaves every leaf a healthy PENDING with no FAILED dependency, so
+the fact is not in its inputs; putting it there means a new column plus a second module
+reading it, which is a second stalled mechanism rather than one. `plans.error` is the
+existing durable channel, with exact precedent in `_reconcile_parked_plan`, which records a
+closed integration PR there and leaves the row parked rather than inventing a status. The
+stored string is also the once-only latch, for the same reason it is there.
+
+The second query that mattered was
+`grep -rn "get_dispatchable_tasks\|dispatch_pending_tasks" src/`, which shows exactly one
+dispatch funnel (`run_once` to `dispatch_pending_tasks` to a single `get_dispatchable_tasks`
+call). That is what makes the wave gate the ONLY verify-derived block on the path: nothing
+else parks on a verify result.
+
+## The merge-gate glance called a gate that ran and went RED "no gate"
+
+`_GATE_UNATTRIBUTED` is the only FAILING verify state that reaches the human merge gate: the
+project command failed on the PR head AND fails identically on the base branch, so it was
+not charged to this task, the brain reviewed the diff anyway, and a person is now being
+asked to approve a pull request on a repository whose configured verification is red. That
+is a state a human must be told about, and it was created an hour before this was found.
+
+`_scope_glance` in the CLI matched only the PASSING phrase, so the Scope column rendered
+that state as "no gate", deleting BOTH facts (a gate ran; it is red) from the one line a
+human reads before merging. The docstring's stated premise, that the producer never writes
+"verify gate failed", had become false inside the same session that wrote the producer.
+
+`_scope_glance` parses the producer's sentence on purpose, so that phrase is a CONTRACT
+across two packages. Both phrases now live in `core/verify_gate.py`, which is stdlib-only
+precisely so the CLI can import it without pulling in the engine, and writer and reader
+alike import them rather than restating them. Proved with the cross-package mutation that
+matters: re-hardcoding the literal in the CLI and rewording the constant turns the CLI test
+red, and the two-arm revert turns it red as well.
+
+Found by asking the per-PROPERTY question of the fix that had caused it, "what else renders
+this field", rather than by re-reading the files that fix touched. The query was
+`grep -rn "review_scope" src/ web/ tests/`, and it named three consumers:
+`approvals._review_scope_from_feedback` (slices it, phrase-agnostic, correct), `praxis task`
+(prints the whole sentence, correct), and this one.
+
+## The commonest worker failure reached neither triage nor calibration
+
+Measured live on plan `c03b3ff6`, leaf 2, a genuinely hard Hindley-Milner unification leaf:
+four attempts, `tasks.triage_decision` NULL throughout, `task_outcomes` empty, and zero
+triage lines in the log for the whole plan. Adaptive triage was never consulted, so the
+standing explanation for why a `split` decision has never been observed across seven probes,
+that leaves are sized smaller than the worker's ceiling, was never actually tested on this
+path. The question was not being answered badly. It was not being asked.
+
+`api/internal.py`'s callback had a triage gate on its `no_changes` branch ONLY. A worker
+that RAN and self-reported `failed` fell through the `else` beside it straight into the
+retry logic, and both shipped entrypoints report `failed` for every non-zero exit, so that
+is the commonest way a leaf ends an attempt.
+
+**This is the same defect, in the same file, one day later.** `60a325e` was titled "the
+worker-callback and micro-edit no-change paths reached neither triage nor calibration" and
+fixed the `no_changes` branch while leaving its sibling untouched, because the enumeration
+was derived by READING again rather than by the query this document names for exactly this
+purpose: "what else can fail a task".
+
+`_dispose_worker_run_failure` DELEGATES to the orchestrator that owns the rules rather than
+copying them, so the `attempt >= 2 and not already_triaged` bound stays in
+`_triage_then_fail` alone and a leaf cannot buy a second brain call by failing through a
+different route. Proved by mutating that one line to `attempt >= 99`: seven tests red across
+BOTH routes' files, restored byte-identical. It is gated on `body.status == "failed"`
+specifically rather than on the whole `else`, and `body.question` keeps no say in routing,
+because rerouting a failure to NEEDS_CLARIFICATION trades a bounded failure for an
+indefinite wait on a person. Provider errors stay excluded upstream, as they already are
+from the retry budget, because the model never answered. It fails OPEN: anything that stops
+the delegation returns False and the caller's existing retry chain runs exactly as before.
+
+`FailureClass.RUN_FAILED` was minted rather than overloaded, on the same reasoning
+`NO_OUTPUT` was. `NO_OUTPUT` means the run SUCCEEDED and produced nothing, and is written
+only once that emptiness has been REFUTED; neither fact is in hand here, and a run that
+failed may well have committed and pushed before a later step aborted the script under
+`set -euo pipefail`. `FIXABLE_IN_PLACE` claims retry-with-feedback will probably work, which
+is a positive claim about a run nobody judged. `RUN_FAILED` counts against the worker for
+the reason the reviewer-error path does not: the worker was handed the leaf, ran, and did
+not finish it.
+
+The evidence handed to triage is `(None, None, "")`, the OPPOSITE of the no-change route's
+measured `(0, 0, "")`. Nothing counted anything on this path: no diff was fetched and
+`agent_runs` carries no file count. `leaf_triage._unknown` reserves `None` for exactly that,
+and a zero would tell the triage brain the worker wrote nothing, which is the strongest push
+it has toward `escalate` or `human`. The calibration row is written on EVERY attempt rather
+than only from the second, matching the review path: the triage bound is about spending a
+brain call, and a calibration set that only ever saw second attempts is the same denominator
+hole one attempt over.
+
+## An autonomous sweep deleted a branch a human had merged work onto
+
+The worst outcome this product has produced, and it destroyed work a person had explicitly
+approved. Measured live 2026-08-26 on `adiatmaja/playground`, plan `c03b3ff6`, two-tier
+branching. Leaf 1 built 322 lines, passed review, parked at the merge gate, a HUMAN approved
+it, and `praxis merge` landed PR #95 on the plan branch. Leaf 2 then spent its attempts, the
+engine wrote the PLAN failed, the plan branch entered the sweeper's `terminal_failed` set,
+and `sweep_dead_branches` ran a real `git push --delete` over it. The merged work survived
+only through `refs/pull/95/head`. **On a `praxis-local://` project there are no pull refs,
+so the identical sequence is IRRECOVERABLE.**
+
+The queries this was derived from, rather than a given list:
+
+- "what deletes a remote branch":
+  `grep -rnE "push[^\n]*--delete|delete_remote_branch|git push .*:" src/` gives
+  `git_ops.delete_remote_branch`, a real `git push <url> --delete <branch>` reached ONLY
+  from `sweep_dead_branches`; `git_backend.LocalGitBackend.merge`, which deletes the SOURCE
+  branch after a squash merge; and `gh pr merge --delete-branch`. The last two are cleanup
+  on a path that just LANDED the work, not a sweep. So the sweeper is the only autonomous
+  deleter: one seat, fixed at that seat.
+- "who writes a plan FAILED": `grep -rn "PlanStatus.FAILED" src/orchestrator/` gives
+  planning failure, decomposition failure, and `terminal_with_failures`. The last is the one
+  that fired, and **its own comment says such a plan "must never open the integration PR"**,
+  which is the very veto (an `integration_pr_url` with no `integration_merged_at`) that
+  would otherwise have saved the branch. The FAILED arm is defined by removing its own
+  protection.
+
+A plan going FAILED while carrying merged leaves may itself be the wrong state, but changing
+plan-status semantics reaches `plan_reachability`, `poll_plan`, `PlanResponse`, the dashboard
+and `praxis plans`, so it was deliberately NOT touched. The narrow invariant instead: the
+sweeper must never delete a branch carrying work a merge already accepted. A further veto,
+`carrying_merged_work`, is derived from rows the reconcile pass already reads
+(`tasks.status == merged` joined to its plan, released by `plans.integration_merged_at`), so
+it costs no new network call and no new query round trip. It vetoes BOTH terminal sets for
+the reason `live_branches` does, and it is REQUIRED rather than defaulted on both
+`dead_branches` and the ledger: an omitted signal reading as "nothing merged here" is exactly
+the pre-fix behaviour.
+
+A branch kept in SILENCE is its own defect, so a spared branch is reported at WARNING once
+per process, naming the branch and the plan. That report is a DIFFERENCE computed by
+re-running the same classifier with an empty veto, never a second hand-written copy of its
+precedence rules, so it cannot drift into a second opinion.
+
+Verified independently of the tests, which is what turned this from a plausible story into a
+measured one: the two altered SELECTs were run against the real `data/orchestrator.db` (40
+tasks, 11 plans), and a separately written second implementation of the rule named 6 plan
+branches carrying unintegrated merged work. One plan was ACTIVE at that moment with one
+merged leaf and one failed leaf, a single `terminal_with_failures` away from reproducing the
+incident on that very database.

@@ -526,6 +526,36 @@ story. New gotchas go in `docs/gotchas.md` first. (No count is quoted on purpose
 - **A plan reaches the gate TWICE**: each task onto the plan branch, then the plan's own
   integration PR. The URL lives on `plans.integration_pr_url`; `integration_merged_at`
   takes it back out of `pending`.
+- **A fact about the REPOSITORY, the BASE BRANCH or a SIBLING leaf is not a fact about THIS
+  leaf**, and that one class recurred at seat after seat: the review head gate, the wave
+  verify gate, the empty-diff seat (all fixed 2026-08-26), and `on_plan_completed`'s backstop,
+  which is REPORTED AND NOT FIXED (it publishes `plan_verify_failed` with no base
+  comparison, blocks nothing, so it is a false alarm rather than a wedge). Enumerate the
+  seats with `grep -rn "run_verify(\|_verify_plan_branch(\|verify_gate_disabled(" src/`.
+- **The project `verify_cmd` settles REGRESSION; the BASE BRANCH settles ATTRIBUTION; the
+  leaf's own declared `verification` is the positive signal** (`review_task`, 2026-08-26).
+  Every non-final leaf of a DEPENDENT chain used to be failed by a bar only the complete
+  feature could clear. A base `error` or skip FAILS CLOSED and names the missing comparison.
+  Not attributing is NOT passing: `_GATE_UNATTRIBUTED` reaches the human, and every surface
+  that renders `review_scope` must say a gate RAN and is RED (the CLI's `_scope_glance`
+  called it "no gate" within the hour; the phrases now live in `core/verify_gate.py` and
+  writer and reader both import them).
+- **The wave verify gate makes the same comparison, or it parks a plan forever, invisibly**
+  (2026-08-26): a plan branch red for a SIBLING's contract was called a regression, and
+  since `merged_count` cannot advance while the wave is parked the verdict was permanent
+  while every leaf stayed a healthy PENDING and the plan read ACTIVE with a null `error`.
+  Base RED identically is memoized and NOT parked; a base `error` fails closed and is NOT
+  memoized. Its base is `projects.default_branch` and nothing else, since the plan branch IS
+  the head here. Surfaced on `plans.error`, deliberately NOT in `plan_reachability` (a parked
+  wave is not in its `(opus_plan, task rows)` inputs).
+- **The sweeper must never delete a branch carrying merged work, and once it did**
+  (2026-08-26): a human approved leaf 1 and `praxis merge` landed it on the plan branch, leaf
+  2 spent its attempts, the plan went FAILED, and `sweep_dead_branches` ran a real
+  `git push --delete` over it. Recoverable only via `refs/pull/<n>/head`, IRRECOVERABLE on a
+  `praxis-local://` backend. `dead_branches` now takes a further veto, `carrying_merged_work`,
+  REQUIRED rather than defaulted on both it and the ledger, and a spared branch is reported
+  at WARNING. `terminal_with_failures` is the arm that fired, and it is defined by removing
+  the integration-PR veto that would have saved the branch.
 - **An empty worker diff is a FACT, not a verdict**: entrypoints report `no_changes`; the
   orchestrator decides. Assert on the status carried to the callback, not "empty diff ->
   failed". **The base-branch verify command alone cannot decide it** (fixed 2026-08-26):
@@ -542,22 +572,44 @@ story. New gotchas go in `docs/gotchas.md` first. (No count is quoted on purpose
   worker_attributable)` (still unpacks as a 2-tuple for its two out-of-module callers), an
   attributable decline writes a `FailureClass.NO_OUTPUT` outcome row and then triages, and a
   non-attributable one records NOTHING and just fails/retries.
-- **Adaptive triage is reached by WORKER-ATTRIBUTABLE failures only, and that is the
-  contract**: the review verdict, and a worker-attributable no-change decline WHEREVER it
-  is decided - the review path's empty diff, the worker callback (`api/internal.py`), and
-  the micro-edit lane. The reviewer-error and unparseable-`pr_url` paths call
-  `_fail_and_maybe_retry` DIRECTLY, because neither says anything about the leaf and
-  triage's worst answer (`human`) is terminal. Attribution comes from
-  `NoChangeDecision.worker_attributable`, never from matching the reason text.
-  **This entry said "exactly TWO callers" for one day and it was WRONG**: the gate was
-  extracted with the two call sites its author had enumerated, and a worker that
-  self-reports `no_changes` fails through the callback router, which never enters
-  `review_task`. Measured live: `attempt` 1 -> 2 -> 3 with `triage_decision` NULL and no
-  triage call at all. A structural rule is a claim about the paths you ENUMERATED, not
-  the paths that EXIST - derive the list with a query ("what else can fail a task"), never
-  by reading. The router supplies facts and the mixin decides, so the `attempt >= 2 and
-  not already_triaged` bound exists ONCE; a mutation of it must turn EVERY route's tests
-  red, which is the only proof the gate is shared rather than copied.
+  **And a RED project `verify_cmd` is NOT attributable here** (fixed 2026-08-26, the same
+  day, the opposite direction): the worker changed nothing, so the branch verified IS the
+  tree it was handed and the redness pre-dates the attempt BY CONSTRUCTION. Charging it
+  wrote repository health into the column the capability loop reads as worker capability.
+  The leaf's OWN declared `verification` decides instead, on the SAME checkout: passes ->
+  the no-op is established and the leaf closes; fails -> attributable, on the DECLARED
+  command's output; absent -> fail closed but do NOT charge. **That leaf command must
+  DIFFER from the project command or it is no evidence at all**
+  (`leaf_validator.discriminating_leaf_command`, the SSoT both seats call): widening what
+  counts as a runnable check let the two become byte-identical and silently reopened this.
+  `_verify_failure_stands` writes its row with a NULL `failure_class` via `_GATE_UNCOMPARED`
+  rather than `VERIFY_FAIL`, because every arm reaching it means the base could not be ASKED.
+- **Adaptive triage is reached by WORKER-ATTRIBUTABLE failures only, and the RULE is the
+  contract, never a caller list**: a failure may reach `_triage_then_fail` when the worker
+  was handed the leaf and its own output is what fell short. Everything else calls
+  `_fail_and_maybe_retry` DIRECTLY, because a fault that says nothing about the leaf would
+  spend a brain call on noise and triage's worst answer (`human`) is terminal; the
+  reviewer-error and unparseable-`pr_url` paths, and provider errors peeled off upstream,
+  are the standing exclusions on exactly that ground. Attribution is computed where the
+  evidence is in hand (`NoChangeDecision.worker_attributable`, or the route's own
+  identity), never by matching the reason text.
+  **Derive the routes with the QUERY "what else can fail a task"**
+  (`rg '_fail_and_maybe_retry\(|_triage_then_fail\(' src/`, plus the callback router's own
+  status arms), never by reading. **This entry has been WRONG TWICE in two days for
+  exactly that reason**: it said "exactly TWO callers", missing a self-reported
+  `no_changes` failing through the callback router; the correction then enumerated the
+  no-change decline at each of its seats and still missed a worker that RAN and reported
+  `failed`, which is what both entrypoints report for every non-zero exit and so the
+  commonest ending of all. Measured both times: `triage_decision` NULL across every
+  attempt, `task_outcomes` empty. A structural rule is a claim about the paths you
+  ENUMERATED, not the paths that EXIST. The router supplies facts and the mixin decides, so
+  the `attempt >= 2 and not already_triaged` bound exists ONCE; a mutation of it must turn
+  EVERY route's tests red, which is the only proof the gate is shared rather than copied.
+  Each route names its own `FailureClass` and none may be overloaded: `NO_OUTPUT` means the
+  run SUCCEEDED and produced nothing (and is written only once that emptiness is REFUTED),
+  `RUN_FAILED` means the run itself ended in failure and nothing reached a review. The
+  no-change route passes triage the measured `(0, 0, "")`; the run-failure route passes
+  `(None, None, "")`, because nothing counted anything there.
 - **A plan can be STALLED while it reads ACTIVE with a null `error`**: a PENDING leaf
   behind a terminally FAILED one is unreachable forever, transitively.
   `core/plan_reachability.py` derives it for every surface (`poll_plan`'s `stalled`,
