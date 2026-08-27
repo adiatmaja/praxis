@@ -151,7 +151,8 @@ uv run praxis merge <task-id>        # one task, plus every gated task on the SA
 uv run praxis reject-merge <task-id> [--feedback "..."]   # the other half of the gate
 uv run praxis merge-plan <plan-id>   # parked tasks, then the integration PR
 
-# Unwedge a plan that is stalled but still ACTIVE (`praxis plans` names the id)
+# Unwedge a plan that is stalled but still ACTIVE (`praxis plans` names the id).
+# A FAILED plan is REACTIVATED by the requeue too, or nothing would ever dispatch it.
 uv run praxis retry <task-id>        # a FAILED task back to pending; 409 on anything else
 
 # Setup, manual equivalent of `praxis init`
@@ -546,6 +547,53 @@ story. New gotchas go in `docs/gotchas.md` first. (No count is quoted on purpose
   that renders `review_scope` must say a gate RAN and is RED (the CLI's `_scope_glance`
   called it "no gate" within the hour; the phrases now live in `core/verify_gate.py` and
   writer and reader both import them).
+- **"Fails identically" means the SAME FAILURE, not "both failed"** (fixed 2026-08-27).
+  The comparison was `base.status != "failed"` and nothing more, so a base that could not
+  even COLLECT and a head that failed three assertions counted as one failure and a real
+  regression was excused. `verify_gate.compare_failures` asks the runner's own EXIT CODE:
+  zero noise sources, no parser, no language knowledge. Output equality and set
+  containment were both measured and REFUSED - an honest worker adding passing tests
+  lengthens the progress line, so containment charges it for repository health. A TIMEOUT
+  reports `returncode=None`, load-bearing because a killed process reports 1 on Windows,
+  exactly like "tests failed". Three outcomes, not two: `FAILED_ALIKE` and `INCOMPARABLE`
+  license the same ACTION and different CLAIMS. Attribution on `FAILED_DIFFERENTLY` is
+  BOUNDED to a leaf that declared the project command as its own acceptance, because
+  leaf 1 of a dependent chain can UNMASK failures.
+  **This is what makes `split` reachable at all**: the final leaf's acceptance IS the
+  project command (correct plan authorship), so its check is non-discriminating, so every
+  failure was non-attributable, so no calibration row and no triage - and triage is where
+  `split` is decided. Four correct rules composing. `split` is STILL UNOBSERVED; reachable
+  is not observed.
+- **The budget gate sized the BIBLE, not the prompt** (fixed 2026-08-27), scoring
+  everything else zero: measured, it saw 445 tokens against a 1638 budget and PASSED while
+  Praxis put 2152 in the window. `_build_worker_bible` now passes the EXACT prompt
+  (`companion_prompt`), beating the derived `_TEMPLATE` floor, which omits the unbounded
+  task description. **No reserve was added for what cannot be counted** (harness system
+  prompt, tool schemas, the repo's `AGENTS.md`): `WORKER_RESERVE_FRACTION` already holds
+  back 60% for that envelope, so a reserve double-charges - the shortfall is NAMED in
+  `token_budget.UNCOUNTED_CONTEXT` instead. Counting the prompt is a MEASUREMENT of a
+  string Praxis builds, so the never-guesses principle is untouched. `difficulty.py` scores
+  `context_ratio` against the FULL budget and is over-optimistic by the same amount:
+  same class, UNFIXED.
+- **A harness callback is RETRIED and the handler must be idempotent** (fixed 2026-08-27).
+  Both entrypoints re-POST up to `CALLBACK_MAX_ATTEMPTS` on any non-200 including the
+  `HTTP 000` curl reports when its `--max-time 10` elapses - and this handler takes
+  MINUTES, so a redelivery of a callback the server SUCCEEDED on is the normal case.
+  Measured: 5 `task_outcomes` rows for 4 runs, attempts 1,2,2,4,4, so the retry budget was
+  silently halved. `claim_agent_run_completion` is an atomic conditional UPDATE keyed on
+  `finished_at IS NULL` (never on `status`, a bare `str` the harness chooses) and is the
+  FIRST write; a redelivery answers 200 `duplicate_callback`. **`RUN_ID` was dead in
+  production** (`grep -rn "RUN_ID" src/` returned zero) so every callback resolved
+  `runs[-1]`; it is plumbed now, and without it a redelivery arriving after a retry
+  disposes a worker mid-execution.
+- **A permanent misconfiguration is not a transient provider error**, and the callback
+  path's re-queue was UNCAPPED (fixed 2026-08-27; the reconcile path had
+  `PROVIDER_ERROR_RESPAWN_CAP`, this one had nothing - 12 respawns, attempt stays 1). The
+  cap is SHARED now. `permanent_worker_config_error` exists but is **deliberately UNWIRED
+  and its premise was REFUTED**: the model+endpoint that refused by name at 02:19 served
+  real work at 06:03, and the model-list probe is NOT authoritative about what the
+  completions endpoint accepts. Do not wire it without a test separating
+  permanently-absent from not-currently-loaded.
 - **The wave verify gate makes the same comparison, or it parks a plan forever, invisibly**
   (2026-08-26): a plan branch red for a SIBLING's contract was called a regression, and
   since `merged_count` cannot advance while the wave is parked the verdict was permanent
