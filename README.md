@@ -1,3 +1,5 @@
+<h1 align="center">Praxis</h1>
+
 <p align="center">
   <strong>Govern any coding harness from inside the one you already use.</strong>
 </p>
@@ -16,77 +18,49 @@
   <a href="https://github.com/adiatmaja/praxis/stargazers"><img alt="Stars" src="https://img.shields.io/github/stars/adiatmaja/praxis?style=social"></a>
 </p>
 
-**You did the planning with a strong model. Praxis takes it from there.**
+You plan with a strong model because judgment is what it does best, then hand the
+implementation to a cheaper tool to save tokens. That handoff has **no safety net**:
+the worker starts without your context, gets tasks too hard for it, and you only find
+out when the code comes back wrong.
 
-Set up inside the harness you already use and wired in over MCP, Praxis:
+**Praxis takes it from there.** Set up inside the harness you already use (Claude Code,
+Codex CLI, or any AI coding tool) and wired in over MCP (Model Context Protocol), it:
 
-- **Decomposes** your plan to fit the worker model that will implement it
-- **Dispatches** each task to a harness working in a disposable container
-- **Gates** every change — your verify command, then a review model, then you
+- **Decomposes** your plan into tasks sized for the worker model
+- **Dispatches** each task to a worker in a disposable container
+- **Gates** every change: your tests, then a review model, then you
 
-What comes back is a pull request waiting for your approval. One session, no copy-pasted
-plans, no switching tools by hand. A CLI and a dashboard drive the same engine.
+What comes back is a pull request for you to approve. One session, no copy-paste, no
+switching tools.
 
-A **provider-agnostic orchestrator for the execution phase of spec-driven development**:
-brainstorm, spec, and plan wherever you like, then hand Praxis the plan.
-
-Praxis sits inside **your** harness and dispatches to **worker** harnesses. Concretely:
-your Claude Code session hands a task to Gemini, or to a local open-weight model in a
-container, and reviews the PR that comes back.
-[OpenCode](https://github.com/sst/opencode) and [Antigravity](https://antigravity.google/)
-(`agy`) ship as workers today.
+**Get started:** [Quick Start](#quick-start), or
+[paste one brief into your assistant](#set-it-up-with-your-agent) and let it set Praxis up.
 
 ## A session, end to end
 
+An illustrative session, condensed (mock output, not a capture). You wrote the plan,
+`my-api` is your repo, and the ask overrides the default worker preset, naming Gemini
+on its `agy` harness:
+
 ```
-you        "use praxis to implement docs/plans/rate-limit.md on my-api"
-assistant  plan accepted: 4 tasks, each sized for the configured worker
-              ...workers run in containers; your session keeps going...
-assistant  4/4 tasks passed verify and review, PRs waiting for approval:
+you        "use praxis to implement docs/plans/rate-limit.md on my-api,
+            worker gemini on the agy harness"
+assistant  plan accepted: 4 tasks, each sized to what gemini can implement
+              ...workers run in Docker containers; your session keeps going...
+              ...task 3 failed verify, re-dispatched with feedback (attempt 2/3)...
+assistant  4/4 tasks passed verify and review, PRs waiting for your approval:
            https://github.com/you/my-api/pull/17 ...
-you        "merge them"    (or: praxis merge-plan <id>, or the dashboard)
+you        "task 3's diff looks right. merge them"    (or: praxis merge-plan <id>)
 ```
 
-And the loop that produced them:
-
-```
-   plan.md
-      │
-      ▼
-   decompose ─▶ dispatch ─▶ implement ─▶ verify ─▶ review ─▶ merge gate
-   sized to      parallel     worker      your      a model    parked for
-   the worker                container    command   reads it   your approval
-                                             │         │
-                                             └────┬────┘
-                                                  ▼ fail
-                                        retry ×3 with feedback
-```
-
-Pull requests are the loop's unit of trust: *inspectable, revertible, approved by you*.
+Pull requests are the unit of trust: *inspectable, revertible, approved by you*.
 GitHub is the one platform Praxis speaks today; local-only mode runs the same loop
 against local branches, where the reviewed, gated branch merge plays the PR's role.
-
-## Why Praxis exists
-
-One-shot a big prompt at a coding agent and you get whatever it produces: nothing sized
-the ask to what the model can actually do, nothing checked the result, no second opinion
-before it lands.
-
-The usual workaround — plan with a strong model, paste the plan into a cheaper one —
-breaks differently:
-
-- The worker **never sees the context** the plan was written with
-- Some tasks are simply **beyond it**
-- **Nothing warns you** about either
-
-Praxis closes both gaps. It carries the plan's context to the worker intact, and it sizes
-and checks every task on the way through. The harnesses stay interchangeable; the
-discipline around them does not.
 
 ## What you do with it
 
 **Implement a plan.** You did the thinking in a chat, an editor, or a design doc; what is
-left is the typing. Hand Praxis the `plan.md` (`execute_plan`, REST and MCP) and the
+left is the implementation. Hand Praxis the `plan.md` (`execute_plan`, REST and MCP) and the
 governed loop carries it to the merge gate. Its smallest case is a single task: tell your
 assistant *"use praxis to fix X on this repo"* and a worker picks it up in an isolated
 container while your session moves on (`dispatch_task`).
@@ -125,10 +99,10 @@ model ever reads the diff.
 **A review model gates every merge.** A separate reviewer inspects each PR diff against
 intent, and there are exactly three outcomes:
 
-- **Pass** — the PR *parks*. Nothing moves until you act: `praxis pending`, then
+- **Pass**: the PR *parks*. Nothing moves until you act: `praxis pending`, then
   `praxis merge <task-id>`.
-- **Fail** — re-dispatched with the reviewer's feedback, up to three times.
-- **Out of attempts** — the task stops there, and Praxis says so rather than leaving you
+- **Fail**: re-dispatched with the reviewer's feedback, up to three times.
+- **Out of attempts**: the task stops there, and Praxis says so rather than leaving you
   to guess. Any task waiting behind it can never run, so `praxis plans` names both ends
   and `praxis retry <task-id>` puts the failed one back in the queue.
 
@@ -149,7 +123,7 @@ Behaviors that round out the loop, each a normal recorded outcome rather than an
 - **The loop proposes its own work, behind the same gate.** After a plan completes, an
   improvement pass surveys the repository and may park a follow-up proposal at
   `praxis pending`. Nothing runs until you approve it.
-- **A rate limit pauses the loop, it does not break it.** When a subscription window
+- **A rate limit pauses the loop, never breaks it.** When a subscription window
   closes, planner and reviewer calls queue up and the loop resumes on its own.
 
 Tasks run in parallel where dependencies allow, each on its own `agent/{task-slug}` branch
@@ -160,7 +134,8 @@ for your approval. Full cycle and swimlane diagram: [docs/workflow.md](docs/work
 
 A **seat** is a role in the loop with a provider assigned to it. Provider, model, and
 harness are chosen per seat and per project, and swapping one never changes the
-architecture around it. Interchangeable examples, not a blessed pairing:
+architecture around it. Interchangeable examples, not a blessed pairing, and not all
+combinations are tested (see [Status](#status)):
 
 ```
   ┌─────────────┐  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐
@@ -190,21 +165,29 @@ Tier recommendations, worker presets, and whole-loop arrangements:
 |----------|-----|
 | Docker | the orchestrator and every worker container |
 | Python 3.11+ and [uv](https://docs.astral.sh/uv/) | the CLI |
-| One planner CLI on a subscription: `claude`, `codex`, or `agy` | the planning and review seats |
+| One planner CLI on a subscription (`claude`, `codex`, or `agy`), or a local model | the planning and review seats |
 | A GitHub token, or answer `skip` for local-only mode | branches and pull requests |
 
-The smallest tryout needs **two logins**: the planner CLI you already pay for (e.g.
-`claude`), plus a one-time interactive `agy` login with a Google account for the default
-worker preset. Then a single dispatched task closes the whole loop. A *local* worker model
-additionally needs [LM Studio](https://lmstudio.ai/) and hardware that can serve it, sized
-in [docs/open-weight-models-complete.md](docs/open-weight-models-complete.md).
+The smallest tryout needs **two logins**, then a single dispatched task closes the loop:
+
+- the planner CLI you already pay for (e.g. `claude`)
+- a one-time interactive `agy` login (Google account) for the default worker preset
+
+A *local* worker model instead needs [LM Studio](https://lmstudio.ai/) and hardware that
+can serve it, sized in
+[docs/open-weight-models-complete.md](docs/open-weight-models-complete.md).
+
+**No subscriptions at all?** A fully local loop is supported: preset `local-lmstudio` for
+the worker, plan and review seats pointed at the same endpoint, and `skip` for GitHub.
+It is the weakest arrangement, since plan quality tracks your local model; recipe in
+[docs/configurations.md](docs/configurations.md#fully-local).
 
 ```bash
 git clone https://github.com/adiatmaja/praxis.git
 cd praxis
 
 uv venv && uv sync --extra dev   # install the CLI and dependencies
-uv run praxis init               # setup wizard, idempotent, re-runnable
+uv run praxis init               # setup wizard, idempotent; first run builds images (minutes)
 ```
 
 `praxis init` prompts for an auth token, a dashboard port, GitHub credentials (or `skip`),
@@ -212,7 +195,7 @@ and a worker preset, then builds the agent images, starts the orchestrator in Do
 verifies the install with the doctor.
 
 > `praxis` is **not** put on your `PATH`. Every command below is `uv run praxis ...`, run
-> from this directory — or activate the venv once (`.venv\Scripts\activate` on Windows,
+> from this directory, or activate the venv once (`.venv\Scripts\activate` on Windows,
 > `source .venv/bin/activate` elsewhere) and drop the prefix.
 
 ```bash
@@ -224,32 +207,56 @@ uv run praxis logs <task-id>  # what the worker actually did, container gone
 The CLI reads `AUTH_TOKEN` and `PORT` from the `.env` in your install directory. Set
 `ORCHESTRATOR_URL` and `ORCHESTRATOR_TOKEN` to point it at a remote deployment instead.
 
-**Or let your agent set it up.** Praxis is built to be driven from an agentic harness, and
-that includes installation. With `--non-interactive` the wizard never prompts:
+### Set it up with your agent
 
-```bash
-uv run praxis init --non-interactive --preset gemini-agy
+Praxis is built to be driven from an agentic harness, installation included. Paste this
+brief into your assistant and step in only where it says STOP:
+
+```text
+Set up Praxis (https://github.com/adiatmaja/praxis) on this machine:
+
+1. Clone the repo if it is not here yet. Work from its root for every step
+   below. Run these two commands in order: uv venv, then uv sync --extra dev
+2. Run: uv run praxis presets. Show me the list and ask me which worker
+   preset to use; a preset is a worker harness plus the model it drives.
+   OpenCode and Antigravity (agy) are the tested harnesses.
+3. Run: uv run praxis init --non-interactive --preset <my choice>
+   This builds the agent images, starts the orchestrator in Docker, and ends
+   with a doctor check. If it refuses because the preset needs a one-time
+   interactive login, STOP and relay its printed instructions to me; once I
+   confirm the login is done, re-run the same command with
+   --accept-preset-requirements added.
+4. Two traps that are not discoverable from a failure:
+   - If you ever rebuild agent images, use `docker compose --profile agents
+     build`, never a bare `docker build`: the profile stamps a label Praxis
+     needs for staleness detection.
+   - If the doctor's planner check is red, STOP: I must log into the planner
+     CLI myself, because that login is interactive and yours would not
+     persist.
+5. `praxis init` printed an MCP configuration block, just above the doctor
+   table, with the path, URL, and auth token already filled in. Ask me which
+   project Praxis should drive if I have not named one, then add the block to
+   that project's MCP config (for Claude Code, `.mcp.json` at its root; any
+   MCP client takes the same command and env). The token must never be
+   committed: check the file is gitignored, and warn me if it is not.
+6. Ask me to reload or restart the MCP client (you cannot do that yourself),
+   then call the praxis `list_providers` tool to confirm the connection
+   works, and report the dashboard URL and the doctor result.
 ```
 
-`uv run praxis presets` lists the names `--preset` accepts; flags pin anything the wizard
-would have asked for (`--auth-token`, `--port`, `--github-token`). A preset needing a
-credential `init` cannot collect is refused rather than half-installed;
-`--accept-preset-requirements` overrides once that setup is done.
+Notes on the brief:
 
-> [!WARNING]
-> Two traps to tell your agent about, because neither is discoverable from a failure:
->
-> - Build the agent images with `docker compose --profile agents build`, never a bare
->   `docker build`: the profile stamps a label Praxis needs for staleness detection.
-> - If the doctor's planner check is red, log into the planner CLI yourself. That login is
->   interactive, and an agent's login would not persist.
+- `--non-interactive` never prompts; `--auth-token`, `--port`, `--github-token` pin
+  anything the wizard would have asked for
+- A preset needing a credential `init` cannot collect is refused, not half-installed;
+  `--accept-preset-requirements` overrides once that setup is done
 
 With the orchestrator running:
 
-- **MCP** — wire `praxis-mcp` into your assistant and drive everything from there
+- **MCP**: wire `praxis-mcp` into your assistant and drive everything from there
   ([docs/mcp.md](docs/mcp.md))
-- **Dashboard** — http://localhost:12323 · **API docs** — http://localhost:12323/docs
-- **CLI** — `uv run praxis projects`, `submit`, `pending`, `plans`, `merge <task-id>` or
+- **Dashboard**: http://localhost:12323 · **API docs**: http://localhost:12323/docs
+- **CLI**: `uv run praxis projects`, `submit`, `pending`, `plans`, `merge <task-id>` or
   `reject-merge <task-id>`, `retry <task-id>`, `clarify <task-id> "answer"`, `mode on`
 
 The planner and reviewer seats use whichever subscription CLI you pointed at during init.
@@ -257,14 +264,18 @@ The implementer seat comes from your worker preset: the shipped default drives G
 `agy`, or pick `local-lmstudio` to serve an open-weight model over an OpenAI-compatible
 endpoint. Full setup and deployment modes: [docs/deployment.md](docs/deployment.md).
 
+**Tearing it down:** `docker compose down` from the install directory stops everything;
+add `-v` to delete the database volume too, then delete the clone.
+
 ## Status
 
 Praxis is **0.1.0, pre-1.0, and under active development**; expect breaking changes until
 1.0. *Implement-a-plan* is the mature path, regularly exercised end to end from cold
 install to merged PR on a real repository. *Auto-delegate mode* is beta, as flagged above.
-OpenCode and Antigravity (`agy`) are the worker harnesses shipped and tested; the harness
-contract is deliberately pluggable, so others should work once wired in, but none have
-been tested.
+[OpenCode](https://github.com/sst/opencode) and
+[Antigravity](https://antigravity.google/) (`agy`) are the worker harnesses **shipped and
+tested**; the harness contract is deliberately pluggable, so others should work once
+wired in, but none have been tested.
 
 ## Documentation
 

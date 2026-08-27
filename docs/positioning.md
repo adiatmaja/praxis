@@ -143,6 +143,19 @@ than re-deriving; they were argued word by word.
   section instead, where "dispatch" has been defined; in the opening it landed
   before a first-time reader knew what a dispatch was (Fable newcomer audit,
   2026-08-24).
+  **Amended 2026-08-28 (owner direction): the opener is PROBLEM-FIRST.** The
+  README is sales copy and the problem is the qualifier: a reader without this
+  problem should self-select out in the first screen. The opening now leads
+  with the buyer's problem ("The problem, concretely" below, compressed to a
+  short hook: context loss, capability overshoot, no warning), then "Praxis
+  takes it from there" with the mechanism bullets, then the outcome. The
+  standalone "Why Praxis exists" section was deleted from the README as
+  absorbed by the hook. **The definition paragraph was removed from the README
+  entirely (same day):** on the repo page the About sits beside the README and
+  already IS the definition, so restating it wasted the beat. The definition
+  now lives in the About and `pyproject.toml` only; the Claude-to-Gemini
+  concrete example moved into "A session, end to end". This supersedes the
+  plain-lead-first and demoted-definition rules above.
 
 ## The problem, concretely
 
@@ -166,9 +179,9 @@ Praxis is built to close these gaps: it carries the plan's contract across the
 provider boundary intact (Static Bible, verbatim `plan_text`), sizes every
 task to the worker that will run it (capability-aware decomposition), and
 escalates what does not fit. This story maps 1:1 onto the three pillars below.
-The README opens "Why Praxis exists" with a paraphrased, conversational version
-of it (humanized wording, no dollar figure); keep the two in sync in spirit,
-never verbatim-duplicated. Never
+The README carries this story as its OPENING HOOK (since 2026-08-28; the old
+"Why Praxis exists" section is gone), paraphrased and conversational, no dollar
+figure; keep the two in sync in spirit, never verbatim-duplicated. Never
 anchor the brand to the dollar figure — the story stars the budget-constrained
 developer, but the product is not "the budget orchestrator" (cost stays a
 consequence, per the guidance at the bottom).

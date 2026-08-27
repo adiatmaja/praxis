@@ -34,7 +34,7 @@ REST endpoints, so the decision to land code stays with a person rather than wit
 driving the session. `retry_task` is not an exception to that rule: it re-runs work and lands
 none, so it is the one recovery action a driving brain can take on its own.
 
-Praxis also exposes a static MCP **resource**, `praxis://guide/orchestration` — the
+Praxis also exposes a static MCP **resource**, `praxis://guide/orchestration`: the
 orchestration guide your assistant should read before driving a multi-step plan. It spells out
 the git-freshness pre-flight, when to pick `execute_plan` over `dispatch_task`, and how to poll
 to completion. Ask your assistant to read that resource if it is unsure how to sequence a run.
@@ -74,9 +74,18 @@ using the Praxis project's environment, so you point `uv` at the cloned Praxis d
 }
 ```
 
+> **Tip:** you rarely need to fill the placeholders by hand: `praxis init` prints this exact
+> block, just above its closing doctor table, with the path, URL, and token already filled in
+> for your install. Re-run `uv run praxis init` to print it again (it is idempotent).
+
 > **Tip:** if you happen to be working *inside* the Praxis repo itself, you can drop the
 > `"--directory", "/path/to/praxis"` arguments, since `uv run praxis-mcp` already resolves the
 > project from the current folder. For every other project, keep `--directory`.
+
+> **Not on Claude Code?** The block above is Claude Code's `.mcp.json` shape, but only the
+> wrapper is specific to it: any MCP client takes the same command (`uv run --directory
+> /path/to/praxis praxis-mcp`) and the same two env vars; adapt them to your harness's own
+> MCP config format.
 
 > **Heads up on secrets:** `.mcp.json` lives in your project and may be committed. Keep your
 > real `PRAXIS_AUTH_TOKEN` out of a public repo (use global user settings, or gitignore the
@@ -123,7 +132,7 @@ model:
    > `<your-worker-model>`:_ …then the full plan text.
 
 2. Your assistant calls `execute_plan(repo_url, plan, model)`. It returns right away with a
-   `plan_id` and `status="pending"` — the brain's capability-aware decomposition is a
+   `plan_id` and `status="pending"`; the brain's capability-aware decomposition is a
    multi-minute call that runs asynchronously, sizing each task to what `model` can implement.
 3. Ask your assistant to `poll_plan(plan_id)` periodically (or watch the `dashboard_url`). Each
    task becomes its own `agent/<slug>` branch and PR, gets reviewed, and squash-merges into the
@@ -132,7 +141,7 @@ model:
    your assistant relays each `pr_url` so you can merge. Tasks at `awaiting_clarification` are
    waiting on an answer.
 
-Before dispatching, **`git push` your local commits** — Praxis clones from `origin`, so anything
+Before dispatching, **`git push` your local commits**: Praxis clones from `origin`, so anything
 only on your machine is invisible to the worker (see the next section). Pass `expected_base_sha`
 if you want the server to hard-reject a dispatch when your local base has drifted from origin.
 
