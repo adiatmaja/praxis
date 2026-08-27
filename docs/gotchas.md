@@ -2405,6 +2405,54 @@ that way for another day because the enumeration behind this fix was hand-derive
 same file. Both had to be closed before the split question could be said to have been ASKED
 at all. See "The commonest worker failure reached neither triage nor calibration".
 
+### The complement, and it produced a plan that COMPLETED having built nothing
+
+Everything above is about a leaf whose declared PATH is absent. The mirror image is a leaf
+whose paths are all PRESENT and whose own declared check PASSES, and it is worse, because
+every signal reads green. Found live on 2026-08-27 (plan `8a2f4349`, playground PR #107):
+
+1. Attempt 1 wrote `guard.py` and `test_guard.py`. The review FAILED it on real defects
+   and left PR #107 open.
+2. The retry dispatched attempt 2 onto the SAME agent branch, which still carried attempt
+   1's rejected commit. The worker saw the work already there and changed nothing, so the
+   entrypoint reported `no_changes` - honest, from where it was standing.
+3. `no_change_outcome` asked the BASE branch. Both declared edit locations existed there
+   (they are pre-existing files) and the leaf's own declared check
+   `pytest src/playground/test_guard.py -q` PASSED: 22 tests, none of them the ones the
+   leaf was asked to add. Measured on that branch, `require_mapping` appears **0 times**.
+4. The leaf closed `no_changes`, the plan reported **COMPLETED with 0 commits on its
+   branch**, and the implementation stayed in an open, review-rejected pull request that no
+   gate would ever show a human again.
+
+**`discriminating_leaf_command` cannot see this shape.** That rule refuses a leaf check
+which RESTATES the project command, and this one did not: `pytest test_guard.py -q`
+genuinely differs from `pytest src/playground -q`. It is non-discriminating for an
+unrelated reason - the suite it runs is one the leaf itself was told to extend, so it
+passes before the work exists. No analysis of the command string can tell you that.
+
+The fact that settles it needs no string analysis at all: **work on a branch that base does
+not contain is, by definition, not in the repository.**
+`_work_sits_unmerged_on_the_task_branch` asks `head_sha` then `base_contains`, and only an
+explicit `False` refutes - `head_sha` answers None for a branch never pushed, which is the
+ordinary shape of a genuine first-attempt no-op, and `base_contains` answers None whenever
+it could not ask (the same tri-state discipline as `_nothing_to_integrate_reason`). It is
+asked AFTER the declared-path check, which is more specific and names something the next
+worker can create, and BEFORE the gate verdict, because no verdict about base can see work
+sitting on another branch.
+
+The decline is deliberately NOT worker-attributable: the worker was handed a branch on
+which the work already existed and produced no diff, which is a defensible reading of what
+it was shown. And the check may only ever REFUSE to close - every failure inside it is
+logged and swallowed, since turning a missing extra check into a failed review is worse
+than the false success it prevents.
+
+Validated against the production artefact through the fact the backend computes:
+`gh api repos/adiatmaja/playground/compare/walk-guard-extend...agent/...` reports
+`status: ahead`, `ahead_by: 1`, merge base != head. Guards in
+`tests/test_no_change_unmerged_work.py`, headline one proven RED by making the refutation
+never fire, plus one pinning the measured BENIGN case (leaf 1 wrote leaf 2's file, branch
+never pushed) still closing.
+
 Not every decline is worker-attributable, so `no_change_outcome` now returns a frozen
 `NoChangeDecision(closed, why, worker_attributable)` - still iterable as `(closed, why)`
 for its two out-of-module callers, the worker callback in `api/internal.py` and the

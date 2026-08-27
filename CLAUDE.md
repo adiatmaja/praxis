@@ -700,6 +700,19 @@ story. New gotchas go in `docs/gotchas.md` first. (No count is quoted on purpose
   counts as a runnable check let the two become byte-identical and silently reopened this.
   `_verify_failure_stands` writes its row with a NULL `failure_class` via `_GATE_UNCOMPARED`
   rather than `VERIFY_FAIL`, because every arm reaching it means the base could not be ASKED.
+  **AND A LEAF CHECK CAN BE NON-DISCRIMINATING WITHOUT RESTATING THE PROJECT COMMAND**
+  (found live 2026-08-27, plan `8a2f4349` / playground PR #107 - a FALSE SUCCESS, every
+  gate green). Attempt 1's work was review-REJECTED and left on the agent branch; the retry
+  saw it already there and changed nothing; the base branch carried both declared paths
+  (pre-existing files) and passed the leaf's own check `pytest test_guard.py -q` - 22 tests,
+  none of them the ones the leaf was told to ADD to that file. The leaf closed `no_changes`,
+  the plan reported **COMPLETED with 0 commits**, and the implementation stayed in an open
+  rejected PR nothing would ever surface again. `discriminating_leaf_command` cannot see it:
+  the command genuinely DIFFERS from the project command and is still non-discriminating,
+  because the suite it runs is one the leaf itself was told to extend. Fixed with a fact
+  that needs no string analysis - **work on a branch base does not contain is not in the
+  repository** (`_work_sits_unmerged_on_the_task_branch`, tri-state, only an explicit
+  `base_contains is False` refutes, NOT attributable, and it may only ever refuse to close).
 - **Adaptive triage is reached by WORKER-ATTRIBUTABLE failures only, and the RULE is the
   contract, never a caller list**: a failure may reach `_triage_then_fail` when the worker
   was handed the leaf and its own output is what fell short. Everything else calls
