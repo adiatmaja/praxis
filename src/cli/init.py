@@ -713,7 +713,11 @@ def _resolve_auth_token(current: dict[str, str], answers: Answers) -> str:
         # Printed, and printed prominently: this is the one generated value
         # the operator cannot recover from the console scrollback of a prompt
         # they never saw, and every MCP client and CLI shell needs it.
-        console.print(f"[green]Generated AUTH_TOKEN:[/green] {token}", highlight=False)
+        console.print(
+            f"[green]Generated AUTH_TOKEN:[/green] {token}",
+            highlight=False,
+            soft_wrap=True,
+        )
         return token
     if existing:
         # Split out of an `and` deliberately: mypy cannot solve rich's
@@ -1059,7 +1063,20 @@ def _print_next_steps(
 
     console.print("\nAdd it to your MCP client with this configuration:\n")
     # markup=False: the snippet's JSON list brackets are data, not rich tags.
-    console.print(mcp_snippet(api_url, token), markup=False)
+    #
+    # soft_wrap=True for the reason `cli.main._copyable` documents, and this is
+    # the worst place in the product to get it wrong: rich's default wrapping
+    # inserts a REAL newline at the console width, and the longest line here is
+    # the absolute install path inside a JSON STRING. Measured on a cold
+    # install, that folded to:
+    #
+    #     "C:\\Users\\...\\C--working-space-pra
+    #     xis\\...\\coldinstall",
+    #
+    # which is not merely ugly, it is invalid JSON with a corrupted path, and
+    # it is the exact block the README's agent brief tells an assistant to
+    # paste into `.mcp.json`. A wide terminal hides it, which is why it shipped.
+    console.print(mcp_snippet(api_url, token), markup=False, soft_wrap=True)
 
     # The CLI reads a DIFFERENT pair of env vars than the MCP server. Both
     # forms below come from `cli_env_exports` so they cannot drift from each
@@ -1067,9 +1084,16 @@ def _print_next_steps(
     exports = cli_env_exports(api_url, token)
     console.print("\nExport these so `praxis doctor` and `praxis pending` reach it:\n")
     for name, value in exports.items():
-        console.print(f"  export {name}={value}", highlight=False)
+        console.print(f"  export {name}={value}", highlight=False, soft_wrap=True)
     powershell = "; ".join(f'$env:{n}="{v}"' for n, v in exports.items())
-    console.print(f"  (PowerShell: {powershell})", highlight=False)
+    # The PowerShell form is ONE line carrying BOTH assignments, so it is the
+    # longest thing printed here and the first to fold. Measured on a cold
+    # install it folded after the URL's `; `, so pasting it set
+    # ORCHESTRATOR_URL and silently dropped ORCHESTRATOR_TOKEN. That fails
+    # LATER, as an auth error against a URL that is demonstrably correct, which
+    # is the most expensive shape this defect could take on the platform this
+    # project is primarily developed on.
+    console.print(f"  (PowerShell: {powershell})", highlight=False, soft_wrap=True)
 
     # Both compose files forward DEFAULT_WORKER_* as bare pass-through entries,
     # so the preset written above is what the container resolves. The mounted
