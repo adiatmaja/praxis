@@ -3515,6 +3515,82 @@ The decompose prompt gained the other half, as prevention at source: a test file
 already exists is the acceptance contract and never belongs in a leaf's `files`, and no
 path may be added that the plan does not authorise for that task.
 
+### CORRECTION, same day: the separation was an artefact of those two plans
+
+**Do not promote `plan_text_verbatim` to HARD.** The paragraph above says the separation
+is the finding and the number provisional. More evidence was gathered on 2026-08-27 and it
+refuted the separation itself, so the paragraph stands as the record of what was believed
+and this subsection overrides it.
+
+The corpus is every execute-plan decomposition this install had produced, plus seven plans
+run live through `execute_plan` to vary the plan SHAPE: a one-section plan that must split
+1:N, a plan written in prose, a plan whose contract is code blocks, a plan with generic
+headings (`## Core`) the decomposer must retitle, a well-formed multi-task plan, a
+fabrication bait, and a verbatim REPLAY of the plan that produced the round-7 fabrication.
+**16 real decompositions, 34 leaves**, kept as
+`tests/fixtures/decompose/plan_text_backing_corpus.json` and extracted programmatically
+from `plans.pending_input` and `plans.opus_plan`. Each leaf was labelled by reading its
+`Files`, `Acceptance` and `Steps` against its plan document.
+
+| | leaves | rule fires |
+|---|---|---|
+| faithful | 31 | **19** |
+| the one fabricating plan | 3 | 3 |
+
+The three fabricated scores (0.04, 0.20, 0.12) sit INSIDE the faithful distribution's
+lower third - **ten faithful leaves score 0.00** - so no threshold separates them. At 0.20
+the rule loses a fabricated leaf and still fires on 14 faithful ones; at 0.50 it fires on
+21. (Counts before the replay was added; it contributes two more faithful fires.) The two-plan fixture separates perfectly because its faithful example (`2f34bc32`)
+happens to be an unusually literal copy at 0.86/0.80/0.88, and that is not what a
+decomposer normally emits.
+
+**The dominant cause is markup, not judgment.** A plan writes ``- Define
+`IntSetError(ValueError)`, raised for every malformed range string.`` and the decomposer
+emits that sentence to the worker without the backticks - correctly, since worker-facing
+prompts are plain text - so a substring test misses a line-for-line copy. Probe `f91dc84e`
+is exactly that: three leaves whose Steps ARE the plan's bullets, word for word, all three
+warned. The second cause is elaboration: a leaf that expands a plan requirement into steps
+a floor model can execute scores near zero, and that is the flagship mechanism working.
+
+Two further measurements from the same corpus:
+
+- **Section resolution succeeded on 1 of 32 leaves.** The document fallback is not the
+  exceptional path; it is effectively the whole rule.
+- **Stripping markup before comparing was measured** (mutation applied, corpus re-scored,
+  reverted): faithful false fires 17/29 -> 9/29, fabricated 3/3 -> 1/3, and the one that
+  survives is precisely the leaf that took the forbidden test file. It is a real
+  improvement and it is still not separation - 9 false to 1 true - so it does not make the
+  rule HARD either. It was not shipped, because tuning a metric on ONE fabricating plan is
+  the same mistake this correction is about.
+
+What survives is the message the operator reads, which now says the warning is a weak
+hint, and the guard `test_verbatim_rule_does_not_separate_on_the_wider_corpus`, which
+pins the measured false-positive count so that a future tuner has to re-measure here
+rather than on the two-plan fixture.
+
+**The candidate that looked like it separated, and what the next sample did to it.** Grade
+a leaf's declared `files` against every path the plan's own `Files:` lines authorise,
+ANYWHERE in the document. (The section-scoped form was refused above for needing
+`_section_for_task`; the document-scoped form needs no section - the same move that
+rescued the verbatim rule.) On the first 11 gradeable leaves it fired once, on the defect
+leaf and nothing else, skipping honestly the 9 whose plans declare no `Files:` line.
+
+Then the replay was measured, and it fires there too, on a FAITHFUL leaf: `8d4ee3b1`'s
+leaf 2 declares `src/playground/__init__.py` to export the new module, a path the plan
+authorises nowhere. So the record is 1 true and 1 false in 12 gradeable leaves, not 1 and
+0 in 11 - and the refinement that would have saved it (only fire on a path that already
+EXISTS in the repository, since the decompose prompt's own sizing rule tells a leaf to
+carry a NEW sibling test file) does not: `__init__.py` already exists. **The rule is
+unshipped and the first flattering measurement lasted exactly one more sample.** Anyone
+returning to it needs a real evidence base on both sides, not one fabricating leaf.
+
+**The round-7 prompt fix did hold on replay.** The plan document that produced the
+fabrication was resubmitted verbatim (plan `8d4ee3b1`): no leaf declares the contract test
+file and both carry the plan's real acceptance command, where the original put
+`test_hm.py` in leaf 1 with sixteen invented tests. One sample against a non-deterministic
+decomposer is evidence, not proof, but it is evidence on the one input that matters.
+Guard: `test_replaying_the_fabricating_plan_no_longer_grabs_the_contract_file`.
+
 ## The route that reaches triage for a big leaf argues against `split`
 
 `07583d2` made the verify-gate route reachable for a leaf whose declared check restates

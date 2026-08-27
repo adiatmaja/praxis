@@ -226,8 +226,24 @@ def _verbatim_coverage(section: str, plan_text: str) -> float:
 #: costs a line in an audit trail while a missed one costs an ungraded rewrite
 #: of the user's acceptance criteria.
 #:
-#: The evidence is two real plans. Treat the NUMBER as provisional and the
-#: SEPARATION as the finding; promoting this rule to HARD needs more of both.
+#: THE SEPARATION WAS AN ARTEFACT OF THOSE TWO PLANS, and more evidence
+#: REFUTED it (2026-08-27, the same day, measured over 15 real decompositions
+#: and 32 leaves -- ``tests/fixtures/decompose/plan_text_backing_corpus.json``,
+#: and ``test_verbatim_rule_does_not_separate_on_the_wider_corpus``). The rule
+#: fires on 17 of the 29 FAITHFUL leaves, and the three fabricated scores
+#: (0.04, 0.20, 0.12) sit INSIDE the faithful distribution's lower third -- ten
+#: faithful leaves score 0.00 -- so NO threshold separates them. The dominant
+#: cause is markup, not judgment: a plan writes a bullet with `inline code` and
+#: the decomposer emits the same sentence for the worker without the backticks,
+#: so a substring test misses a line-for-line copy.
+#:
+#: This rule is therefore a WEAK HINT, not evidence of fabrication. It stays
+#: SOFT and it must not gate anything: promoting it to HARD would have blocked
+#: faithful decompositions far more often than the one fabrication it was built
+#: from. Stripping markup before comparing was measured too (17/29 -> 9/29
+#: false, 3/3 -> 1/3 fabricated, and the one that survives IS the defect leaf);
+#: it is an improvement and it is still not separation, so it does not make the
+#: rule HARD either. Re-measure on the CORPUS, never on the two-plan fixture.
 _PLAN_BACKED_THRESHOLD = 0.35
 
 #: Lines shorter than this are labels and fragments ("Steps:", "Files: x.py")
@@ -1002,7 +1018,11 @@ def _check_plan_text_verbatim(
             # deleted the repository's acceptance test and specified sixteen
             # replacement tests of its own invention, and 1 of 3 on a faithful
             # decomposition of a well-formed three-task plan. The check that
-            # grades drift was disabled BY drifting.
+            # grades drift was disabled BY drifting. Widened the same day over
+            # every decomposition this install had produced plus six plans
+            # written to vary the plan SHAPE: **1 of 32 leaves** resolved a
+            # section. This fallback is not the exceptional path, it is
+            # effectively the whole rule.
             #
             # Fall back to the DOCUMENT, which needs no section resolution and
             # no title: are this leaf's own lines in the plan at all? The
@@ -1023,9 +1043,20 @@ def _check_plan_text_verbatim(
                         rule="plan_text_verbatim",
                         task_id=leaf.id,
                         severity="soft",
+                        # A WEAK HINT, and the message says so, because the
+                        # measurement says so: 17 of 29 faithful leaves in the
+                        # corpus carry this warning, most of them for markup
+                        # differences alone. An operator who reads it as "this
+                        # leaf was fabricated" will be wrong five times in six,
+                        # and the sentence they read is the only place that can
+                        # tell them.
                         message=(
                             "plan_text is largely not present in the source "
-                            "plan, and no plan heading names this leaf"
+                            "plan, and no plan heading names this leaf. This "
+                            "is a weak hint, not a finding: a faithful leaf "
+                            "that reworded or unquoted the plan's own lines "
+                            "scores the same. Compare the leaf against the "
+                            "plan before acting on it"
                         ),
                     )
                 )

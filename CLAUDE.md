@@ -808,8 +808,24 @@ story. New gotchas go in `docs/gotchas.md` first. (No count is quoted on purpose
   fires on every three-word brief, which an existing fixture caught. Section resolution is
   unchanged and still preferred. Validated on the real artefacts, kept as
   `tests/fixtures/decompose/plan_text_backing_cases.json`: 3/3 fabricated, 0/3 faithful.
-  The rule stays SOFT and the 0.35 threshold rests on TWO real plans - the separation is
-  the finding, the number is provisional.
+  **THAT SEPARATION WAS AN ARTEFACT OF THOSE TWO PLANS, and the rule MUST NOT become
+  HARD** (measured the same day over 16 real decompositions / 34 leaves, the corpus kept
+  as `plan_text_backing_corpus.json`): it fires on **19 of the 31 FAITHFUL leaves**, and
+  the fabricated scores 0.04/0.20/0.12 sit INSIDE the faithful lower third - ten faithful
+  leaves score 0.00 - so no threshold separates. The cause is MARKUP, not judgment: a
+  decomposer strips a plan bullet's backticks for a plain-text worker prompt and a
+  substring test then misses a line-for-line copy (probe `f91dc84e`: three leaves that ARE
+  the plan's bullets, all three warned). Elaborating a requirement into floor-model steps
+  scores near zero too, and that is the flagship mechanism working. **Section resolution
+  succeeded on 1 of 32 leaves**, so the fallback IS the rule. Stripping markup was measured
+  (17/29 -> 9/29 false, 3/3 -> 1/3 fabricated, the survivor being the real defect leaf) and
+  deliberately NOT shipped: better, still not separation, and tuning on one fabricating
+  plan repeats the error. The rule stays SOFT, its message now SAYS it is a weak hint, and
+  `test_verbatim_rule_does_not_separate_on_the_wider_corpus` pins the count so a tuner must
+  re-measure on the corpus. The unshipped candidate (leaf `files` graded against the plan's
+  `Files:` lines, DOCUMENT-scoped) looked perfect at 1 true / 0 false in 11 leaves and then
+  false-fired on the very next sample; `docs/gotchas.md` carries that and the fact that the
+  round-7 PROMPT fix HELD when the fabricating plan was replayed verbatim.
 - **The route that reaches triage for a BIG leaf argues against `split`** (2026-08-27).
   `07583d2`'s verify-gate arm is sound and reachable, but the final leaf of a dependent
   chain reaches the NO-CHANGE route instead: its declared path exists precisely because an
@@ -849,8 +865,13 @@ story. New gotchas go in `docs/gotchas.md` first. (No count is quoted on purpose
 - **`tests/fixtures/decompose/plan_text_backing_cases.json` holds TWO REAL decompositions**
   - one that fabricated an acceptance suite, one faithful, same decomposer and same day -
   extracted programmatically from `plans.pending_input` and `plans.opus_plan`, never
-  retyped. It is what keeps the `plan_text_verbatim` threshold honest if anyone tunes it.
-  A rule that fires on both, or on neither, is worthless. Do not hand-edit it; re-extract.
+  retyped. **Two plans is not an evidence base and this pair MISLED once already** - it
+  separates perfectly and the rule does not generalise. `plan_text_backing_corpus.json`
+  beside it is the wider one (15 real decompositions, 32 leaves, six of them plans authored
+  to vary the plan SHAPE and run live through `execute_plan`), each leaf labelled by
+  reading its `Files`/`Acceptance`/`Steps` against its plan. **Tune or re-severity any
+  decomposition-grading rule against the CORPUS, never the pair.** Both are extracted
+  programmatically; do not hand-edit either, re-extract.
 - **The status vocabulary is frozen in `core/status_vocab.py`**: add a value to the enum
   AND its exhaustive `test_schemas` assertion together.
 - **`core/leaf_templates.py` is the single source of per-`LeafType` section

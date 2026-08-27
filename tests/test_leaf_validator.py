@@ -1267,3 +1267,114 @@ def test_verbatim_rule_on_the_real_decompositions(case: str, expect_fires: bool)
         assert len(fired) == len(leaves), fixture["note"]
     else:
         assert fired == [], fixture["note"]
+
+
+def _corpus() -> list[dict]:
+    """The wider plan_text-backing corpus (15 real decompositions, 32 leaves)."""
+    return json.loads(
+        (
+            Path(__file__).parent
+            / "fixtures"
+            / "decompose"
+            / "plan_text_backing_corpus.json"
+        ).read_text(encoding="utf-8")
+    )
+
+
+def _verbatim_fires(plan: dict) -> list[str]:
+    """Return the leaf ids ``plan_text_verbatim`` fires on for one dumped plan."""
+    leaves = [
+        LeafTask(id=leaf["id"], title=leaf["title"], plan_text=leaf["plan_text"])
+        for leaf in plan["leaves"]
+    ]
+    result = validate_leaves({}, _profile(), plan["source_plan"], leaves)
+    return [v.task_id for v in result.soft if v.rule == "plan_text_verbatim"]
+
+
+@pytest.mark.unit
+def test_verbatim_rule_does_not_separate_on_the_wider_corpus():
+    """MEASURED REFUTATION: this rule is not evidence of fabrication.
+
+    ``plan_text_backing_cases.json`` holds TWO plans and on those two the rule
+    separates perfectly (3 of 3 fabricated, 0 of 3 faithful). That is what it
+    was built and tuned on, and it does NOT generalise. Measured on 2026-08-27
+    over every execute-plan decomposition this install had produced plus seven
+    plans run live to vary the SHAPE (one-section 1:N, prose, code blocks,
+    generic headings the decomposer must retitle, a well-formed multi-task
+    plan, a fabrication bait, and a verbatim REPLAY of the plan that produced
+    the round-7 fabrication): 34 leaves over 16 real decompositions, labelled
+    by reading each leaf's Files/Acceptance/Steps against its plan.
+
+    The rule fires on 19 of the 31 FAITHFUL leaves. Its precision on this
+    corpus is 3 in 22. The dominant cause is not judgment but markup: a plan
+    writes ``- Define `IntSetError(ValueError)`, raised for ...`` and the
+    decomposer emits the same sentence for the worker with the backticks
+    stripped, so a substring test misses a line-for-line copy. Probe D's three
+    leaves are literally the plan's own bullets and all three fire.
+
+    So promoting it to HARD is refuted: it would have blocked faithful
+    decompositions far more often than the one it was built to catch. Anyone
+    tuning the metric must re-measure HERE, not on the two-plan fixture.
+    """
+    corpus = _corpus()
+    faithful_fires = 0
+    faithful_leaves = 0
+    fabricated_fires = 0
+    fabricated_leaves = 0
+    for plan in corpus:
+        fires = len(_verbatim_fires(plan))
+        if plan["label"] == "faithful":
+            faithful_fires += fires
+            faithful_leaves += len(plan["leaves"])
+        else:
+            fabricated_fires += fires
+            fabricated_leaves += len(plan["leaves"])
+
+    assert (faithful_leaves, fabricated_leaves) == (31, 3)
+    assert fabricated_fires == 3
+    assert faithful_fires == 19, (
+        "The measured false-positive count changed. That is not a test to "
+        "update in passing: re-measure the whole corpus and rewrite the "
+        "docstring with the new numbers before deciding anything about this "
+        "rule's severity."
+    )
+
+
+@pytest.mark.unit
+def test_verbatim_rule_fires_on_a_line_for_line_copy_of_the_plan():
+    """The clearest single false positive, kept as its own guard.
+
+    Probe D (plan ``f91dc84e``, 2026-08-27): a three-section plan whose leaf
+    Steps are the plan's own bullets, word for word, with only the markdown
+    inline-code backticks removed - which is what a worker-facing prompt should
+    do. All three leaves are warned as "largely not present in the source
+    plan". Nothing about that decomposition is wrong.
+    """
+    plan = next(p for p in _corpus() if p["plan_id"] == "f91dc84e")
+    assert plan["label"] == "faithful"
+    assert len(_verbatim_fires(plan)) == 3
+
+
+@pytest.mark.unit
+def test_replaying_the_fabricating_plan_no_longer_grabs_the_contract_file():
+    """The round-7 prompt fix, tested on the input that defeated it.
+
+    Plan ``2ea05b85`` said ``src/playground/test_hm.py`` was the contract and
+    forbade editing it, and the decomposer put that file into leaf 1's ``files``
+    with sixteen replacement tests of its own. The decompose prompt then gained
+    the prevention half. On 2026-08-27 the SAME plan document was submitted
+    again, verbatim, through ``execute_plan`` (plan ``8d4ee3b1``): no leaf
+    declares the test file and both carry the plan's real acceptance command.
+
+    One sample against a non-deterministic decomposer is evidence, not proof -
+    but it is evidence on the one input that matters, and it is the reason the
+    ``files``-authorisation rule was not shipped off the back of a single
+    fabricating leaf. That same replay also shows the rule's cost: leaf 2 adds
+    ``src/playground/__init__.py``, which the plan authorises nowhere and which
+    already exists in the repository, so a document-scoped files rule would
+    fire on a faithful leaf here.
+    """
+    plan = next(p for p in _corpus() if p["plan_id"] == "8d4ee3b1")
+    declared = {path for leaf in plan["leaves"] for path in (leaf["files"] or [])}
+    assert "src/playground/test_hm.py" not in declared
+    assert "src/playground/__init__.py" in declared
