@@ -3852,3 +3852,120 @@ The usable signal needs no inference and no log parsing: **ask the endpoint for 
 and compare the `model` field of the response to the model that was requested.** A
 mismatch is unambiguous, and it is a property of the (model, endpoint) PAIR, which is
 exactly how the existing reason sentence is already worded.
+
+## A human's REJECT was overwritten by a planning failure already in flight
+
+`_still_activatable` exists because a `POST /api/plans/{id}/reject` can legitimately land
+while a planning brain call is running. It guards the SUCCESS arm of both seats: the
+decomposition result is discarded rather than written back as ACTIVE, and the plan row is
+left exactly as the rejecter wrote it.
+
+The FAILURE arm had no such guard. When the same brain call came back unusable instead of
+usable, the failure path wrote FAILED and an engine-authored reason straight over the
+human's REJECTED.
+
+Observed live on 2026-08-28 during the production-readiness walk. A plan was submitted by
+mistake, rejected within seconds (the endpoint answered 200 with `"status": "rejected"`),
+and the decomposition already in flight then failed on "review response had no tasks". The
+row ended:
+
+    7efdbcb9 | status= failed | error= 'review response had no tasks'
+
+Nothing is dispatched either way, so the entire cost is in what the surfaces then say. The
+dashboard rendered "This plan failed before any task was recorded" for a plan a person had
+cancelled on purpose, two lanes above a different plan correctly reading "This plan was
+rejected, so no tasks were created". Same UI, two plans, one honest and one not.
+`plans.error` is a ONE-WAY column, so the misattribution is permanent.
+
+### The first fix was incomplete, and a test of the other arm is what found it
+
+Guarding `_fail_plan` alone covers the PERMANENT class, which is the arm the live incident
+took. A TRANSIENT failure never reaches `_fail_plan` below the attempt bound: it goes to
+`_charge_planning_attempt`, which bumps `plan_attempts` and writes `plans.error` **without
+touching the status**. Guarding only the terminal arm therefore left a rejected plan
+reading REJECTED with an engine-authored error against it and its attempt counter
+climbing, which is a quieter version of the same lie.
+
+Both arms now share `_planning_outcome_still_applies`, and the transient one checks it
+BEFORE the counter moves, because bumping the counter is itself a write against the row.
+
+### Which statuses are refused, and why FAILED is not among them
+
+`_UNFAILABLE_PLAN_STATUSES` is REJECTED and COMPLETED, and each is there for its own
+reason rather than as a blanket terminal check. REJECTED is a human's decision, which a
+planner's failure has no standing to overturn. COMPLETED has landed, so a late failure
+from an already-superseded attempt would deny work that is in the tree.
+
+FAILED is deliberately still writable: re-failing an already-failed plan is idempotent and
+the newest reason is the useful one. This is NOT the complement of
+`_ACTIVATABLE_PLAN_STATUSES`, and writing it as one would start discarding the only
+diagnosis a retrying seat produces.
+
+`tests/test_plan_rejection_survives_planning_failure.py` pins both defects and both
+positive controls. Emptying the frozenset turns the two defect tests red and leaves the
+two controls green. Note that the COMPLETED test asserts `error` and `plan_attempts`, not
+just the status: on the transient arm the status is never written, so a status-only
+assertion stayed green with the whole guard deleted, which is the guard-cannot-fail shape
+this repo keeps re-learning.
+
+## The dashboard read the API's naive UTC timestamps as local time
+
+`GET /api/plans` serves SQLite's own `created_at`: `"2026-08-27 21:13:33"`, with a space
+instead of a `T`, and no offset and no `Z`. A string in that shape is not an ISO instant,
+so `new Date(s)` takes the implementation-defined branch of ECMA-262, and V8 reads it as
+LOCAL time. Every relative age the dashboard printed was therefore wrong by exactly the
+viewer's UTC offset.
+
+Measured in the live dashboard on 2026-08-28 from UTC+7, against the plan that had just
+finished:
+
+    new Date("2026-08-27 21:13:33").toISOString()  ->  2026-08-27T14:13:33.000Z
+    true age 0.33 h                                    rendered "7h ago"
+
+East of UTC this over-reports, which is merely wrong. WEST of UTC it UNDER-reports, and
+`timeAgo`'s own `Math.max(0, ...)` then clamps a timestamp that parses into the future all
+the way down to "0s ago", so work that is hours old reads as "just now". That is the
+direction that actually misleads.
+
+**The blast radius is one site, and the query is the way to know that**:
+`new Date\(|Date\.parse\(|timeAgo\(|age_hours|toLocale` over `web/app.js` returns five
+hits. Two of them (`proposalAges`, the proposal row) use the SERVER-computed `age_hours`
+and were always right; the header badge uses `oldest_hours`, likewise server-side. Only
+`timeAgo`, called from `renderCompletedLane`, did its own parsing.
+
+`toInstant` completes a zone-less stamp to UTC and leaves a zone-bearing one alone.
+The second half matters: `agent_runs.finished_at` is a full ISO instant with `+00:00`, and
+appending `Z` to it would shift an already-correct value, which is the same bug with the
+sign flipped.
+
+The guard reads the zone-detection regex OUT of the shipped source and exercises it
+against real timestamps from this API, rather than restating it, so widening or tightening
+the pattern is MEASURED. Both mutations are killed: reverting `timeAgo` to raw parsing, and
+loosening the regex so a naive stamp looks zoned.
+
+## A stalled plan was invisible on the dashboard lane
+
+A stalled plan is left ACTIVE with a null `error` on purpose (writing it FAILED would hand
+its branch to the stale-branch sweeper). Every surface has to compensate for that, and
+three of the four did:
+
+- `praxis plans` prints `active (stalled; 1 task blocked by a failure)` plus a copyable
+  `praxis retry <blocking-task-id>`, with the BLOCKING id, which is the only legal argument;
+- MCP `poll_plan` sets `stalled.action_required` to `retry_failed_task` and its hint names
+  all three recovery routes;
+- `PlanResponse` carries `stalled_task_ids` and `stalled_blocked_by_task_ids`.
+
+The dashboard lane header rendered `badge(plan.status)` and nothing else, so the swim lane,
+which is the view the dashboard opens on, showed a plan nothing will ever move as an
+ordinary ACTIVE lane. The stall was rendered only in the plan DETAIL panel, which a reader
+reaches by clicking. Found on 2026-08-28 against playground plan `01029a25`, whose CLI and
+MCP views both flagged it at list level.
+
+The chip sits BESIDE the status badge rather than replacing it, because both facts are
+true: the plan is active, and nothing will ever move it.
+
+**The first version of the guard could not fail.** It asserted that `lane-stalled` and
+`plan.stalled_task_ids` appear in `renderSwimLane`'s body, and stayed green when the chip
+was deleted from the header, because the chip's DECLARATION is in the same function.
+Declaring is not rendering: the guard now pins the EMISSION, matching between
+`badge(plan.status)` and the spec preview.

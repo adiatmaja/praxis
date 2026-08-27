@@ -307,10 +307,18 @@ Tables: `users`, `projects`, `plans`, `tasks`, `agent_runs`, `opus_state`,
 - `tasks.contract_drift` (migration 13) is what a task's diff did to the paths its PLAN
   DOCUMENT authorised, computed at review time from the diff already in hand and carried
   to whoever opens the merge gate. JSON text, decoded by the ONE decoder
-  (`core/contract_drift.decode_payload`). NULLABLE, and the NULL is load-bearing: it means
-  "never computed" (a pre-feature row, or a review that failed before a diff existed) and
-  every surface renders it as "not checked", never as clean - a checked-and-clean task
-  carries `{"gradable": true, "named_not_authorised": [], ...}` instead.
+  (`core/contract_drift.decode_payload`). NULLABLE, and the NULL means "never computed"
+  (a pre-feature row, or a review that failed before a diff existed); a checked-and-clean
+  task carries `{"gradable": true, "named_not_authorised": [], ...}` instead. **The
+  distinction lives in the DATA and in the REST payload, NOT on any rendering surface**
+  (corrected 2026-08-28; this entry used to claim "every surface renders it as 'not
+  checked', never as clean", which was never true of any of them). `_drift_line`
+  (`src/cli/main.py`), `contractDriftBlock` (`web/app.js`) and MCP's summary all render
+  NOTHING for NULL and for checked-clean alike, deliberately and for a stated reason: a
+  clean line on every parked task trains the reader to skip the block that also carries
+  the warnings. So a human at the gate cannot tell "not checked" from "clean", and that
+  is the accepted trade, not an oversight. Only the UNGRADABLE reason is printed, because
+  that one is not the normal case.
 - **Schema version is 13; `tests/test_migrations.py` pins it.** Idempotency is proved by
   invoking a step DIRECTLY TWICE, never by rewinding `user_version`: a rewind that no
   longer reaches far enough silently stops re-running the step, and a `count(...) == 1`
@@ -777,6 +785,31 @@ story. New gotchas go in `docs/gotchas.md` first. (No count is quoted on purpose
   command's defaults in `OptionInfo`).
 - **GitHub's PR state outranks `gh`'s exit code**: `gh pr merge` can 504 AFTER a
   successful merge, so `merge_pr` re-reads `gh pr view --json state` before failing.
+- **A human's REJECT outranks a planning failure already in flight, on BOTH arms**
+  (2026-08-28). `_still_activatable` guarded only the SUCCESS arm, so a decomposition that
+  came back UNUSABLE wrote FAILED plus an engine-authored reason over the operator's
+  REJECTED, and `plans.error` is one-way. Guarding the terminal arm alone is NOT enough:
+  a transient failure never reaches `_fail_plan`, it reaches `_charge_planning_attempt`,
+  which writes the error and bumps the counter without touching the status.
+  `_planning_outcome_still_applies` is shared by both and is checked BEFORE the counter
+  moves. `_UNFAILABLE_PLAN_STATUSES` is REJECTED + COMPLETED and is deliberately NOT the
+  complement of `_ACTIVATABLE_PLAN_STATUSES`: re-failing a FAILED plan is idempotent.
+- **A repository is pinned to the base branch its FIRST project row got** (2026-08-28,
+  open). `ProjectUpdate` forbids `default_branch` and `praxis configure` has no flag, and
+  `execute_plan` resolves a repo with `ORDER BY rowid LIMIT 1`, so a second project row
+  for the same URL is silently unreachable while the call still overwrites the first
+  row's `model_name` and `harness`. Creating it answers 201 and then does nothing.
+- **The dashboard's own date math must treat an API timestamp as UTC**: the API serves
+  SQLite's naive `created_at` (`"2026-08-27 21:13:33"`), which V8 parses as LOCAL time, so
+  every relative age was off by the viewer's UTC offset (measured: "7h ago" for a plan 20
+  minutes old, from UTC+7). `toInstant` in `web/app.js` is the normaliser; a zone-bearing
+  stamp must be left alone or it shifts twice. Enumerate the sites with
+  `new Date\(|Date\.parse\(|timeAgo\(|age_hours|toLocale` over `web/app.js` - the ones
+  using the SERVER's `age_hours` were always correct.
+- **A stalled plan reads ACTIVE, so every surface needs its own marker.** The dashboard
+  swim lane had none and showed it as an ordinary active lane; the stall was only in the
+  plan detail. A guard that greps a function body for the marker CANNOT fail if the
+  marker's declaration stays behind: pin the EMISSION.
 - **An id belongs on its own line, never in a table column** (rich shrinks and folds
   it; a truncated id 404s). `pending`/`plans`/`tasks` print a copyable
   `praxis <verb> <id>` line below the table; assert contiguity on ONE line at 80
