@@ -112,10 +112,16 @@ than re-deriving; they were argued word by word.
 - **README opening paragraph:** leads PLAIN ("you did the planning with a strong
   model; Praxis takes it from there"), then the mechanism chain (decompose to the
   worker model's capability, dispatch, verify, review, PR parked for approval),
-  and demotes the formal definition to an "In one phrase:" second beat. Two
+  and demotes the formal definition to a second beat. Two
   independent Fable newcomer audits (2026-08-24) scored the definition-first
   opening as the page's main defect; the definition itself is unchanged, only
-  its position.
+  its position. **The ORDER is what is canonical here, not any label announcing
+  it** (2026-08-27): the opening carried "In plain words:" over the subtitle and
+  "In one phrase:" over the definition, and both labels were cut as throat-clearing
+  while the beats they introduced stayed exactly where they were. The mechanism
+  chain is now three bullets rather than one sentence, for the same reason the
+  definition moved: a newcomer should not have to parse a five-line sentence to
+  find three parallel verbs. Do not reinstate a label to satisfy this bullet.
   "Never a blind dispatch" closes the decomposition paragraph in the governed
   section instead, where "dispatch" has been defined; in the opening it landed
   before a first-time reader knew what a dispatch was (Fable newcomer audit,
