@@ -604,6 +604,30 @@ class _LeafVerifyRun:
     output: str = ""
 
 
+#: A phrase from the unmerged-work decline below, used to recognise OUR OWN
+#: previous message in ``tasks.review_feedback``. The decline quotes the prior
+#: feedback so the review's objections survive into the next worker's prompt,
+#: and without this check attempt 3 would quote attempt 2's quotation of
+#: attempt 1 - the same text nested, crowding out the part a worker can act on.
+_UNMERGED_WORK_SENTINEL = "already carries your previous attempt's work"
+
+
+@dataclass(frozen=True)
+class _UnmergedWork:
+    """This task's own branch, carrying commits the base branch does not.
+
+    ``pr_url`` and ``prior_feedback`` are carried because the decline built
+    from this is written to ``tasks.review_feedback``, which the Bible injects
+    into the NEXT worker's prompt: the pull request is what a human needs to
+    act, and the prior review's objections are the only part a worker can act
+    on. Either may be absent, and the reason renders what it has.
+    """
+
+    branch: str
+    pr_url: str | None
+    prior_feedback: str
+
+
 @dataclass(frozen=True)
 class _PlanVerifyResult:
     """Outcome of the whole-plan verify gate.
@@ -3098,7 +3122,7 @@ class ReviewMixin:
         task_id: str,
         project: dict[str, Any],
         base_branch: str,
-    ) -> str | None:
+    ) -> _UnmergedWork | None:
         """Return the task branch when it carries commits ``base`` does not.
 
         The question "does the repository already satisfy this leaf" is asked
@@ -3142,7 +3166,8 @@ class ReviewMixin:
             base_branch: The branch the leaf was cut from.
 
         Returns:
-            The task's branch name when it carries unmerged commits, else None.
+            The branch, its pull request and the review feedback already on the
+            row, when the branch carries unmerged commits; else None.
         """
         try:
             task = await self._tq.get_task(task_id)
@@ -3155,7 +3180,17 @@ class ReviewMixin:
             if not isinstance(head, str) or not head:
                 return None
             contained = await backend.base_contains(base_branch, head)
-            return str(branch) if contained is False else None
+            if contained is not False:
+                return None
+            # Read from the row BEFORE the callback overwrites it with this
+            # very decline: at this instant it still holds the review that
+            # rejected the attempt now sitting on the branch.
+            prior = task.get("review_feedback")
+            return _UnmergedWork(
+                branch=str(branch),
+                pr_url=task.get("pr_url"),
+                prior_feedback=prior if isinstance(prior, str) else "",
+            )
         except Exception:  # noqa: BLE001 - one more fact, never a new failure
             # This method only ever REFUSES to close a leaf. Raising out of it
             # would turn a missing extra check into a failed review, which is a
@@ -3166,6 +3201,51 @@ class ReviewMixin:
                 task_id,
             )
             return None
+
+    @staticmethod
+    def _unmerged_work_reason(unmerged: _UnmergedWork) -> str:
+        """Say what happened AND what the next worker must do about it.
+
+        This string is not a log line. The callback writes it to
+        ``tasks.review_feedback`` and ``worker_bible`` injects that column into
+        the next attempt's prompt, so whatever is written here is the guidance
+        the worker gets - and it REPLACES what was there, which on this path is
+        the review that rejected the work now sitting on the branch.
+
+        The first version of this said only that the branch carried unmerged
+        commits. True, and useless to a worker: it describes git topology and
+        names no action, while silently displacing the two concrete defects the
+        reviewer had listed. A worker handed that has nothing to do, produces
+        no diff again, and spends the attempt reaching the same state.
+
+        So the reason states the action first, names the pull request for the
+        human who will read the same column, and quotes the prior review last.
+        The quote is skipped when the stored feedback is one of THESE messages
+        (see :data:`_UNMERGED_WORK_SENTINEL`), or attempt 3 would quote attempt
+        2's quotation of attempt 1 and bury the actionable part in its own
+        history.
+
+        Args:
+            unmerged: The branch, its pull request, and the feedback already on
+                the task row.
+
+        Returns:
+            A clause that reads correctly after the caller's "Worker produced
+            no changes, and ".
+        """
+        where = f" (pull request: {unmerged.pr_url})" if unmerged.pr_url else ""
+        reason = (
+            f"its own branch ({unmerged.branch}) {_UNMERGED_WORK_SENTINEL}, which "
+            f"the repository does not have{where}. That work was NOT accepted, so "
+            "the task is not done: change the files on that branch to answer the "
+            "objections below and commit there. Do not start again from scratch, "
+            "and do not report no changes: the repository cannot have already "
+            "satisfied this task while that work is unmerged"
+        )
+        prior = unmerged.prior_feedback.strip()
+        if prior and _UNMERGED_WORK_SENTINEL not in prior:
+            reason += f". The review that rejected it said: {_log_excerpt(prior)}"
+        return reason
 
     async def no_change_outcome(
         self,
@@ -3402,15 +3482,15 @@ class ReviewMixin:
         # specific fact and names something the next worker can create, and
         # BEFORE the gate verdict, because no verdict about the base branch can
         # see work that is sitting on another branch.
-        unmerged_branch = await self._work_sits_unmerged_on_the_task_branch(
+        unmerged = await self._work_sits_unmerged_on_the_task_branch(
             task_id, project, base_branch
         )
-        if unmerged_branch is not None:
+        if unmerged is not None:
             logger.warning(
                 "Task %s reported no changes, but its own branch %s carries "
                 "commits %s does not; refusing to close it as a no-op",
                 task_id,
-                unmerged_branch,
+                unmerged.branch,
                 base_branch,
             )
             # NOT worker-attributable, deliberately. The worker was handed a
@@ -3420,15 +3500,7 @@ class ReviewMixin:
             # leaf still fails closed and still retries, it is simply not
             # charged in the column the capability loop reads and not offered a
             # triage answer whose worst case is terminal.
-            return NoChangeDecision(
-                False,
-                f"its own branch ({unmerged_branch}) carries commits that "
-                f"{base_branch} does not, so this task's work exists but is "
-                "NOT in the repository - most often an earlier attempt whose "
-                "review failed, still open as a pull request. The repository "
-                "cannot have 'already satisfied' this task while that work is "
-                "unmerged",
-            )
+            return NoChangeDecision(False, self._unmerged_work_reason(unmerged))
         evidence = _no_op_evidence(verdict, base_branch)
         if evidence is None:
             logger.warning(

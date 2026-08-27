@@ -210,3 +210,113 @@ async def test_a_raising_backend_never_fails_the_review(
     decision = await _decide(orch, task_id, project, backend)
 
     assert decision.closed is True
+
+
+# ---------------------------------------------------------------------------
+# What the refusal TELLS the next worker
+# ---------------------------------------------------------------------------
+#
+# The decline is written to `tasks.review_feedback` by the callback and
+# `worker_bible` injects that column into the next attempt's prompt. So this
+# string is guidance, not a log line - and it REPLACES what was there, which on
+# this path is the review that rejected the work now sitting on the branch.
+
+
+async def _set_task(orch: Any, task_id: str, **fields: Any) -> None:
+    for column, value in fields.items():
+        await orch._tq._db.execute(
+            f"UPDATE tasks SET {column} = ? WHERE id = ?",  # nosec B608
+            (value, task_id),
+        )
+
+
+async def _reason(orch: Any, task_id: str, project: dict[str, Any]) -> str:
+    monkeypatched = _backend(head="deadbee", contained=False)
+    decision = await _decide(orch, task_id, project, monkeypatched)
+    assert decision.closed is False
+    return decision.why
+
+
+@pytest.mark.unit
+async def test_the_refusal_names_an_action_and_the_pull_request(
+    orchestrator_fixture, monkeypatch
+):
+    """A worker handed git topology has nothing to do and produces no diff again.
+
+    The first version of this reason said only that the branch carried commits
+    the base did not. True, and useless: it names no action, and it silently
+    displaced the concrete defects the reviewer had listed. The pull request is
+    there for the human reading the same column.
+    """
+    orch, task_id, project = orchestrator_fixture
+    await _declare(orch, task_id, verification='python -c "import a"')
+    await _set_task(orch, task_id, pr_url="https://github.com/u/repo/pull/107")
+    monkeypatch.setattr(
+        review_mod,
+        "run_verify",
+        AsyncMock(side_effect=[(False, _RED), (True, "ok")]),
+    )
+
+    why = await _reason(orch, task_id, project)
+
+    assert "https://github.com/u/repo/pull/107" in why
+    assert "change the files on that branch" in why
+    assert "Do not start again from scratch" in why
+
+
+@pytest.mark.unit
+async def test_the_refusal_carries_the_review_that_rejected_the_work(
+    orchestrator_fixture, monkeypatch
+):
+    """The only part a worker can act on must survive into its prompt.
+
+    Measured on the live walk: attempt 1's review named two real defects, and
+    the retry's decline overwrote them with a sentence about branch topology.
+    """
+    orch, task_id, project = orchestrator_fixture
+    await _declare(orch, task_id, verification='python -c "import a"')
+    await _set_task(
+        orch,
+        task_id,
+        review_feedback="`allowed: object` is not iterable under strict mypy.",
+    )
+    monkeypatch.setattr(
+        review_mod,
+        "run_verify",
+        AsyncMock(side_effect=[(False, _RED), (True, "ok")]),
+    )
+
+    why = await _reason(orch, task_id, project)
+
+    assert "not iterable under strict mypy" in why
+
+
+@pytest.mark.unit
+async def test_the_refusal_does_not_quote_its_own_previous_message(
+    orchestrator_fixture, monkeypatch
+):
+    """Attempt 3 must not quote attempt 2's quotation of attempt 1.
+
+    Without this, the actionable part is pushed further down the prompt on
+    every attempt by the history of the attempts before it.
+    """
+    orch, task_id, project = orchestrator_fixture
+    await _declare(orch, task_id, verification='python -c "import a"')
+    await _set_task(
+        orch,
+        task_id,
+        review_feedback=(
+            "Worker produced no changes, and its own branch (agent/x) "
+            f"{review_mod._UNMERGED_WORK_SENTINEL}, which the repository does not have."
+        ),
+    )
+    monkeypatch.setattr(
+        review_mod,
+        "run_verify",
+        AsyncMock(side_effect=[(False, _RED), (True, "ok")]),
+    )
+
+    why = await _reason(orch, task_id, project)
+
+    assert "The review that rejected it said" not in why
+    assert why.count(review_mod._UNMERGED_WORK_SENTINEL) == 1
