@@ -13,6 +13,7 @@ from typing import Any
 
 import pytest
 
+from orchestrator.core.agent_prompt import fixed_scaffolding_tokens
 from orchestrator.core.difficulty import (
     DEFAULT_BIAS,
     DEFAULT_WEIGHTS,
@@ -24,6 +25,7 @@ from orchestrator.core.difficulty import (
     resolve_bias,
     resolve_weights,
 )
+from orchestrator.core.token_budget import estimate_tokens, worker_budget
 from orchestrator.models.schemas import CapabilityProfile, LeafTask
 
 
@@ -485,3 +487,35 @@ async def test_effective_settings_reads_the_weights_and_thresholds(db):
     # Move the shipped threshold and this names the tests that have to be
     # re-derived, instead of leaving them quietly measuring the wrong boundary.
     assert config["flag_below"] == _FLAG_BELOW
+
+
+@pytest.mark.unit
+def test_context_ratio_charges_the_prompt_scaffolding_not_just_plan_text():
+    """The scorer must charge what Praxis SENDS, not just the leaf's own text.
+
+    Same defect class as the budget-gate fix of 2026-08-27, at a different
+    seat. ``_build_worker_bible`` was found scoring the Bible alone and
+    charging everything else zero; this scorer had the sibling bug, charging
+    ``plan_text`` alone. What actually reaches the worker is that text INSIDE
+    the implementer prompt, and ``agent_prompt.fixed_scaffolding_tokens`` is
+    the derived floor for the rest of it - 1344 tokens, which on an 8192-token
+    window is 41% of the whole per-leaf budget. Under-charging by that much
+    makes the pre-dispatch scorer over-optimistic exactly for the small-window
+    workers the flag exists to protect.
+
+    The floor is DERIVED from the template on each call, never a literal here:
+    a number written down in this test would keep passing after someone edited
+    the template, which is the failure mode the floor's own docstring warns
+    about.
+    """
+    profile = _profile()
+    leaf = _leaf()
+    budget = worker_budget(profile.context_window)
+    floor = fixed_scaffolding_tokens()
+
+    charged = extract_features(leaf, profile).context_ratio * budget
+
+    assert charged >= estimate_tokens(leaf.plan_text) + floor, (
+        "context_ratio charges only the leaf's plan_text; the implementer "
+        f"prompt scaffolding ({floor} tokens) reaches the worker too"
+    )

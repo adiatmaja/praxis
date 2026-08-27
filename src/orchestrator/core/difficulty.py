@@ -19,6 +19,7 @@ import math
 from dataclasses import dataclass
 from typing import Any, Protocol
 
+from orchestrator.core.agent_prompt import fixed_scaffolding_tokens
 from orchestrator.core.leaf_validator import _RUNNABLE_SIGNAL
 from orchestrator.core.token_budget import (
     estimate_tokens,
@@ -137,7 +138,23 @@ def extract_features(
     estimated_loc = leaf.estimated_loc if leaf.estimated_loc is not None else loc_limit
 
     per_leaf_budget = max(worker_budget(profile.context_window), 1)
-    context_tokens = estimate_tokens(leaf.plan_text or "")
+    # What Praxis SENDS, not just the leaf's own text. The plan text reaches
+    # the worker INSIDE the implementer prompt, and charging the text alone
+    # was the sibling of the budget-gate defect fixed on 2026-08-27: measured,
+    # the scaffolding is 1344 tokens, which is 41% of the whole per-leaf
+    # budget on an 8192-token window. Under-charging by that much makes this
+    # scorer over-optimistic precisely for the small-window workers the flag
+    # exists to protect.
+    #
+    # A FLOOR, deliberately, and derived on each call from the template rather
+    # than written down: the real prompt is this scaffolding with a title and
+    # a description substituted in, so it is always at least this large. A
+    # floor can under-charge and never over-charge, and over-charging is the
+    # direction that refuses real work. The harness system prompt, tool
+    # schemas and the repo's own AGENTS.md are still uncounted here for the
+    # same reason ``token_budget.UNCOUNTED_CONTEXT`` gives: the reserve
+    # already holds room for that envelope, so charging it again double-counts.
+    context_tokens = estimate_tokens(leaf.plan_text or "") + fixed_scaffolding_tokens()
 
     return DifficultyFeatures(
         files_touched=len(leaf.files),
