@@ -22,10 +22,18 @@ venv/
 .idea/
 CLAUDE.local.md
 
-# Local Claude Code / MCP config
+# Local Claude Code / MCP config. `.claude/agents/*.md` is deliberately NOT
+# here: those are project tooling, versioned like CLAUDE.md, and a contributor
+# should get them. Everything else under .claude/ is per-machine state.
 .claude/settings.local.json
 .claude/scheduled_tasks.lock
+.claude/worktrees/
 .mcp.json
+
+# Serena MCP's per-project config and cache. Machine-local tool state, same
+# category as .claude/settings.local.json: it names local paths and language
+# servers, and nothing in the product reads it.
+.serena/
 
 htmlcov/
 .coverage
