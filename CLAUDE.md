@@ -152,6 +152,7 @@ cat spec.md | uv run praxis submit <project-id> --file -
 # run, cached 60s; exits non-zero on any red, and a rate limit is amber)
 uv run praxis doctor
 uv run praxis env               # which URL and token the CLI resolved, and from where
+uv run praxis mcp               # re-print the MCP client config block (server may be DOWN)
 uv run praxis logs <task-id>    # the agent container log, captured on the run row
 
 # See what is parked at the merge gate, and open it
@@ -810,6 +811,20 @@ story. New gotchas go in `docs/gotchas.md` first. (No count is quoted on purpose
   swim lane had none and showed it as an ordinary active lane; the stall was only in the
   plan detail. A guard that greps a function body for the marker CANNOT fail if the
   marker's declaration stays behind: pin the EMISSION.
+- **`praxis init` prints the MCP block ONCE, so `praxis mcp` exists to re-print it**
+  (2026-08-28). `mcp_snippet` had a single caller inside `init`, in the middle of a
+  multi-minute mostly-Docker-build output, so an operator whose scrollback rolled had to
+  re-run the whole install; an assistant following the README brief hit exactly that.
+  `praxis mcp` reuses `cli.init.mcp_snippet` (never a second copy: the env var names are
+  the ones `mcp_server.client` reads), works with the orchestrator DOWN, and reports the
+  INSTALL ROOT rather than the cwd, since `mcp_snippet` defaults to `Path.cwd()` and that
+  default is right for `init` and wrong for a verb runnable from a subdirectory.
+- **A sidebar stat, or any figure written only AFTER its fetch, must not ship a numeric
+  default** (2026-08-28). All four `#stat-*` elements shipped `0` in `index.html` and are
+  assigned only on success, so a rejected token rendered four measurements nobody took
+  while the panel below correctly said "not authorized". Same class as `Agents: NaN`. The
+  non-numeric placeholder is only safe because nothing parses them back out of the DOM,
+  and `tests/test_sidebar_stats_are_not_measured_zeros.py` pins both halves together.
 - **`soft_wrap=True` on EVERY pasteable line, and `cli/init.py` had none** (2026-08-28).
   `grep -n soft_wrap src/cli/init.py` returned 0 while `init` is the one command whose
   whole output is meant to be copied. Its MCP block folded mid-path INSIDE a JSON string
