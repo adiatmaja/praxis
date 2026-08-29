@@ -4073,3 +4073,145 @@ this product generates itself.
 The fixture now uses obviously-fake literals of the SAME LENGTH, because length is what
 decides whether the export lines fold, and shortening them would quietly weaken the
 guards that exist to catch that.
+
+## Nothing said how long a worker had been running, and nothing stopped it
+
+A worker ran unattended for about two hours against the owner's own LM Studio hardware on
+2026-08-28. He found out because his machine was busy, not because Praxis said so. The
+run row was there the whole time:
+
+    run fd2a7799   completed   2026-08-27 21:58:00 -> 22:56:09     58m 09s
+    run d861bff6   stopped     2026-08-27 22:56:15 -> 01:01:41   2h 05m
+
+Two separate defects, and only one of them is the obvious one.
+
+**Nothing REPORTED elapsed time.** Not `poll_task`, not `praxis task`, not the dashboard.
+A wedged worker, a slow worker and one burning somebody's GPU were the same row on every
+surface, so there was no moment at which anybody was told to look. This half is worth
+fixing even if the bound below had never been added: it costs no policy decision and
+removes most of the harm on its own.
+
+`core/run_elapsed.py` is the single derivation, so no two surfaces can answer differently.
+Three rules, each of which has already cost this repository a defect somewhere else:
+
+- **a naive stamp is UTC.** `agent_runs.started_at` defaults to SQLite's
+  `CURRENT_TIMESTAMP`; read as local time it is wrong by the reader's whole offset, which
+  is how the dashboard rendered a 20-minute-old plan as "7h ago". A stamp that DOES carry
+  a zone (`finished_at` is a full ISO instant) must be left alone or it shifts twice. Both
+  shapes appear on the SAME row, above;
+- **unmeasurable is `None`, never `0.0`.** These surfaces exist to make a LONG run stand
+  out, so a stamp nobody could parse must not render as a run that just started. Note that
+  `core/approvals._age_hours` answers `0.0` for the same input and is RIGHT to: it feeds a
+  sort key. Here the number is the message. Same class as the four sidebar stats that
+  shipped a numeric `0`;
+- **open is `finished_at IS NULL`, never `status`.** That column carries whatever string
+  the harness reported, and one answering with the word "running" produced a CLOSED row
+  that still read as open. `claim_agent_run_completion` and `get_running_runs` key on the
+  same predicate, and the bound below depends on agreeing with them.
+
+The number is computed on the SERVER at every seat. The dashboard surfaces that consumed a
+server-computed age were the ones that were never wrong.
+
+The seat that carries it to the dashboard is `GET /api/plans/{id}/tasks`, NOT
+`GET /api/tasks/{id}`: both the swim-lane card and the detail panel read the plan's task
+list, so `running_for_seconds` is a computed field on `TaskResponse` over a `running_since`
+column joined off `agent_runs`. A version that only enriched the task-detail endpoint would
+have been invisible on every dashboard surface while looking complete.
+
+### Bounding the run: the expiry is NOT the worker's fault
+
+`worker_timeout_minutes`, 60 shipped, `0` or less disables it. Generous on purpose: the
+58-minute attempt above was legitimate work on a squeezed context window, so a tighter
+bound kills real runs. At the shipped value it would have stopped attempt 2 an hour early.
+
+**The attribution is the load-bearing decision, not the bound.** An expiry means WE
+STOPPED IT. Nothing about one distinguishes a hung harness from a stalled endpoint from a
+leaf that was simply large, so it must write NO `task_outcomes` row and must NOT reach
+adaptive triage. `task_outcomes` is the one table the whole calibration loop reads, and
+charging an expiry to it teaches the capability engine a failure rate off Praxis's own
+impatience; triage is for failures where the worker was handed the leaf and its own output
+fell short, and its worst answer (`human`) is terminal. The expiry therefore goes through
+`_resolve_failed_run`, which does neither, and the task retries normally. Derive that
+property rather than trusting this paragraph:
+
+    rg -n '_fail_and_maybe_retry\(|_triage_then_fail\(' src/
+
+Every hit is in `orchestrator_review.py`; the reconcile mixin has no route in.
+
+Three further properties, each a way to get it wrong:
+
+- **the check runs BEFORE reconcile's live-monitor short circuit.** After it, the bound
+  could never fire for the case it exists for: a run streaming logs happily at hour two is
+  precisely one with a live monitor, and that arm `continue`s past everything;
+- **an unreadable start stamp never expires a run.** The bound cannot be MEASURED, and
+  killing a run on a guess is the one outcome worse than not killing it;
+- **the reason is worker-facing GUIDANCE, not a diagnosis.** `fail_task` writes it to
+  `tasks.review_feedback`, and the Bible injects that column into the NEXT attempt's
+  prompt, REPLACING whatever was there. So it names the ACTION first ("Resume from the
+  commits already on this branch") and disclaims attribution second, for the human reading
+  the same column at the gate. A sentence that only diagnoses leaves the worker nothing to
+  do and burns the attempt.
+
+### `stop_agent` was awaited, and the mock is where the bug lived
+
+`AgentManager.stop_agent` is SYNCHRONOUS. `_stop_superseded_container` called it as
+`await self._agents.stop_agent(...)`, so `await None` raised `TypeError` straight into the
+surrounding `except`: every superseded container WAS stopped, was then reported as one
+Docker had refused, and its run row was written `failed` with "may still be running"
+attached. That is the exact false report the method was added to prevent, wearing the
+opposite sign.
+
+Its guard could not catch it because the test double declared `async def stop_agent` while
+the object it doubles never has. **A double that is more capable than the real object is
+where a bug lives.** The double now matches the real signature, and restoring the `await`
+turns that guard red - measured, not assumed.
+
+### A knob nobody reads is worse than no knob
+
+Found next door: `callback_grace` was a documented key in `config/praxis.yaml`, a field on
+`Settings`, and a hardcoded `5.0` in `Orchestrator.__init__` that nothing ever overrode.
+`rg -n "callback_grace" src/` returned the comment, the field and the assignment, and no
+wiring between them - `loop_interval`'s old shape, still alive beside it. Both are passed
+from `main.py` now.
+
+The guard for that had to be fixed before it could fail. Its first version searched
+`main.py`'s raw text for `worker_timeout_minutes=settings.worker_timeout_minutes` and
+**SURVIVED commenting the kwarg out**, because the searched substring lives on inside the
+comment. Comments are stripped from the extracted call now. A second version compared the
+shipped YAML against a constructed `Settings` - which OVERLAYS that same YAML, so editing
+the file moved both sides and the test was tautological; it reads the FIELD default now.
+
+## A second project row for a known repository was created and then never used
+
+A repository is pinned to the base branch its FIRST project row got. `ProjectUpdate`
+forbids `default_branch` and `praxis configure` has no flag for it, so the obvious move is
+to create a second project. That answered **201 Created** and then did nothing at all:
+
+    WHERE repo_url = ? ORDER BY rowid LIMIT 1
+
+is how `api/execute_plan.py` and `api/dispatch.py` both resolve a repository, so the first
+row wins permanently. The new row is never dispatched against, is never the answer to
+anything, and its `default_branch` - the field it was usually created to change - is inert,
+while the operator watches plans keep landing against settings they believe they replaced.
+
+`POST /api/projects` now answers **409** with the existing project's id, name and base
+branch, and names `praxis configure` / `PATCH /api/projects/{id}` as the remedy: a refusal
+an operator cannot act on is barely better than the silent 201.
+
+Two things it deliberately is NOT:
+
+- **not a silent reuse.** Reusing would quietly apply the caller's `model_name`, `harness`
+  and `verify_cmd` to a project they did not name, which is the same surprise with the
+  sign flipped;
+- **not an answer to whether `default_branch` should be mutable.** That is a separate,
+  still-open decision with real trade-offs (branches are cut at dispatch and the
+  integration PR's base is read at completion, so a mid-flight change silently retargets a
+  running plan). This closes only the half with no trade-off in it: the row should never
+  have been created.
+
+The comparison is exact string equality, deliberately the same one the resolvers make. A
+looser check here would refuse a URL those queries treat as a DIFFERENT repository,
+turning an honest 201 into a 409 nobody can explain; a trailing-slash case pins that.
+
+`execute_plan` and `dispatch` are untouched: both have their own reuse-or-insert path and
+neither calls this endpoint.

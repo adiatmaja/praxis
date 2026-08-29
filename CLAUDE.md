@@ -121,7 +121,9 @@ The rest of `core/`, grouped by concern:
   `agent_manager`, `agent_prompt`, `worker_bible`, `harnesses`,
   `preflight`, `session_resume`, `progress_handover`, `clarification_states`,
   `token_budget`, `context_window` (resolves a worker's context window, or says unknown),
-  `micro_edit`
+  `micro_edit`, `run_elapsed` (pure derivation over `agent_runs` rows, no DB: how long a
+  run has been going or took, and the one answer every surface and the wall-clock bound
+  share)
 - **Git & platform:** `git_ops`, `git_backend` (GitHub / local), `github_credentials`,
   `repo_url_policy`, `merge_policy`, `branch_sweeper`, `diff_guard`, `diff_stats`,
   `blast_radius` (repo-wide reach of the identifiers a diff changes, for the review prompt),
@@ -561,7 +563,10 @@ story. New gotchas go in `docs/gotchas.md` first. (No count is quoted on purpose
   `core/verify_gate.normalize_verify_cmd` is the SSoT at all four read sites; the API
   rejects it 422; `run_verify` raises rather than shell it.
 - **`loop_interval` reaches `run_loop`; shipped default is 5**; non-positive is floored,
-  never honoured.
+  never honoured. **`callback_grace` and `worker_timeout_minutes` reach the Orchestrator
+  the same way, from `main.py`** - the first did NOT until 2026-08-29 and was decoration.
+  A new timing key is not wired until something passes it: check with
+  `rg -n "<key>" src/` and expect a hit in `main.py`, not just in `config.py`.
 - **Brain prompts go via stdin, never argv** (argv overflows; Windows `WinError 206`).
 - **`gh pr` calls need `--repo <owner/name>`** or they target the orchestrator's own cwd.
 - **A PR may be reused only on a POSITIVE open-state hit**: `gh pr list --head --base
@@ -795,11 +800,48 @@ story. New gotchas go in `docs/gotchas.md` first. (No count is quoted on purpose
   `_planning_outcome_still_applies` is shared by both and is checked BEFORE the counter
   moves. `_UNFAILABLE_PLAN_STATUSES` is REJECTED + COMPLETED and is deliberately NOT the
   complement of `_ACTIVATABLE_PLAN_STATUSES`: re-failing a FAILED plan is idempotent.
-- **A repository is pinned to the base branch its FIRST project row got** (2026-08-28,
-  open). `ProjectUpdate` forbids `default_branch` and `praxis configure` has no flag, and
-  `execute_plan` resolves a repo with `ORDER BY rowid LIMIT 1`, so a second project row
-  for the same URL is silently unreachable while the call still overwrites the first
-  row's `model_name` and `harness`. Creating it answers 201 and then does nothing.
+- **A repository is pinned to the base branch its FIRST project row got** (2026-08-28).
+  `ProjectUpdate` forbids `default_branch` and `praxis configure` has no flag, and both
+  `execute_plan` and `dispatch` resolve a repo with `ORDER BY rowid LIMIT 1`, so a second
+  project row for the same URL is unreachable while the call still overwrites the first
+  row's `model_name` and `harness`. **The half with no trade-off is FIXED (2026-08-29):
+  `POST /api/projects` answers 409** naming the existing project, its base branch and the
+  remedy, rather than 201 for a row nothing will ever use. Match is EXACT string equality,
+  the same comparison the resolvers make; a looser one would refuse a URL they treat as a
+  different repo. **Whether `default_branch` should become mutable is still OPEN and is
+  the owner's call**: branches are cut at dispatch and the integration PR's base is read
+  at completion, so a mid-flight change silently retargets a running plan.
+- **Nothing reported how long a worker had been running, and nothing bounded it**
+  (2026-08-29; one ran ~2h against the owner's own hardware unnoticed).
+  `core/run_elapsed.py` is the ONE derivation. Its three rules: a naive stamp is UTC
+  (SQLite's `CURRENT_TIMESTAMP`) while a zone-bearing one is left alone - BOTH shapes
+  appear on one `agent_runs` row; unmeasurable is `None`, NEVER `0.0` (unlike
+  `approvals._age_hours`, which feeds a sort key and is right to answer 0.0); open is
+  `finished_at IS NULL`, never `status`. Computed on the SERVER at every seat. The
+  dashboard seat is `GET /api/plans/{id}/tasks` (a computed `running_for_seconds` over a
+  joined `running_since`), NOT `/api/tasks/{id}` - both dashboard surfaces read the plan's
+  task list, so enriching only the detail endpoint looks complete and renders nothing.
+- **`worker_timeout_minutes` (60, `0` disables) bounds ONE run, and the expiry is NOT
+  worker-attributable** - that is the load-bearing decision, not the bound. It means WE
+  STOPPED IT, and nothing about an expiry tells a hung harness from a stalled endpoint
+  from a large leaf, so it writes NO `task_outcomes` row and reaches NO triage; it goes
+  through `_resolve_failed_run` and retries normally. The check sits BEFORE reconcile's
+  live-monitor short circuit (a run streaming logs at hour two is exactly one WITH a live
+  monitor). An unreadable start stamp never expires a run. The reason is worker-facing
+  GUIDANCE (it lands in `review_feedback`, which the Bible injects into the next attempt),
+  so it names the ACTION first and disclaims attribution second.
+- **`AgentManager.stop_agent` is SYNCHRONOUS and was being awaited** (fixed 2026-08-29):
+  `await None` raised into the surrounding `except`, so every superseded container WAS
+  stopped and was then reported as one Docker had refused, with its run row written
+  `failed` / "may still be running". The guard could not fail because the test double
+  declared `async def stop_agent`. **A double more capable than the real object is where
+  the bug lives.**
+- **`callback_grace` was a documented key nothing read** (fixed 2026-08-29):
+  `Orchestrator.__init__` hardcoded `5.0` - `loop_interval`'s old shape surviving next
+  door. Both are passed from `main.py` now. Its guard SURVIVED commenting the kwarg out
+  (the searched substring lives on inside the comment), and a companion guard comparing
+  the YAML to a constructed `Settings` was tautological, since `Settings` OVERLAYS that
+  YAML. Strip comments; compare against the FIELD default.
 - **The dashboard's own date math must treat an API timestamp as UTC**: the API serves
   SQLite's naive `created_at` (`"2026-08-27 21:13:33"`), which V8 parses as LOCAL time, so
   every relative age was off by the viewer's UTC offset (measured: "7h ago" for a plan 20
