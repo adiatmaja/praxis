@@ -52,6 +52,44 @@ async def create_project(request: Request, body: ProjectCreate) -> dict[str, Any
             ),
         )
 
+    # A second project row for a repository this install already knows is
+    # UNREACHABLE, so creating it and answering 201 Created is the server
+    # reporting work it did not do. Every path that resolves a repository to a
+    # project selects `WHERE repo_url = ? ORDER BY rowid LIMIT 1`
+    # (`api/execute_plan.py`, `api/dispatch.py`), so the FIRST row wins
+    # permanently: the new row is never dispatched against, never listed as the
+    # answer to anything, and its `default_branch` - the field the second row
+    # is usually created to change - is inert. The caller then watches plans
+    # land against settings they thought they had replaced.
+    #
+    # 409, not a silent reuse: reusing would quietly apply the caller's
+    # `model_name`, `harness` and `verify_cmd` to a project they did not name,
+    # which is the same surprise wearing the opposite sign.
+    #
+    # The match is EXACT string equality, deliberately the same comparison the
+    # resolvers make. A looser one here would refuse a URL that those queries
+    # would treat as a different repository, which turns an honest 201 into an
+    # unexplainable 409.
+    existing = await db.fetch_one(
+        "SELECT id, name, default_branch FROM projects WHERE repo_url = ? "
+        "ORDER BY rowid LIMIT 1",
+        (body.repo_url,),
+    )
+    if existing is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"Project {existing['id']} ('{existing['name']}') already "
+                f"tracks {body.repo_url} on base branch "
+                f"'{existing['default_branch']}'. A repository resolves to its "
+                "FIRST project row everywhere, so a second one would be "
+                "created and then never used. Change the existing project with "
+                "'praxis configure' (or PATCH /api/projects/"
+                f"{existing['id']}), or delete it first if you meant to start "
+                "over."
+            ),
+        )
+
     # NOTE: the protected-branch guard (main/master/release*) applies only to
     # WORK/BASE branches at execute_plan and dispatch, NOT here: a project's
     # configured default_branch legitimately IS the protected branch (main), so
