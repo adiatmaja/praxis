@@ -815,9 +815,13 @@ class ReconcileMixin:
             run: A row from ``get_running_runs``.
 
         Returns:
-            True when the run was expired and the caller must skip it, False
-            when it is inside the bound, the bound is disabled, or its start
-            could not be read.
+            True when the caller must SKIP this run, which covers two endings:
+            the run was expired here, or it settled itself during the callback
+            grace below and is no longer this pass's business. They are one
+            return value because they license the same ACTION - the run is
+            disposed of either way - and the caller has nothing left to do with
+            it in either case. False when it is inside the bound, the bound is
+            disabled, or its start could not be read.
 
         **An expiry is NOT worker-attributable, and that is the load-bearing
         decision here.** It means WE STOPPED IT, not that the worker fell
@@ -841,6 +845,53 @@ class ReconcileMixin:
         elapsed = run_elapsed.elapsed_seconds(run.get("started_at"))
         if elapsed is None or elapsed <= bound:
             return False
+
+        # WAIT FIRST, re-read, and only then dispose. The ORDER is the fix.
+        #
+        # The bound's first live firing (2026-08-29) killed the container at
+        # 18:48:50,027 and the worker's own ``completed`` callback arrived at
+        # 18:48:50,433 - 404 ms later, refused as a redelivery because the
+        # expiry had already closed the run. Nothing was lost that time (the
+        # agent branch had never been pushed), but a worker that HAD pushed and
+        # opened a pull request would now read ``failed (timeout)`` with a real
+        # PR sitting open and unmentioned by anything.
+        #
+        # The race is not rare in the way a naive estimate suggests: a bound
+        # SELECTS for workers finishing near it, so the callbacks are
+        # concentrated exactly where the kill happens rather than spread over
+        # the hour. Stopping first and waiting afterwards would fix nothing -
+        # the worker is dead either way, and all the wait would buy is
+        # discovering so. Waiting first costs a genuinely wedged worker
+        # ``_callback_grace`` extra seconds (shipped default 5) against an
+        # hour-long bound.
+        #
+        # Same shape, same attribute and same predicate as ``_reconcile_exited``
+        # below, which has waited out an in-flight callback since long before
+        # this bound existed. ``_callback_grace``'s docstring already defines it
+        # as "seconds to wait for an in-flight agent-done callback", which is
+        # precisely this question, so a second constant would be a second answer
+        # to it.
+        await asyncio.sleep(self._callback_grace)
+        current = await self._tq.get_agent_run(run["id"])
+        # ``finished_at``, never ``status``: that column carries whatever string
+        # the harness reported, and this has to agree with
+        # ``claim_agent_run_completion`` and ``get_running_runs`` or the bound
+        # expires a run the callback already settled - the whole defect.
+        #
+        # True, not False, and deliberately: the return value means "the caller
+        # must SKIP this run", and a run somebody else has disposed of must be
+        # skipped. Falling through to the monitor/status arms below would
+        # re-reconcile a settled row. A vanished row (``None``) is the
+        # DELETE /api/projects race and is skipped for the same reason.
+        if current is None or current["finished_at"] is not None:
+            logger.info(
+                "Run %s reached the %s bound but reported completion while we "
+                "waited %.1fs for it; leaving it alone",
+                run["id"],
+                run_elapsed.format_duration(bound),
+                self._callback_grace,
+            )
+            return True
 
         stopped = await self._stop_run_container(run, "over-running")
         logger.warning(

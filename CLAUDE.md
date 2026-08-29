@@ -830,6 +830,15 @@ story. New gotchas go in `docs/gotchas.md` first. (No count is quoted on purpose
   monitor). An unreadable start stamp never expires a run. The reason is worker-facing
   GUIDANCE (it lands in `review_feedback`, which the Bible injects into the next attempt),
   so it names the ACTION first and disclaims attribution second.
+- **The expiry WAITS `_callback_grace`, re-reads the run, and disposes of nothing once
+  `finished_at` is set** (fixed 2026-08-29, found on the bound's FIRST live firing: the
+  worker reported `completed` 404ms AFTER the kill). `complete_agent_run` closes a run
+  UNCONDITIONALLY, so without the re-read a successful run becomes a fabricated timeout
+  with a real PR open and unmentioned. **The ORDER is the whole fix** - stopping first
+  kills the worker either way and only changes when Praxis finds out. The race is NOT
+  uniformly distributed: a bound SELECTS for workers finishing near it. Both the sleep
+  and the `finished_at` check appear VERBATIM in `_reconcile_exited`, so a mutation
+  anchor here needs a disambiguating neighbour line.
 - **`AgentManager.stop_agent` is SYNCHRONOUS and was being awaited** (fixed 2026-08-29):
   `await None` raised into the surrounding `except`, so every superseded container WAS
   stopped and was then reported as one Docker had refused, with its run row written

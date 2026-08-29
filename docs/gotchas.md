@@ -4152,6 +4152,45 @@ Three further properties, each a way to get it wrong:
   the same column at the gate. A sentence that only diagnoses leaves the worker nothing to
   do and burns the attempt.
 
+### The bound raced its own completion callback, and the loss would be silent
+
+The bound's FIRST live firing exposed a hole in it, which is the argument for
+walking a change rather than shipping it on a green suite:
+
+    18:48:50,027  Stopped container bcc821ab6e4c
+    18:48:50,029  Run d8597220 has been going 1h 00m, past the 1h 00m bound
+    18:48:50,433  Ignoring a redelivered agent-done callback ... (reported completed):
+                  that run was already disposed of
+    18:48:50,973  Reconciled run d8597220 -> failed
+
+The worker reported `completed` **404 ms after Praxis killed it**. Nothing was lost that
+time, and that was checked rather than assumed: the agent branch did not exist on the
+remote and no pull request had been opened, so nothing had been pushed. Had it been, the
+task would read `failed (timeout)` with a real PR sitting open and mentioned by nothing,
+because `complete_agent_run` closes a run UNCONDITIONALLY and got there before the
+callback's `claim_agent_run_completion` could.
+
+**The race is not rare in the way a naive estimate suggests.** A 60-minute bound SELECTS
+for workers finishing near 60 minutes, so completions are concentrated exactly where the
+kill happens rather than spread across the hour. Reasoning about it as a uniform
+one-second window in an hour is the wrong model.
+
+The fix restores the invariant `_reconcile_exited` has always kept: a run is open iff
+`finished_at IS NULL`, and only a caller that has seen it still open AFTER waiting out
+`_callback_grace` may dispose of it. **The ORDER is the whole fix.** Stopping first and
+waiting afterwards kills the worker either way and only changes when Praxis finds out;
+waiting first costs a genuinely wedged worker five extra seconds against an hour-long
+bound. `_callback_grace` is reused rather than given a sibling constant, because its
+docstring already defines it as "seconds to wait for an in-flight agent-done callback",
+which is precisely this question.
+
+Two notes for whoever edits this next. Both `asyncio.sleep(self._callback_grace)` and the
+`finished_at` re-check appear VERBATIM in `_reconcile_exited` in the same file, so a
+mutation anchor here needs a disambiguating neighbour line or it matches twice. And the
+`return True` on the settled path is deliberately not mutation-covered: flipping it to
+`False` makes the caller attach a monitor to a settled run, which busy-loops under the
+test's zeroed poll interval, and **a hang is not a red**.
+
 ### `stop_agent` was awaited, and the mock is where the bug lived
 
 `AgentManager.stop_agent` is SYNCHRONOUS. `_stop_superseded_container` called it as
