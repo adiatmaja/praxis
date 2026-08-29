@@ -9,6 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel
 
 from orchestrator.api.auth import verify_token
+from orchestrator.core import run_elapsed
 from orchestrator.core.clarification_states import RESOLVED
 from orchestrator.core.contract_drift import decode_payload
 from orchestrator.models.schemas import TaskResponse, TaskStatus
@@ -49,7 +50,18 @@ async def list_tasks(request: Request, plan_id: str) -> list[dict[str, Any]]:
 
 @router.get("/tasks/{task_id}")
 async def get_task(request: Request, task_id: str) -> dict[str, Any]:
-    """Get task detail and agent run history."""
+    """Get task detail, agent run history, and how long the live run has gone.
+
+    ``running_for_seconds`` and each run's ``elapsed_seconds`` are computed
+    HERE, on the server, from the run rows already in hand. Until they existed
+    a wedged worker, a slow worker and one burning somebody's hardware read
+    identically on every surface: one ran unattended for about two hours on
+    2026-08-28 and the operator found out because his machine was busy.
+
+    Both are derived, never stored, so they cannot go stale; both are ``None``
+    when nothing is running or a stamp could not be read, which is "we cannot
+    tell you" and must never render as zero.
+    """
 
     queue = request.app.state.task_queue
     task = await queue.get_task(task_id)
@@ -57,13 +69,15 @@ async def get_task(request: Request, task_id: str) -> dict[str, Any]:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Task not found"
         )
+    runs = await queue.get_runs_for_task(task_id)
     # This route returns the raw row (no response_model), so the JSON TEXT in
     # ``contract_drift`` would reach the CLI and the dashboard as a string
     # while ``TaskResponse`` hands its own callers a dict. One shape, decided
     # here, or every renderer grows its own parser.
     return {
         "task": {**task, "contract_drift": decode_payload(task.get("contract_drift"))},
-        "runs": await queue.get_runs_for_task(task_id),
+        "runs": run_elapsed.annotate_runs(runs),
+        "running_for_seconds": run_elapsed.running_for_seconds(runs),
     }
 
 

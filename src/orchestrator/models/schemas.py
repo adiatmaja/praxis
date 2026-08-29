@@ -7,7 +7,14 @@ from enum import StrEnum
 from sys import version_info
 from typing import Literal, TypedDict
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    computed_field,
+    field_validator,
+    model_validator,
+)
 
 from orchestrator.core.harnesses import REGISTRY, default_harness_id
 from orchestrator.core.repo_url_policy import validate_repo_url as _validate_repo_url
@@ -551,8 +558,31 @@ class TaskResponse(BaseModel):
     every renderer must show that as "not checked" rather than as a clean
     result. A task that WAS checked and could not be graded carries
     ``gradable: false`` with the reason in ``why_not``."""
+    running_since: str | None = None
+    """When this task's live agent run started, or ``None`` if none is open.
+
+    Read off ``agent_runs`` (``finished_at IS NULL``), not off the task row:
+    the run is the thing that has a wall clock. Absent on every endpoint that
+    returns a task without joining its runs, and that is not a loss - those
+    endpoints answer about tasks nothing is running."""
     created_at: str
     updated_at: str
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def running_for_seconds(self) -> float | None:
+        """Seconds the live run has been going, measured as this is served.
+
+        Computed on the SERVER and shipped as a number. The dashboard's own
+        date math read a naive UTC stamp as local time and rendered a
+        20-minute-old plan as "7h ago"; the surfaces that consumed a
+        server-computed age were the ones that were never wrong. ``None``
+        means nothing is running, or its start stamp could not be read - both
+        of which are "we cannot tell you", never zero.
+        """
+        from orchestrator.core.run_elapsed import elapsed_seconds
+
+        return elapsed_seconds(self.running_since)
 
     @field_validator("contract_drift", mode="before")
     @classmethod

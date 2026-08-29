@@ -464,8 +464,25 @@ class TaskQueue:
         return await self._db.fetch_one("SELECT * FROM tasks WHERE id = ?", (task_id,))
 
     async def get_tasks_for_plan(self, plan_id: str) -> list[dict[str, Any]]:
+        """Return a plan's task rows, each carrying its live run's start time.
+
+        ``running_since`` is the correlated subquery rather than a second
+        round trip because it is what every list surface needs to say how long
+        a worker has been going, and a fact that costs an extra query per task
+        is a fact the dashboard will end up not showing.
+
+        ``finished_at IS NULL`` is the openness predicate everywhere in this
+        codebase (``claim_agent_run_completion``, ``get_running_runs``), never
+        ``status``, which carries whatever string the harness reported. MIN
+        picks the OLDEST open run when reconciliation has left two: the older
+        is the longer-running and the more alarming of the two.
+        """
         return await self._db.fetch_all(
-            "SELECT * FROM tasks WHERE plan_id = ? ORDER BY rowid",
+            """SELECT t.*, (
+                   SELECT MIN(r.started_at) FROM agent_runs r
+                   WHERE r.task_id = t.id AND r.finished_at IS NULL
+               ) AS running_since
+               FROM tasks t WHERE t.plan_id = ? ORDER BY t.rowid""",
             (plan_id,),
         )
 

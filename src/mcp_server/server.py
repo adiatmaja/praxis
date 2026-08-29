@@ -25,6 +25,7 @@ from orchestrator.core.plan_reachability import (
     derive_stalled_by_failure_state,
     graph_pairs,
 )
+from orchestrator.core.run_elapsed import format_duration
 
 
 def load_orchestration_guide() -> str:
@@ -223,11 +224,27 @@ async def pending_approvals_impl(client: Any) -> dict[str, Any]:
     return {"summary": summary, **result}
 
 
-def _task_summary(task: dict[str, Any]) -> str:
-    """One human-readable line for a task, as the first key of the payload."""
+def _task_summary(task: dict[str, Any], *, running_for_seconds: object = None) -> str:
+    """One human-readable line for a task, as the first key of the payload.
+
+    Args:
+        task: The task row as ``GET /api/tasks/{id}`` serves it.
+        running_for_seconds: The server's own measurement of how long the live
+            agent run has been going, or ``None`` when none is open. In the
+            SUMMARY rather than only in the payload, for the same reason the
+            strong contract-drift tier is: an assistant relaying "still
+            running" to a human has to relay how long, or a worker consuming a
+            person's hardware reads exactly like one about to finish. That is
+            not hypothetical - one ran unattended for about two hours on
+            2026-08-28 and the operator noticed because his machine was busy.
+    """
     title = task.get("title") or task.get("id") or "task"
     status = _TASK_STATUS_MAP.get(task.get("status", ""), task.get("status"))
     parts = [f"{title}: {status}"]
+    if isinstance(running_for_seconds, int | float) and not isinstance(
+        running_for_seconds, bool
+    ):
+        parts.append(f"running for {format_duration(float(running_for_seconds))}")
     if task.get("pr_url"):
         parts.append(str(task["pr_url"]))
     attempt = task.get("attempt")
@@ -274,7 +291,8 @@ async def poll_task_impl(client: Any, task_id: str) -> dict[str, Any]:
     raw_status = task.get("status")
     awaiting = raw_status == "passed"
     approvals = await _approvals_digest_line(client)
-    summary = _task_summary(task)
+    running_for = data.get("running_for_seconds")
+    summary = _task_summary(task, running_for_seconds=running_for)
     if raw_status == "needs_clarification":
         return {
             "summary": summary,
@@ -299,6 +317,12 @@ async def poll_task_impl(client: Any, task_id: str) -> dict[str, Any]:
         # the prose summary but only when > 1, which left a caller reading the
         # STRUCTURED result with no way to tell attempt 1 from attempt 3.
         "attempt": task.get("attempt"),
+        # Seconds the live agent run has been going, measured on the server,
+        # or None when nothing is running. Structured as well as folded into
+        # the summary: a caller deciding whether to keep polling needs the
+        # number, and "we cannot tell you" must stay distinguishable from
+        # zero.
+        "running_for_seconds": running_for,
         # Structured, both tiers, alongside the summary's strong-tier warning.
         # ``None`` means the check never ran (a task older than the column, or
         # a review that failed before a diff existed) and must not be read as
@@ -1304,7 +1328,12 @@ async def poll_task(task_id: str) -> dict[str, Any]:
     """Get the status, PR URL, and review of a dispatched task.
 
     Normal payload: {summary, task_id, status, verdict, pr_url, branch,
-    review, attempt, dashboard_url, approvals}.
+    review, attempt, running_for_seconds, dashboard_url, approvals}.
+
+    ``running_for_seconds`` is how long the live agent run has been going,
+    measured on the server, or ``null`` when nothing is running. Relay it when
+    you report that a task is still in progress: a worker consuming somebody's
+    hardware and one about to finish are the same status without it.
 
     ``status="awaiting_merge"`` (with ``verdict="pass"``) means the PR passed
     review and is parked for human approval. Relay ``pr_url`` to the user; only

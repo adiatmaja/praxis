@@ -957,6 +957,13 @@
           '<div class="detail-section"><div class="detail-section-title">Configuration</div><div class="detail-card">' +
           '<div class="detail-field"><span class="field-label">Status</span><span class="field-value">' + badge(task.status) + '</span></div>' +
           '<div class="detail-field"><span class="field-label">Attempt</span><span class="field-value">' + esc(task.attempt) + '</span></div>' +
+          // Rendered only while a run is open. A "Running for -" row on every
+          // finished task would be the same noise the contract-drift block
+          // avoids, and this line exists to make ONE state visible: a worker
+          // that has been going far longer than it should.
+          (formatDuration(task.running_for_seconds) ?
+            '<div class="detail-field"><span class="field-label">Running for</span><span class="field-value">' +
+            esc(formatDuration(task.running_for_seconds)) + '</span></div>' : "") +
           '<div class="detail-field"><span class="field-label">PR</span><span class="field-value">' +
           (task.pr_url ? '<a href="' + esc(task.pr_url) + '" target="_blank" rel="noreferrer">View PR</a>' : "-") + '</span></div>' +
           '<div class="detail-field"><span class="field-label">Updated</span><span class="field-value">' + esc(task.updated_at) + '</span></div>' +
@@ -1515,6 +1522,9 @@
           '</div>'
         : "";
       const logLine = dashboardTaskLogs[task.id] ? '<div class="card-log-line">' + esc(stripAnsi(dashboardTaskLogs[task.id])) + '</div>' : "";
+      const running = formatDuration(task.running_for_seconds);
+      const runningLine = running ?
+        '<div class="card-meta">running for ' + esc(running) + '</div>' : "";
       return '<article class="task-card status-' + esc(task.status) + (isSelected ? " selected" : "") +
         '" data-task-id="' + esc(task.id) + '" onclick="openDashboardTask(' + jsArg(task.id) + ',' + jsArg(task.plan_id) + ')">' +
         '<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;">' +
@@ -1523,6 +1533,10 @@
         '</div>' +
         '<div class="card-title">' + esc(task.title) + '</div>' +
         '<div class="card-meta">' + esc(task.branch_name || "-") + '</div>' +
+        // The at-a-glance seat. The swim lane is where somebody watching a
+        // plan actually looks, and a card that has said "in progress" for two
+        // hours is indistinguishable from one two minutes in without this.
+        runningLine +
         '<div class="card-meta" style="display:flex;align-items:center;gap:8px;margin-top:6px;">' + retryAction + prLink + '</div>' +
         mergeActions +
         logLine +
@@ -1581,6 +1595,23 @@
       const raw = String(isoString).trim();
       const hasZone = /(?:[Zz]|[+-]\d{2}:?\d{2})$/.test(raw);
       return new Date(hasZone ? raw : raw.replace(" ", "T") + "Z");
+    }
+
+    // The SERVER measures how long a run has been going and ships the number
+    // (`running_for_seconds`); this only renders it. Deliberately not derived
+    // here from a timestamp: client-side date math on these stamps is exactly
+    // what read naive UTC as local time and rendered a 20-minute-old plan as
+    // "7h ago". null means nothing is running, or its start could not be read,
+    // and both are "we cannot tell you" -- never 0.
+    function formatDuration(seconds) {
+      if (typeof seconds !== "number" || !Number.isFinite(seconds)) return "";
+      const total = Math.max(0, Math.floor(seconds));
+      const hours = Math.floor(total / 3600);
+      const minutes = Math.floor((total % 3600) / 60);
+      const secs = total % 60;
+      if (hours) return hours + "h " + String(minutes).padStart(2, "0") + "m";
+      if (minutes) return minutes + "m " + String(secs).padStart(2, "0") + "s";
+      return secs + "s";
     }
 
     function timeAgo(isoString) {

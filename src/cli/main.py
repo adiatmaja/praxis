@@ -18,6 +18,7 @@ from rich.text import Text
 from cli.doctor import doctor as _doctor
 from cli.init import _fetch_presets_or_defaults, parse_env
 from cli.init import init as _init
+from orchestrator.core.run_elapsed import format_duration
 from orchestrator.core.settings_file import config_file_path
 from orchestrator.core.verify_gate import (
     SCOPE_VERIFY_PASSED,
@@ -982,10 +983,14 @@ def tasks(plan_id: str = typer.Argument(..., help="Plan ID")) -> None:
         # A title is decomposer output and a branch name is derived from it,
         # so `refactor [core] parser` is an ordinary value here, not an exotic
         # one. `Text` per the note on `_check`.
+        # The elapsed time rides INSIDE the status cell rather than in a fifth
+        # column: this table already lost its id column to rich shrinking five
+        # columns on an 80-column console, and a duration is only meaningful
+        # for the one status that carries it.
         table.add_row(
             Text(task["title"] or ""),
             Text(task["branch_name"] or ""),
-            task["status"],
+            _task_status_cell(task["status"], task.get("running_for_seconds")),
             str(task["attempt"]),
         )
     console.print(table)
@@ -1032,6 +1037,13 @@ def task(task_id: str = typer.Argument(..., help="Task ID")) -> None:
     )
     if task_data["pr_url"]:
         console.print(Text(f"PR: {task_data['pr_url']}"))
+    # Unconditional whenever a run is open, and ABOVE the review feedback: this
+    # is the one fact that was missing when a worker ran for about two hours on
+    # somebody's own hardware and no surface said so. A wedged worker, a slow
+    # worker and one burning a GPU are the same row without it.
+    running_line = _running_line(data.get("running_for_seconds"))
+    if running_line:
+        console.print(Text(running_line))
     # BEFORE the feedback, and unconditionally when there is something to say:
     # this is the fact the feedback structurally cannot carry, because the
     # reviewer grades the diff against the LEAF's plan_text. A human inspecting
@@ -1048,7 +1060,10 @@ def task(task_id: str = typer.Argument(..., help="Task ID")) -> None:
         console.print("[yellow]Feedback:[/yellow]", Text(task_data["review_feedback"]))
     for run in data["runs"]:
         console.print(
-            Text(f"  {run['id'][:8]} | {run['status']} | {run['started_at']}")
+            Text(
+                f"  {run['id'][:8]} | {run['status']} | {run['started_at']}"
+                f" | {format_duration(run.get('elapsed_seconds'))}"
+            )
         )
 
 
@@ -1512,6 +1527,46 @@ def _scope_glance(review_scope: str | None) -> str:
     else:
         verify = "no gate"
     return f"{checkout}, {verify}"
+
+
+def _task_status_cell(status: object, running_for_seconds: object) -> str:
+    """A status, with how long its live run has been going when there is one.
+
+    Args:
+        status: The task's status string.
+        running_for_seconds: The server's measurement, or ``None``.
+
+    Returns:
+        ``"in_progress (2h 14m)"`` while a run is open, the bare status
+        otherwise. Nothing is appended for ``None`` so a finished task's cell
+        is unchanged: the suffix exists to make a long run stand out, and a
+        parenthesis on every row is how it would stop doing that.
+    """
+    text = str(status)
+    if not isinstance(running_for_seconds, int | float) or isinstance(
+        running_for_seconds, bool
+    ):
+        return text
+    return f"{text} ({format_duration(float(running_for_seconds))})"
+
+
+def _running_line(running_for_seconds: object) -> str:
+    """ "Running for ..." when a run is open, "" when none is.
+
+    Prints NOTHING rather than "unknown" when the server reports ``None``,
+    which is the normal case for every task that is not currently executing.
+    An "unknown" on each of those would be noise on the line that exists to
+    make ONE state visible: a run that has been going too long.
+
+    The number is the server's own measurement, not a span computed here from
+    a timestamp: the client that did its own date math on these stamps read
+    naive UTC as local time and rendered a 20-minute-old row as "7h ago".
+    """
+    if not isinstance(running_for_seconds, int | float) or isinstance(
+        running_for_seconds, bool
+    ):
+        return ""
+    return f"Running for: {format_duration(float(running_for_seconds))}"
 
 
 def _drift_line(drift: object) -> str:
