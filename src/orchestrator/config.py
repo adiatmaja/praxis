@@ -145,6 +145,14 @@ class Settings(BaseSettings):
     memory_md_path: str = "docs/MEMORY.md"
     loop_interval: int = 5
     callback_grace: int = 5
+    # Wall-clock ceiling on ONE agent run, in minutes. Nothing bounded a worker
+    # before this: the cap of 3 attempts was the only limit, so a harness that
+    # never reported spent a real, finite resource (a subscription, an API
+    # budget, somebody's GPU) until a person noticed. Generous on purpose - a
+    # legitimate run of 32 minutes was measured on a squeezed context window -
+    # and 0 or less disables the bound entirely, which is a supported state for
+    # anyone whose workers are expected to run longer than an hour.
+    worker_timeout_minutes: int = 60
     # URL agent containers POST their completion callback to. Reachable from
     # inside a container, so it uses host.docker.internal and must match the
     # port the orchestrator actually listens on. None => derived from `port`.

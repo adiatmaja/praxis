@@ -105,7 +105,19 @@ def test_the_dashboard_styles_have_a_superseded_badge_rule() -> None:
 
 
 class _FakeAgents:
-    """Agent-manager double that counts container-status round-trips."""
+    """Agent-manager double that counts container-status round-trips.
+
+    Every method here matches ``AgentManager``'s real signature, and
+    ``stop_agent`` is SYNCHRONOUS because the real one is. It used to be
+    declared ``async`` while the object it doubles returns ``None``, and that
+    single mismatch hid a live defect for the whole life of this file: the
+    production call was ``await self._agents.stop_agent(...)``, ``await None``
+    raised ``TypeError`` straight into the surrounding ``except``, and so every
+    superseded container was in fact stopped, was then reported as one Docker
+    had refused, and its run row was written ``failed`` with "may still be
+    running" attached. A double that is more capable than the real object is
+    where the bug lives.
+    """
 
     def __init__(self, status: dict[str, Any] | None) -> None:
         self._status = status
@@ -120,7 +132,7 @@ class _FakeAgents:
     def get_container_logs(self, container_id: str, tail: int | str = 500) -> str:
         return ""
 
-    async def stop_agent(self, container_id: str) -> None:
+    def stop_agent(self, container_id: str) -> None:
         if self.stop_raises:
             message = "docker refused"
             raise RuntimeError(message)

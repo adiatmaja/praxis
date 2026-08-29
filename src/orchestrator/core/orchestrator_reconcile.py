@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING, Any, Literal, cast
 
 import httpx
 
-from orchestrator.core import branch_sweeper
+from orchestrator.core import branch_sweeper, run_elapsed
 from orchestrator.core.approvals import fetch_pending_approvals
 from orchestrator.core.git_backend import PullRequestRef
 from orchestrator.core.provider_errors import is_provider_error
@@ -702,6 +702,39 @@ def _seconds_since(timestamp: Any, now: datetime) -> float | None:
     return (now - parsed).total_seconds()
 
 
+def _worker_timeout_reason(elapsed: float, bound: float) -> str:
+    """What a timed-out task's next attempt, and its operator, are told.
+
+    ``fail_task`` writes this into ``tasks.review_feedback``, and the Bible
+    injects that column into the NEXT attempt's prompt, REPLACING whatever was
+    there. So this is WORKER-FACING GUIDANCE, not a diagnosis: it has to name
+    an ACTION the worker can take, or the retry reads a sentence about Praxis's
+    scheduling policy, has nothing to do, and burns the attempt. That mistake
+    has been made here before, with a sentence about branch topology.
+
+    The disclaimer is second and is for the human reading the same column at
+    the merge gate or in ``praxis task``: an expiry is not a verdict on the
+    work, and a reader who takes it for one will throw away a good branch.
+
+    Args:
+        elapsed: How long the run had been going, in seconds.
+        bound: The configured ceiling, in seconds.
+
+    Returns:
+        The stored feedback line.
+    """
+    return (
+        "Resume from the commits already on this branch and finish the "
+        "remaining work; nothing you pushed was discarded. The previous "
+        f"attempt was stopped by Praxis after "
+        f"{run_elapsed.format_duration(elapsed)}, past the configured "
+        f"{run_elapsed.format_duration(bound)} worker time limit "
+        "(worker_timeout_minutes). That is a limit being enforced, not a "
+        "judgement on the work: nothing here says the attempt was wrong, only "
+        "that it ran too long to keep waiting for."
+    )
+
+
 class ReconcileMixin:
     """Reconciliation half of the Orchestrator (see class Orchestrator)."""
 
@@ -712,6 +745,7 @@ class ReconcileMixin:
         _bus: EventBus
         _monitors: dict[str, asyncio.Task[None]]
         _callback_grace: float
+        _worker_timeout_seconds: float
         _monitor_poll_interval: float
         _effective_settings: Any
         _git: Any
@@ -729,11 +763,12 @@ class ReconcileMixin:
         except Exception:  # noqa: BLE001 - log fetch is best-effort
             return ""
 
-    async def _stop_superseded_container(self, run: dict[str, Any]) -> bool:
-        """Stop the container of a superseded task's abandoned run.
+    async def _stop_run_container(self, run: dict[str, Any], why: str) -> bool:
+        """Stop one agent run's container, and say honestly whether it worked.
 
         Args:
             run: The agent-run row being closed out.
+            why: What is closing it, for the warning when Docker refuses.
 
         Returns:
             True when Docker was asked and did not refuse, which is what
@@ -741,20 +776,92 @@ class ReconcileMixin:
             agent manager is absent or the stop raised: the container may still
             be running, and saying otherwise is the false report this exists to
             prevent.
+
+        ``stop_agent`` is SYNCHRONOUS (``AgentManager.stop_agent`` returns
+        ``None``) and is called as such. It used to be awaited here, and
+        ``await None`` raises ``TypeError`` into the very ``except`` below - so
+        every superseded container WAS stopped, was then reported as one Docker
+        had refused, and its run row was written ``failed`` with "may still be
+        running". The guard could not catch it because the test double declared
+        ``async def stop_agent`` while the object it doubles never has: a mock
+        that does not match the real signature is where the bug lived.
         """
         if self._agents is None:
             return False
         try:
-            await self._agents.stop_agent(run["container_id"])
+            self._agents.stop_agent(run["container_id"])
         except Exception:  # noqa: BLE001 - a stop failure must not wedge the sweep
             logger.warning(
-                "Could not stop the container of superseded run %s (%s); it may "
-                "still be running",
+                "Could not stop the container of %s run %s (%s); it may still "
+                "be running",
+                why,
                 run["id"],
                 run["container_id"],
                 exc_info=True,
             )
             return False
+        return True
+
+    async def _expire_overrunning_run(self, run: dict[str, Any]) -> bool:
+        """Stop and fail a run that has outlived the configured wall clock.
+
+        Nothing bounded a worker before this. The cap of three attempts was the
+        only limit, so a harness that never reported spent a real finite
+        resource until a person noticed: one ran about two hours against the
+        owner's own LM Studio box on 2026-08-28 and he found out because his
+        machine was busy.
+
+        Args:
+            run: A row from ``get_running_runs``.
+
+        Returns:
+            True when the run was expired and the caller must skip it, False
+            when it is inside the bound, the bound is disabled, or its start
+            could not be read.
+
+        **An expiry is NOT worker-attributable, and that is the load-bearing
+        decision here.** It means WE STOPPED IT, not that the worker fell
+        short, and nothing about an expiry tells a hung harness apart from a
+        stalled endpoint or a leaf that was simply large. So this goes through
+        ``_resolve_failed_run``, which writes NO ``task_outcomes`` row and
+        never calls ``_triage_then_fail`` - triage is for failures where the
+        worker was handed the leaf and its own output is what fell short, and
+        its worst answer (``human``) is terminal. Charging the worker here
+        would teach the capability engine a failure rate off Praxis's own
+        impatience, and ``task_outcomes`` is the one table the whole
+        calibration loop reads.
+
+        A start stamp that will not parse means the bound cannot be MEASURED,
+        and an unmeasured bound must never be enforced: killing a run on a
+        guess is the one outcome worse than not killing it.
+        """
+        bound = self._worker_timeout_seconds
+        if bound <= 0:
+            return False
+        elapsed = run_elapsed.elapsed_seconds(run.get("started_at"))
+        if elapsed is None or elapsed <= bound:
+            return False
+
+        stopped = await self._stop_run_container(run, "over-running")
+        logger.warning(
+            "Run %s has been going %s, past the %s bound; stopping it "
+            "(container %s: %s)",
+            run["id"],
+            run_elapsed.format_duration(elapsed),
+            run_elapsed.format_duration(bound),
+            run["container_id"],
+            "stopped" if stopped else "could not be stopped, may still be running",
+        )
+        await self._resolve_failed_run(
+            run,
+            _worker_timeout_reason(elapsed, bound),
+            can_retry=True,
+            # `stopped` only when Docker was asked and did not refuse. The same
+            # honesty rule the superseded arm keeps: a run row saying "stopped"
+            # while the container is still burning the hardware is the false
+            # report this whole change exists to end.
+            run_status="stopped" if stopped else "failed",
+        )
         return True
 
     async def reconcile_runs(self) -> None:
@@ -778,6 +885,13 @@ class ReconcileMixin:
                     await self._fail_orphan(run, "Agent manager unavailable")
             else:
                 for run in running:
+                    # BEFORE the live-monitor short circuit below, which is the
+                    # whole point: a run that is happily streaming logs has a
+                    # live monitor and `continue`s past everything, and a run
+                    # that is happily streaming logs at hour two is exactly the
+                    # one this bound exists for.
+                    if await self._expire_overrunning_run(run):
+                        continue
                     monitor = self._monitors.get(run["id"])
                     if monitor is not None and not monitor.done():
                         continue
@@ -798,7 +912,7 @@ class ReconcileMixin:
                         # recorded as ``failed`` with the reason, because
                         # "stopped" would be the same false claim in a quieter
                         # form.
-                        stopped = await self._stop_superseded_container(run)
+                        stopped = await self._stop_run_container(run, "superseded")
                         await self._tq.complete_agent_run(
                             run["id"],
                             "stopped" if stopped else "failed",
@@ -1711,13 +1825,32 @@ class ReconcileMixin:
         *,
         can_retry: bool,
         logs: str | None = None,
+        run_status: str = "failed",
     ) -> None:
         """Finalize a failed run as either a bounded retry or terminal failure.
 
-        Marks the agent run ``failed``, then re-queues the task as ``pending``
-        (incrementing its attempt) when retries remain and ``can_retry`` is
-        set, otherwise marks the task ``failed``. This is what makes a lost
-        completion callback self-recover instead of stalling.
+        Marks the agent run ``run_status``, then re-queues the task as
+        ``pending`` (incrementing its attempt) when retries remain and
+        ``can_retry`` is set, otherwise marks the task ``failed``. This is what
+        makes a lost completion callback self-recover instead of stalling.
+
+        Args:
+            run: The agent-run row being finalized.
+            reason: Stored on ``tasks.review_feedback``; see
+                ``_worker_timeout_reason`` on what that column then does.
+            can_retry: Whether re-dispatching could plausibly help.
+            logs: Captured container output, or None to read it here.
+            run_status: What the RUN row records. ``failed`` for every arm that
+                found a run already broken; ``stopped`` only where Praxis
+                asked Docker to stop it and Docker did not refuse, which is
+                the wall-clock bound's arm.
+
+        This path deliberately writes NO ``task_outcomes`` row and never
+        reaches adaptive triage. Every caller here is a fault Praxis observed
+        from the OUTSIDE - a vanished container, an absent daemon, a bound
+        being enforced - and none of them is evidence about what the worker
+        produced. Routing any of them through ``_triage_then_fail`` would spend
+        a brain call on noise and can end at ``human``, which is terminal.
         """
         log_text = logs if logs is not None else self._safe_logs(run["container_id"])
         # ``log_text``, never ``log_text or reason``. This column is what
@@ -1728,7 +1861,7 @@ class ReconcileMixin:
         # case it was written for, and it also broke the provider-error streak,
         # which reads this column back: a genuine provider failure whose logs
         # Docker could not serve stopped matching and reset the count.
-        await self._tq.complete_agent_run(run["id"], "failed", log_text)
+        await self._tq.complete_agent_run(run["id"], run_status, log_text)
 
         task = await self._tq.get_task(run["task_id"])
         max_retries = 0

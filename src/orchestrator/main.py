@@ -146,6 +146,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         # The planner reads a plan's spec doc back out of the repo; without
         # this the spec submitted via /plans never reaches the brain.
         spec_reader=app.state.brainstorm,
+        # Both are documented settings keys, so both have to be PASSED or the
+        # constructor's own default is the real value and the knob is dead.
+        # `callback_grace` was exactly that for months: a YAML comment, a
+        # Settings field, and a hardcoded 5.0 nothing ever overrode.
+        callback_grace=settings.callback_grace,
+        worker_timeout_minutes=settings.worker_timeout_minutes,
     )
 
     from orchestrator.core.context_sync import ContextSync

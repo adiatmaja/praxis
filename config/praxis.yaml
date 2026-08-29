@@ -7,6 +7,21 @@ loop_interval: 5       # seconds between orchestration loop passes. Until this
                        # cost of that much added latency per state transition.
 callback_grace: 5      # seconds to wait before reconciling a missing callback
 
+# Wall-clock ceiling on ONE agent run, in minutes. Past it Praxis stops the
+# container and fails the task, and the task retries normally.
+#
+# An expiry is NOT worker-attributable and is deliberately not recorded as one:
+# it means WE STOPPED IT, not that the worker fell short, and nothing about an
+# expiry tells a hung harness apart from a stalled endpoint or a leaf that was
+# simply large. So no task_outcomes row is written and adaptive triage is not
+# consulted; charging the worker here would teach the capability engine a
+# failure rate off Praxis's own impatience.
+#
+# 60 is generous on purpose: a legitimate run of 32 minutes has been measured
+# on a squeezed context window, so a tighter bound kills real work. Set 0 (or
+# any non-positive value) to disable the bound entirely.
+worker_timeout_minutes: 60
+
 # How often the approvals digest event may fire, in hours. Parked work is
 # surfaced on poll_task, poll_plan, `praxis pending`, and the dashboard badge
 # continuously; this only rate-limits the SSE event.

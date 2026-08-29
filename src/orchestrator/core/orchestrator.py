@@ -54,6 +54,13 @@ logger = logging.getLogger(__name__)
 # gentler loop; that is now a real choice rather than a dead one.
 _DEFAULT_LOOP_INTERVAL_SECONDS = 5.0
 
+# Both match their own ``Settings`` field defaults and the shipped YAML, for
+# the reason above: a caller that omits either must get what the configured
+# default would have given, or the constructor becomes a second answer to a
+# question the settings layer already answers.
+_DEFAULT_CALLBACK_GRACE_SECONDS = 5.0
+_DEFAULT_WORKER_TIMEOUT_MINUTES = 60.0
+
 # Floor applied to a configured interval of 0 or less. A non-positive value
 # is refused rather than honored: passed straight to asyncio.wait_for it
 # would busy-spin the orchestration loop instead of idling between passes.
@@ -475,6 +482,8 @@ class Orchestrator(DispatchMixin, ReviewMixin, ReconcileMixin, ImprovementMixin)
         effective_settings: Any = None,
         llm_router: Any = None,
         spec_reader: Any = None,
+        callback_grace: float = _DEFAULT_CALLBACK_GRACE_SECONDS,
+        worker_timeout_minutes: float = _DEFAULT_WORKER_TIMEOUT_MINUTES,
     ) -> None:
         self._tq = task_queue
         self._agents = agent_manager
@@ -502,7 +511,14 @@ class Orchestrator(DispatchMixin, ReviewMixin, ReconcileMixin, ImprovementMixin)
         self._monitors: dict[str, asyncio.Task[None]] = {}
         # Seconds to wait for an in-flight agent-done callback before a
         # monitor concludes a container exited without reporting completion.
-        self._callback_grace: float = 5.0
+        # Taken from the CALLER since 2026-08-29: `callback_grace` had been a
+        # documented settings key and a `Settings` field for months while this
+        # line hardcoded 5.0 and nothing ever read the field - the same shape
+        # `loop_interval` had, and a knob that lies is worse than no knob.
+        self._callback_grace: float = float(callback_grace)
+        # Wall-clock ceiling on ONE agent run, in seconds; 0 or less disables
+        # the bound. Nothing bounded a worker before this.
+        self._worker_timeout_seconds: float = float(worker_timeout_minutes) * 60.0
         # Seconds between live-log polls of a running container.
         self._monitor_poll_interval: float = 2.0
         # Base seconds to back off before re-queuing a task after a transient
