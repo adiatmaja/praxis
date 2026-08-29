@@ -6,7 +6,7 @@
 
 <p align="center">
   Let your coding assistant hand real tasks to other AI coding tools,<br>
-  then approve every pull request yourself.
+  then approve every change yourself.
 </p>
 
 <p align="center">
@@ -39,17 +39,24 @@ switching tools.
 
 An illustrative session, condensed (mock output, not a capture). You wrote the plan,
 `my-api` is your repo, and the ask overrides the default worker preset, naming Gemini
-on its `agy` harness:
+on its `agy` (Antigravity) harness:
 
 ```
 you        "use praxis to implement docs/plans/rate-limit.md on my-api,
             worker gemini on the agy harness"
+              Called praxis (execute_plan)
 assistant  plan accepted: 4 tasks, each sized to what gemini can implement
               ...workers run in Docker containers; your session keeps going...
               ...task 3 failed verify, re-dispatched with feedback (attempt 2/3)...
-assistant  4/4 tasks passed verify and review, PRs waiting for your approval:
-           https://github.com/you/my-api/pull/17 ...
-you        "task 3's diff looks right. merge them"    (or: praxis merge-plan <id>)
+              Called praxis (poll_plan)
+assistant  task 1 passed verify and review, its PR is parked for your approval;
+           task 2 depends on it and dispatches once you merge:
+           https://github.com/you/my-api/pull/17
+you        "the diff looks right. merge it"        (or: praxis merge <task-id>)
+              ...implement, verify, review, approve, until every task lands...
+assistant  4/4 tasks merged; the integration PR to main is parked for you:
+           https://github.com/you/my-api/pull/21
+you        "merge it"                              (or: praxis merge-plan <id>)
 ```
 
 Pull requests are the unit of trust: *inspectable, revertible, approved by you*.
@@ -68,7 +75,7 @@ container while your session moves on (`dispatch_task`).
 editing files and becomes a planner and reviewer full time, dispatching every task to the
 default worker and reviewing the PR that comes back. Frontier judgment on every task
 without frontier tokens on the mechanical edits. The single-branch review flow is still
-being hardened, so treat it as a preview. `praxis mode on|off|status`, mechanics in
+being hardened. `praxis mode on|off|status`, mechanics in
 [docs/workflow.md](docs/workflow.md).
 
 ## How the output is governed
@@ -152,10 +159,12 @@ Tier recommendations, worker presets, and whole-loop arrangements:
 [docs/configurations.md](docs/configurations.md).
 
 > [!NOTE]
-> **What it costs:** Praxis itself is free, Apache-2.0, and self-hosted; there is no
-> service and no metered billing of its own. Running it costs whatever the seats cost,
-> typically model subscriptions you already pay for, and the token-heavy implement seat
-> can run on a free local open-weight model while the judgment-heavy seats stay on a
+> **What it costs:** Praxis itself is free, Apache-2.0, and self-hosted; no service,
+> no telemetry, no metered billing of its own. Running it costs whatever the seats
+> cost, typically model subscriptions you already pay for. Rule of thumb: a plan
+> spends one planning call up front plus one review call per task attempt on those
+> subscriptions; the token-heavy implement seat is the bulk of the spend, and it can
+> run on a free local open-weight model while the judgment-heavy seats stay on a
 > capable hosted one.
 
 ## Quick Start
@@ -170,15 +179,17 @@ Tier recommendations, worker presets, and whole-loop arrangements:
 The smallest tryout needs **two logins**, then a single dispatched task closes the loop:
 
 - the planner CLI you already pay for (e.g. `claude`)
-- a one-time interactive `agy` login (Google account) for the default worker preset
+- a one-time interactive `agy` (Google Antigravity) login, with a Google account, for
+  the default worker preset
 
 A *local* worker model instead needs [LM Studio](https://lmstudio.ai/) and hardware that
-can serve it, sized in
+can serve it; a 27B-class worker fits a 24 GB GPU, and the tiers are sized in
 [docs/open-weight-models-complete.md](docs/open-weight-models-complete.md).
 
 **No subscriptions at all?** A fully local loop is supported: preset `local-lmstudio` for
 the worker, plan and review seats pointed at the same endpoint, and `skip` for GitHub.
-It is the weakest arrangement, since plan quality tracks your local model; recipe in
+It is the weakest arrangement, since plan and review quality track your local model;
+recipe in
 [docs/configurations.md](docs/configurations.md#fully-local).
 
 ```bash
@@ -269,7 +280,8 @@ The implementer seat comes from your worker preset: the shipped default drives G
 endpoint. Full setup and deployment modes: [docs/deployment.md](docs/deployment.md).
 
 **Tearing it down:** `docker compose down` from the install directory stops everything;
-add `-v` to delete the database volume too, then delete the clone.
+add `-v` to also delete the database volume (all plan and task history), then delete
+the clone.
 
 ## Status
 
@@ -298,8 +310,11 @@ wired in, but none have been tested.
 ## Security Model
 
 Praxis is designed for a **single trusted operator on hardware they control**. A worker
-container sees its cloned repo and the GitHub token you provide, so scope that token to
-the repositories Praxis should touch. Treat `AUTH_TOKEN` as root on the host, prefer a
+container sees its cloned repo and the GitHub token you provide, and has ordinary
+outbound network access, so scope that token to the repositories Praxis should touch
+and treat worker output as untrusted until it passes review. Merging is human-gated by
+default: `auto_merge` is a per-project opt-in, and it never applies to protected
+branches. Treat `AUTH_TOKEN` as root on the host, prefer a
 GitHub App over a broad PAT, and keep the merge gate enforced with branch protection.
 Read the full model in
 [docs/deployment.md](docs/deployment.md#security--trust-model) before exposing it beyond
