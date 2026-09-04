@@ -116,6 +116,14 @@ belongs among the everyday traps.
   the `org.praxis.entrypoint-sha256` label EMPTY, because that label is a build ARG only
   compose supplies, and the freshness check reads an empty label as "cannot judge" rather
   than as fresh, so the rebuild looks done while the stale image may still be what runs.
+  **A bare `docker compose --profile agents build` leaves it empty TOO** (found
+  2026-09-05 on a cold install): compose reads the arg from `OPENCODE_ENTRYPOINT_SHA256`
+  and `AGY_ENTRYPOINT_SHA256` in the ENVIRONMENT, and only `praxis init` exports them.
+  Without `init`, export them first with the same function it uses:
+  `uv run python -c "from orchestrator.core.entrypoint_hash import hash_entrypoint;
+  from pathlib import Path; print(hash_entrypoint(Path('docker/agy-agent/entrypoint.sh')))"`
+  (and the opencode twin), then build. The doctor's NOTE row "no entrypoint hash on the
+  image; rebuild to populate it" is this exact state.
   To read an image's baked-in files reliably use `docker cp <container>:/path`, NOT
   `docker run --entrypoint cat <img> /path`, which on buildkit multi-manifest images
   resolves the attestation manifest (no rootfs) and returns nothing (false negative).

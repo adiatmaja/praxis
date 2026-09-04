@@ -476,7 +476,10 @@ story. New gotchas go in `docs/gotchas.md` first. (No count is quoted on purpose
 - **Agent images sit behind the `agents` compose profile** (build-only): rebuild after
   ANY `entrypoint.sh` change or a stale image runs silently. Staleness is judged by the
   `org.praxis.entrypoint-sha256` label (content, not mtime); rebuild via `praxis init` +
-  `docker compose --profile agents build` - a bare `docker build` leaves the label EMPTY.
+  `docker compose --profile agents build` - a bare `docker build` leaves the label EMPTY,
+  and so does a compose build WITHOUT `praxis init` first: the arg comes from
+  `OPENCODE_ENTRYPOINT_SHA256` / `AGY_ENTRYPOINT_SHA256` in the environment, which only
+  `init` exports (`docs/gotchas.md` has the one-liner to export them by hand).
 - **A local `repo_url` is validated in one namespace and mounted in another**: preflight
   checks it with `Path.exists()` INSIDE the orchestrator container, but the daemon resolves
   the same string as a bind-mount source on the HOST. `LOCAL_REPOS_PATH` (+ the
