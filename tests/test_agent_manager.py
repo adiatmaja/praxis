@@ -1053,3 +1053,18 @@ async def test_agy_spawn_does_not_get_opencode_sessions_mount(
     call_kwargs = mock_client.containers.run.call_args.kwargs
     volumes = call_kwargs.get("volumes") or {}
     assert volumes == {}
+
+
+@pytest.mark.unit
+@patch("orchestrator.core.agent_manager.httpx.AsyncClient")
+async def test_detect_context_limit_tolerates_the_namespace_prefix(
+    mock_client: MagicMock,
+) -> None:
+    """`qwen3.8-27b` configured, `qwen/qwen3.8-27b` listed: the same model, so
+    the window must resolve rather than fall to unknown and skip the budget
+    gate (the comparison is `worker_model_probe.model_matches`, shared with
+    the pre-dispatch probe and the doctor)."""
+    mock_client.return_value = _mock_async_client(
+        {"data": [{"id": "qwen/qwen3.8-27b", "loaded_context_length": 40960}]}
+    )
+    assert await detect_context_limit("http://x:1234", "qwen3.8-27b") == 40960

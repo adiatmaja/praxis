@@ -545,6 +545,10 @@ story. New gotchas go in `docs/gotchas.md` first. (No count is quoted on purpose
   SUBSTITUTION, not reachability, and an outage is the provider-error path's job. Patch
   it on the MIXIN (`orchestrator_dispatch.probe_served_model`); conftest stubs it autouse.
   The ladder still ships empty: the probe makes a rung REFUSABLE, not verified.
+  **`model_matches` is the ONE comparison** (same day): the doctor's worker row and
+  `detect_context_limit` used exact strings, so a `qwen/qwen3.8-27b` listing read the
+  configured `qwen3.8-27b` as "not loaded" and the window as unknown on an install every
+  dispatch ran fine on. All three seats share it now.
 
 **The loop**
 

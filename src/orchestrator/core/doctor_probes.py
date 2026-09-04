@@ -11,6 +11,7 @@ import os.path
 from dataclasses import dataclass
 
 from orchestrator.core.doctor import CheckResult, CheckStatus, image_content_differs
+from orchestrator.core.worker_model_probe import model_matches
 
 
 def probe_docker_daemon(reachable: bool, detail: str = "") -> CheckResult:
@@ -664,7 +665,14 @@ def probe_worker_endpoint(
             status=CheckStatus.RED,
             detail=f"{detail}: {error}" if error else detail,
         )
-    if configured_model and configured_model not in models:
+    # The SAME comparison the pre-dispatch probe makes (`model_matches`): an
+    # endpoint that lists `qwen/qwen3.8-27b` is serving the configured
+    # `qwen3.8-27b`, and an exact-string check here was red on an install every
+    # dispatch ran fine on (measured 2026-09-05). A doctor row and its product
+    # twin must not disagree about what "the same model" means.
+    if configured_model and not any(
+        model_matches(configured_model, listed) for listed in models
+    ):
         loaded = ", ".join(models) or "(none)"
         return CheckResult(
             check_id="worker_endpoint",

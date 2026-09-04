@@ -4366,3 +4366,11 @@ the deployment's own endpoint before it is named, with the curl in `config/praxi
 And a timing note for anyone extending it: `PROBE_TIMEOUT_SECONDS` is 90 because LM
 Studio JIT-loads a named model on the first completion, which can take tens of seconds
 on a large one; a dead endpoint refuses in milliseconds either way.
+
+`model_matches` is also the comparison the doctor's worker row (`probe_worker_endpoint`)
+and the context-window probe (`agent_manager.detect_context_limit`) make, since the same
+day. Both used exact string equality: the reference endpoint lists `qwen/qwen3.8-27b` for
+the configured `qwen3.8-27b`, so the doctor was red ("not loaded") and the window resolved
+to unknown (budget gate skipped) on an install where every dispatch ran fine. A doctor row,
+its product twin and the pre-dispatch probe must not disagree about what "the same model"
+means; grep `model_matches(` to find every seat.

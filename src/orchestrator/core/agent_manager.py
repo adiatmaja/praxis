@@ -36,6 +36,7 @@ from orchestrator.core.harnesses import (
     should_attempt_lm_studio_probe,
 )
 from orchestrator.core.worker_effort import resolve_worker_effort
+from orchestrator.core.worker_model_probe import model_matches
 
 
 # Minimum free disk space (in bytes) required before spawning an agent container.
@@ -138,7 +139,10 @@ async def detect_context_limit(lm_studio_url: str, model_name: str) -> int | Non
         logger.warning("Could not detect context limit from %s: %s", url, exc)
         return None
     for model in payload.get("data", []):
-        if model.get("id") != model_name:
+        # Same tolerance as the pre-dispatch probe and the doctor: a listed
+        # `vendor/x` IS the configured `x` (measured 2026-09-05: an exact match
+        # here resolved the window to unknown and skipped the budget gate).
+        if not model_matches(model_name, str(model.get("id") or "")):
             continue
         limit = model.get("loaded_context_length") or model.get("max_context_length")
         if isinstance(limit, int) and limit > 0:

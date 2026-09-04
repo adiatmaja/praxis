@@ -628,3 +628,28 @@ def test_an_absent_endpoint_adds_no_dangling_preposition():
     """Callers that pass no URL must not produce 'did not answer at '."""
     result = probe_worker_endpoint(reachable=False, models=[], configured_model="m")
     assert " at " not in result.detail
+
+
+@pytest.mark.unit
+def test_worker_endpoint_tolerates_the_namespace_prefix_the_endpoint_adds() -> None:
+    """Measured live 2026-09-05: the configured `qwen3.8-27b` is served as
+    `qwen/qwen3.8-27b`, which the pre-dispatch probe treats as the SAME model
+    (`worker_model_probe.model_matches`). The doctor must make the same
+    comparison, or it is red on an install every dispatch runs fine on."""
+    result = probe_worker_endpoint(
+        reachable=True,
+        models=["qwen/qwen3.8-27b", "google/gemma-4-12b"],
+        configured_model="qwen3.8-27b",
+    )
+    assert result.status == CheckStatus.GREEN, result.detail
+
+
+@pytest.mark.unit
+def test_worker_endpoint_still_red_on_a_different_model() -> None:
+    result = probe_worker_endpoint(
+        reachable=True,
+        models=["qwen/qwen3.8-27b"],
+        configured_model="glm-4.7",
+    )
+    assert result.status == CheckStatus.RED
+    assert "'glm-4.7' is not loaded" in result.detail
