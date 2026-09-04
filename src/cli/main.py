@@ -537,6 +537,15 @@ def configure(
             "set."
         ),
     ),
+    default_branch: str | None = typer.Option(
+        None,
+        "--default-branch",
+        help=(
+            "The base branch this project's plans are cut from and "
+            "integrated into. Refused with 422 while any plan is pending or "
+            "active."
+        ),
+    ),
 ) -> None:
     """Update project settings."""
 
@@ -551,6 +560,8 @@ def configure(
         body["verify_cmd"] = verify_cmd
     if harness is not None:
         body["harness"] = harness
+    if default_branch is not None:
+        body["default_branch"] = default_branch
     if not body:
         console.print("[yellow]No settings to update[/yellow]")
         return
@@ -1469,6 +1480,49 @@ def status() -> None:
             "[yellow]Active agents: unknown[/yellow] (could not reach the "
             "agent manager; Docker may be unavailable)"
         )
+    _print_open_runs(data)
+
+
+def _print_open_runs(data: dict[str, Any]) -> None:
+    """Print the install-wide "what is running" table below the agent count.
+
+    This is the LEDGER's view (open = ``finished_at IS NULL``), distinct from
+    the "Active agents" line above (Docker's view); the two are allowed to
+    disagree, e.g. a container Docker has lost is still an open run here until
+    reconcile closes it. Server-provided text (task title, project name) goes
+    into a `Text` cell, never a plain string: rich reads a bare `[` as a
+    markup tag, and a decomposer-authored title like `refactor [core] parser`
+    is an ordinary value here. Ids never go in a table column; each run gets
+    its own copyable `praxis task <id>` line below the table, soft-wrapped so
+    it survives selection whole.
+    """
+    running = data.get("running") or []
+    running_known = data.get("running_known", True)
+    console.print()
+    if not running_known:
+        console.print(
+            "[yellow]Running work: unknown[/yellow] (could not read the run ledger)"
+        )
+        return
+    if not running:
+        console.print("[dim]No worker is currently running.[/dim]")
+        return
+    table = Table(title="Running")
+    table.add_column("Task")
+    table.add_column("Project")
+    table.add_column("Attempt")
+    table.add_column("Running for")
+    for run in running:
+        table.add_row(
+            Text(str(run.get("task_title") or "")),
+            Text(str(run.get("project_name") or "")),
+            str(run.get("task_attempt") or ""),
+            format_duration(run.get("running_for_seconds")),
+        )
+    console.print(table)
+    console.print()
+    for run in running:
+        _copyable(f"praxis task {run['task_id']}")
 
 
 @app.command()

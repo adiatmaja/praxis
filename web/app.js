@@ -2401,6 +2401,18 @@
           // is the same lie in slower motion.
           measuredAgentCount = null;
         }
+        // The LEDGER's own view (open = finished_at IS NULL), riding the
+        // same stat's tooltip rather than a new element: it can legitimately
+        // differ from the container count above (a container Docker has
+        // lost is still an open run here until reconcile closes it).
+        // `running_known === false` means the query itself failed, which is
+        // NOT the same fact as zero running and must not read like it.
+        if (status.running_known) {
+          const runningNote = status.running_count + " running (ledger)";
+          agentsStat.title = agentsStat.title
+            ? agentsStat.title + " | " + runningNote
+            : runningNote;
+        }
         document.getElementById("stat-queue").textContent = status.opus_state.queued_count;
         measuredQueueCount = status.opus_state.queued_count;
         window.__opusStatus = status.opus_state ? status.opus_state.status : "unknown";

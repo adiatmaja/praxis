@@ -26,6 +26,50 @@ from orchestrator.models.schemas import ProjectCreate, ProjectResponse, ProjectU
 
 router = APIRouter(tags=["projects"], dependencies=[Depends(verify_token)])
 
+#: Plan statuses that still have work outstanding. Mirrors the PlanStatus
+#: enum minus its two terminal-success/terminal-failure members (completed,
+#: rejected, failed); kept as a plain tuple here rather than importing
+#: PlanStatus so a SQL IN-clause can bind it directly.
+_NON_TERMINAL_PLAN_STATUSES: tuple[str, ...] = ("pending", "active")
+
+
+async def _preflight_branch(
+    settings: Any,
+    repo_url: str,
+    branch: str,
+) -> None:
+    """Preflight one repo/branch pair, the same way ``create_project`` does.
+
+    Raises ``HTTPException`` on any failure: a missing GitHub credential maps
+    to 422 (see the comment in ``create_project``, this is the same
+    handling, extracted so ``update_project`` gets an identical check rather
+    than a second, driftable copy of it), and a ``PreflightError`` maps
+    through ``status_and_detail`` exactly as the create path does.
+    """
+
+    try:
+        provider = build_credential_provider(settings)
+    except CredentialError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=(
+                f"{exc}. This repo_url needs a GitHub credential; a local "
+                "file:// path needs none, and allow_local_repo_paths in the "
+                "settings file enables that mode."
+            ),
+        ) from exc
+    git = GitOps(provider)
+    try:
+        await preflight_remote(
+            git,
+            repo_url,
+            base=branch,
+            credential_configured=credential_configured(settings),
+        )
+    except PreflightError as exc:
+        sc, detail = status_and_detail(exc)
+        raise HTTPException(status_code=sc, detail=detail) from exc
+
 
 @router.post(
     "/projects",
@@ -120,28 +164,7 @@ async def create_project(request: Request, body: ProjectCreate) -> dict[str, Any
     # no GitHub credential configured, which is correct for evaluating with a
     # file:// repo", which is true and is why this url is the thing that has to
     # explain itself.
-    try:
-        provider = build_credential_provider(settings)
-    except CredentialError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=(
-                f"{exc}. This repo_url needs a GitHub credential; a local "
-                "file:// path needs none, and allow_local_repo_paths in the "
-                "settings file enables that mode."
-            ),
-        ) from exc
-    git = GitOps(provider)
-    try:
-        await preflight_remote(
-            git,
-            body.repo_url,
-            base=body.default_branch,
-            credential_configured=credential_configured(settings),
-        )
-    except PreflightError as exc:
-        sc, detail = status_and_detail(exc)
-        raise HTTPException(status_code=sc, detail=detail) from exc
+    await _preflight_branch(settings, body.repo_url, body.default_branch)
 
     project_id = str(uuid.uuid4())
     await db.execute(
@@ -220,6 +243,45 @@ async def update_project(
         )
 
     updates = body.model_dump(exclude_none=True)
+
+    # A changed default_branch is refused while any plan is still non-terminal
+    # (pending/active): branches are cut at DISPATCH and the integration PR's
+    # base is read at COMPLETION, so a mid-flight change silently retargets a
+    # running plan. The same value is a no-op - no plan check, no preflight -
+    # so re-sending the current branch (e.g. a caller that always includes
+    # every field) never trips either guard.
+    new_branch = updates.get("default_branch")
+    if new_branch is not None and new_branch != project["default_branch"]:
+        placeholders = ", ".join("?" for _ in _NON_TERMINAL_PLAN_STATUSES)
+        row = await db.fetch_one(
+            "SELECT COUNT(*) AS n FROM plans WHERE project_id = ? "
+            f"AND status IN ({placeholders})",  # noqa: S608  # nosec B608
+            (project_id, *_NON_TERMINAL_PLAN_STATUSES),
+        )
+        non_terminal_count = int(row["n"]) if row is not None else 0
+        if non_terminal_count > 0:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=(
+                    f"Project {project_id} has {non_terminal_count} plan(s) "
+                    "still pending or active, so default_branch cannot move "
+                    f"from '{project['default_branch']}' to '{new_branch}' "
+                    "now: branches are cut at dispatch and the integration "
+                    "PR's base is read at completion, so a mid-flight change "
+                    "would silently retarget running work. Wait for those "
+                    "plans to finish (or reject them with 'praxis reject "
+                    "<plan-id>'), then retry; 'praxis plans "
+                    f"{project_id}' lists what is still outstanding."
+                ),
+            )
+
+        # Preflight the NEW branch on the remote exactly as create_project
+        # does, so a branch that does not exist there is refused with the
+        # same status the create path would give rather than accepted and
+        # silently undispatchable.
+        settings = request.app.state.settings
+        await _preflight_branch(settings, project["repo_url"], new_branch)
+
     if updates:
         set_clause = ", ".join(f"{key} = ?" for key in updates)
         await db.execute(

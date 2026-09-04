@@ -3390,6 +3390,44 @@ section unbudgeted by design; and the entrypoint writes an OpenCode `limit` bloc
 the probed context with an `output` reserve of 8192, so a probed 4096 hands its compaction
 math a reserve larger than the whole context.
 
+### The classification names its evidence, and the entrypoint's own callback report is not evidence (2026-09-05)
+
+Round 10 recorded this line from a live run on the stress rig and could not say what it
+meant:
+
+    Task ... worker provider/gateway error (streak 1/5); re-queued without consuming a
+    retry attempt: Agent finished with status failed
+
+It went into the ledger as "a bare `failed` worker status is read as a provider error".
+That reading was not checkable, because the line printed the worker's REASON (every
+non-zero exit produces "Agent finished with status failed") and not the EVIDENCE: the
+classification was a substring scan over the whole container log, and nothing said which
+of the sixteen signals matched, or on which line. By the time anyone looked, the Docker
+data root had been reset and the log was gone.
+
+Two changes. `provider_errors.find_provider_signal` returns the signal AND the line it
+matched on (`ProviderSignal`), `is_provider_error` delegates to it, and BOTH re-queue
+seats (the callback handler in `api/internal.py` and `_resolve_failed_run_or_pause` in
+`orchestrator_reconcile.py`) carry both into the log line ("Matched 'HTTP 504' in worker
+log line '...'"), the `worker_provider_error` event (`signal`, `evidence`), and the stored
+feedback. The feedback is `provider_error_feedback`: worker-facing (the Bible injects
+`review_feedback` into the next attempt), so the ACTION comes first, the evidence second,
+and the original reason last so it is never lost; the cap's terminal sentence still
+quotes the original reason and `test_callback_provider_error_is_capped` still pins it.
+
+And one false-positive class is excluded, the only one that could be shown rather than
+guessed. Both entrypoints echo `WARNING: callback attempt N/M failed (HTTP <code>)` and
+`ERROR: callback failed after N attempts` about their OWN callback to the ORCHESTRATOR
+(the dev container hot-reloads on every edit to `src/`, and the hosted profile has Caddy
+in front). `HTTP 503` on that line says nothing about the model endpoint, and the
+unchanged scan read it as a worker-endpoint outage and re-queued a real failure for free.
+Reproduced by mutation: with the exclusion removed, the fixture built from the
+entrypoint's verbatim wording produces exactly the round-10 log line, now naming `HTTP
+503` on the callback line. That is a reconstruction, not a proof of what happened on
+2026-08-29. The exclusion is matched on the exact prefix at line start and nothing wider,
+on purpose: a diff context line quoting the entrypoint begins with a space and is still
+scanned, because widening the exclusion is how a real signal starts being skipped.
+
 ## The recovery every surface recommends did nothing, and reported success
 
 `POST /tasks/{id}/retry` wrote `tasks.status = pending` and stopped there. Dispatch reaches
@@ -4118,6 +4156,21 @@ list, so `running_for_seconds` is a computed field on `TaskResponse` over a `run
 column joined off `agent_runs`. A version that only enriched the task-detail endpoint would
 have been invisible on every dashboard surface while looking complete.
 
+Every seat above still needs a plan id or a task id in hand before it will show you
+anything, which is exactly the gap that let the two-hour run above go unnoticed: nobody had
+a reason to open that plan. The INSTALL-WIDE seat is `TaskQueue.get_open_runs` (one query,
+joined to task, plan and project), surfaced on `GET /api/status` as `running` /
+`running_count` / `running_known`, and rendered by `praxis status` as a table (task title
+and project name as `rich.text.Text` cells, never plain strings, for the same markup-safety
+reason as everywhere else) plus one copyable `praxis task <id>` line per run below it. It is
+the LEDGER's view (open = `finished_at IS NULL`, same predicate as everywhere on this page,
+never `status`), not Docker's: `active_agents`/`total_agents` can disagree with
+`running_count`, and that is allowed, because a container Docker has lost is still an open
+run here until reconcile closes it. `praxis status` is a front door, so a broken ledger
+query must not take the endpoint down with it: it is caught, logged, and reported as
+`running: []`, `running_known: false`, which the CLI renders as "could not read the run
+ledger", never as "0 running".
+
 ### Bounding the run: the expiry is NOT the worker's fault
 
 `worker_timeout_minutes`, 60 shipped, `0` or less disables it. Generous on purpose: the
@@ -4242,11 +4295,22 @@ Two things it deliberately is NOT:
 - **not a silent reuse.** Reusing would quietly apply the caller's `model_name`, `harness`
   and `verify_cmd` to a project they did not name, which is the same surprise with the
   sign flipped;
-- **not an answer to whether `default_branch` should be mutable.** That is a separate,
-  still-open decision with real trade-offs (branches are cut at dispatch and the
-  integration PR's base is read at completion, so a mid-flight change silently retargets a
-  running plan). This closes only the half with no trade-off in it: the row should never
-  have been created.
+- **not an answer to whether `default_branch` should be mutable**, at the time this half
+  shipped. That decision is settled now (below): `default_branch` IS mutable, through the
+  remedy this section names.
+
+**`default_branch` is mutable now, with a guard (shipped 2026-09-05).** `ProjectUpdate`
+accepts `default_branch`, validated non-empty like every other optional string field, and
+`praxis configure --default-branch <branch>` sends it. `PATCH /api/projects/{id}` refuses
+the change with **422** while the project has any non-terminal plan (`pending` or
+`active`): branches are cut at dispatch and the integration PR's base is read at
+completion, so a mid-flight change would silently retarget running work. The 422 detail
+names the count, the current branch, the requested branch, and `praxis plans <project-id>`
+as the verb that lists what is outstanding. Requesting the SAME branch is a no-op: no plan
+check, no preflight. A genuinely new branch is preflighted on the remote exactly the way
+`create_project` does (same credential and `PreflightError` handling, factored into
+`_preflight_branch` so the two paths cannot drift), so a branch that does not exist there
+is refused with the same status the create path would give, before the row is written.
 
 The comparison is exact string equality, deliberately the same one the resolvers make. A
 looser check here would refuse a URL those queries treat as a DIFFERENT repository,
@@ -4254,3 +4318,51 @@ turning an honest 201 into a 409 nobody can explain; a trailing-slash case pins 
 
 `execute_plan` and `dispatch` are untouched: both have their own reuse-or-insert path and
 neither calls this endpoint.
+
+## The pre-dispatch model probe: the endpoint's RESPONSE decides, and a substitution refuses the spawn (2026-09-05)
+
+The retraction above left one piece unbuilt and unscoped: a probe that verifies the
+model in the completions RESPONSE, not the request, before a worker is spawned. Until it
+existed no escalation rung could honestly ship, because an OpenAI-compatible endpoint
+answers HTTP 200 for a model string it does not serve and hands back whatever is loaded,
+so a rung naming an unserved model ran a different model and wrote `task_outcomes` rows
+under the name that never ran.
+
+`core/worker_model_probe.py` is that probe. `probe_served_model(url, model)` POSTs a
+one-token completion (`max_tokens: 1`, `reasoning_effort: none` stated explicitly per
+`core/thinking.py`, because the answer is the `model` field and a thinking model would
+spend its token on reasoning) and reads the `model` the endpoint says it used. Three
+verdicts, and the third is the load-bearing one:
+
+- `served`: the response names the requested model, modulo a stripped namespace prefix
+  (`vendor/x` -> `x`) or an added instance suffix (`x` -> `x:2`), the two benign shapes
+  LM Studio produces for one loaded model. `x:latest` is NOT stripped: only a numeric
+  suffix is an instance.
+- `substituted`: the response names a DIFFERENT model. This is the only verdict that
+  refuses. `DispatchMixin._model_is_substituted` FAILS the task (permanent in the same
+  sense as `SpawnConfigurationError`: nothing changes on the next tick, so deferring
+  would log the same warning forever), writes no run row (no container existed) and no
+  outcome row (no worker ran, so nothing is attributable), stores an operator-facing
+  reason naming both models and the remedy (`praxis retry` once the endpoint serves the
+  model), and publishes `worker_model_substituted`. The plan then stalls honestly with a
+  copyable retry verb, like every other terminal leaf.
+- `unverified`: the endpoint could not be reached, answered non-200, or answered without
+  a readable `model` field. Dispatch PROCEEDS. This probe catches SUBSTITUTION, not
+  reachability; the worker meets the same endpoint and the provider-error path already
+  owns an outage. Failing closed here would turn a transient into a terminal, which is
+  the mistake `permanent_worker_config_error` was refused for.
+
+The probe runs only for a harness whose `HarnessSpec.supports_local_llm` is True and only
+when the resolved `lm_studio_url` is a non-empty string; agy speaks to Google and has no
+endpoint to ask. It sits AFTER the budget gate and BEFORE `new_run_id()`, at the same
+seat as the permanent spawn refusals, and it is called through the mixin module
+(`orchestrator_dispatch.probe_served_model`) so tests patch it there: `tests/conftest.py`
+stubs it to `unverified` autouse, because every dispatch test that reaches the spawn
+path with a truthy endpoint URL would otherwise POST to it.
+
+What this does NOT change: `implement_escalation` still ships EMPTY. The probe makes a
+rung REFUSABLE, not verified; whether a specific rung is served is still measured against
+the deployment's own endpoint before it is named, with the curl in `config/praxis.yaml`.
+And a timing note for anyone extending it: `PROBE_TIMEOUT_SECONDS` is 90 because LM
+Studio JIT-loads a named model on the first completion, which can take tens of seconds
+on a large one; a dead endpoint refuses in milliseconds either way.

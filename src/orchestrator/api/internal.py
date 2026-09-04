@@ -736,20 +736,27 @@ async def agent_done(request: Request, body: AgentDonePayload) -> dict[str, str]
                 )
             else:
                 from orchestrator.core.orchestrator_reconcile import (
-                    ReconcileMixin,
                     provider_error_respawn_cap,
                     provider_error_streak,
                     respawn_cap_reached,
                     worker_endpoint_unreachable_reason,
+                )
+                from orchestrator.core.provider_errors import (
+                    find_provider_signal,
+                    provider_error_feedback,
                 )
 
                 # Hoisted out of the retry chain below because a SECOND decision reads
                 # it now. A transient provider/gateway error is not the worker failing;
                 # this path already refuses to spend a retry on one, and for the same
                 # reason it must not write an attributable calibration row for one.
-                provider_error_run = bool(logs) and ReconcileMixin.is_provider_error(
-                    logs
-                )
+                # The SIGNAL and the LINE it matched on, not a bare bool: the
+                # re-queue below used to log only the worker's own reason
+                # ("Agent finished with status failed", which every non-zero
+                # exit produces), so nobody reading it could tell a real
+                # gateway timeout from a false positive.
+                provider_signal = find_provider_signal(logs) if logs else None
+                provider_error_run = provider_signal is not None
 
                 max_retries = int(project["max_retries"]) if project else 0
                 # Set when the orchestrator took ownership of this task's next state, so
@@ -941,26 +948,37 @@ async def agent_done(request: Request, body: AgentDonePayload) -> dict[str, str]
                             streak,
                         )
                     else:
+                        # ``provider_signal`` is not None on this arm by
+                        # construction (``provider_error_run`` gates it); the
+                        # assert makes that visible to the type checker and to
+                        # the next person who moves the gate.
+                        assert provider_signal is not None  # nosec B101
+                        guidance = provider_error_feedback(provider_signal, feedback)
                         now = _datetime.now(_UTC).isoformat()
                         await queue._db.execute(
                             "UPDATE tasks SET status = ?, review_feedback = ?, "
                             "updated_at = ? WHERE id = ?",
-                            (TaskStatus.PENDING, feedback, now, body.task_id),
+                            (TaskStatus.PENDING, guidance, now, body.task_id),
                         )
                         request.app.state.event_bus.publish(
                             {
                                 "type": "worker_provider_error",
                                 "task_id": body.task_id,
                                 "reason": feedback,
+                                "signal": provider_signal.signal,
+                                "evidence": provider_signal.line,
                                 "consecutive_errors": streak,
                             }
                         )
                         logger.warning(
                             "Task %s worker provider/gateway error (streak %d/%d); "
-                            "re-queued without consuming a retry attempt: %s",
+                            "re-queued without consuming a retry attempt. Matched "
+                            "%r in worker log line %r; the worker reported: %s",
                             task_id,
                             streak,
                             cap,
+                            provider_signal.signal,
+                            _scrub(provider_signal.line),
                             _scrub(feedback),
                         )
                 elif int(task["attempt"]) < max_retries:

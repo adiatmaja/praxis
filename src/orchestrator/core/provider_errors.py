@@ -51,6 +51,7 @@ whatever the duration.
 """
 
 import re
+from dataclasses import dataclass
 
 from orchestrator.core.llm_router import (
     ProviderAuthError,
@@ -85,9 +86,94 @@ _RATE_LIMIT_SIGNALS: tuple[str, ...] = (
 )
 
 
+#: Lines the harness ENTRYPOINT writes about its own callback to the
+#: orchestrator, verbatim from ``docker/*/entrypoint.sh``. They carry the HTTP
+#: status the ORCHESTRATOR (or a proxy in front of it) answered, so ``HTTP
+#: 503`` on one of them says nothing about the model endpoint: the worker may
+#: have finished its work and then failed to report it. Scanning them as
+#: evidence classified the run as a worker-endpoint outage and re-queued it
+#: without spending an attempt, which is the remedy for a different fault.
+#: Matched on the exact prefix and only at line start; a diff context line
+#: quoting the entrypoint begins with a space and is not excluded, on purpose,
+#: because widening the exclusion is how a real signal starts getting skipped.
+_CALLBACK_REPORT_PREFIXES: tuple[str, ...] = (
+    "WARNING: callback attempt ",
+    "ERROR: callback failed after ",
+)
+
+#: Longest evidence line carried into feedback, events and log lines. A worker
+#: log line can be a whole JSON payload; the operator needs enough to find it.
+_EVIDENCE_LIMIT = 300
+
+
+@dataclass(frozen=True)
+class ProviderSignal:
+    """Which provider-error signal matched, and the log line it matched on.
+
+    Both halves are carried to every surface that acts on the classification,
+    because a re-queue that names only the worker's own reason ("Agent
+    finished with status failed", which every non-zero exit produces) cannot
+    be checked by anyone: the reason is not the evidence.
+    """
+
+    signal: str
+    line: str
+
+
+def find_provider_signal(text: str) -> ProviderSignal | None:
+    """Return the first provider/gateway signal in ``text`` with its line.
+
+    Args:
+        text: Full container log text.
+
+    Returns:
+        The matched signal and the (stripped, bounded) line it appeared on,
+        or None when no line carries one. The entrypoint's own callback
+        report lines are skipped: see ``_CALLBACK_REPORT_PREFIXES``.
+    """
+    for raw_line in text.splitlines():
+        if raw_line.startswith(_CALLBACK_REPORT_PREFIXES):
+            continue
+        for signal in _PROVIDER_SIGNALS:
+            if signal in raw_line:
+                return ProviderSignal(
+                    signal=signal, line=raw_line.strip()[:_EVIDENCE_LIMIT]
+                )
+    return None
+
+
 def is_provider_error(text: str) -> bool:
     """Return True if the text indicates a transient provider/gateway error."""
-    return any(signal in text for signal in _PROVIDER_SIGNALS)
+    return find_provider_signal(text) is not None
+
+
+def provider_error_feedback(found: ProviderSignal, original_reason: str) -> str:
+    """The sentence stored on the re-queued task, and injected into the next prompt.
+
+    ``tasks.review_feedback`` is worker-facing guidance (the Bible injects it
+    into the next attempt), so the ACTION comes first, the evidence second for
+    the human reading the same column, and the worker's own reason last so it
+    is never lost.
+
+    Args:
+        found: The matched signal and its line.
+        original_reason: What the worker or the reconciler reported.
+
+    Returns:
+        One paragraph, action first.
+    """
+    # Bounded here as well as in ``find_provider_signal``: this string is
+    # injected into the next worker prompt, so a caller constructing the
+    # signal by hand must not be able to hand the worker a 5 KB log line.
+    line = found.line[:_EVIDENCE_LIMIT]
+    return (
+        "Start this task again from the beginning; assume nothing from the "
+        "previous attempt exists. That attempt ended in a transient error from "
+        "the model endpoint or a gateway in front of it, which is not a fault "
+        f"in the work and was not charged as an attempt (matched {found.signal!r} "
+        f"in the worker log line {line!r}). "
+        f"The reported reason was: {original_reason}"
+    )
 
 
 #: The endpoint's own wording when it will not serve the model it was asked

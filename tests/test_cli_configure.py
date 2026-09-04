@@ -43,6 +43,22 @@ def test_configure_sends_verify_cmd(monkeypatch) -> None:
     assert captured == {"verify_cmd": "python -m pytest -q"}
 
 
+def test_configure_sends_default_branch(monkeypatch) -> None:
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "PATCH":
+            captured.update(json.loads(request.content))
+            return httpx.Response(200, json={"name": "playground"})
+        return httpx.Response(404, json={"detail": "not found"})
+
+    _patch_client(monkeypatch, handler)
+    result = runner.invoke(app, ["configure", "p1", "--default-branch", "develop"])
+
+    assert result.exit_code == 0
+    assert captured == {"default_branch": "develop"}
+
+
 def test_configure_with_no_options_sends_nothing(monkeypatch) -> None:
     calls: list[str] = []
 

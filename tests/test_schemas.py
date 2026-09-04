@@ -150,8 +150,14 @@ def test_project_update_validates_retry_and_cycle_bounds() -> None:
 def test_project_update_rejects_removed_fields() -> None:
     with pytest.raises(ValidationError):
         ProjectUpdate(repo_url="https://github.com/adiatmaja/praxis.git")
+
+
+@pytest.mark.unit
+def test_project_update_accepts_default_branch_but_not_a_blank_one() -> None:
+    """Mutable since 2026-09-05; the route refuses it while plans are in flight."""
+    assert ProjectUpdate(default_branch=" develop ").default_branch == "develop"
     with pytest.raises(ValidationError):
-        ProjectUpdate(default_branch="main")
+        ProjectUpdate(default_branch="   ")
 
 
 @pytest.mark.unit

@@ -95,6 +95,12 @@ escalation:
 # and confirm the value that comes back is the model you asked for. A namespace
 # prefix being stripped (`vendor/x` -> `x`) or an instance suffix being added
 # (`x` -> `x:2`) is benign; a DIFFERENT model is the fault above.
+#
+# Since 2026-09-05 Praxis makes that same check itself, right before every spawn
+# on an OpenAI-compatible harness (core/worker_model_probe.py): a rung the
+# endpoint substitutes FAILS the task before any container runs, with a reason
+# naming both models, and writes no calibration row. That makes a wrong rung
+# refusable rather than silent; it does not make one correct, so still verify.
 implement_escalation: []
 
 # Hard ceiling on leaves in one plan, counting split children. Adaptive

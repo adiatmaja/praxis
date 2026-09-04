@@ -28,6 +28,7 @@ from orchestrator.core.llm_router import (
     build_argv,
 )
 from orchestrator.core.opus_bridge import is_rate_limited
+from orchestrator.core.run_elapsed import elapsed_seconds
 from orchestrator.models.schemas import OpusStateResponse
 
 
@@ -538,6 +539,23 @@ async def system_status(request: Request) -> dict[str, Any]:
         }
     providers = [await _probe_provider(name) for name in ("claude", "codex", "agy")]
 
+    # The LEDGER's view of what is running, distinct from `containers` above
+    # (Docker's view): a container Docker has lost is still an open run here
+    # until reconcile closes it, and the two are allowed to disagree.
+    # `praxis status` is the front door, so a broken query must not take the
+    # whole endpoint down with it -- report the failure honestly instead.
+    try:
+        open_runs = await request.app.state.task_queue.get_open_runs()
+        running = [
+            {**run, "running_for_seconds": elapsed_seconds(run.get("started_at"))}
+            for run in open_runs
+        ]
+        running_known = True
+    except Exception as exc:  # noqa: BLE001 - status must answer regardless
+        logger.warning("Could not read the open-run ledger for /api/status: %s", exc)
+        running = []
+        running_known = False
+
     return {
         "opus_state": _opus_state_response(opus_state),
         "active_agents": len(
@@ -589,6 +607,9 @@ async def system_status(request: Request) -> dict[str, Any]:
         # would hide precisely that case.
         "bench_mode": bench_mode(),
         "verify_gate_disabled": verify_gate_disabled(),
+        "running": running,
+        "running_count": len(running),
+        "running_known": running_known,
     }
 
 

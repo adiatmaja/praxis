@@ -105,6 +105,33 @@ def no_live_agy_container(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(doctor_api, "probe_agy_models", _not_probed)
 
 
+@pytest.fixture(autouse=True)
+def no_live_worker_model_probe(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep the pre-dispatch model probe off the network.
+
+    Sibling of the two fixtures above and for the same reason. Every dispatch
+    test that reaches the spawn path with a truthy ``lm_studio_url`` would
+    otherwise POST a completion to it; a loopback URL refuses fast, an
+    unroutable one waits out the probe timeout. ``unverified`` is the value
+    that keeps every pre-existing test behaving as it did: it means "not
+    probed", and dispatch proceeds on it exactly as it does when the endpoint
+    cannot be asked.
+
+    Patched on the MIXIN module that calls it (``orchestrator_dispatch``),
+    per the CLAUDE.md rule; ``tests/test_worker_model_probe.py`` overrides
+    the patch with its own recording stub for the seam tests.
+    """
+    from orchestrator.core import orchestrator_dispatch
+    from orchestrator.core.worker_model_probe import ModelProbe
+
+    async def _not_probed(url: str, model: str, **_: Any) -> ModelProbe:
+        return ModelProbe(
+            "unverified", model, None, "the test suite never probes an endpoint"
+        )
+
+    monkeypatch.setattr(orchestrator_dispatch, "probe_served_model", _not_probed)
+
+
 @pytest.fixture
 def test_settings(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Settings:
     db_path = tmp_path / "test.db"

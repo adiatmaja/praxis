@@ -1196,6 +1196,52 @@ class TaskQueue:
             "SELECT * FROM agent_runs WHERE finished_at IS NULL ORDER BY rowid"
         )
 
+    async def get_open_runs(self) -> list[dict[str, Any]]:
+        """Return every open agent run, joined to its task, plan and project.
+
+        This is the INSTALL-WIDE view: every other surface needs a plan id or
+        a task id before it will show a live run, and that is exactly what let
+        a two-hour worker run go unnoticed (see ``core/run_elapsed.py``).
+        ``GET /api/status`` and ``praxis status`` are the only callers.
+
+        Keyed on ``finished_at IS NULL``, the SAME predicate
+        :meth:`get_running_runs` and :meth:`get_tasks_for_plan` use and for
+        the identical reason: ``agent_runs.status`` carries whatever string
+        the harness reported, and a harness answering with the word "running"
+        produces a row that is CLOSED and must not be listed here as open.
+
+        Ordered oldest ``started_at`` first, so the run that has been going
+        the longest -- the most alarming one -- is first in the list.
+
+        Returns:
+            One dict per open run, carrying the run's own id, started_at and
+            container_id, its task's id/title/attempt/status, its plan's id
+            and title, and its project's id and name. "Plan title" is
+            ``plans.spec_path``: the plans table carries no title/name
+            column, and ``spec_path`` is the same stand-in ``praxis plans``
+            already displays under its "Spec" column.
+        """
+        return await self._db.fetch_all(
+            """SELECT
+                   r.id AS run_id,
+                   r.started_at AS started_at,
+                   r.container_id AS container_id,
+                   t.id AS task_id,
+                   t.title AS task_title,
+                   t.attempt AS task_attempt,
+                   t.status AS task_status,
+                   p.id AS plan_id,
+                   p.spec_path AS plan_title,
+                   pr.id AS project_id,
+                   pr.name AS project_name
+               FROM agent_runs r
+               JOIN tasks t ON r.task_id = t.id
+               JOIN plans p ON t.plan_id = p.id
+               JOIN projects pr ON p.project_id = pr.id
+               WHERE r.finished_at IS NULL
+               ORDER BY r.started_at ASC, r.rowid ASC"""
+        )
+
     async def update_agent_run_logs(self, run_id: str, logs: str) -> None:
         """Persist in-progress logs for a running agent run.
 

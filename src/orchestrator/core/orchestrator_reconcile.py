@@ -20,7 +20,11 @@ import httpx
 from orchestrator.core import branch_sweeper, run_elapsed
 from orchestrator.core.approvals import fetch_pending_approvals
 from orchestrator.core.git_backend import PullRequestRef
-from orchestrator.core.provider_errors import is_provider_error
+from orchestrator.core.provider_errors import (
+    find_provider_signal,
+    is_provider_error,
+    provider_error_feedback,
+)
 from orchestrator.core.status_vocab import GATED_STATUSES, TERMINAL_STATUSES
 from orchestrator.models.schemas import PlanStatus, TaskStatus
 
@@ -2078,7 +2082,8 @@ class ReconcileMixin:
             logs: Container log text (fetched if None).
         """
         log_text = logs if logs is not None else self._safe_logs(run["container_id"])
-        if log_text and self.is_provider_error(log_text):
+        found = find_provider_signal(log_text) if log_text else None
+        if found is not None:
             # Transient provider error: do NOT consume a retry. Mark the run
             # failed but reset the task to PENDING without touching attempt.
             await self._tq.complete_agent_run(run["id"], "failed", log_text or reason)
@@ -2114,22 +2119,32 @@ class ReconcileMixin:
                 await self._tq._db.execute(
                     "UPDATE tasks SET status = ?, review_feedback = ?, updated_at = ? "
                     "WHERE id = ?",
-                    (TaskStatus.PENDING, reason, now, run["task_id"]),
+                    (
+                        TaskStatus.PENDING,
+                        provider_error_feedback(found, reason),
+                        now,
+                        run["task_id"],
+                    ),
                 )
                 self._bus.publish(
                     {
                         "type": "worker_provider_error",
                         "task_id": run["task_id"],
                         "reason": reason,
+                        "signal": found.signal,
+                        "evidence": found.line,
                         "consecutive_errors": streak,
                     }
                 )
                 logger.warning(
                     "Worker provider/gateway error for task %s (streak %d/%d); "
-                    "re-queued without consuming a retry attempt: %s",
+                    "re-queued without consuming a retry attempt. Matched %r in "
+                    "worker log line %r; the reported reason was: %s",
                     run["task_id"],
                     streak,
                     cap,
+                    found.signal,
+                    found.line,
                     reason,
                 )
             return

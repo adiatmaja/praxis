@@ -536,6 +536,15 @@ story. New gotchas go in `docs/gotchas.md` first. (No count is quoted on purpose
   RESPONSE, never the request** - the curl is in `config/praxis.yaml`. A stripped namespace
   prefix (`vendor/x` -> `x`) or an added instance suffix (`x` -> `x:2`) is benign; a
   DIFFERENT model is the fault. The model-LIST probe was authoritative all along.
+  **The pre-dispatch probe EXISTS now** (2026-09-05, `core/worker_model_probe.py`): before
+  a worker is spawned on a harness with an OpenAI-compatible endpoint, a one-token
+  completion is sent and the RESPONSE's `model` field is compared with the same two
+  tolerances. `substituted` FAILS the task before any container exists (no run row, no
+  outcome row, `worker_model_substituted` event, operator-facing reason naming both
+  models); `served` and `unverified` both proceed, because the probe catches
+  SUBSTITUTION, not reachability, and an outage is the provider-error path's job. Patch
+  it on the MIXIN (`orchestrator_dispatch.probe_served_model`); conftest stubs it autouse.
+  The ladder still ships empty: the probe makes a rung REFUSABLE, not verified.
 
 **The loop**
 
@@ -677,6 +686,15 @@ story. New gotchas go in `docs/gotchas.md` first. (No count is quoted on purpose
   under "Config and deployment". Its DETECTOR still cannot fire here - it greps the
   container log for a refusal BY NAME, and a substituting endpoint never refuses - so
   wiring it would need the pre-dispatch probe described there, not the log matcher.
+  **The classification NAMES ITS EVIDENCE** (2026-09-05): `find_provider_signal` returns
+  the signal AND the log line it matched, and both re-queue seats put them in the log
+  line, the `worker_provider_error` event (`signal`, `evidence`) and the stored feedback
+  (`provider_error_feedback`, action first, original reason last). Round 10's "a bare
+  `failed` is read as a provider error" was unverifiable precisely because the old line
+  printed the worker's REASON and not the match. The entrypoint's own `WARNING: callback
+  attempt N/M failed (HTTP ...)` lines are EXCLUDED from the scan: they report the
+  ORCHESTRATOR's answer to the callback, not the model endpoint's, and `HTTP 503` on one
+  re-queued a real failure for free. Exact prefix at line start, nothing wider.
 - **The wave verify gate makes the same comparison, or it parks a plan forever, invisibly**
   (2026-08-26): a plan branch red for a SIBLING's contract was called a regression, and
   since `merged_count` cannot advance while the wave is parked the verdict was permanent
@@ -800,17 +818,22 @@ story. New gotchas go in `docs/gotchas.md` first. (No count is quoted on purpose
   `_planning_outcome_still_applies` is shared by both and is checked BEFORE the counter
   moves. `_UNFAILABLE_PLAN_STATUSES` is REJECTED + COMPLETED and is deliberately NOT the
   complement of `_ACTIVATABLE_PLAN_STATUSES`: re-failing a FAILED plan is idempotent.
-- **A repository is pinned to the base branch its FIRST project row got** (2026-08-28).
-  `ProjectUpdate` forbids `default_branch` and `praxis configure` has no flag, and both
-  `execute_plan` and `dispatch` resolve a repo with `ORDER BY rowid LIMIT 1`, so a second
-  project row for the same URL is unreachable while the call still overwrites the first
-  row's `model_name` and `harness`. **The half with no trade-off is FIXED (2026-08-29):
-  `POST /api/projects` answers 409** naming the existing project, its base branch and the
-  remedy, rather than 201 for a row nothing will ever use. Match is EXACT string equality,
-  the same comparison the resolvers make; a looser one would refuse a URL they treat as a
-  different repo. **Whether `default_branch` should become mutable is still OPEN and is
-  the owner's call**: branches are cut at dispatch and the integration PR's base is read
-  at completion, so a mid-flight change silently retargets a running plan.
+- **A repository used to be pinned to the base branch its FIRST project row got**
+  (2026-08-28). Both `execute_plan` and `dispatch` resolve a repo with
+  `ORDER BY rowid LIMIT 1`, so a second project row for the same URL is unreachable while
+  the call still overwrites the first row's `model_name` and `harness`. **The half with no
+  trade-off is FIXED (2026-08-29): `POST /api/projects` answers 409** naming the existing
+  project, its base branch and the remedy, rather than 201 for a row nothing will ever use.
+  Match is EXACT string equality, the same comparison the resolvers make; a looser one
+  would refuse a URL they treat as a different repo. **`default_branch` is now mutable
+  (2026-09-05, owner's call resolved):** `ProjectUpdate` accepts it, and
+  `praxis configure --default-branch <branch>` / `PATCH /api/projects/{id}` send it.
+  Refused with 422 while the project has any non-terminal plan (`pending` or `active`):
+  branches are cut at dispatch and the integration PR's base is read at completion, so a
+  mid-flight change would silently retarget running work. The same value is a no-op (no
+  plan check, no preflight); a genuinely new branch is preflighted on the remote exactly
+  like `create_project` (shared helper `_preflight_branch`), so a branch missing on the
+  remote is refused before the row is written.
 - **Nothing reported how long a worker had been running, and nothing bounded it**
   (2026-08-29; one ran ~2h against the owner's own hardware unnoticed).
   `core/run_elapsed.py` is the ONE derivation. Its three rules: a naive stamp is UTC
@@ -820,7 +843,12 @@ story. New gotchas go in `docs/gotchas.md` first. (No count is quoted on purpose
   `finished_at IS NULL`, never `status`. Computed on the SERVER at every seat. The
   dashboard seat is `GET /api/plans/{id}/tasks` (a computed `running_for_seconds` over a
   joined `running_since`), NOT `/api/tasks/{id}` - both dashboard surfaces read the plan's
-  task list, so enriching only the detail endpoint looks complete and renders nothing.
+  task list, so enriching only the detail endpoint looks complete and renders nothing. The
+  INSTALL-WIDE seat (2026-09-05, no plan/task id needed) is `TaskQueue.get_open_runs` ->
+  `GET /api/status` `running`/`running_count`/`running_known` -> `praxis status`, the
+  LEDGER's view (open = `finished_at IS NULL`) which can disagree with the Docker-derived
+  `active_agents`/`total_agents` on the same response; the CLI prints copyable
+  `praxis task <id>` lines below the table.
 - **`worker_timeout_minutes` (60, `0` disables) bounds ONE run, and the expiry is NOT
   worker-attributable** - that is the load-bearing decision, not the bound. It means WE
   STOPPED IT, and nothing about an expiry tells a hung harness from a stalled endpoint

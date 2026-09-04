@@ -371,6 +371,12 @@ class ProjectUpdate(BaseModel):
     #: to clear it back to NULL through this endpoint, exactly as for every
     #: other nullable column here.
     context_window: int | None = Field(default=None, gt=0)
+    #: Mutable since 2026-09 (see docs/gotchas.md, "A second project row for a
+    #: known repository was created and then never used"). The endpoint
+    #: refuses the change with 422 while any plan is non-terminal, because
+    #: branches are cut at dispatch and the integration PR's base is read at
+    #: completion.
+    default_branch: str | None = None
 
     @field_validator("harness")
     @classmethod
@@ -387,6 +393,7 @@ class ProjectUpdate(BaseModel):
         "name",
         "model_name",
         "lm_studio_url",
+        "default_branch",
     )
     @classmethod
     def validate_optional_nonempty(cls, value: str | None) -> str | None:

@@ -25,7 +25,7 @@ from orchestrator.core.context_window import (
     resolve_context_window,
 )
 from orchestrator.core.github_credentials import CredentialError
-from orchestrator.core.harnesses import default_harness_id
+from orchestrator.core.harnesses import REGISTRY, default_harness_id
 from orchestrator.core.leaf_validator import (
     is_runnable_verification,
     normalize_verification,
@@ -59,6 +59,10 @@ from orchestrator.core.verify_gate import (
     normalize_verify_cmd,
 )
 from orchestrator.core.worker_bible import BibleSources, build_bible
+from orchestrator.core.worker_model_probe import (
+    probe_served_model,
+    substitution_reason,
+)
 from orchestrator.models.schemas import TaskStatus
 
 
@@ -547,6 +551,18 @@ class DispatchMixin:
 
             harness_id, worker_model = resolve_implementer(task, project)
             resume_session = resolve_resume_session(task, harness_id)
+
+            # Does the endpoint SERVE the model this worker is about to be told
+            # to use? An OpenAI-compatible endpoint answers 200 for a model
+            # string it does not serve and hands back whatever is loaded, so
+            # without this the task runs under a different model and its
+            # outcome row is written under the name that never ran. Only a
+            # POSITIVE differing answer refuses; an outage or an unreadable
+            # reply proceeds, because the worker meets the same endpoint and
+            # the provider-error path already owns that case. Skipped
+            # outright for a harness with no OpenAI-compatible endpoint (agy).
+            if await self._model_is_substituted(task, harness_id, worker_model):
+                continue
 
             # The run's identity, minted BEFORE the container so the container
             # can be told which run it is. Until 2026-08-27 nothing did: this
@@ -1182,6 +1198,58 @@ class DispatchMixin:
         if str(plan.get("error") or "") == reason:
             return
         await self._tq.set_plan_error(plan_id, reason)
+
+    async def _model_is_substituted(
+        self, task: dict[str, Any], harness_id: str, worker_model: str
+    ) -> bool:
+        """Refuse the spawn when the endpoint answers with a different model.
+
+        Returns True when the task was FAILED here and the caller must skip
+        it. False means proceed: the model was served, or nothing could be
+        established. The refusal is permanent in the same sense as the spawn
+        configuration errors below it (nothing changes on the next tick), so
+        it fails the task rather than deferring it, writes no run row (no
+        container existed) and no outcome row (no worker ran, so there is
+        nothing to attribute), and publishes ``worker_model_substituted`` so a
+        surface can show it.
+        """
+        spec = REGISTRY.get(harness_id)
+        if spec is None or not spec.supports_local_llm:
+            return False
+        lm_studio_url = ""
+        if self._effective_settings is not None:
+            resolved_url = await self._effective_settings.lm_studio_url()
+            lm_studio_url = resolved_url if isinstance(resolved_url, str) else ""
+        if not lm_studio_url:
+            return False
+        probe = await probe_served_model(lm_studio_url, worker_model)
+        if probe.verdict != "substituted":
+            return False
+        reason = substitution_reason(probe)
+        logger.error(
+            "Spawn for task %s refused: endpoint %s serves %r, not the configured %r",
+            task["id"],
+            lm_studio_url,
+            probe.served,
+            probe.requested,
+        )
+        await self._tq.fail_task(task["id"], reason)
+        self._bus.publish(
+            {
+                "type": "worker_model_substituted",
+                "task_id": task["id"],
+                "plan_id": task.get("plan_id"),
+                "harness": harness_id,
+                "requested": probe.requested,
+                "served": probe.served,
+                "endpoint": lm_studio_url,
+                "feedback": reason,
+            }
+        )
+        self._bus.publish(
+            {"type": "task_failed", "task_id": task["id"], "feedback": reason}
+        )
+        return True
 
     async def _build_worker_bible(
         self,
