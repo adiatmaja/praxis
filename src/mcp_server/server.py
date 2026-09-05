@@ -1017,13 +1017,26 @@ def _plan_next_action(data: dict[str, Any]) -> tuple[str, str]:
                 "user; the work is on the plan branch and reaches the base "
                 "branch only when they merge it",
             )
+        state = data.get("integration_state")
+        if state == "nothing_to_integrate":
+            return (
+                "none",
+                "nothing to integrate: the work already reached the base branch "
+                "through the task PRs, nothing to do",
+            )
+        if state is None and not data.get("error"):
+            return (
+                "wait_again",
+                "the integration stage has not recorded an outcome yet (the PR "
+                f"is being opened); call wait_plan({data.get('plan_id')}) again",
+            )
         return (
             "none",
             "completed with no integration PR: "
             + (
                 str(data.get("error"))
                 if data.get("error")
-                else "nothing to integrate, the task PRs already landed"
+                else f"the integration stage recorded {state}"
             ),
         )
     if status in {"failed", "rejected"}:
@@ -1128,6 +1141,7 @@ async def wait_plan_impl(
         "stalled_blocked_by_task_ids": data.get("stalled_blocked_by_task_ids") or [],
         "integration_pr_url": data.get("integration_pr_url"),
         "integration_merged_at": data.get("integration_merged_at"),
+        "integration_state": data.get("integration_state"),
         "plan_attempts": data.get("plan_attempts"),
         "max_planning_attempts": data.get("max_planning_attempts"),
         "waited_seconds": data.get("waited_seconds"),

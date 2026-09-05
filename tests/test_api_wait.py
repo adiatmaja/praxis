@@ -138,7 +138,15 @@ async def test_plan_detail_carries_status_terminal_and_waiting_on(
     body = (await client.get(f"/api/plans/{plan_id}", headers=auth_headers)).json()
     assert body["status"] == "completed"
     assert body["terminal"] is True
+    # COMPLETED is written BEFORE the integration stage runs, so until the
+    # stage records its outcome the engine is still working on this plan.
+    assert body["waiting_on"] == "review"
+    assert body["integration_state"] is None
+
+    await queue.set_integration_state(plan_id, "nothing_to_integrate")
+    body = (await client.get(f"/api/plans/{plan_id}", headers=auth_headers)).json()
     assert body["waiting_on"] == "nothing"
+    assert body["integration_state"] == "nothing_to_integrate"
 
 
 async def test_plan_list_derives_the_same_wait_state_as_the_detail(
@@ -357,6 +365,7 @@ async def test_wait_plan_returns_at_once_on_a_terminal_plan(
     plan_id, _ = await _plan_with_tasks(client, db, auth_headers)
     queue = client.app.state.task_queue  # type: ignore[attr-defined]
     await queue.update_plan_status(plan_id, PlanStatus.COMPLETED)
+    await queue.set_integration_state(plan_id, "nothing_to_integrate")
     started = time.monotonic()
     body = (
         await client.get(
@@ -515,3 +524,32 @@ async def test_wait_plan_on_a_pending_proposal_returns_at_once_on_the_human(
     assert body["timed_out"] is False
     detail = (await client.get(f"/api/plans/{plan_id}", headers=auth_headers)).json()
     assert detail["waiting_on"] == "human"
+
+
+async def test_wait_plan_keeps_waiting_while_the_integration_stage_runs(
+    client: AsyncClient, db: Database, auth_headers: dict[str, str]
+) -> None:
+    """COMPLETED lands on the row before the integration PR exists (observed
+    live: 30 s apart). A wait that rested on the status alone told its caller
+    "nothing more will happen" and the PR appeared after they left."""
+    plan_id, _ = await _plan_with_tasks(client, db, auth_headers)
+    queue = client.app.state.task_queue  # type: ignore[attr-defined]
+    await queue.update_plan_status(plan_id, PlanStatus.COMPLETED)
+    bus = client.app.state.event_bus  # type: ignore[attr-defined]
+
+    async def open_pr_later() -> None:
+        await asyncio.sleep(0.1)
+        await queue.set_plan_integration_pr(plan_id, "https://github.com/u/a/pull/9")
+        await queue.set_integration_state(plan_id, "opened")
+        bus.publish({"type": "plan_integration_ready", "plan_id": plan_id})
+
+    mover = asyncio.create_task(open_pr_later())
+    body = (
+        await client.get(
+            f"/api/plans/{plan_id}/wait", params={"timeout": 20}, headers=auth_headers
+        )
+    ).json()
+    await mover
+    assert body["changed"] is True
+    assert body["waiting_on"] == "human"
+    assert body["integration_pr_url"] == "https://github.com/u/a/pull/9"

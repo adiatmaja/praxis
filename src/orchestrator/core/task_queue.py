@@ -402,6 +402,34 @@ class TaskQueue:
             (pr_url, plan_id),
         )
 
+    async def set_integration_state(self, plan_id: str, state: str) -> None:
+        """Record which outcome the integration stage reached for this plan.
+
+        The stage's own outcome names (``opened``, ``reused``,
+        ``nothing_to_integrate``, ``failed``) or ``skipped``. This is the
+        POSITIVE record a wait rests on: ``completed`` alone is written before
+        the stage runs, and the nothing-to-integrate outcome deliberately
+        writes no URL and no error, so without this column those two read
+        identically for the seconds the PR takes to open.
+        """
+        await self._db.execute(
+            "UPDATE plans SET integration_state = ? WHERE id = ?",
+            (state, plan_id),
+        )
+
+    async def set_integration_state_if_unset(self, plan_id: str, state: str) -> None:
+        """Record ``state`` only when no outcome is recorded yet.
+
+        For the stage's early returns: a plan re-entering the stage after its
+        PR was recorded (``approve_merges``, a retried tick) must keep
+        ``opened``, never become ``skipped``.
+        """
+        await self._db.execute(
+            "UPDATE plans SET integration_state = ? "
+            "WHERE id = ? AND integration_state IS NULL",
+            (state, plan_id),
+        )
+
     async def mark_plan_integrated(self, plan_id: str) -> None:
         """Stamp the plan as landed on its base branch.
 

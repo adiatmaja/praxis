@@ -416,6 +416,44 @@ async def _migration_0013_contract_drift(
         await connection.execute("ALTER TABLE tasks ADD COLUMN contract_drift TEXT")
 
 
+async def _migration_0014_integration_state(
+    connection: aiosqlite.Connection,
+) -> None:
+    """Add plans.integration_state: the POSITIVE record of the integration stage.
+
+    ``process_plan_once`` writes COMPLETED and THEN runs ``on_plan_completed``,
+    which opens the integration PR. Observed live on 2026-09-05: a wait on the
+    plan returned "completed, nothing more will happen" at 08:42:02 and the PR
+    existed by 08:42:32. Before this column a completed row with no URL and no
+    error was ambiguous between "the stage is running right now" and "nothing
+    to integrate, which deliberately records nothing", and no timestamp on
+    the row could separate them.
+
+    Values are the stage's own outcome names (``opened``, ``reused``,
+    ``nothing_to_integrate``, ``failed``) plus ``skipped`` for an early return,
+    written on EVERY exit of the stage. NULL from now on means exactly "the
+    stage has not recorded an outcome yet".
+
+    Backfill: a completed row that predates the column already had its stage
+    run once, so its outcome is what the row shows: a URL means ``opened``, an
+    error means ``failed``, neither means ``nothing_to_integrate``. Rows the
+    stage has not reached (not completed) stay NULL. Idempotent: the column is
+    guarded and the backfill touches only NULL rows, so a recorded state is
+    never overwritten.
+    """
+    cursor = await connection.execute("PRAGMA table_info(plans)")
+    cols = {row[1] for row in await cursor.fetchall()}
+    if "integration_state" not in cols:
+        await connection.execute("ALTER TABLE plans ADD COLUMN integration_state TEXT")
+    await connection.execute(
+        "UPDATE plans SET integration_state = CASE "
+        "WHEN integration_pr_url IS NOT NULL THEN 'opened' "
+        "WHEN error IS NOT NULL THEN 'failed' "
+        "ELSE 'nothing_to_integrate' END "
+        "WHERE status = 'completed' AND integration_state IS NULL"
+    )
+
+
 MIGRATIONS: list[Migration] = [
     Migration(1, "baseline: schema as of 2026-07-02", _migration_0001_baseline),
     Migration(
@@ -477,6 +515,11 @@ MIGRATIONS: list[Migration] = [
         13,
         "add tasks.contract_drift so the merge gate can say what the diff touched",
         _migration_0013_contract_drift,
+    ),
+    Migration(
+        14,
+        "add plans.integration_state so a completed plan says whether integration ran",
+        _migration_0014_integration_state,
     ),
 ]
 

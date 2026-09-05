@@ -349,7 +349,8 @@ async def test_wait_plan_completed_with_integration_pr_says_relay_it() -> None:
         _plan_wait(
             status="completed",
             terminal=True,
-            waiting_on="nothing",
+            waiting_on="human",
+            integration_state="opened",
             integration_pr_url="https://github.com/u/r/pull/9",
             tasks=[
                 {"task_id": "t1", "title": "A", "status": "merged", "pr_url": PR},
@@ -368,6 +369,7 @@ async def test_wait_plan_integrated_says_nothing_to_do() -> None:
             status="completed",
             terminal=True,
             waiting_on="nothing",
+            integration_state="opened",
             integration_pr_url="https://github.com/u/r/pull/9",
             integration_merged_at="2026-09-05 10:00:00",
             tasks=[
@@ -438,3 +440,42 @@ async def test_wait_plan_pending_proposal_says_approve_or_reject() -> None:
     assert f"praxis approve {PLAN_ID}" in result["summary"]
     assert f"praxis reject {PLAN_ID}" in result["summary"]
     assert "decompos" not in result["summary"].lower()
+
+
+async def test_wait_plan_completed_with_nothing_to_integrate_says_already_on_base() -> (
+    None
+):
+    client = _plan_routes(
+        _plan_wait(
+            status="completed",
+            terminal=True,
+            waiting_on="nothing",
+            integration_state="nothing_to_integrate",
+            tasks=[
+                {"task_id": "t1", "title": "A", "status": "no_changes", "pr_url": None},
+            ],
+        )
+    )
+    result = await server.wait_plan_impl(client, plan_id=PLAN_ID)
+    assert result["next_action"] == "none"
+    assert result["integration_state"] == "nothing_to_integrate"
+    assert "already" in result["summary"].lower()
+    assert "cannot be established" not in result["summary"]
+
+
+async def test_wait_plan_completed_mid_integration_says_wait_again() -> None:
+    """The stage has not recorded an outcome: the PR is being opened."""
+    client = _plan_routes(
+        _plan_wait(
+            status="completed",
+            terminal=True,
+            waiting_on="review",
+            integration_state=None,
+            changed=False,
+            timed_out=True,
+            tasks=[{"task_id": "t1", "title": "A", "status": "merged", "pr_url": PR}],
+        )
+    )
+    result = await server.wait_plan_impl(client, plan_id=PLAN_ID)
+    assert result["next_action"] == "wait_again"
+    assert "integration" in result["summary"].lower()

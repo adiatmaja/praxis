@@ -209,6 +209,7 @@ async def test_a_failed_integration_pr_is_recorded_on_the_plan_row(
     assert plan is not None
     error = str(plan["error"] or "")
     assert "gh auth fail" in error
+    assert plan["integration_state"] == _INTEGRATION_FAILED
     # Names the branch the work is stranded on and the base it never reached,
     # or the operator has a reason with nothing to act on.
     assert _GITHUB_PLAN_BRANCH in error
@@ -280,6 +281,11 @@ async def test_nothing_to_integrate_is_not_written_as_a_plan_error(
     assert plan is not None
     assert plan["error"] is None
     git.open_integration_pr.assert_not_awaited()
+    # The POSITIVE record of that correct outcome. Without it a completed plan
+    # with no URL and no error was ambiguous between "nothing to integrate"
+    # and "the integration stage is running right now": a wait on the plan
+    # returned "nothing more will happen" 30 s before PR #13 existed.
+    assert plan["integration_state"] == _INTEGRATION_NOTHING
 
 
 # ---------------------------------------------------------------------------
@@ -462,3 +468,56 @@ async def test_the_github_path_still_reaches_gh_pr_create(db: Database) -> None:
     assert plan["error"] is None
     ready = _ready(events())
     assert ready["integration_status"] == _INTEGRATION_OPENED
+
+
+@pytest.mark.integration
+async def test_the_opened_outcome_is_recorded_on_the_plan_row(db: Database) -> None:
+    task_queue, plan_id = await _seed(db, _GITHUB_REPO, _GITHUB_PLAN_BRANCH)
+    git = _github_git(head_sha=_HEAD_SHA, open_result="https://github.com/o/r/pull/9")
+    await _orchestrator(
+        task_queue, git, EventBus(), neutralise_gate=True
+    ).on_plan_completed(plan_id)
+    plan = await task_queue.get_plan(plan_id)
+    assert plan is not None
+    assert plan["integration_pr_url"] == "https://github.com/o/r/pull/9"
+    assert plan["integration_state"] == _INTEGRATION_OPENED
+
+
+@pytest.mark.integration
+async def test_an_early_return_still_records_that_the_stage_ran(db: Database) -> None:
+    """A plan with no branch never reaches the four outcomes; before this it
+    recorded nothing, indistinguishable from a stage still running."""
+    task_queue, plan_id = await _seed(db, _GITHUB_REPO, _GITHUB_PLAN_BRANCH)
+    await db.execute(
+        "UPDATE plans SET plan_branch_name = NULL WHERE id = ?", (plan_id,)
+    )
+    git = _github_git(head_sha=_HEAD_SHA, open_result="https://github.com/o/r/pull/9")
+    await _orchestrator(
+        task_queue, git, EventBus(), neutralise_gate=True
+    ).on_plan_completed(plan_id)
+    plan = await task_queue.get_plan(plan_id)
+    assert plan is not None
+    assert plan["integration_state"] == "skipped"
+    git.open_integration_pr.assert_not_awaited()
+
+
+@pytest.mark.integration
+async def test_a_recorded_outcome_is_not_overwritten_by_a_later_early_return(
+    db: Database,
+) -> None:
+    """``approve_merges`` and a retried tick can re-enter the stage; a plan
+    whose PR is already recorded must keep ``opened``, not become ``skipped``."""
+    task_queue, plan_id = await _seed(db, _GITHUB_REPO, _GITHUB_PLAN_BRANCH)
+    git = _github_git(head_sha=_HEAD_SHA, open_result="https://github.com/o/r/pull/9")
+    await _orchestrator(
+        task_queue, git, EventBus(), neutralise_gate=True
+    ).on_plan_completed(plan_id)
+    await db.execute(
+        "UPDATE plans SET plan_branch_name = NULL WHERE id = ?", (plan_id,)
+    )
+    await _orchestrator(
+        task_queue, git, EventBus(), neutralise_gate=True
+    ).on_plan_completed(plan_id)
+    plan = await task_queue.get_plan(plan_id)
+    assert plan is not None
+    assert plan["integration_state"] == _INTEGRATION_OPENED

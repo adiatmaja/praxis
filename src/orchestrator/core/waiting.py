@@ -118,14 +118,8 @@ def plan_is_terminal(status: str) -> bool:
     return status in _TERMINAL_PLAN_STATUSES
 
 
-def plan_waiting_on(
-    status: str,
-    tasks: list[dict[str, Any]],
-    opus_plan_json: str | None,
-    *,
-    source: str | None = None,
-) -> str:
-    """Who has to act before a plan in ``status`` with these leaves moves again.
+def plan_waiting_on(plan: dict[str, Any], tasks: list[dict[str, Any]]) -> str:
+    """Who has to act before this plan, with these leaves, moves again.
 
     The order is the whole rule: something MOVING outranks something PARKED,
     because a wait must not return while a worker is still in flight even if
@@ -140,20 +134,36 @@ def plan_waiting_on(
     status). Found on the first live listing: three proposals parked at that
     gate would have read as "waiting on the planner".
 
+    A COMPLETED plan is not at rest until the integration stage has recorded
+    its outcome: ``process_plan_once`` writes COMPLETED and then the stage
+    opens the PR, and a wait that rested on the status alone said "nothing
+    more will happen" 30 seconds before the PR existed (observed live,
+    2026-09-05). ``integration_state`` NULL means the stage has not recorded
+    anything (``review``, the engine is integrating); an open PR is the
+    plan's own merge gate (``human``); everything else is settled.
+
     Args:
-        status: A ``PlanStatus`` value.
+        plan: The plan row: ``status``, ``opus_plan``, ``source``,
+            ``integration_pr_url``, ``integration_merged_at``,
+            ``integration_state``, ``error``. Absent keys read as ``None``.
         tasks: The plan's task rows in rowid order.
-        opus_plan_json: The plan's ``opus_plan`` column, for the stall check.
-        source: The plan row's ``source`` (``user``, ``execute-plan``,
-            ``promoted``, ``autonomous``). ``None`` means unknown, which is
-            read as not a proposal.
 
     Returns:
         One of ``WAITING_ON_VALUES``.
     """
+    status = str(plan.get("status"))
+    opus_plan_json = plan.get("opus_plan")
+    if status == PlanStatus.COMPLETED.value:
+        if plan.get("integration_merged_at"):
+            return "nothing"
+        if plan.get("integration_pr_url"):
+            return "human"
+        if plan.get("integration_state") or plan.get("error"):
+            return "nothing"
+        return "review"
     if plan_is_terminal(status):
         return "nothing"
-    if plan_awaits_approval({"source": source, "status": status}):
+    if plan_awaits_approval(plan):
         return "human"
     statuses = [str(t.get("status")) for t in tasks]
     if not statuses:

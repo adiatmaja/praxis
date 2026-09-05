@@ -157,6 +157,8 @@ def test_the_denominator_the_cli_prints_is_the_engines_own_cap() -> None:
     copy of the cap survived every test in this file.
     """
     payload = PlanResponse(
+        terminal=False,
+        waiting_on="worker",
         id=PLAN_ID,
         project_id=PROJECT_ID,
         source="user",

@@ -912,6 +912,17 @@ def _status_cell(plan: dict[str, Any]) -> str:
         reason = plan.get("error")
         if reason:
             return f"{status_text} (no PR; {_truncate_error(str(reason))})"
+        # Since migration 14 the stage RECORDS the no-op outcome, so the bare
+        # cell is no longer the only honest rendering: a recorded
+        # `nothing_to_integrate` means the work already reached base, and a
+        # NULL on a completed plan means the stage has not recorded anything
+        # yet (the PR is being opened). A server older than the column sends
+        # neither and renders exactly as before.
+        state = plan.get("integration_state")
+        if state == "nothing_to_integrate":
+            return f"{status_text} (no PR; already on base)"
+        if state is None and "integration_state" in plan:
+            return f"{status_text} (integrating)"
         return f"{status_text} (no PR)"
     if status_text in ("active", "pending"):
         # AHEAD of the planning arm below, and the order is the point. A plan
@@ -1120,6 +1131,14 @@ def _wait_rest_lines(kind: str, target_id: str, body: dict[str, Any]) -> None:
                     )
                 )
                 _copyable(f"  praxis merge-plan {target_id}")
+            return
+        if kind == "plan" and body.get("integration_state") == "nothing_to_integrate":
+            console.print(
+                Text(
+                    "Plan completed: nothing to integrate, the work already "
+                    "reached the base branch through the task PRs."
+                )
+            )
             return
         if status_text == "failed":
             reason = body.get("error") or (body.get("task") or {}).get(

@@ -514,6 +514,11 @@ class PlanResponse(BaseModel):
     #: from a plan whose work reached the base branch.
     integration_pr_url: str | None = None
     integration_merged_at: str | None = None
+    #: What the integration stage recorded (migration 14): ``opened``,
+    #: ``reused``, ``nothing_to_integrate``, ``failed`` or ``skipped``. NULL
+    #: means the stage has not recorded an outcome yet, which on a COMPLETED
+    #: plan means the PR is being opened right now.
+    integration_state: str | None = None
     #: DERIVED beside ``status``, by ``core/waiting`` (the one derivation every
     #: surface renders): whether nothing will ever advance this plan again, and
     #: who has to act before it moves (``planner`` while decomposition is a

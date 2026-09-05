@@ -321,3 +321,37 @@ def test_wait_on_a_pending_proposal_names_the_approve_and_reject_verbs(
     assert "proposal" in flat(result).lower()
     assert on_one_line(result, f"praxis approve {PLAN_ID}")
     assert on_one_line(result, f"praxis reject {PLAN_ID}")
+
+
+def test_wait_on_a_completed_plan_with_nothing_to_integrate_says_so(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    script = _Script(
+        [
+            {
+                "plan_id": PLAN_ID,
+                "status": "completed",
+                "previous": "completed",
+                "changed": False,
+                "timed_out": False,
+                "terminal": True,
+                "waiting_on": "nothing",
+                "integration_state": "nothing_to_integrate",
+                "fingerprint": "a",
+                "timeout_seconds": 90.0,
+                "waited_seconds": 0.0,
+                "tasks": [
+                    {"task_id": TASK_ID, "title": "Add slugify", "status": "no_changes"}
+                ],
+                "integration_pr_url": None,
+                "integration_merged_at": None,
+                "plan_attempts": 0,
+                "error": None,
+            }
+        ],
+        kind="plan",
+    )
+    _wire(monkeypatch, script)
+    result = runner.invoke(app, ["wait", PLAN_ID])
+    assert result.exit_code == 0, result.stdout
+    assert "nothing to integrate" in flat(result).lower()

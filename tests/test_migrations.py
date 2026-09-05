@@ -119,8 +119,8 @@ async def test_escalation_index_defaults_to_zero(tmp_path):
 
 
 @pytest.mark.unit
-def test_current_schema_version_is_thirteen():
-    assert CURRENT_SCHEMA_VERSION == 13
+def test_current_schema_version_is_fourteen():
+    assert CURRENT_SCHEMA_VERSION == 14
 
 
 @pytest.mark.unit
@@ -342,5 +342,93 @@ async def test_migration_13_is_idempotent(tmp_path):
         await _migration_0013_contract_drift(connection)
         names = [r["name"] for r in await db.fetch_all("PRAGMA table_info(tasks)")]
         assert names.count("contract_drift") == 1
+    finally:
+        await db.close()
+
+
+async def _seed_completed_plans(db: Database) -> None:
+    await db.execute("INSERT INTO users (id, name, token_hash) VALUES ('u1', 'U', 'h')")
+    await db.execute(
+        "INSERT INTO projects (id, user_id, name, repo_url) "
+        "VALUES ('proj1', 'u1', 'P', 'https://example.com/repo')"
+    )
+    rows = [
+        ("opened", "completed", "https://github.com/o/r/pull/1", None, None),
+        ("landed", "completed", "https://github.com/o/r/pull/2", "2026-01-01", None),
+        ("stranded", "completed", None, None, "gh auth fail"),
+        ("noop", "completed", None, None, None),
+        ("live", "active", None, None, None),
+        ("dead", "failed", None, None, "planner answered in prose"),
+    ]
+    for pid, status, pr, merged, error in rows:
+        await db.execute(
+            "INSERT INTO plans (id, project_id, source, status, integration_pr_url, "
+            "integration_merged_at, error) VALUES (?, 'proj1', 'test', ?, ?, ?, ?)",
+            (pid, status, pr, merged, error),
+        )
+
+
+async def _states(db: Database) -> dict[str, str | None]:
+    rows = await db.fetch_all("SELECT id, integration_state FROM plans")
+    return {str(r["id"]): r["integration_state"] for r in rows}
+
+
+@pytest.mark.unit
+async def test_migration_14_backfills_integration_state_from_what_the_row_shows(
+    tmp_path,
+):
+    """A completed row that predates the column already had its integration
+    stage run exactly once, so its outcome is whatever the row shows: a URL
+    means opened, an error means failed, neither means nothing to integrate.
+    Only rows the stage has not reached yet (not completed) stay NULL, which
+    is what NULL means from now on: "the stage has not recorded an outcome"."""
+    from orchestrator.database import _migration_0014_integration_state
+
+    db = Database(f"sqlite+aiosqlite:///{tmp_path / 'm14.db'}")
+    await db.initialize()
+    await _seed_completed_plans(db)
+    # ``initialize`` created the column empty; the step's backfill is what is
+    # under test, so run it directly on rows it has not seen.
+    await db.execute("UPDATE plans SET integration_state = NULL")
+    conn = db._connection
+    assert conn is not None
+    try:
+        await _migration_0014_integration_state(conn)
+        await conn.commit()
+        assert await _states(db) == {
+            "opened": "opened",
+            "landed": "opened",
+            "stranded": "failed",
+            "noop": "nothing_to_integrate",
+            "live": None,
+            "dead": None,
+        }
+    finally:
+        # In a ``finally``: an assertion failing above this line leaked the
+        # aiosqlite worker thread and the pytest process hung AT EXIT, which
+        # under a mutation reads as a run that never finishes.
+        await db.close()
+
+
+@pytest.mark.unit
+async def test_migration_14_is_idempotent_and_never_overwrites_a_recorded_state(
+    tmp_path,
+):
+    from orchestrator.database import _migration_0014_integration_state
+
+    db = Database(f"sqlite+aiosqlite:///{tmp_path / 'm14b.db'}")
+    await db.initialize()
+    await _seed_completed_plans(db)
+    await db.execute("UPDATE plans SET integration_state = 'skipped' WHERE id = 'noop'")
+    conn = db._connection
+    assert conn is not None
+    try:
+        await _migration_0014_integration_state(conn)
+        await _migration_0014_integration_state(conn)
+        await conn.commit()
+        states = await _states(db)
+        assert states["noop"] == "skipped"
+        assert states["opened"] == "opened"
+        assert states["live"] is None
     finally:
         await db.close()

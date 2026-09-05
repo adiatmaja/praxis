@@ -126,9 +126,7 @@ def _attach_stall_state(plan: dict[str, Any], tasks: list[dict[str, Any]]) -> No
     # the detail must answer identically, and they load tasks differently.
     plan_status = str(plan.get("status"))
     plan["terminal"] = waiting.plan_is_terminal(plan_status)
-    plan["waiting_on"] = waiting.plan_waiting_on(
-        plan_status, tasks, plan.get("opus_plan"), source=plan.get("source")
-    )
+    plan["waiting_on"] = waiting.plan_waiting_on(plan, tasks)
 
 
 async def _derived(queue: Any, plan: dict[str, Any]) -> dict[str, Any]:

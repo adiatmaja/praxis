@@ -89,57 +89,93 @@ def _rows(*statuses: str) -> list[dict[str, Any]]:
 
 @pytest.mark.parametrize("status", ["completed", "rejected", "failed"])
 def test_terminal_plan_waits_on_nothing(status: str) -> None:
-    assert waiting.plan_waiting_on(status, _rows("pending"), _graph([])) == "nothing"
+    """With its integration outcome RECORDED: a completed plan whose stage has
+    not recorded anything is still being integrated (tests below)."""
+    row = {"status": status, "opus_plan": _graph([]), "integration_state": "skipped"}
+    assert waiting.plan_waiting_on(row, _rows("pending")) == "nothing"
     assert waiting.plan_is_terminal(status)
 
 
 @pytest.mark.parametrize("status", ["pending", "active"])
 def test_plan_with_no_tasks_waits_on_the_planner(status: str) -> None:
-    assert waiting.plan_waiting_on(status, [], None) == "planner"
+    assert (
+        waiting.plan_waiting_on({"status": status, "opus_plan": None}, []) == "planner"
+    )
     assert not waiting.plan_is_terminal(status)
 
 
 def test_plan_with_a_worker_in_flight_waits_on_the_worker() -> None:
     rows = _rows("in_progress", "pending")
-    assert waiting.plan_waiting_on("active", rows, _graph([], ["t0"])) == "worker"
+    assert (
+        waiting.plan_waiting_on(
+            {"status": "active", "opus_plan": _graph([], ["t0"])}, rows
+        )
+        == "worker"
+    )
 
 
 def test_plan_with_a_review_in_flight_waits_on_review() -> None:
     rows = _rows("reviewing", "pending")
-    assert waiting.plan_waiting_on("active", rows, _graph([], ["t0"])) == "review"
+    assert (
+        waiting.plan_waiting_on(
+            {"status": "active", "opus_plan": _graph([], ["t0"])}, rows
+        )
+        == "review"
+    )
 
 
 def test_plan_parked_at_the_merge_gate_waits_on_a_human() -> None:
     rows = _rows("passed", "pending")
-    assert waiting.plan_waiting_on("active", rows, _graph([], ["t0"])) == "human"
+    assert (
+        waiting.plan_waiting_on(
+            {"status": "active", "opus_plan": _graph([], ["t0"])}, rows
+        )
+        == "human"
+    )
 
 
 def test_plan_parked_on_a_clarification_waits_on_a_human() -> None:
     rows = _rows("needs_clarification")
-    assert waiting.plan_waiting_on("active", rows, _graph([])) == "human"
+    assert (
+        waiting.plan_waiting_on({"status": "active", "opus_plan": _graph([])}, rows)
+        == "human"
+    )
 
 
 def test_plan_stalled_behind_a_terminal_failure_waits_on_a_human() -> None:
     """The stall reads ACTIVE with a null error; only ``praxis retry`` moves it."""
     rows = _rows("failed", "pending")
-    assert waiting.plan_waiting_on("active", rows, _graph([], ["t0"])) == "human"
+    assert (
+        waiting.plan_waiting_on(
+            {"status": "active", "opus_plan": _graph([], ["t0"])}, rows
+        )
+        == "human"
+    )
 
 
 def test_plan_with_only_dispatchable_pending_leaves_waits_on_the_worker() -> None:
     rows = _rows("merged", "pending")
-    assert waiting.plan_waiting_on("active", rows, _graph([], ["t0"])) == "worker"
+    assert (
+        waiting.plan_waiting_on(
+            {"status": "active", "opus_plan": _graph([], ["t0"])}, rows
+        )
+        == "worker"
+    )
 
 
 def test_a_worker_in_flight_outranks_a_parked_sibling() -> None:
     """A wait must not return while something is still moving."""
     rows = _rows("passed", "in_progress")
-    assert waiting.plan_waiting_on("active", rows, _graph([], [])) == "worker"
+    assert (
+        waiting.plan_waiting_on({"status": "active", "opus_plan": _graph([], [])}, rows)
+        == "worker"
+    )
 
 
 @pytest.mark.parametrize("status", [s.value for s in PlanStatus])
 def test_plan_is_resting_means_the_engine_will_not_move_it(status: str) -> None:
     rows = _rows("pending")
-    on = waiting.plan_waiting_on(status, rows, _graph([]))
+    on = waiting.plan_waiting_on({"status": status, "opus_plan": _graph([])}, rows)
     assert waiting.plan_is_resting(on) == (on in {"human", "nothing"})
 
 
@@ -323,8 +359,97 @@ def test_pending_autonomous_proposal_waits_on_a_human_not_the_planner() -> None:
     """A ``pending`` plan whose source is ``autonomous`` is parked at the
     PROPOSAL gate: nothing decomposes it until a person approves it, so a
     wait that called it "planner" would block on a state only a human moves."""
-    assert waiting.plan_waiting_on("pending", [], None, source="autonomous") == "human"
-    assert waiting.plan_waiting_on("pending", [], None, source="user") == "planner"
     assert (
-        waiting.plan_waiting_on("pending", [], None, source="execute-plan") == "planner"
+        waiting.plan_waiting_on(
+            {"status": "pending", "opus_plan": None, "source": "autonomous"}, []
+        )
+        == "human"
     )
+    assert (
+        waiting.plan_waiting_on(
+            {"status": "pending", "opus_plan": None, "source": "user"}, []
+        )
+        == "planner"
+    )
+    assert (
+        waiting.plan_waiting_on(
+            {"status": "pending", "opus_plan": None, "source": "execute-plan"}, []
+        )
+        == "planner"
+    )
+
+
+def test_pending_autonomous_proposal_waits_on_a_human_not_the_planner() -> None:
+    """A ``pending`` plan whose source is ``autonomous`` is parked at the
+    PROPOSAL gate: nothing decomposes it until a person approves it, so a
+    wait that called it "planner" would block on a state only a human moves."""
+    assert (
+        waiting.plan_waiting_on(
+            {"status": "pending", "opus_plan": None, "source": "autonomous"}, []
+        )
+        == "human"
+    )
+    assert (
+        waiting.plan_waiting_on(
+            {"status": "pending", "opus_plan": None, "source": "user"}, []
+        )
+        == "planner"
+    )
+    assert (
+        waiting.plan_waiting_on(
+            {"status": "pending", "opus_plan": None, "source": "execute-plan"}, []
+        )
+        == "planner"
+    )
+
+
+# --- a completed plan is not at rest until the integration stage says so ---
+
+
+def _completed(**cols: Any) -> dict[str, Any]:
+    row: dict[str, Any] = {
+        "status": "completed",
+        "opus_plan": _graph([]),
+        "integration_pr_url": None,
+        "integration_merged_at": None,
+        "integration_state": None,
+        "error": None,
+    }
+    row.update(cols)
+    return row
+
+
+def test_completed_plan_with_no_recorded_outcome_is_still_integrating() -> None:
+    """Observed live: a wait returned "completed, nothing more will happen" at
+    08:42:02 and the integration PR existed by 08:42:32. `process_plan_once`
+    writes COMPLETED before the stage runs, so the window is real."""
+    assert waiting.plan_waiting_on(_completed(), _rows("merged")) == "review"
+
+
+def test_completed_plan_with_an_open_integration_pr_waits_on_a_human() -> None:
+    row = _completed(
+        integration_pr_url="https://github.com/o/r/pull/9", integration_state="opened"
+    )
+    assert waiting.plan_waiting_on(row, _rows("merged")) == "human"
+
+
+def test_completed_plan_that_landed_waits_on_nothing() -> None:
+    row = _completed(
+        integration_pr_url="https://github.com/o/r/pull/9",
+        integration_merged_at="2026-09-05 10:00:00",
+        integration_state="opened",
+    )
+    assert waiting.plan_waiting_on(row, _rows("merged")) == "nothing"
+
+
+@pytest.mark.parametrize("state", ["nothing_to_integrate", "failed", "skipped"])
+def test_completed_plan_with_a_recorded_no_pr_outcome_waits_on_nothing(
+    state: str,
+) -> None:
+    assert waiting.plan_waiting_on(_completed(integration_state=state), []) == "nothing"
+
+
+def test_completed_plan_with_an_error_but_no_state_waits_on_nothing() -> None:
+    """A pre-feature stranded row: the error IS the recorded outcome."""
+    row = _completed(error="the integration pull request could not be opened")
+    assert waiting.plan_waiting_on(row, _rows("merged")) == "nothing"

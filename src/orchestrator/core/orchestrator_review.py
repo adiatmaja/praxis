@@ -187,6 +187,19 @@ _INTEGRATION_OPENED = "opened"
 _INTEGRATION_REUSED = "reused"
 _INTEGRATION_NOTHING = "nothing_to_integrate"
 _INTEGRATION_FAILED = "failed"
+#: The stage returned before reaching any of the four outcomes (no plan, no
+#: project, or no branch/repo to integrate). Recorded so a NULL
+#: ``plans.integration_state`` keeps meaning exactly "the stage has not
+#: recorded an outcome yet", which is what a wait on a completed plan rests on.
+_INTEGRATION_SKIPPED = "skipped"
+
+
+@dataclass
+class _IntegrationOutcome:
+    """Mutable holder so the wrapper can record whatever the stage decided."""
+
+    status: str | None = None
+
 
 # Consecutive ticks a task may fail its review on something that is NOT a
 # genuine throttle before the task is failed and the plan allowed to move on.
@@ -4726,7 +4739,36 @@ class ReviewMixin:
         return None
 
     async def on_plan_completed(self, plan_id: str) -> None:
-        """Open a best-effort integration PR and signal readiness, then draft a context sync."""
+        """Open a best-effort integration PR and signal readiness, then draft a context sync.
+
+        The outcome is recorded on ``plans.integration_state`` on EVERY exit,
+        including the early returns and an exception: ``process_plan_once``
+        writes COMPLETED before this runs, so until this column is written a
+        completed plan is still being worked on, and a wait on it must not
+        rest. A decided outcome is written unconditionally; an early return
+        writes ``skipped`` only where nothing is recorded yet, because a plan
+        re-entering the stage after its PR was recorded must keep ``opened``.
+        """
+        outcome = _IntegrationOutcome()
+        try:
+            await self._complete_plan_stage(plan_id, outcome)
+        finally:
+            try:
+                if outcome.status is not None:
+                    await self._tq.set_integration_state(plan_id, outcome.status)
+                else:
+                    await self._tq.set_integration_state_if_unset(
+                        plan_id, _INTEGRATION_SKIPPED
+                    )
+            except Exception:  # noqa: BLE001 - never wedge the loop
+                logger.warning(
+                    "Failed to record the integration outcome for plan %s", plan_id
+                )
+
+    async def _complete_plan_stage(
+        self, plan_id: str, outcome: _IntegrationOutcome
+    ) -> None:
+        """The integration stage proper; ``outcome`` carries what it decided."""
         plan = await self._tq.get_plan(plan_id)
         if plan is None:
             return
@@ -4807,6 +4849,7 @@ class ReviewMixin:
                 # `gh pr create` against the same (base, head) pair.
                 pr_url = existing_pr
                 integration_status = _INTEGRATION_REUSED
+                outcome.status = integration_status
                 log.info(
                     "integration PR skipped: branch=%s already has an open "
                     "PR against base=%s, reusing %s",
@@ -4830,6 +4873,7 @@ class ReviewMixin:
                 # as `no_changes` one layer down: the absence is a fact, and
                 # what it MEANS is decided here.
                 integration_status = _INTEGRATION_NOTHING
+                outcome.status = integration_status
                 integration_detail = nothing_to_integrate
                 log.info(
                     "nothing to integrate for plan %s: %s",
@@ -4848,8 +4892,10 @@ class ReviewMixin:
                         ),
                     )
                     integration_status = _INTEGRATION_OPENED
+                    outcome.status = integration_status
                 except Exception as exc:  # noqa: BLE001 - reported, never fatal
                     integration_status = _INTEGRATION_FAILED
+                    outcome.status = integration_status
                     # States what was established and NOTHING ELSE. This used
                     # to assert that the work "is on the plan branch and has
                     # NOT reached the base branch", which is one of the causes

@@ -328,7 +328,22 @@ Tables: `users`, `projects`, `plans`, `tasks`, `agent_runs`, `opus_state`,
   the warnings. So a human at the gate cannot tell "not checked" from "clean", and that
   is the accepted trade, not an oversight. Only the UNGRADABLE reason is printed, because
   that one is not the normal case.
-- **Schema version is 13; `tests/test_migrations.py` pins it.** Idempotency is proved by
+- **`plans.integration_state` (migration 14) is the POSITIVE record of the integration
+  stage**: `opened` / `reused` / `nothing_to_integrate` / `failed`, or `skipped` for an
+  early return, written on EVERY exit of `on_plan_completed` (a `finally` in the wrapper;
+  a decided outcome unconditionally, `skipped` only where nothing is recorded yet, so a
+  re-entry after the PR was recorded keeps `opened`). NULL means exactly "the stage has
+  not recorded an outcome yet". Found by item 0's own acceptance walk: `process_plan_once`
+  writes COMPLETED and THEN the stage opens the PR, so a wait resting on the status alone
+  said "nothing more will happen" 30 s before PR #13 existed, and the row carried nothing
+  (no `updated_at` on plans, and the no-op outcome deliberately writes no URL and no
+  error) that could tell "integrating now" from "nothing to integrate". The backfill
+  maps a pre-column completed row from what it shows (URL: `opened`; error: `failed`;
+  neither: `nothing_to_integrate`) and never overwrites a recorded state.
+  `core/waiting.plan_waiting_on` rests on it: completed + merged: `nothing`; + open PR:
+  `human`; + recorded state or error: `nothing`; + NULL: `review` (integrating).
+  `praxis plans` renders `(no PR; already on base)` and `(integrating)` from it.
+- **Schema version is 14; `tests/test_migrations.py` pins it.** Idempotency is proved by
   invoking a step DIRECTLY TWICE, never by rewinding `user_version`: a rewind that no
   longer reaches far enough silently stops re-running the step, and a `count(...) == 1`
   assertion passes whether the step re-ran or never ran at all.

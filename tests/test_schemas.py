@@ -296,6 +296,8 @@ def test_response_models_construct_successfully() -> None:
         created_at="2026-06-01T00:00:00Z",
     )
     plan_response = PlanResponse(
+        terminal=False,
+        waiting_on="worker",
         id="plan-1",
         project_id="project-1",
         opus_plan=None,

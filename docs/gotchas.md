@@ -4440,3 +4440,20 @@ resolves a task or plan id, prints each transition, exits 0 at rest (naming the 
 that moves it) and 2 on timeout. The CLI judges its own budget by what it ASKED the
 server for, not by a wall clock: it asks for the whole remaining budget when that fits
 under the cap, so a timed-out answer to that request IS the deadline.
+
+**The walk that accepted this feature found its first hole.** `praxis wait` on the plan
+printed "completed, nothing more will happen" at 08:42:02; integration PR #13 existed by
+08:42:32. `process_plan_once` writes COMPLETED and THEN `on_plan_completed` opens the PR,
+and nothing on the row could separate "the stage is running right now" from "nothing to
+integrate" (which deliberately writes no URL and no error): plans have no `updated_at`,
+and the CLI's own comment on `_status_cell` already admitted "several early-return paths
+through `on_plan_completed` record nothing at all". So the stage now RECORDS its outcome
+on `plans.integration_state` (migration 14) on every exit, via a `finally` in the
+wrapper: the four outcome names, or `skipped` for an early return, and `skipped` is
+written only where nothing is recorded yet so a re-entry after the PR exists keeps
+`opened`. NULL means exactly "not recorded yet", and a completed plan with NULL waits on
+`review` (the engine is integrating). A restart between COMPLETED and the stage leaves
+NULL forever, because `get_runnable_plans` never returns a completed plan; that is an
+honest "the stage did not run" a wait reports as timed out with `waiting_on: review`, not
+a false rest, and it is a probe for the restart condition, not something to paper over
+with a timer.
