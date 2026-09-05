@@ -4797,3 +4797,36 @@ task, and a deferred task is PENDING, so the operator's way to force one early i
 whole path exists to avoid. And a deferred task is not "resting", because the engine
 really does resume it, so a wait blocks and ends at its 90 s cap carrying
 `waiting_on: provider` and the deadline.
+
+
+## D8 driven: a plan too big for the worker fails honestly and builds nothing
+
+The last unobserved stress edge, driven 2026-09-06 on `adiatmaja/playground` with the
+worker window pinned to 4096 tokens (`projects.context_window`, a real deployment
+condition: the budget gate exists for small local models). At that window the per-leaf
+budget is 1638 tokens and `agent_prompt`'s fixed scaffolding alone is 1344, so 294 remain
+for leaf text. The plan was one deliberately indivisible task, a character-by-character
+duration parser whose every rule is a transition of one state machine, with the plan
+saying in terms that it must not be split.
+
+What happened, in order: decomposition ran with `per_leaf_budget: 1638` and
+`profile_summary: qwen3.8-27b/4096` recorded on its `decompose_input` event, and emitted
+ONE leaf, obeying the plan's instruction rather than sizing to the window. Dispatch then
+refused it before any container existed, logging "Context budget for opencode/qwen3.8-27b:
+4096 tokens (project override)" and "context exceeds the local model window; failing".
+
+The result is what the round-8 regression check is for. No container was spawned, no run
+row was written, no commit was made, and the plan did NOT complete: it reached FAILED,
+`terminal_incomplete` answered true with the recovery hint, no integration PR was opened
+("with nothing merged there would be nothing for one to carry"), and the task's reason
+names the cause, "context for this task exceeds the local model's window; split the task",
+which is advice the plan's author can act on. `praxis plans` renders it as failed with a
+copyable verb.
+
+Two things worth keeping. **Decomposition does not guarantee its leaves fit**: it is told
+the budget and it still emitted a leaf four times over it, because the plan forbade
+splitting, and that is the right precedence (a plan that says the work is indivisible is
+information the sizer does not have). The budget gate is the backstop and it held.
+And **`praxis reject` refuses a FAILED plan**, correctly: rejecting would write REJECTED
+over a verdict the plan already reached, and the recorded reason is the only account of
+what happened. The probe plan is therefore left FAILED on the rig as its own evidence.
