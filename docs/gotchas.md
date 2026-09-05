@@ -4663,3 +4663,31 @@ ANSWERED**. A harness exit code cannot tell the two apart, the classifier's word
 the only thing that does, and every new provider brings its own wording. When a walk
 shows a run failing in seconds, read the container log before believing the attempt
 count: `praxis logs <task-id>` prints it.
+
+
+## `praxis stop` took 33 seconds because PID 1 ignored the signal
+
+Round 12 measured it (probe 2): `praxis stop` runs `container.stop(timeout=30)`, Docker
+sends SIGTERM to the entrypoint, which is PID 1 of the container, and nothing happened
+for 30 s until the SIGKILL. Two shell facts compound here. Bash defers a trap while a
+FOREGROUND command runs, and the agent ran in the foreground (`agy ... | tee` with
+`PIPESTATUS[0]` read afterwards). And a PID 1 with no handler for TERM ignores it
+outright, so there was not even a deferred handler to run. A bare `docker stop` was
+worse: when the harness did notice, it exited 0 and reported `completed` with no PR, and
+the orchestrator had to fail it from the shape of the callback.
+
+Both entrypoints now run the agent in the BACKGROUND under job control and `wait` on it
+(`run_agent`), which is the one shape in which a trap fires promptly. `on_term` (TERM and
+INT) kills the agent's whole process group (the agent binary and tee, not only the
+wrapping subshell), logs "Received SIGTERM: stopping the agent and reporting failed",
+and `run_agent` returns 143, which the EXIT trap turns into a `failed` callback with the
+task's reason. The agent's own exit status still reaches the state machine: the subshell
+exits with `PIPESTATUS[0]`, never tee's zero, and a test pins that. Round 13, 2026-09-05.
+
+`tests/test_entrypoint_stops_on_sigterm.py` extracts the shipped slice, runs a fake agent
+that sleeps 30 s, sends TERM after 1.5 s and asserts the stop line, the 143, the absence
+of the agent's post-sleep output and an elapsed time under ten seconds; a handler whose
+`kill` does nothing turns it red in exactly the way the old script behaved (the sleeping
+agent holds the captured pipe open). The images must be rebuilt after this change: an
+entrypoint edit does nothing until `praxis init` (or the hand export of the entrypoint
+hashes) followed by `docker compose --profile agents build`.

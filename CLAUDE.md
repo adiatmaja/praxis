@@ -1088,6 +1088,11 @@ story. New gotchas go in `docs/gotchas.md` first. (No count is quoted on purpose
   closed if it cannot read it back. `tests/test_submit_spec_seam.py` covers the seam
   end-to-end; keep it that way.
 - **Agent runs non-root** in `/home/agent/workspace`, git auth via `GH_TOKEN`.
+- **Both entrypoints trap TERM and stop the agent promptly** (2026-09-05, round 13):
+  `praxis stop` used to take 33 s because bash as PID 1 ignores an unhandled TERM and
+  defers traps while a foreground command runs. The agent now runs in the background under
+  job control (`run_agent`), `on_term` kills its process group and exits 143 (a `failed`
+  callback). Rebuild the agent images after any entrypoint edit.
 - **A planner that answers in prose is PERMANENTLY failed, never retried**: no JSON
   anywhere in the reply means a refusal/question/permission request, structural not
   keyword-matched; malformed JSON is the transient bucket and retries to a bound.

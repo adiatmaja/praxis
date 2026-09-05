@@ -184,6 +184,52 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# A STOP REQUEST. `docker stop` (and `praxis stop`, which goes through it) sends
+# SIGTERM to this script, PID 1 of the container. Bash defers a trap while a
+# FOREGROUND command runs, and as PID 1 an unhandled TERM is ignored outright,
+# so the agent ran on until Docker's 30 s SIGKILL: `praxis stop` took 33 s
+# measured (round 12, probe 2), and a bare `docker stop` reported `completed`
+# with no PR because the harness exited 0. The agent is therefore run in the
+# BACKGROUND and waited on (`run_agent`), the one shape in which a trap fires
+# promptly; the handler kills it, says so, and `run_agent` returns 143, which
+# the EXIT trap above turns into a `failed` callback.
+STOP_REQUESTED=0
+AGENT_PID=""
+on_term() {
+    STOP_REQUESTED=1
+    echo "Received SIGTERM: stopping the agent and reporting failed"
+    if [ -n "${AGENT_PID}" ]; then
+        # The whole process GROUP (job control below gives the agent its own),
+        # so the agent binary and tee die with the wrapping subshell rather
+        # than running on until PID 1 exits.
+        kill -TERM -- "-${AGENT_PID}" 2>/dev/null || kill -TERM "${AGENT_PID}" 2>/dev/null || true
+    fi
+}
+trap on_term TERM INT
+
+# Run "$@" (the agent command) piped through tee into ${AGENT_LOG}, in the
+# background, and return the AGENT's exit status (never tee's), or 143 after a
+# stop request. `wait` returns as soon as a trapped signal arrives, then the
+# trap runs; the second wait lets the killed subshell go before returning.
+run_agent() {
+    # Job control ON for the start alone: a background job then gets its own
+    # process group, which is what lets on_term kill agent + tee together.
+    set -m
+    ( "$@" 2>&1 | tee "${AGENT_LOG}"; exit "${PIPESTATUS[0]}" ) &
+    AGENT_PID=$!
+    set +m
+    local rc
+    wait "${AGENT_PID}"
+    rc=$?
+    if [ "${STOP_REQUESTED}" = "1" ]; then
+        wait "${AGENT_PID}" 2>/dev/null || true
+        AGENT_PID=""
+        return 143
+    fi
+    AGENT_PID=""
+    return "${rc}"
+}
+
 echo "=== agy (Antigravity) agent starting ==="
 echo "Repo: ${REPO_URL}"
 echo "Branch: ${BRANCH}  Base: ${BASE_BRANCH}  Model: ${MODEL}"
@@ -396,17 +442,18 @@ fi
 # JSON-envelope split below.
 RAW_LOG="$(mktemp)"
 OUTPUT_LOG="$(mktemp)"
+AGENT_LOG="${RAW_LOG}"
 set +e
-agy "${AGY_ARGS[@]}" -p "${EFFECTIVE_PROMPT}" 2>&1 | tee "${RAW_LOG}"
-agy_rc="${PIPESTATUS[0]}"
+run_agent agy "${AGY_ARGS[@]}" -p "${EFFECTIVE_PROMPT}"
+agy_rc=$?
 set -e
 if [ "${agy_rc}" -ne 0 ] && [ -n "${WORKER_SESSION_ID:-}" ]; then
     # A stale or pruned conversation id must not fail the task. Retry once cold.
     echo "WARNING: resume with conversation ${WORKER_SESSION_ID} failed; retrying cold"
     AGY_ARGS=("${AGY_BASE_ARGS[@]}")
     set +e
-    agy "${AGY_ARGS[@]}" -p "${EFFECTIVE_PROMPT}" 2>&1 | tee "${RAW_LOG}"
-    agy_rc="${PIPESTATUS[0]}"
+    run_agent agy "${AGY_ARGS[@]}" -p "${EFFECTIVE_PROMPT}"
+    agy_rc=$?
     set -e
 fi
 if [ "${agy_rc}" -ne 0 ]; then
