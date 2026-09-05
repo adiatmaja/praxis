@@ -35,6 +35,7 @@ from orchestrator.models.schemas import (
     PlanResponse,
     PlanStatus,
     TaskStatus,
+    _max_planning_attempts,
 )
 
 
@@ -415,6 +416,10 @@ async def wait_plan(
     plan, tasks = outcome.snapshot
     return {
         **plan,
+        # A computed ``PlanResponse`` field, not a column: spreading the raw
+        # row alone made MCP's summary read "planning attempts 0 of None" on
+        # the first live decomposition this endpoint waited through.
+        "max_planning_attempts": _max_planning_attempts(),
         "plan_id": plan_id,
         "tasks": [
             {

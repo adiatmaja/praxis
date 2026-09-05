@@ -97,6 +97,17 @@ async def _task_detail(queue: Any, task: dict[str, Any]) -> dict[str, Any]:
     """
     runs = await queue.get_runs_for_task(task["id"])
     task_status = str(task.get("status"))
+    # A PENDING leaf behind a gated or failed dependency waits on the person
+    # that dependency waits on, one edge away. The plan's graph and sibling
+    # rows are the only place that fact lives, so they are read here.
+    blockers: dict[str, Any] = {"gated": [], "failed": []}
+    if task_status == TaskStatus.PENDING.value:
+        plan = await queue.get_plan(task["plan_id"])
+        if plan is not None and plan.get("opus_plan"):
+            siblings = await queue.get_tasks_for_plan(task["plan_id"])
+            blockers = waiting.task_blockers(
+                task["id"], plan.get("opus_plan"), siblings
+            )
     # This route returns the raw row (no response_model), so the JSON TEXT in
     # ``contract_drift`` would reach the CLI and the dashboard as a string
     # while ``TaskResponse`` hands its own callers a dict. One shape, decided
@@ -111,7 +122,8 @@ async def _task_detail(queue: Any, task: dict[str, Any]) -> dict[str, Any]:
         "pr_url": task.get("pr_url"),
         "plan_id": task.get("plan_id"),
         "terminal": waiting.task_is_terminal(task_status),
-        "waiting_on": waiting.task_waiting_on(task_status),
+        "waiting_on": waiting.task_waiting_on(task_status, blockers),
+        "blocked_by": blockers,
         "fingerprint": _task_fingerprint(task),
     }
 
@@ -171,33 +183,34 @@ async def wait_task(
     effective = waiting.clamp_timeout(timeout)
 
     async def read() -> dict[str, Any]:
+        # The whole detail payload, so ``resting`` and the answer share one
+        # derivation: a pending leaf behind a gate rests HERE too.
         row = await queue.get_task(task_id)
         if row is None:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND, detail="Task not found"
             )
-        return cast(dict[str, Any], row)
+        return await _task_detail(queue, row)
 
     def changed(first: dict[str, Any], current: dict[str, Any]) -> bool:
         if since is not None or fingerprint is not None:
-            return (since is not None and current.get("status") != since) or (
-                fingerprint is not None and _task_fingerprint(current) != fingerprint
+            return bool(
+                (since is not None and current["status"] != since)
+                or (fingerprint is not None and current["fingerprint"] != fingerprint)
             )
-        return _task_fingerprint(current) != _task_fingerprint(first)
+        return bool(current["fingerprint"] != first["fingerprint"])
 
     outcome = await waiting.wait_for_change(
         read,
         changed=changed,
-        resting=lambda row: waiting.task_is_resting(str(row.get("status"))),
+        resting=lambda payload: str(payload["waiting_on"]) in {"human", "nothing"},
         event_bus=request.app.state.event_bus,
         timeout=effective,
     )
-    payload = await _task_detail(queue, outcome.snapshot)
+    payload = outcome.snapshot
     payload.update(
         {
-            "previous": since
-            if since is not None
-            else str(outcome.first.get("status")),
+            "previous": since if since is not None else str(outcome.first["status"]),
             "changed": outcome.changed,
             "timed_out": outcome.timed_out,
             "timeout_seconds": effective,

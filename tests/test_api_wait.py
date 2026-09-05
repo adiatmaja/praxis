@@ -553,3 +553,80 @@ async def test_wait_plan_keeps_waiting_while_the_integration_stage_runs(
     assert body["changed"] is True
     assert body["waiting_on"] == "human"
     assert body["integration_pr_url"] == "https://github.com/u/a/pull/9"
+
+
+async def test_wait_plan_serves_the_planning_cap_like_the_plan_payload_does(
+    client: AsyncClient, db: Database, auth_headers: dict[str, str]
+) -> None:
+    """Seen live on probe 1: the MCP summary read "planning attempts 0 of None"
+    because the wait payload spread the raw row, and the cap is a computed
+    ``PlanResponse`` field, not a column."""
+    await seed_user(db)
+    project = await client.post(
+        "/api/projects",
+        json={"name": "App", "repo_url": "https://github.com/u/a", "model_name": "m"},
+        headers=auth_headers,
+    )
+    queue = client.app.state.task_queue  # type: ignore[attr-defined]
+    plan_id = await queue.create_plan(project.json()["id"], "Build auth")
+    detail = (await client.get(f"/api/plans/{plan_id}", headers=auth_headers)).json()
+    body = (
+        await client.get(
+            f"/api/plans/{plan_id}/wait", params={"timeout": 0}, headers=auth_headers
+        )
+    ).json()
+    assert body["max_planning_attempts"] == detail["max_planning_attempts"]
+    assert isinstance(body["max_planning_attempts"], int)
+
+
+async def test_pending_leaf_behind_the_merge_gate_waits_on_a_human(
+    client: AsyncClient, db: Database, auth_headers: dict[str, str]
+) -> None:
+    plan_id, (first, second) = await _plan_with_tasks(
+        client, db, auth_headers, chain=True
+    )
+    queue = client.app.state.task_queue  # type: ignore[attr-defined]
+    await db.execute(
+        "UPDATE tasks SET pr_url = ? WHERE id = ?",
+        ("https://github.com/u/a/pull/14", first),
+    )
+    await queue.update_task_status(first, TaskStatus.PASSED)
+
+    detail = (await client.get(f"/api/tasks/{second}", headers=auth_headers)).json()
+    assert detail["status"] == "pending"
+    assert detail["waiting_on"] == "human"
+    assert [b["task_id"] for b in detail["blocked_by"]["gated"]] == [first]
+    assert (
+        detail["blocked_by"]["gated"][0]["pr_url"] == "https://github.com/u/a/pull/14"
+    )
+
+    started = time.monotonic()
+    body = (
+        await client.get(
+            f"/api/tasks/{second}/wait", params={"timeout": 30}, headers=auth_headers
+        )
+    ).json()
+    assert time.monotonic() - started < 1.0
+    assert body["changed"] is False
+    assert body["timed_out"] is False
+    assert body["waiting_on"] == "human"
+
+
+async def test_pending_leaf_behind_a_terminal_failure_waits_on_a_human(
+    client: AsyncClient, db: Database, auth_headers: dict[str, str]
+) -> None:
+    _, (first, second) = await _plan_with_tasks(client, db, auth_headers, chain=True)
+    queue = client.app.state.task_queue  # type: ignore[attr-defined]
+    await queue.update_task_status(first, TaskStatus.FAILED)
+    detail = (await client.get(f"/api/tasks/{second}", headers=auth_headers)).json()
+    assert detail["waiting_on"] == "human"
+    assert [b["task_id"] for b in detail["blocked_by"]["failed"]] == [first]
+
+
+async def test_a_dispatchable_pending_leaf_reports_no_blockers(
+    client: AsyncClient, db: Database, auth_headers: dict[str, str]
+) -> None:
+    _, (task_id,) = await _plan_with_tasks(client, db, auth_headers)
+    detail = (await client.get(f"/api/tasks/{task_id}", headers=auth_headers)).json()
+    assert detail["waiting_on"] == "worker"
+    assert detail["blocked_by"] == {"gated": [], "failed": []}

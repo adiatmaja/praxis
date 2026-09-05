@@ -39,9 +39,10 @@ from orchestrator.core.approvals import plan_awaits_approval
 from orchestrator.core.event_bus import EventBus
 from orchestrator.core.plan_reachability import (
     derive_stalled_by_failure_state,
+    graph_pairs,
     stalled_task_ids,
 )
-from orchestrator.core.status_vocab import TERMINAL_STATUSES
+from orchestrator.core.status_vocab import SATISFIED_STATUSES, TERMINAL_STATUSES
 from orchestrator.models.schemas import PlanStatus, TaskStatus
 
 
@@ -88,11 +89,17 @@ def task_is_terminal(status: str) -> bool:
     return status in TERMINAL_STATUSES
 
 
-def task_waiting_on(status: str) -> str:
+def task_waiting_on(status: str, blockers: dict[str, Any] | None = None) -> str:
     """Who has to act before a task in ``status`` moves again.
 
     Args:
         status: A ``TaskStatus`` value.
+        blockers: What ``task_blockers`` derived for this leaf, or ``None``
+            when the caller has no plan in hand. A PENDING leaf behind a gated
+            or terminally failed dependency waits on the same person that
+            dependency does, one edge away; seen live on probe 1, where
+            ``wait_task`` on the second leaf said "wait again" while the plan
+            correctly named the merge gate.
 
     Returns:
         ``worker`` (queued or implementing), ``review`` (the brain is grading
@@ -105,12 +112,82 @@ def task_waiting_on(status: str) -> str:
     """
     if task_is_terminal(status):
         return "nothing"
+    if (
+        status == TaskStatus.PENDING.value
+        and blockers
+        and (blockers.get("gated") or blockers.get("failed"))
+    ):
+        return "human"
     return _TASK_WAITING_ON.get(status, "worker")
 
 
-def task_is_resting(status: str) -> bool:
+def task_is_resting(status: str, blockers: dict[str, Any] | None = None) -> bool:
     """Whether a wait on a task in ``status`` should return at once."""
-    return task_waiting_on(status) in _RESTING
+    return task_waiting_on(status, blockers) in _RESTING
+
+
+def _blocker(row: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "task_id": row.get("id"),
+        "title": row.get("title"),
+        "status": row.get("status"),
+        "pr_url": row.get("pr_url"),
+    }
+
+
+def task_blockers(
+    task_id: str, opus_plan_json: str | None, tasks: list[dict[str, Any]]
+) -> dict[str, list[dict[str, Any]]]:
+    """The dependencies holding a PENDING leaf at a human gate.
+
+    ``gated``: direct dependencies parked at the merge gate (``passed``); the
+    person who merges them releases this leaf. ``failed``: dependencies the
+    reachability rule names as terminally failed, transitively, so the leaf
+    can never be dispatched until one is retried. Both are derived by the
+    rules dispatch itself uses (``graph_pairs``, ``SATISFIED_STATUSES``,
+    ``derive_stalled_by_failure_state``), never re-typed here.
+
+    Args:
+        task_id: The leaf in question.
+        opus_plan_json: The plan's ``opus_plan`` column.
+        tasks: The plan's task rows in rowid order.
+
+    Returns:
+        ``{"gated": [...], "failed": [...]}``, each entry
+        ``{task_id, title, status, pr_url}``. Both empty for any leaf that is
+        not pending, unknown to the graph, or whose dependencies are all
+        satisfied or still moving.
+    """
+    empty: dict[str, list[dict[str, Any]]] = {"gated": [], "failed": []}
+    pairs, slug_rows = graph_pairs(opus_plan_json, tasks)
+    for _slug, deps, row in pairs:
+        if str(row.get("id")) != task_id:
+            continue
+        if str(row.get("status")) != TaskStatus.PENDING.value:
+            return empty
+        gated: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for dep in deps:
+            for dep_row in slug_rows.get(dep, []):
+                dep_id = str(dep_row.get("id"))
+                dep_status = str(dep_row.get("status"))
+                if dep_status in SATISFIED_STATUSES or dep_id in seen:
+                    continue
+                if dep_status == TaskStatus.PASSED.value:
+                    seen.add(dep_id)
+                    gated.append(_blocker(dep_row))
+        failed: list[dict[str, Any]] = []
+        state = derive_stalled_by_failure_state(opus_plan_json, tasks)
+        rows_by_id = {str(t.get("id")): t for t in tasks}
+        for entry in state.get("blocked_by_failure") or []:
+            if str(entry.get("task_id")) != task_id:
+                continue
+            for blocker_id in entry.get("blocked_by_task_ids") or []:
+                blocker_row = rows_by_id.get(str(blocker_id))
+                if blocker_row is not None:
+                    failed.append(_blocker(blocker_row))
+        return {"gated": gated, "failed": failed}
+    return empty
 
 
 def plan_is_terminal(status: str) -> bool:

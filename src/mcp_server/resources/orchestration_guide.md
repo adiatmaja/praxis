@@ -246,9 +246,10 @@ Read `next_action` and do exactly that:
 
 - `wait_again`: still moving; call the same tool again. `timed_out=true` with
   `changed=false` is normal for a larger leaf.
-- `relay_pr`: a leaf is at `awaiting_merge`, or a completed plan's integration PR is open.
-  Give the `pr_url` to the user; only they can merge it, and a plan's work is NOT on the
-  base branch until they do.
+- `relay_pr`: a leaf is at `awaiting_merge`, or a completed plan's integration PR is open,
+  or (from `wait_task`) a `pending` leaf sits behind a gated dependency named in
+  `blocked_by`. Give the `pr_url` to the user; only they can merge it, and a plan's work
+  is NOT on the base branch until they do.
 - `answer_clarification`: the worker asked a question; relay it, the user answers with
   `praxis clarify <task-id> "..."`.
 - `retry`: a leaf failed terminally (read `get_task_logs` and `review`, change something,

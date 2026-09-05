@@ -900,7 +900,10 @@ def _wait_timeout(timeout_seconds: int) -> int:
 
 
 def _task_next_action(
-    raw_status: str, task_id: str, task: dict[str, Any]
+    raw_status: str,
+    task_id: str,
+    task: dict[str, Any],
+    blocked_by: dict[str, Any] | None = None,
 ) -> tuple[str, str]:
     """The ONE thing to do next for a task in ``raw_status``, and its sentence.
 
@@ -909,6 +912,23 @@ def _task_next_action(
         ``relay_pr``, ``answer_clarification``, ``retry``, ``none``,
         ``wait_again``.
     """
+    if raw_status == "pending" and blocked_by:
+        gated = blocked_by.get("gated") or []
+        failed = blocked_by.get("failed") or []
+        if gated:
+            urls = ", ".join(str(b.get("pr_url") or b.get("task_id")) for b in gated)
+            return (
+                "relay_pr",
+                f"this leaf waits on a dependency at the merge gate: relay {urls} "
+                "to the user for approval; it dispatches once they merge",
+            )
+        if failed:
+            ids = ", ".join(str(b.get("task_id")) for b in failed)
+            return (
+                "retry",
+                "this leaf can never be dispatched behind a terminally failed "
+                f"dependency: retry_task({ids}) after reading its logs and review",
+            )
     if raw_status == "passed":
         return (
             "relay_pr",
@@ -955,7 +975,9 @@ async def wait_task_impl(
     running_for = data.get("running_for_seconds")
     title = task.get("title") or task_id
     shown = status_vocab.mcp_status(raw_status)
-    next_action, sentence = _task_next_action(raw_status, task_id, task)
+    next_action, sentence = _task_next_action(
+        raw_status, task_id, task, data.get("blocked_by")
+    )
 
     if timed_out:
         head = (
@@ -987,6 +1009,7 @@ async def wait_task_impl(
         "terminal": bool(data.get("terminal")),
         "waiting_on": data.get("waiting_on"),
         "next_action": next_action,
+        "blocked_by": data.get("blocked_by"),
         "pr_url": data.get("pr_url"),
         "review": task.get("review_feedback"),
         "branch": task.get("branch_name"),
@@ -1076,11 +1099,15 @@ def _plan_next_action(data: dict[str, Any]) -> tuple[str, str]:
     if not tasks:
         attempts = data.get("plan_attempts")
         cap = data.get("max_planning_attempts")
+        counter = (
+            f"planning attempts {attempts} of {cap}"
+            if cap is not None
+            else f"planning attempts {attempts}"
+        )
         return (
             "wait_again",
             "decomposition is a multi-minute brain call with no in-flight "
-            f"signal (planning attempts {attempts} of {cap}); call "
-            f"wait_plan({data.get('plan_id')}) again",
+            f"signal ({counter}); call wait_plan({data.get('plan_id')}) again",
         )
     return "wait_again", f"call wait_plan({data.get('plan_id')}) again"
 

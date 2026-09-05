@@ -479,3 +479,63 @@ async def test_wait_plan_completed_mid_integration_says_wait_again() -> None:
     result = await server.wait_plan_impl(client, plan_id=PLAN_ID)
     assert result["next_action"] == "wait_again"
     assert "integration" in result["summary"].lower()
+
+
+async def test_wait_plan_decomposing_without_a_cap_does_not_print_of_none() -> None:
+    """An older server sends no cap; the summary shows the count alone."""
+    body = _plan_wait(
+        status="pending", waiting_on="planner", tasks=[], changed=False, timed_out=True
+    )
+    body.pop("max_planning_attempts")
+    body["plan_attempts"] = 2
+    client = _plan_routes(body)
+    result = await server.wait_plan_impl(client, plan_id=PLAN_ID)
+    assert "of None" not in result["summary"]
+    assert "attempts 2" in result["summary"]
+
+
+async def test_wait_task_pending_behind_the_gate_says_relay_the_blocking_pr() -> None:
+    body = _task_wait(
+        status="pending",
+        previous="pending",
+        changed=False,
+        waiting_on="human",
+        running_for_seconds=None,
+    )
+    body["blocked_by"] = {
+        "gated": [
+            {
+                "task_id": "aaaa",
+                "title": "first",
+                "status": "passed",
+                "pr_url": "https://github.com/u/r/pull/14",
+            }
+        ],
+        "failed": [],
+    }
+    client = _routes(body)
+    result = await server.wait_task_impl(client, task_id=TASK_ID)
+    assert result["next_action"] == "relay_pr"
+    assert "pull/14" in result["summary"]
+    assert "wait_task" not in result["summary"]
+    assert result["blocked_by"] == body["blocked_by"]
+
+
+async def test_wait_task_pending_behind_a_failure_says_retry_the_blocker() -> None:
+    body = _task_wait(
+        status="pending",
+        previous="pending",
+        changed=False,
+        waiting_on="human",
+        running_for_seconds=None,
+    )
+    body["blocked_by"] = {
+        "gated": [],
+        "failed": [
+            {"task_id": "aaaa", "title": "first", "status": "failed", "pr_url": None}
+        ],
+    }
+    client = _routes(body)
+    result = await server.wait_task_impl(client, task_id=TASK_ID)
+    assert result["next_action"] == "retry"
+    assert "retry_task(aaaa)" in result["summary"]

@@ -849,7 +849,10 @@ story. New gotchas go in `docs/gotchas.md` first. (No count is quoted on purpose
   transition that landed between two calls. MCP `wait_task`/`wait_plan` name ONE
   `next_action` (`wait_again`, `relay_pr`, `answer_clarification`, `retry`,
   `approve_proposal`, `none`);
-  `praxis wait` exits 0 at rest and 2 on timeout.
+  `praxis wait` exits 0 at rest and 2 on timeout. **A PENDING leaf behind a gated or
+  terminally failed dependency waits on that person too** (`waiting.task_blockers`,
+  served as `blocked_by: {gated, failed}` on the task payload; found on probe 1, where
+  `wait_task` on the second leaf said "wait again" while the plan named the gate).
 - **The CLI falls back to the nearest `./.env`** for `AUTH_TOKEN`/`PORT`, walking up from
   cwd; `praxis env` says which source won.
 - **`praxis init` logic is `run_init(Answers(...))`, not `init()`** (typer wraps the

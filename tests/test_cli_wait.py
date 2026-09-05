@@ -355,3 +355,60 @@ def test_wait_on_a_completed_plan_with_nothing_to_integrate_says_so(
     result = runner.invoke(app, ["wait", PLAN_ID])
     assert result.exit_code == 0, result.stdout
     assert "nothing to integrate" in flat(result).lower()
+
+
+def test_wait_on_a_leaf_behind_the_gate_names_the_blocking_merge(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    body = _task_wait(
+        status="pending",
+        previous="pending",
+        changed=False,
+        waiting_on="human",
+        running_for_seconds=None,
+    )
+    body["blocked_by"] = {
+        "gated": [
+            {
+                "task_id": "aaaaaaaa-0000-0000-0000-000000000000",
+                "title": "first [core]",
+                "status": "passed",
+                "pr_url": PR,
+            }
+        ],
+        "failed": [],
+    }
+    script = _Script([body])
+    _wire(monkeypatch, script)
+    result = runner.invoke(app, ["wait", TASK_ID])
+    assert result.exit_code == 0, result.stdout
+    assert "blocked" in flat(result).lower()
+    assert on_one_line(result, "praxis merge aaaaaaaa-0000-0000-0000-000000000000")
+
+
+def test_wait_on_a_leaf_behind_a_failure_names_the_retry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    body = _task_wait(
+        status="pending",
+        previous="pending",
+        changed=False,
+        waiting_on="human",
+        running_for_seconds=None,
+    )
+    body["blocked_by"] = {
+        "gated": [],
+        "failed": [
+            {
+                "task_id": "aaaaaaaa-0000-0000-0000-000000000000",
+                "title": "first",
+                "status": "failed",
+                "pr_url": None,
+            }
+        ],
+    }
+    script = _Script([body])
+    _wire(monkeypatch, script)
+    result = runner.invoke(app, ["wait", TASK_ID])
+    assert result.exit_code == 0, result.stdout
+    assert on_one_line(result, "praxis retry aaaaaaaa-0000-0000-0000-000000000000")

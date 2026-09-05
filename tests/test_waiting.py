@@ -453,3 +453,63 @@ def test_completed_plan_with_an_error_but_no_state_waits_on_nothing() -> None:
     """A pre-feature stranded row: the error IS the recorded outcome."""
     row = _completed(error="the integration pull request could not be opened")
     assert waiting.plan_waiting_on(row, _rows("merged")) == "nothing"
+
+
+# --- a pending leaf behind a gate waits on that person, transitively ---------
+
+
+def _chain(first_status: str) -> tuple[list[dict[str, Any]], str]:
+    rows = _rows(first_status, "pending")
+    rows[0]["pr_url"] = "https://github.com/o/r/pull/14"
+    rows[0]["title"] = "first"
+    rows[1]["title"] = "second"
+    return rows, _graph([], ["t0"])
+
+
+def test_pending_leaf_behind_a_gated_dependency_is_blocked_by_it() -> None:
+    """Seen live on probe 1: wait_task on the second leaf said "wait again"
+    while the plan correctly said the merge gate. The leaf waits on the same
+    person, one edge away."""
+    rows, graph = _chain("passed")
+    blocked = waiting.task_blockers("id1", graph, rows)
+    assert [b["task_id"] for b in blocked["gated"]] == ["id0"]
+    assert blocked["gated"][0]["pr_url"] == "https://github.com/o/r/pull/14"
+    assert blocked["failed"] == []
+    assert waiting.task_waiting_on("pending", blocked) == "human"
+
+
+def test_pending_leaf_behind_a_terminal_failure_is_blocked_by_it() -> None:
+    rows, graph = _chain("failed")
+    blocked = waiting.task_blockers("id1", graph, rows)
+    assert [b["task_id"] for b in blocked["failed"]] == ["id0"]
+    assert blocked["gated"] == []
+    assert waiting.task_waiting_on("pending", blocked) == "human"
+
+
+@pytest.mark.parametrize("first", ["merged", "no_changes", "in_progress", "reviewing"])
+def test_pending_leaf_behind_a_moving_or_satisfied_dependency_waits_on_the_worker(
+    first: str,
+) -> None:
+    rows, graph = _chain(first)
+    blocked = waiting.task_blockers("id1", graph, rows)
+    assert blocked == {"gated": [], "failed": []}
+    assert waiting.task_waiting_on("pending", blocked) == "worker"
+
+
+def test_blockers_are_only_derived_for_a_pending_leaf() -> None:
+    rows, graph = _chain("passed")
+    rows[1]["status"] = "in_progress"
+    assert waiting.task_blockers("id1", graph, rows) == {"gated": [], "failed": []}
+
+
+def test_blockers_of_an_unknown_task_or_no_graph_are_empty() -> None:
+    rows, graph = _chain("passed")
+    assert waiting.task_blockers("nope", graph, rows) == {"gated": [], "failed": []}
+    assert waiting.task_blockers("id1", None, rows) == {"gated": [], "failed": []}
+
+
+def test_task_is_resting_takes_the_blockers_into_account() -> None:
+    rows, graph = _chain("passed")
+    blocked = waiting.task_blockers("id1", graph, rows)
+    assert waiting.task_is_resting("pending", blocked)
+    assert not waiting.task_is_resting("pending")

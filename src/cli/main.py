@@ -1153,6 +1153,26 @@ def _wait_rest_lines(kind: str, target_id: str, body: dict[str, Any]) -> None:
         return
     # waiting_on == "human"
     if kind == "task":
+        blocked = body.get("blocked_by") or {}
+        if status_text == "pending" and (blocked.get("gated") or blocked.get("failed")):
+            for dep in blocked.get("gated") or []:
+                console.print(
+                    Text(
+                        "Blocked behind a leaf at the merge gate: "
+                        f"{dep.get('title') or dep.get('task_id')} "
+                        f"{dep.get('pr_url') or ''}"
+                    )
+                )
+                _copyable(f"  praxis merge {dep.get('task_id')}")
+            for dep in blocked.get("failed") or []:
+                console.print(
+                    Text(
+                        "Blocked behind a terminally failed leaf: "
+                        f"{dep.get('title') or dep.get('task_id')}"
+                    )
+                )
+                _copyable(f"  praxis retry {dep.get('task_id')}")
+            return
         if status_text == "needs_clarification":
             question = (body.get("task") or {}).get("clarification_question") or ""
             console.print(Text(f"Worker asked: {question}"))
