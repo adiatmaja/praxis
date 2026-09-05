@@ -4945,6 +4945,19 @@ class ReviewMixin:
                         exc,
                     )
 
+            # Recorded THE MOMENT it is decided, not when the stage returns:
+            # the stage goes on to draft the context sync (a clone and a brain
+            # call, minutes on a real repository), and a no-PR outcome left
+            # NULL for that long reads as "still integrating" to every wait.
+            # The wrapper's ``finally`` stays as the backstop for early
+            # returns and exceptions.
+            try:
+                await self._tq.set_integration_state(plan_id, integration_status)
+            except Exception:  # noqa: BLE001 - never wedge the loop
+                logger.warning(
+                    "Failed to record the integration outcome for plan %s", plan_id
+                )
+
             # What this event REPORTS, which since the base comparison exists is
             # no longer the same fact as what the head gate DID. ``failed`` and
             # ``unattributed`` are both a red gate; only the first is this

@@ -248,7 +248,10 @@ def test_wait_resolves_a_plan_id_and_prints_leaf_transitions(
                 "changed": True,
                 "timed_out": False,
                 "terminal": True,
-                "waiting_on": "nothing",
+                # What the server sends since 34ed538: an open integration PR
+                # is the plan's own merge gate, a HUMAN's to open.
+                "waiting_on": "human",
+                "integration_state": "opened",
                 "fingerprint": "b",
                 "timeout_seconds": 90.0,
                 "waited_seconds": 40.0,

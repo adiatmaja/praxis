@@ -521,3 +521,29 @@ async def test_a_recorded_outcome_is_not_overwritten_by_a_later_early_return(
     plan = await task_queue.get_plan(plan_id)
     assert plan is not None
     assert plan["integration_state"] == _INTEGRATION_OPENED
+
+
+@pytest.mark.integration
+async def test_the_outcome_is_recorded_before_the_context_sync_draft_runs(
+    db: Database,
+) -> None:
+    """The stage keeps working after it decides (a clone and a brain call to
+    draft the context sync, minutes on a real repo). Observed live: PR #16
+    opened at 09:38:24 and ``integration_state`` stayed NULL until the draft
+    finished, so for a no-PR outcome a wait would have said "integrating" for
+    the whole draft. The record must land the moment the outcome is decided;
+    the ``finally`` is the backstop for early returns, not the primary seat."""
+    task_queue, plan_id = await _seed(db, _GITHUB_REPO, _GITHUB_PLAN_BRANCH)
+    git = _github_git(head_sha=_HEAD_SHA, open_result="https://github.com/o/r/pull/9")
+    orch = _orchestrator(task_queue, git, EventBus(), neutralise_gate=True)
+    seen: list[str | None] = []
+
+    class _Sync:
+        async def draft(self, repo_url: str, summary: str) -> dict[str, Any]:
+            plan = await task_queue.get_plan(plan_id)
+            seen.append(plan["integration_state"] if plan else None)
+            return {"draft_id": "d1", "path": "docs/x.md", "content": "x"}
+
+    orch._context_sync = _Sync()
+    await orch.on_plan_completed(plan_id)
+    assert seen == [_INTEGRATION_OPENED]

@@ -1119,19 +1119,23 @@ def _wait_kind(client: httpx.Client, target_id: str) -> str:
 def _wait_rest_lines(kind: str, target_id: str, body: dict[str, Any]) -> None:
     """Say why the engine stopped and name the verb that moves it, copyably."""
     status_text = str(body.get("status") or "")
-    if body.get("waiting_on") == "nothing":
-        if kind == "plan" and body.get("integration_pr_url"):
-            if body.get("integration_merged_at"):
-                console.print(Text(f"Plan {status_text}: the work landed on base."))
-            else:
-                console.print(
-                    Text(
-                        f"Plan {status_text}: integration PR "
-                        f"{body['integration_pr_url']} is open; land it with"
-                    )
+    # BEFORE the waiting_on split: an open integration PR is the plan's own
+    # merge gate, so the server reports it as waiting on a HUMAN, and a landed
+    # one as nothing. Under the "nothing" arm alone, the live run that
+    # accepted this verb printed "plan completed" and no verb at all.
+    if kind == "plan" and body.get("integration_pr_url"):
+        if body.get("integration_merged_at"):
+            console.print(Text(f"Plan {status_text}: the work landed on base."))
+        else:
+            console.print(
+                Text(
+                    f"Plan {status_text}: integration PR "
+                    f"{body['integration_pr_url']} is open; land it with"
                 )
-                _copyable(f"  praxis merge-plan {target_id}")
-            return
+            )
+            _copyable(f"  praxis merge-plan {target_id}")
+        return
+    if body.get("waiting_on") == "nothing":
         if kind == "plan" and body.get("integration_state") == "nothing_to_integrate":
             console.print(
                 Text(
