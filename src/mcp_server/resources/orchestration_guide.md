@@ -59,7 +59,7 @@ Praxis decomposes and gates a plan against the SPECIFIC local worker model that
 will implement it, so pass the right `model`. Resolve it in this order:
 
 1. Call `get_project(repo_url)`.
-2. If it returns a `model`, reuse that value — the project is already configured.
+2. If it returns a `model`, reuse that value, the project is already configured.
 3. If `project` is null (Praxis has never seen this repo), ask the user which
    worker model to use. Do not invent a model name. `list_providers` helps only
    for the local arm: its `worker_models` enumerates what LM Studio currently
@@ -67,7 +67,7 @@ will implement it, so pass the right `model`. Resolve it in this order:
    never appear there, and its absence is not evidence the name is wrong.
 4. Pass the resolved `model` to `execute_plan` (for a full plan) or
    `dispatch_task` (for a single task).
-5. Watch progress with `poll_plan` (or `poll_task`) until terminal.
+5. Wait with `wait_plan` (or `wait_task`) until it comes to rest; do not poll.
 
 Use `list_projects` to discover which repos Praxis already knows instead of
 guessing a `repo_url`.
@@ -92,7 +92,7 @@ Rules for `local_context`:
 
 Flow: resolve the worker model with `get_project`, then call
 `execute_plan` or `dispatch_task` with both `context` and `local_context`,
-then poll until terminal.
+then `wait_plan` / `wait_task` until it comes to rest.
 
 ## 1. When to delegate to Praxis
 
@@ -101,8 +101,9 @@ local model and conserves your own subscription budget. Keep work that is high-n
 architectural, or ambiguous in your own session, where your stronger reasoning matters.
 
 The flow is asynchronous and one-shot. You get a `task_id` back immediately, the worker
-runs in the background, and you poll for the result. The MCP connection is blind between
-calls: nothing streams to you, so you must poll.
+runs in the background, and you `wait_task` for the result. The MCP connection is blind
+between calls: nothing streams to you, so the wait tools block on the server and return
+when something moved (section 4). Do not poll.
 
 **In auto-delegate mode, dispatch ONE task at a time and let it reach a terminal status
 before dispatching the next.** Every task in that mode pushes to one shared work branch, and
@@ -172,13 +173,13 @@ mis-sized estimate has to stay visible, and dispatching it properly is your call
   handed over a plan and do not yet know the individual task ids.
 - `poll_task`, `get_task_logs`, `cancel_task`, `retry_task` - lifecycle and triage
   (sections 4 and 6).
-- `get_project` — read a repo's configured worker model, harness, `verify_cmd` and
+- `get_project`: read a repo's configured worker model, harness, `verify_cmd` and
   `auto_merge`. Always returns a `project` key: the config, or null when Praxis has
   never seen the repo. Note `improvement_plan_approval_gate` is NOT the merge gate;
   `auto_merge` is the field that decides whether Praxis merges without a human.
-- `list_projects` — list repos Praxis knows, each with its configured model + harness.
-- `get_mode` — return auto-delegate mode state ({enabled, worker:{harness,model}}).
-- `pending_approvals` — list everything waiting on a human, across all projects and
+- `list_projects`: list repos Praxis knows, each with its configured model + harness.
+- `get_mode`: return auto-delegate mode state ({enabled, worker:{harness,model}}).
+- `pending_approvals`: list everything waiting on a human, across all projects and
   all THREE gates: `tasks` (reviewed PRs parked at the merge gate), `plans` (completed
   plans whose integration PR is open), `proposals` (autonomous improvement plans nobody
   has approved to run) and `clarifications` (tasks blocked on a question). `count`
@@ -227,21 +228,52 @@ help implement THIS task. Do not paste your whole memory tree.
 Never include secrets, tokens, or `.env` values. They are redacted server-side, but keep
 them out of the context anyway.
 
-## 4. Polling cadence
+## 4. Waiting: wait, do not poll
 
-After dispatching, poll `poll_task(task_id)` at a reasonable interval. Do not spin in a
-tight loop: work typically takes minutes (clone, implement, review). Each poll returns
-the current `status`, the `pr_url` once a PR exists, the `review` feedback once reviewed,
-and a `dashboard_url`. The `dashboard_url` is the rich human view with live logs if you
-or your user want to watch in a browser.
+After dispatching, call `wait_task(task_id)`. It BLOCKS on the server until the task's
+status changes, the task comes to rest, or 90 seconds pass, and then returns the state
+reached plus `next_action`, the one thing to do. Do not write a poll loop around
+`poll_task`: the MCP connection is blind between calls, a loop sleeps through the moment
+the work finishes, and a loop reading the wrong field waits forever on work that is
+already done (that happened; `wait_task` exists because of it).
 
-After `execute_plan`, poll `poll_plan(plan_id)` instead: decomposition runs asynchronously,
-so the individual task ids do not exist yet. `poll_plan` returns the plan `status` and a
-per-task summary (including `awaiting_merge` tasks parked for human approval) as the tasks
-appear, then drill into any one with `poll_task(task_id)`.
+After `execute_plan`, call `wait_plan(plan_id)`. It wakes on the plan status AND on any
+leaf's status, because a plan reads `active` from the first dispatch to the last merge.
+The task ids do not exist until decomposition finishes; `wait_plan` lists them as they
+appear, then `wait_task(task_id)` follows any one of them.
 
-`poll_plan` also carries three dicts that are ALWAYS present and always non-empty, so
-truth-testing them is always true. Read the inner field, not the dict:
+Read `next_action` and do exactly that:
+
+- `wait_again`: still moving; call the same tool again. `timed_out=true` with
+  `changed=false` is normal for a larger leaf.
+- `relay_pr`: a leaf is at `awaiting_merge`, or a completed plan's integration PR is open.
+  Give the `pr_url` to the user; only they can merge it, and a plan's work is NOT on the
+  base branch until they do.
+- `answer_clarification`: the worker asked a question; relay it, the user answers with
+  `praxis clarify <task-id> "..."`.
+- `retry`: a leaf failed terminally (read `get_task_logs` and `review`, change something,
+  then `retry_task`), or a pending leaf is stalled behind one and the ids to retry are
+  named.
+- `approve_proposal`: an autonomous improvement proposal is parked at the proposal gate
+  (`pending`, no leaves, `source=autonomous`); nothing decomposes it until the user runs
+  `praxis approve <plan-id>` or `praxis reject <plan-id>`. Relay that; do not wait on it.
+- `none`: nothing to do (`merged`, `no_changes`, `superseded`, or a plan that landed).
+
+A wait NEVER blocks on a state only a person can move (`waiting_on="human"`: the merge
+gate, a clarification, a stall). It returns at once with `changed=false` so you can relay
+it; calling it again in a loop is polling with extra steps.
+
+Expected durations, so a timed-out wait is read correctly: a small leaf on Gemini Flash Low
+finishes in under a minute; review is a brain call of a minute or two; decomposition
+(`waiting_on="planner"`, no task rows yet) is a multi-minute brain call with NO in-flight
+signal, and `plan_attempts` of `max_planning_attempts` is the only counter, so several
+timed-out `wait_plan` calls in a row are normal there and not a fault. A worker still
+`in_progress` after ten minutes is worth reporting with its `running_for_seconds`.
+
+`poll_task` and `poll_plan` still exist for a one-shot read of the current state with no
+waiting (for example, to answer "where is it now" without blocking). `poll_plan` carries
+three dicts that are ALWAYS present and always non-empty, so truth-testing them is always
+true. Read the inner field, not the dict:
 
 - `merge_gate["action_required"] == "approve_merge"` - a pending leaf is waiting only on a
   human merging a dependency's PR. Relay the gated `pr_url`s; you cannot merge them.

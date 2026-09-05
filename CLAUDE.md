@@ -163,6 +163,12 @@ uv run praxis merge <task-id>        # one task, plus every gated task on the SA
 uv run praxis reject-merge <task-id> [--feedback "..."]   # the other half of the gate
 uv run praxis merge-plan <plan-id>   # parked tasks, then the integration PR
 
+# Wait on a task or a plan (prints each transition; exit 0 at rest, 2 on timeout).
+# Built on GET /api/{tasks,plans}/{id}/wait, the same endpoint MCP wait_task /
+# wait_plan use. NEVER hand-roll a poll loop: the detail payload nests the row
+# under `task` and a loop reading the top level once waited on finished work.
+uv run praxis wait <task-id|plan-id> [--timeout 900]
+
 # Unwedge a plan that is stalled but still ACTIVE (`praxis plans` names the id).
 # A FAILED plan is REACTIVATED by the requeue too, or nothing would ever dispatch it.
 uv run praxis retry <task-id>        # a FAILED task back to pending; 409 on anything else
@@ -810,6 +816,25 @@ story. New gotchas go in `docs/gotchas.md` first. (No count is quoted on purpose
   dashboard); recovery is `praxis retry <task-id>` / MCP `retry_task` /
   `POST /api/tasks/{id}/retry`, and only the BLOCKING id is a legal argument (409 on any
   status but `failed`). The ACTIVE status and the null `error` are both deliberate.
+- **WAIT, DO NOT POLL, and the wait never blocks on a state only a person can move**
+  (2026-09-05, `core/waiting.py`). A poll loop read `GET /api/tasks/{id}` at the top
+  level, got `None` for `status` every cycle (the row is nested under `task`), and would
+  have waited ten minutes on a worker that finished in 40 s. Now the detail payload
+  MIRRORS `status`/`attempt`/`pr_url`/`plan_id` at the top level with `terminal` and
+  `waiting_on` (`worker`/`review`/`human`/`nothing`; plans add `planner`) beside them,
+  the plan payload carries the same two as REQUIRED fields (a default would have hidden
+  the three routes that returned a bare row), and `GET /api/{tasks,plans}/{id}/wait`
+  blocks on the event bus. Three rules: the bus is a WAKE-UP, never the truth (not every
+  transition publishes, so the row is re-read on every wake and on a 2 s tick, and the
+  subscription is taken BEFORE the first read); a HUMAN gate (merge gate, clarification,
+  stall, the PROPOSAL gate via `approvals.plan_awaits_approval`) returns at once with
+  `changed: false`; the timeout is CAPPED at 90 s, under the MCP client's 120 s, so the
+  server always ends a wait. `fingerprint` (status+attempt+pr_url, every leaf for a
+  plan) passed back between calls sees a re-dispatch (`pending -> pending`) and a
+  transition that landed between two calls. MCP `wait_task`/`wait_plan` name ONE
+  `next_action` (`wait_again`, `relay_pr`, `answer_clarification`, `retry`,
+  `approve_proposal`, `none`);
+  `praxis wait` exits 0 at rest and 2 on timeout.
 - **The CLI falls back to the nearest `./.env`** for `AUTH_TOKEN`/`PORT`, walking up from
   cwd; `praxis env` says which source won.
 - **`praxis init` logic is `run_init(Answers(...))`, not `init()`** (typer wraps the

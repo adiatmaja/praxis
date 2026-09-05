@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import math
 import os
 import sys
+import time
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, NoReturn
@@ -18,6 +20,7 @@ from rich.text import Text
 from cli.doctor import doctor as _doctor
 from cli.init import _fetch_presets_or_defaults, parse_env
 from cli.init import init as _init
+from orchestrator.core.approvals import plan_awaits_approval
 from orchestrator.core.run_elapsed import format_duration
 from orchestrator.core.settings_file import config_file_path
 from orchestrator.core.verify_gate import (
@@ -1076,6 +1079,204 @@ def task(task_id: str = typer.Argument(..., help="Task ID")) -> None:
                 f" | {format_duration(run.get('elapsed_seconds'))}"
             )
         )
+
+
+#: One server-side wait blocks at most this long (``core/waiting``'s cap); the
+#: client budget for that request is the cap plus a round trip. `wait` loops
+#: on the endpoint up to its own ``--timeout``, so the HTTP client never ends
+#: a wait: the server does, and its answer carries the state.
+_WAIT_SERVER_CAP = 90.0
+_WAIT_CLIENT_TIMEOUT = _WAIT_SERVER_CAP + 30.0
+
+#: Exit code when ``--timeout`` passes with the engine still moving. Distinct
+#: from 1 (an error) so a script can tell "ask again later" from "broken".
+_WAIT_TIMED_OUT_EXIT = 2
+
+
+def _wait_kind(client: httpx.Client, target_id: str) -> str:
+    """``"task"`` or ``"plan"`` for the id, or exit 1 when it is neither."""
+    if client.get(f"/api/tasks/{target_id}").status_code == 200:
+        return "task"
+    if client.get(f"/api/plans/{target_id}").status_code == 200:
+        return "plan"
+    console.print(
+        Text(f"{target_id} is neither a task id nor a plan id on this server.")
+    )
+    raise typer.Exit(1)
+
+
+def _wait_rest_lines(kind: str, target_id: str, body: dict[str, Any]) -> None:
+    """Say why the engine stopped and name the verb that moves it, copyably."""
+    status_text = str(body.get("status") or "")
+    if body.get("waiting_on") == "nothing":
+        if kind == "plan" and body.get("integration_pr_url"):
+            if body.get("integration_merged_at"):
+                console.print(Text(f"Plan {status_text}: the work landed on base."))
+            else:
+                console.print(
+                    Text(
+                        f"Plan {status_text}: integration PR "
+                        f"{body['integration_pr_url']} is open; land it with"
+                    )
+                )
+                _copyable(f"  praxis merge-plan {target_id}")
+            return
+        if status_text == "failed":
+            reason = body.get("error") or (body.get("task") or {}).get(
+                "review_feedback"
+            )
+            console.print(Text(f"{kind.capitalize()} failed: {reason or 'no reason'}"))
+            if kind == "task":
+                console.print(Text("Retry after changing something with"))
+                _copyable(f"  praxis retry {target_id}")
+            return
+        console.print(Text(f"Nothing more will happen: {kind} is {status_text}."))
+        return
+    # waiting_on == "human"
+    if kind == "task":
+        if status_text == "needs_clarification":
+            question = (body.get("task") or {}).get("clarification_question") or ""
+            console.print(Text(f"Worker asked: {question}"))
+            console.print(Text("Answer with"))
+            _copyable(f'  praxis clarify {target_id} "<answer>"')
+        else:
+            console.print(Text(f"Parked at the merge gate: {body.get('pr_url')}"))
+            console.print(Text("Approve with"))
+            _copyable(f"  praxis merge {target_id}")
+        return
+    if plan_awaits_approval(body):
+        console.print(
+            Text(
+                "Parked at the proposal gate: an autonomous improvement proposal "
+                "nobody has approved. Dispatch it or close it with"
+            )
+        )
+        _copyable(f"  praxis approve {target_id}")
+        _copyable(f"  praxis reject {target_id}")
+        return
+    blocking = [str(t) for t in (body.get("stalled_blocked_by_task_ids") or [])]
+    if blocking:
+        console.print(
+            Text("Stalled: a pending leaf sits behind a terminally failed one.")
+        )
+        for task_id in blocking:
+            _copyable(f"  praxis retry {task_id}")
+        return
+    for leaf in body.get("tasks") or []:
+        if leaf.get("status") == "passed":
+            console.print(
+                Text(f"Leaf parked at the merge gate: {leaf.get('pr_url') or ''}")
+            )
+            _copyable(f"  praxis merge {leaf.get('task_id')}")
+        elif leaf.get("status") == "needs_clarification":
+            console.print(Text("Leaf asked a question; answer with"))
+            _copyable(f'  praxis clarify {leaf.get("task_id")} "<answer>"')
+
+
+def _wait_print_transitions(
+    kind: str,
+    body: dict[str, Any],
+    seen: dict[str, str] | None,
+) -> dict[str, str]:
+    """Print what moved since the last answer; return the leaf map for next time.
+
+    Every line is server text: titles carry brackets, so ``Text``.
+    """
+    stamp = time.strftime("%H:%M:%S")
+    status_text = str(body.get("status") or "")
+    if kind == "task":
+        if seen is None:
+            console.print(Text(str((body.get("task") or {}).get("title") or "")))
+        if body.get("changed"):
+            line = f"{stamp}  {body.get('previous')} -> {status_text}"
+            attempt = body.get("attempt")
+            if isinstance(attempt, int) and attempt > 1:
+                line += f" (attempt {attempt})"
+            if body.get("pr_url"):
+                line += f"  {body['pr_url']}"
+            console.print(Text(line))
+        elif seen is None:
+            console.print(Text(f"{stamp}  {status_text}"))
+        return {}
+    leaves = {
+        str(t.get("task_id")): str(t.get("status")) for t in body.get("tasks") or []
+    }
+    titles = {
+        str(t.get("task_id")): str(t.get("title") or t.get("task_id"))
+        for t in body.get("tasks") or []
+    }
+    if seen is None:
+        console.print(Text(f"{stamp}  plan {status_text}"))
+        for task_id, leaf_status in leaves.items():
+            console.print(Text(f"{stamp}    {titles[task_id]}: {leaf_status}"))
+        return leaves
+    if body.get("previous") != status_text:
+        console.print(Text(f"{stamp}  plan {body.get('previous')} -> {status_text}"))
+    for task_id, leaf_status in leaves.items():
+        before = seen.get(task_id)
+        if before is None:
+            console.print(Text(f"{stamp}    {titles[task_id]}: {leaf_status}"))
+        elif before != leaf_status:
+            console.print(
+                Text(f"{stamp}    {titles[task_id]}: {before} -> {leaf_status}")
+            )
+    return leaves
+
+
+@app.command()
+def wait(
+    target_id: str = typer.Argument(..., help="Task ID or plan ID"),
+    timeout: float = typer.Option(
+        900.0,
+        "--timeout",
+        help="Seconds to wait at most before exiting 2 (default 15 minutes).",
+    ),
+) -> None:
+    """Block until a task or plan comes to rest, printing each transition.
+
+    Built on the server's wait endpoint, so there is no poll loop to write
+    and no field to read wrong. Exits 0 when the engine has nothing more to
+    do by itself (a terminal state, or parked on a person: the last lines
+    say which and name the verb), exits 2 when --timeout passed with the
+    engine still moving, and 1 on any error.
+    """
+    deadline = time.monotonic() + max(0.0, timeout)
+    with _client(_WAIT_CLIENT_TIMEOUT) as client:
+        kind = _wait_kind(client, target_id)
+        seen: dict[str, str] | None = None
+        fingerprint: str | None = None
+        body: dict[str, Any] = {}
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            # The server is asked for the WHOLE remaining budget when that fits
+            # under its cap, so a timed-out answer to such a request IS the
+            # deadline: the budget is judged by what was asked, not by a wall
+            # clock the server's own wait already consumed.
+            asked = math.ceil(min(_WAIT_SERVER_CAP, remaining))
+            params: dict[str, Any] = {"timeout": f"{asked:g}"}
+            if fingerprint:
+                params["fingerprint"] = fingerprint
+            body = _check_dict(
+                client.get(f"/api/{kind}s/{target_id}/wait", params=params)
+            )
+            seen = _wait_print_transitions(kind, body, seen)
+            fingerprint = str(body.get("fingerprint") or "") or None
+            if body.get("waiting_on") in {"human", "nothing"}:
+                _wait_rest_lines(kind, target_id, body)
+                return
+            if body.get("timed_out") and asked >= remaining:
+                break
+    status_text = str(body.get("status") or "unknown")
+    line = f"Timed out: still {status_text} after {format_duration(timeout)}"
+    running = body.get("running_for_seconds")
+    if isinstance(running, int | float) and not isinstance(running, bool):
+        line += f", running for {format_duration(float(running))}"
+    console.print(Text(line))
+    console.print(Text("Keep waiting with"))
+    _copyable(f"  praxis wait {target_id}")
+    raise typer.Exit(_WAIT_TIMED_OUT_EXIT)
 
 
 #: Lines of container log printed by default. A worker transcript runs to

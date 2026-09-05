@@ -15,6 +15,7 @@ from mcp.server.fastmcp import FastMCP
 
 from mcp_server.client import PraxisClient, PraxisClientError
 from orchestrator.core import status_vocab
+from orchestrator.core.approvals import plan_awaits_approval
 
 # The reachability rule is SHARED, not MCP's. `poll_plan` was its first reader
 # and for one commit its only one, which is exactly how a rule ends up with two
@@ -884,6 +885,258 @@ async def poll_plan_impl(client: Any, plan_id: str) -> dict[str, Any]:
     }
 
 
+# --- waiting -----------------------------------------------------------------
+
+#: The longest one ``wait_task`` / ``wait_plan`` call blocks. Mirrors the
+#: server's ``core/waiting.WAIT_TIMEOUT_CAP_SECONDS`` and is sent as the
+#: default, so a caller who names nothing gets the longest honest wait; it
+#: sits well inside the HTTP client's own 120 s budget on purpose, because a
+#: wait ended by the client is the failure these tools exist to remove.
+WAIT_TIMEOUT_CAP_SECONDS = 90
+
+
+def _wait_timeout(timeout_seconds: int) -> int:
+    return max(0, min(int(timeout_seconds), WAIT_TIMEOUT_CAP_SECONDS))
+
+
+def _task_next_action(
+    raw_status: str, task_id: str, task: dict[str, Any]
+) -> tuple[str, str]:
+    """The ONE thing to do next for a task in ``raw_status``, and its sentence.
+
+    Returns:
+        ``(next_action, sentence)`` where ``next_action`` is one of
+        ``relay_pr``, ``answer_clarification``, ``retry``, ``none``,
+        ``wait_again``.
+    """
+    if raw_status == "passed":
+        return (
+            "relay_pr",
+            f"relay {task.get('pr_url') or 'the PR'} to the user for approval; "
+            "only they can merge it",
+        )
+    if raw_status == "needs_clarification":
+        return (
+            "answer_clarification",
+            "relay the question to the user, who answers with "
+            f'praxis clarify {task_id} "..."',
+        )
+    if raw_status == "failed":
+        return (
+            "retry",
+            f"read get_task_logs({task_id}) and the review, change something, "
+            f"then retry_task({task_id})",
+        )
+    if status_vocab.mcp_status(raw_status) in _TERMINAL_STATUSES:
+        return "none", "nothing to do"
+    return "wait_again", f"call wait_task({task_id}) again"
+
+
+async def wait_task_impl(
+    client: Any, task_id: str, timeout_seconds: int = WAIT_TIMEOUT_CAP_SECONDS
+) -> dict[str, Any]:
+    """Block on the server until the task moves, comes to rest, or times out.
+
+    Built on ``GET /api/tasks/{id}/wait``. The summary names the state reached
+    and exactly ONE next action, because the failure this replaces was an
+    assistant polling through a state only a person could move.
+    """
+    try:
+        data = await client.get(
+            f"/api/tasks/{task_id}/wait?timeout={_wait_timeout(timeout_seconds)}"
+        )
+    except PraxisClientError as exc:
+        return _error(exc)
+    task = data.get("task", {})
+    raw_status = str(data.get("status") or task.get("status") or "")
+    previous = data.get("previous")
+    changed = bool(data.get("changed"))
+    timed_out = bool(data.get("timed_out"))
+    running_for = data.get("running_for_seconds")
+    title = task.get("title") or task_id
+    shown = status_vocab.mcp_status(raw_status)
+    next_action, sentence = _task_next_action(raw_status, task_id, task)
+
+    if timed_out:
+        head = (
+            f"{title}: still {shown} after "
+            f"{format_duration(float(data.get('waited_seconds') or 0))}"
+        )
+        if isinstance(running_for, int | float) and not isinstance(running_for, bool):
+            head += f", running for {format_duration(float(running_for))}"
+    elif changed:
+        head = (
+            f"{title}: {status_vocab.mcp_status(str(previous))} -> {shown} after "
+            f"{format_duration(float(data.get('waited_seconds') or 0))}"
+        )
+    else:
+        head = f"{title}: {shown}"
+    drift = task.get("contract_drift")
+    if isinstance(drift, dict) and drift.get("named_not_authorised"):
+        named = ", ".join(str(p) for p in drift["named_not_authorised"])
+        head += f". WARNING: diff edits {named}, which the plan never authorised"
+    summary = f"{head}. Next: {sentence}."
+
+    result: dict[str, Any] = {
+        "summary": summary,
+        "task_id": task_id,
+        "status": shown,
+        "previous": status_vocab.mcp_status(previous) if previous else None,
+        "changed": changed,
+        "timed_out": timed_out,
+        "terminal": bool(data.get("terminal")),
+        "waiting_on": data.get("waiting_on"),
+        "next_action": next_action,
+        "pr_url": data.get("pr_url"),
+        "review": task.get("review_feedback"),
+        "branch": task.get("branch_name"),
+        "attempt": data.get("attempt"),
+        "running_for_seconds": running_for,
+        "waited_seconds": data.get("waited_seconds"),
+        "timeout_seconds": data.get("timeout_seconds"),
+        "contract_drift": drift,
+        "dashboard_url": _dashboard_url(client),
+        "approvals": await _approvals_digest_line(client),
+    }
+    if raw_status == "needs_clarification":
+        result["question"] = task.get("clarification_question") or ""
+    return result
+
+
+def _plan_next_action(data: dict[str, Any]) -> tuple[str, str]:
+    """The ONE thing to do next for a plan the wait returned, and its sentence."""
+    status = str(data.get("status") or "")
+    tasks: list[dict[str, Any]] = data.get("tasks") or []
+    if status == "completed":
+        if data.get("integration_merged_at"):
+            return "none", "the work landed on the base branch, nothing to do"
+        if data.get("integration_pr_url"):
+            return (
+                "relay_pr",
+                f"relay the integration PR {data['integration_pr_url']} to the "
+                "user; the work is on the plan branch and reaches the base "
+                "branch only when they merge it",
+            )
+        return (
+            "none",
+            "completed with no integration PR: "
+            + (
+                str(data.get("error"))
+                if data.get("error")
+                else "nothing to integrate, the task PRs already landed"
+            ),
+        )
+    if status in {"failed", "rejected"}:
+        return "none", f"{status}: {data.get('error') or 'no reason recorded'}"
+    if plan_awaits_approval(data):
+        plan_id = data.get("plan_id")
+        return (
+            "approve_proposal",
+            "an autonomous improvement proposal is parked at the proposal gate "
+            "and nothing runs it until a person decides: they run "
+            f"praxis approve {plan_id} to dispatch it or praxis reject {plan_id} "
+            "to close it",
+        )
+    blocking = [str(t) for t in (data.get("stalled_blocked_by_task_ids") or [])]
+    if blocking:
+        return (
+            "retry",
+            "a pending leaf sits behind a terminally failed one and no tick "
+            "will dispatch it; retry_task(" + ", ".join(blocking) + ")",
+        )
+    gated = [t for t in tasks if str(t.get("status")) == "passed"]
+    if gated:
+        urls = ", ".join(str(t.get("pr_url") or t.get("task_id")) for t in gated)
+        return (
+            "relay_pr",
+            f"{len(gated)} leaf awaiting_merge: relay {urls} to the user for "
+            "approval; only they can merge it",
+        )
+    asking = [t for t in tasks if str(t.get("status")) == "needs_clarification"]
+    if asking:
+        ids = ", ".join(str(t.get("task_id")) for t in asking)
+        return (
+            "answer_clarification",
+            f"leaf {ids} asked a question; relay it to the user, who answers "
+            f'with praxis clarify <task-id> "..."',
+        )
+    if not tasks:
+        attempts = data.get("plan_attempts")
+        cap = data.get("max_planning_attempts")
+        return (
+            "wait_again",
+            "decomposition is a multi-minute brain call with no in-flight "
+            f"signal (planning attempts {attempts} of {cap}); call "
+            f"wait_plan({data.get('plan_id')}) again",
+        )
+    return "wait_again", f"call wait_plan({data.get('plan_id')}) again"
+
+
+async def wait_plan_impl(
+    client: Any, plan_id: str, timeout_seconds: int = WAIT_TIMEOUT_CAP_SECONDS
+) -> dict[str, Any]:
+    """Block on the server until the plan or any leaf moves, rests, or times out.
+
+    Built on ``GET /api/plans/{id}/wait``. The summary counts satisfied leaves
+    the way ``poll_plan`` does and names exactly ONE next action.
+    """
+    try:
+        data = await client.get(
+            f"/api/plans/{plan_id}/wait?timeout={_wait_timeout(timeout_seconds)}"
+        )
+    except PraxisClientError as exc:
+        return _error(exc)
+    tasks: list[dict[str, Any]] = data.get("tasks") or []
+    status = str(data.get("status") or "")
+    changed = bool(data.get("changed"))
+    timed_out = bool(data.get("timed_out"))
+    waited = format_duration(float(data.get("waited_seconds") or 0))
+    next_action, sentence = _plan_next_action(data)
+    leaves = _plan_summary(tasks)
+    if timed_out:
+        head = f"plan still {status} after {waited}, {leaves}"
+    elif changed:
+        head = f"plan {status} ({data.get('previous')} before) after {waited}, {leaves}"
+    else:
+        head = f"plan {status}, {leaves}"
+    summary = f"{head}. Next: {sentence}."
+    return {
+        "summary": summary,
+        "plan_id": plan_id,
+        "status": status,
+        "previous": data.get("previous"),
+        "changed": changed,
+        "timed_out": timed_out,
+        "terminal": bool(data.get("terminal")),
+        "waiting_on": data.get("waiting_on"),
+        "next_action": next_action,
+        "error": data.get("error"),
+        "task_count": len(tasks),
+        "tasks": [
+            {
+                "task_id": t.get("task_id"),
+                "title": t.get("title"),
+                "status": _TASK_STATUS_MAP.get(
+                    str(t.get("status", "")), t.get("status")
+                ),
+                "attempt": t.get("attempt"),
+                "pr_url": t.get("pr_url"),
+            }
+            for t in tasks
+        ],
+        "stalled_task_ids": data.get("stalled_task_ids") or [],
+        "stalled_blocked_by_task_ids": data.get("stalled_blocked_by_task_ids") or [],
+        "integration_pr_url": data.get("integration_pr_url"),
+        "integration_merged_at": data.get("integration_merged_at"),
+        "plan_attempts": data.get("plan_attempts"),
+        "max_planning_attempts": data.get("max_planning_attempts"),
+        "waited_seconds": data.get("waited_seconds"),
+        "timeout_seconds": data.get("timeout_seconds"),
+        "dashboard_url": _dashboard_url(client),
+        "approvals": await _approvals_digest_line(client),
+    }
+
+
 async def list_providers_impl(client: Any) -> dict[str, Any]:
     """List brain providers and the worker models available to dispatch to."""
     try:
@@ -1150,8 +1403,10 @@ mcp = FastMCP(
         "a reviewed pull request. Read the praxis://guide/orchestration "
         "resource before your first dispatch. Typical loop: get_project to read a "
         "repo's configured worker, dispatch_task or execute_plan to delegate, "
-        "then poll_task or poll_plan until the task reaches a TERMINAL status. "
-        "Do not poll for awaiting_merge specifically: a task can end at "
+        "then wait_task or wait_plan (they block on the server and name the "
+        "one next action) until the work comes to rest; do not write a poll "
+        "loop, and do not wait for awaiting_merge specifically: a task can "
+        "end at "
         "no_changes (the work was already there, a success with no PR), "
         "superseded, or failed without ever passing through it, and a task at "
         "awaiting_clarification is waiting on a person and will never advance "
@@ -1389,6 +1644,68 @@ async def poll_plan(plan_id: str) -> dict[str, Any]:
     the integration PR to the user rather than announcing the plan as done.
     """
     return await _with_client(poll_plan_impl, plan_id=plan_id)
+
+
+@mcp.tool()
+async def wait_task(
+    task_id: str, timeout_seconds: int = WAIT_TIMEOUT_CAP_SECONDS
+) -> dict[str, Any]:
+    """Wait for a dispatched task to move. USE THIS INSTEAD OF POLLING.
+
+    Blocks on the server until the task's status changes, or the task comes
+    to REST (terminal, or parked on a person), or ``timeout_seconds`` passes
+    (capped at 90). Returns {summary, task_id, status, previous, changed,
+    timed_out, terminal, waiting_on, next_action, pr_url, review, branch,
+    attempt, running_for_seconds, waited_seconds, dashboard_url, approvals}.
+
+    Read ``next_action`` and do exactly that: ``wait_again`` (still moving,
+    call this again), ``relay_pr`` (``awaiting_merge``: give ``pr_url`` to the
+    user; only they can merge), ``answer_clarification`` (``question`` is set;
+    the user answers with ``praxis clarify``), ``retry`` (``failed``: read
+    ``get_task_logs`` and ``review``, change something, ``retry_task``),
+    ``none`` (``merged``, ``no_changes``, ``superseded``: nothing to do).
+
+    A task at a human gate returns AT ONCE with ``changed=false``: waiting
+    there blocks exactly the caller who has to relay it. Expected durations:
+    a small leaf on Gemini Flash Low finishes in under a minute; review is a
+    brain call of a minute or two; ``timed_out=true`` with ``changed=false``
+    is normal for a larger leaf, call again.
+    """
+    return await _with_client(
+        wait_task_impl, task_id=task_id, timeout_seconds=timeout_seconds
+    )
+
+
+@mcp.tool()
+async def wait_plan(
+    plan_id: str, timeout_seconds: int = WAIT_TIMEOUT_CAP_SECONDS
+) -> dict[str, Any]:
+    """Wait for an execute_plan submission to move. USE THIS INSTEAD OF POLLING.
+
+    Blocks on the server until the plan status OR ANY LEAF's status changes,
+    or the plan comes to rest (terminal, or waiting on a person), or
+    ``timeout_seconds`` passes (capped at 90). Returns {summary, plan_id,
+    status, previous, changed, timed_out, terminal, waiting_on, next_action,
+    error, task_count, tasks, stalled_task_ids, stalled_blocked_by_task_ids,
+    integration_pr_url, integration_merged_at, plan_attempts,
+    max_planning_attempts, waited_seconds, dashboard_url, approvals}.
+
+    ``waiting_on`` says who has to act: ``planner`` (decomposition, a
+    multi-minute brain call with NO in-flight signal; ``plan_attempts`` of
+    ``max_planning_attempts`` is the only counter, so several timed-out waits
+    in a row are normal here), ``worker``, ``review``, ``human``, ``nothing``.
+
+    Read ``next_action`` and do exactly that: ``wait_again``; ``relay_pr``
+    (a leaf at ``awaiting_merge``, or a completed plan's integration PR: the
+    work is NOT on the base branch until a person merges it); ``retry`` (a
+    pending leaf is stalled behind a terminally failed one; ``retry_task`` the
+    ids named); ``answer_clarification``; ``approve_proposal`` (an autonomous
+    improvement proposal parked at the proposal gate: the user runs
+    ``praxis approve`` or ``praxis reject``); ``none``.
+    """
+    return await _with_client(
+        wait_plan_impl, plan_id=plan_id, timeout_seconds=timeout_seconds
+    )
 
 
 @mcp.tool()

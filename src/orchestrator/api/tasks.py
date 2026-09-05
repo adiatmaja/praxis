@@ -5,13 +5,14 @@ from __future__ import annotations
 import logging
 from typing import Any, cast
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel
 
 from orchestrator.api.auth import verify_token
-from orchestrator.core import run_elapsed
+from orchestrator.core import run_elapsed, waiting
 from orchestrator.core.clarification_states import RESOLVED
 from orchestrator.core.contract_drift import decode_payload
+from orchestrator.core.status_vocab import CANONICAL_TASK_STATUSES
 from orchestrator.models.schemas import TaskResponse, TaskStatus
 
 
@@ -69,7 +70,33 @@ async def get_task(request: Request, task_id: str) -> dict[str, Any]:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Task not found"
         )
-    runs = await queue.get_runs_for_task(task_id)
+    return await _task_detail(queue, task)
+
+
+def _task_fingerprint(task: dict[str, Any]) -> str:
+    """The facts a wait compares between two calls on one task.
+
+    ``attempt`` is in it because a re-dispatch is ``pending -> pending`` with
+    the attempt bumped: a comparison on status alone waits through it.
+    """
+    return waiting.fingerprint(
+        [task.get("status"), task.get("attempt"), task.get("pr_url")]
+    )
+
+
+async def _task_detail(queue: Any, task: dict[str, Any]) -> dict[str, Any]:
+    """The task detail payload, one shape for the GET and for the wait.
+
+    ``status``, ``attempt``, ``pr_url`` and ``plan_id`` are MIRRORED at the top
+    level, beside the nested ``task`` row every existing caller reads. On
+    2026-09-05 a poll loop read ``status`` at the top level, got ``None`` each
+    cycle, and would have waited ten minutes on a worker that finished in
+    forty seconds. ``terminal`` and ``waiting_on`` are derived beside them so
+    a caller never re-derives "is anything still going to happen" from a
+    status string.
+    """
+    runs = await queue.get_runs_for_task(task["id"])
+    task_status = str(task.get("status"))
     # This route returns the raw row (no response_model), so the JSON TEXT in
     # ``contract_drift`` would reach the CLI and the dashboard as a string
     # while ``TaskResponse`` hands its own callers a dict. One shape, decided
@@ -78,7 +105,106 @@ async def get_task(request: Request, task_id: str) -> dict[str, Any]:
         "task": {**task, "contract_drift": decode_payload(task.get("contract_drift"))},
         "runs": run_elapsed.annotate_runs(runs),
         "running_for_seconds": run_elapsed.running_for_seconds(runs),
+        "task_id": task["id"],
+        "status": task_status,
+        "attempt": task.get("attempt"),
+        "pr_url": task.get("pr_url"),
+        "plan_id": task.get("plan_id"),
+        "terminal": waiting.task_is_terminal(task_status),
+        "waiting_on": waiting.task_waiting_on(task_status),
+        "fingerprint": _task_fingerprint(task),
     }
+
+
+@router.get("/tasks/{task_id}/wait")
+async def wait_task(
+    request: Request,
+    task_id: str,
+    timeout: float = Query(
+        default=waiting.WAIT_TIMEOUT_CAP_SECONDS,
+        description=(
+            "Seconds to block at most; capped server-side so the answer always "
+            "comes from Praxis, never from an HTTP client giving up."
+        ),
+    ),
+    since: str | None = Query(
+        default=None,
+        description=(
+            "The status the caller last saw. The wait returns at once when the "
+            "current status differs from it, so a transition between two "
+            "calls is never waited through twice."
+        ),
+    ),
+    fingerprint: str | None = Query(
+        default=None,
+        description=(
+            "The `fingerprint` a previous answer carried. Like `since`, but it "
+            "also sees a re-dispatch (`pending -> pending` with the attempt "
+            "bumped) and a PR appearing."
+        ),
+    ),
+) -> dict[str, Any]:
+    """Block until the task's state moves, comes to rest, or the timeout passes.
+
+    Returns the same payload as ``GET /api/tasks/{id}`` plus ``previous``,
+    ``changed``, ``timed_out``, ``timeout_seconds`` (the effective, capped
+    value) and ``waited_seconds``. ``changed`` and ``timed_out`` are never
+    both true. A task at a HUMAN gate (``waiting_on == "human"``: the merge
+    gate or a clarification) or in a terminal state returns at once with
+    ``changed: false``, because no amount of waiting moves it; the caller's
+    job there is to relay it.
+    """
+    if since is not None and since not in CANONICAL_TASK_STATUSES:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=(
+                f"since must be a task status, one of "
+                f"{sorted(CANONICAL_TASK_STATUSES)}; got {since!r}. (The MCP "
+                f"alias awaiting_merge is the REST status passed.)"
+            ),
+        )
+    queue = request.app.state.task_queue
+    if await queue.get_task(task_id) is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Task not found"
+        )
+    effective = waiting.clamp_timeout(timeout)
+
+    async def read() -> dict[str, Any]:
+        row = await queue.get_task(task_id)
+        if row is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="Task not found"
+            )
+        return cast(dict[str, Any], row)
+
+    def changed(first: dict[str, Any], current: dict[str, Any]) -> bool:
+        if since is not None or fingerprint is not None:
+            return (since is not None and current.get("status") != since) or (
+                fingerprint is not None and _task_fingerprint(current) != fingerprint
+            )
+        return _task_fingerprint(current) != _task_fingerprint(first)
+
+    outcome = await waiting.wait_for_change(
+        read,
+        changed=changed,
+        resting=lambda row: waiting.task_is_resting(str(row.get("status"))),
+        event_bus=request.app.state.event_bus,
+        timeout=effective,
+    )
+    payload = await _task_detail(queue, outcome.snapshot)
+    payload.update(
+        {
+            "previous": since
+            if since is not None
+            else str(outcome.first.get("status")),
+            "changed": outcome.changed,
+            "timed_out": outcome.timed_out,
+            "timeout_seconds": effective,
+            "waited_seconds": round(outcome.waited_seconds, 3),
+        }
+    )
+    return payload
 
 
 @router.post("/tasks/{task_id}/stop")

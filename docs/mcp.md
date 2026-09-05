@@ -18,7 +18,9 @@ model can't.
 | `dispatch_task(repo_url, instructions, model, harness?, branch?, context?, local_context?, expected_base_sha?, files?, verification?, neighbor_contracts?, micro_edit?)` | Dispatch one task; returns `{task_id, plan_id, project_id, status, warnings, dashboard_url}`. `status` is the literal `"queued"`, an acknowledgement rather than a task status: the row is written `pending`. `warnings` lists pre-flight checks that were SKIPPED (a missing GitHub credential disables the `expected_base_sha` compare). SIDE EFFECT: an unknown `repo_url` creates a project, and a known one has its stored `model_name`/`harness` overwritten. Praxis always runs its own review. `micro_edit={path, content, commit_message}` takes the MICRO-EDIT LANE instead: no container is spawned, Praxis commits that one file to `branch` itself, and the verify gate, review, merge gate and outcome row all still run. Requires `branch` and auto-delegate mode. See "Micro edits" in the orchestration guide for the rubric. |
 | `execute_plan(repo_url, plan, model, harness?, branch?, context?, local_context?, expected_base_sha?)` | Hand Praxis a full, externally-authored **plan** (the entire plan text). Returns immediately with `{plan_id, project_id, dashboard_url, status="pending"}`; Praxis capability-gates the plan against `model`, decomposes it into a task graph, and dispatches the tasks. Use this (not `dispatch_task`) when you already have a multi-step plan. |
 | `poll_plan(plan_id)` | Plan status, a one-line summary of every task, plus `integration_pr_url` / `integration_merged_at`. `completed` does NOT mean the work reached the base branch: a completed plan's leaves are merged into the PLAN branch, and it has landed only once `integration_merged_at` is set. `merge_gate`, `stalled` and `terminal_incomplete` are always present and always truthy dicts, so read their inner fields (`merge_gate["action_required"]`, `stalled["action_required"]`, `terminal_incomplete["terminal_incomplete"]`), never the dict itself. **`stalled` is the one that says STOP POLLING**: a pending leaf sits behind a terminally failed one, so no tick will ever dispatch it while `status` stays `active` and `error` stays null forever. It names the failed tasks and `action_required: "retry_failed_task"`; the tool for that is `retry_task`. Tasks at `awaiting_merge` are parked for your PR approval; `awaiting_clarification` is blocked on a question only a human can answer. |
-| `poll_task(task_id)` | Get status, PR URL, review (and a dashboard link for wedged tasks). |
+| `poll_task(task_id)` | One-shot read of status, PR URL, review (and a dashboard link for wedged tasks). For waiting, use `wait_task`. |
+| `wait_task(task_id, timeout_seconds=90)` | **Wait, do not poll.** Blocks on the server until the task's status changes, the task comes to rest (terminal, or parked on a person), or the timeout (capped at 90 s) passes. Returns the state reached, `changed` / `timed_out`, `waiting_on` (`worker`, `review`, `human`, `nothing`) and `next_action`: `wait_again`, `relay_pr`, `answer_clarification`, `retry` or `none`. A task at a human gate returns at once with `changed=false`. Expected durations: a small leaf on Gemini Flash Low finishes in under a minute; review is a brain call of a minute or two. CLI twin: `praxis wait <task-id>`. |
+| `wait_plan(plan_id, timeout_seconds=90)` | The same for an `execute_plan` submission; wakes on the plan status AND on any leaf's status. `waiting_on="planner"` means decomposition, a multi-minute brain call with no in-flight signal: `plan_attempts` of `max_planning_attempts` is the only counter, so several timed-out waits in a row are normal there. `next_action` names the gated PR to relay, the stalled leaf to `retry_task`, the integration PR that has not landed, the proposal gate (`approve_proposal`: the user runs `praxis approve` or `praxis reject`), or nothing. CLI twin: `praxis wait <plan-id>`. |
 | `list_providers()` | List brain providers, and the models LM Studio currently has loaded. `worker_models` covers the local arm only: a Gemini model string served through the agy harness can never appear there, so its absence is not evidence the name is wrong. |
 | `get_project(repo_url)` | Read a repo's configured worker model, harness, `verify_cmd`, `auto_merge` and `improvement_plan_approval_gate`. Always returns a `project` key: the config, or null when Praxis has never seen the repo. `auto_merge` is the field that decides whether Praxis merges without a human; the improvement gate is a different thing entirely. |
 | `list_projects()` | List every repo Praxis knows, each with its configured model + harness. |
@@ -100,8 +102,9 @@ and it picks the right tool. For example:
 > `<your-lm-studio-model>`._
 
 It calls `dispatch_task` and hands back a `task_id`. Praxis spawns a containerized coding agent
-that implements on a branch, opens a PR, and reviews it, then ask the assistant to `poll_task`
-until the task reaches a TERMINAL status (or watch the dashboard). Do not wait for `merged`:
+that implements on a branch, opens a PR, and reviews it, then ask the assistant to `wait_task`
+until the task comes to rest (or watch the dashboard); it blocks on the server and names the
+next action, so there is no poll loop to write. Do not wait for `merged`:
 a clean review parks at `awaiting_merge` for you to approve, and `no_changes`, `superseded`
 and `failed` are terminal without ever passing through it. Pick a worker model that can follow a
 coding agent's edit format; very small chat models reply *with* the code instead of editing, so
@@ -134,7 +137,8 @@ model:
 2. Your assistant calls `execute_plan(repo_url, plan, model)`. It returns right away with a
    `plan_id` and `status="pending"`; the brain's capability-aware decomposition is a
    multi-minute call that runs asynchronously, sizing each task to what `model` can implement.
-3. Ask your assistant to `poll_plan(plan_id)` periodically (or watch the `dashboard_url`). Each
+3. Ask your assistant to `wait_plan(plan_id)` (or watch the `dashboard_url`); it blocks until a
+   leaf moves and says what to do next, so nobody polls. Each
    task becomes its own `agent/<slug>` branch and PR, gets reviewed, and squash-merges into the
    plan branch on pass.
 4. Tasks that reach `awaiting_merge` have passed review and are parked for **your** approval;

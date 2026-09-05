@@ -514,6 +514,15 @@ class PlanResponse(BaseModel):
     #: from a plan whose work reached the base branch.
     integration_pr_url: str | None = None
     integration_merged_at: str | None = None
+    #: DERIVED beside ``status``, by ``core/waiting`` (the one derivation every
+    #: surface renders): whether nothing will ever advance this plan again, and
+    #: who has to act before it moves (``planner`` while decomposition is a
+    #: multi-minute brain call with no task rows yet, ``worker``, ``review``,
+    #: ``human`` at a merge gate / clarification / stall, ``nothing``). Both
+    #: are REQUIRED: a default here would be a measurement nobody took, served
+    #: for any route that forgot to derive it.
+    terminal: bool
+    waiting_on: str
     #: DERIVED, not a column. Two projections of one
     #: ``plan_reachability.derive_stalled_by_failure_state`` call: the pending
     #: leaves that can never be dispatched, and the terminally FAILED tasks

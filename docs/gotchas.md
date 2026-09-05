@@ -4382,3 +4382,61 @@ the configured `qwen3.8-27b`, so the doctor was red ("not loaded") and the windo
 to unknown (budget gate skipped) on an install where every dispatch ran fine. A doctor row,
 its product twin and the pre-dispatch probe must not disagree about what "the same model"
 means; grep `model_matches(` to find every seat.
+
+
+## Waiting on a task was a poll loop reading the wrong field, so now there is a wait
+
+Found live on 2026-09-05. A poll loop read `GET /api/tasks/{id}` at the top level, got
+`None` for `status` every cycle (the row is nested under `task`; only
+`running_for_seconds` was top-level), and would have waited ten minutes on a worker that
+finished in forty seconds. A user's assistant doing the same thing is BLOCKED on work
+that is already done and parked at a gate, and nothing in the payload told it so. Three
+surfaces fix it, and the rules behind them are the part worth keeping.
+
+**The mirror.** `GET /api/tasks/{id}` now carries `status`, `attempt`, `pr_url`,
+`plan_id`, `task_id` at the top level, beside the nested `task` row every existing
+caller reads, plus `terminal` (from `status_vocab.TERMINAL_STATUSES`) and `waiting_on`
+(`worker`, `review`, `human`, `nothing`). `GET /api/plans/{id}` and the plan list carry
+`terminal` and `waiting_on` (plans add `planner`) as REQUIRED `PlanResponse` fields
+with no default. That choice paid for itself within the minute: three routes
+(`create_plan`, `approve`/`reject`, `promote`) returned the bare row and went 500 on
+response validation, which is exactly the routes a silent default would have served a
+measurement nobody took. Every `PlanResponse` route now goes through one `_derived`
+helper. `core/waiting.py` is the ONE derivation of "who is this waiting on".
+
+**The wait.** `GET /api/tasks/{id}/wait?timeout=&since=&fingerprint=` and the same
+under `/api/plans/{id}/wait` block until the state moves, come to rest, or the timeout
+passes. Three rules, each proven by a mutation:
+
+- The event bus is a WAKE-UP, never the source of truth. Not every transition publishes
+  an event (the callback handler's `in_progress -> reviewing` does not), so the row is
+  re-read on every wake AND on a two-second tick, and the subscription is taken BEFORE
+  the first read: taken after, an event landing during that read is lost and the loop
+  sleeps a whole tick on a transition already made.
+- A wait NEVER blocks on a state only a person can move. Terminal states and the human
+  gates (the merge gate, a clarification, a stall behind a terminal failure, and the
+  PROPOSAL gate) return at once with `changed: false`, because blocking there blocks
+  exactly the caller who has to relay it. The proposal gate was the one the first
+  derivation missed: an autonomous proposal is `pending` with no task rows, exactly
+  like a user plan mid-decomposition, and the first live listing showed three of them
+  reading as "waiting on the planner". `approvals.plan_awaits_approval` (source AND
+  status) is the rule, shared rather than re-typed.
+- The timeout is CAPPED at 90 s server-side (`WAIT_TIMEOUT_CAP_SECONDS`), under the MCP
+  client's 120 s request timeout, so the SERVER always ends a wait and the answer
+  always carries the state. A wait ended by the client is the failure being removed.
+
+`since` is the status the caller last saw; `fingerprint` (status, attempt, PR; every
+leaf's for a plan) is stronger: a re-dispatch is `pending -> pending` with the attempt
+bumped, invisible to a status compare, and a plan reads `active` from the first dispatch
+to the last merge, so a plan wait keyed on the plan status alone would time out through
+every leaf.
+
+**The surfaces.** MCP `wait_task` / `wait_plan` name the state reached and ONE
+`next_action` (`wait_again`, `relay_pr`, `answer_clarification`, `retry`, `none`), and
+the orchestration guide's polling section is now "wait, do not poll" with expected
+durations (a small leaf on Flash Low under a minute; review a minute or two;
+decomposition multi-minute with `plan_attempts` as the only signal). `praxis wait <id>`
+resolves a task or plan id, prints each transition, exits 0 at rest (naming the verb
+that moves it) and 2 on timeout. The CLI judges its own budget by what it ASKED the
+server for, not by a wall clock: it asks for the whole remaining budget when that fits
+under the cap, so a timed-out answer to that request IS the deadline.

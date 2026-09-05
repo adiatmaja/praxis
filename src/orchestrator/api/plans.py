@@ -8,11 +8,12 @@ import uuid
 from datetime import UTC, datetime
 from typing import Any, cast
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel
 
 from orchestrator.api.auth import verify_token
 from orchestrator.api.repo_errors import repo_failure_detail
+from orchestrator.core import waiting
 from orchestrator.core.github_credentials import (
     CredentialError,
     build_credential_provider,
@@ -25,7 +26,10 @@ from orchestrator.core.plan_reachability import (
     stalled_task_ids,
 )
 from orchestrator.core.spec_docs import render_spec_doc, spec_doc_path
-from orchestrator.core.status_vocab import SATISFIED_STATUSES
+from orchestrator.core.status_vocab import (
+    CANONICAL_PLAN_STATUSES,
+    SATISFIED_STATUSES,
+)
 from orchestrator.models.schemas import (
     PlanCreate,
     PlanResponse,
@@ -118,6 +122,26 @@ def _attach_stall_state(plan: dict[str, Any], tasks: list[dict[str, Any]]) -> No
     state = derive_stalled_by_failure_state(plan.get("opus_plan"), tasks)
     plan["stalled_task_ids"] = stalled_task_ids(state)
     plan["stalled_blocked_by_task_ids"] = blocking_task_ids(state)
+    # The wait state rides the same call for the same reason: the list and
+    # the detail must answer identically, and they load tasks differently.
+    plan_status = str(plan.get("status"))
+    plan["terminal"] = waiting.plan_is_terminal(plan_status)
+    plan["waiting_on"] = waiting.plan_waiting_on(
+        plan_status, tasks, plan.get("opus_plan"), source=plan.get("source")
+    )
+
+
+async def _derived(queue: Any, plan: dict[str, Any]) -> dict[str, Any]:
+    """Attach the derived state to one plan row, loading its leaves as needed.
+
+    EVERY route that answers with a ``PlanResponse`` goes through here, because
+    ``terminal`` and ``waiting_on`` are required fields with no default: a
+    route that returned the bare row used to 500 on response validation, which
+    is exactly the failure a silent default would have hidden.
+    """
+    tasks = await queue.get_tasks_for_plan(plan["id"]) if plan.get("opus_plan") else []
+    _attach_stall_state(plan, tasks)
+    return plan
 
 
 async def _tasks_by_plan(
@@ -231,7 +255,7 @@ async def create_plan(
     plan = await request.app.state.task_queue.get_plan(plan_id)
     if plan is None:
         raise HTTPException(status_code=500, detail="Plan creation failed")
-    return cast(dict[str, Any], plan)
+    return await _derived(request.app.state.task_queue, plan)
 
 
 @router.get("/projects/{project_id}/plans", response_model=list[PlanResponse])
@@ -275,9 +299,142 @@ async def get_plan(request: Request, plan_id: str) -> dict[str, Any]:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Plan not found"
         )
+    return await _derived(queue, plan)
+
+
+def _plan_fingerprint(plan: dict[str, Any], tasks: list[dict[str, Any]]) -> str:
+    """The facts a wait compares between two calls on one plan.
+
+    Every leaf's status, attempt and PR are in it, because a plan reads
+    ``active`` from the first dispatch to the last merge: keyed on the plan
+    status alone a wait would time out through every leaf transition.
+    """
+    return waiting.fingerprint(
+        [
+            plan.get("status"),
+            plan.get("error"),
+            plan.get("plan_attempts"),
+            plan.get("integration_pr_url"),
+            plan.get("integration_merged_at"),
+            [
+                [t.get("id"), t.get("status"), t.get("attempt"), t.get("pr_url")]
+                for t in tasks
+            ],
+        ]
+    )
+
+
+_PlanSnapshot = tuple[dict[str, Any], list[dict[str, Any]]]
+
+
+async def _plan_snapshot(queue: Any, plan_id: str) -> _PlanSnapshot:
+    """One read of a plan and its leaves, derived state attached.
+
+    The task rows are loaded whenever the plan has a graph, exactly as
+    ``get_plan`` loads them, so the wait and the GET derive from one shape.
+    """
+    plan = await queue.get_plan(plan_id)
+    if plan is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Plan not found"
+        )
     tasks = await queue.get_tasks_for_plan(plan_id) if plan.get("opus_plan") else []
     _attach_stall_state(plan, tasks)
-    return cast(dict[str, Any], plan)
+    return plan, tasks
+
+
+@router.get("/plans/{plan_id}/wait")
+async def wait_plan(
+    request: Request,
+    plan_id: str,
+    timeout: float = Query(
+        default=waiting.WAIT_TIMEOUT_CAP_SECONDS,
+        description=(
+            "Seconds to block at most; capped server-side so the answer always "
+            "comes from Praxis, never from an HTTP client giving up."
+        ),
+    ),
+    since: str | None = Query(
+        default=None,
+        description=(
+            "The PLAN status the caller last saw. Returns at once when the "
+            "current status differs. Coarse: a plan reads `active` from the "
+            "first dispatch to the last merge, so prefer `fingerprint`."
+        ),
+    ),
+    fingerprint: str | None = Query(
+        default=None,
+        description=(
+            "The `fingerprint` a previous answer carried; it covers every "
+            "leaf's status, so a leaf transition between two calls returns "
+            "at once."
+        ),
+    ),
+) -> dict[str, Any]:
+    """Block until the plan or any of its leaves moves, rests, or the timeout.
+
+    Returns the plan row with the derived state (``status``, ``terminal``,
+    ``waiting_on``, the stall projections), a ``tasks`` list of
+    ``{task_id, title, status, attempt, pr_url}``, plus ``previous``,
+    ``changed``, ``timed_out``, ``timeout_seconds`` and ``waited_seconds``.
+    A plan waiting on a HUMAN (``waiting_on == "human"``: a merge gate, a
+    clarification, a stall behind a terminal failure) or in a terminal state
+    returns at once with ``changed: false``.
+    """
+    if since is not None and since not in CANONICAL_PLAN_STATUSES:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=(
+                f"since must be a plan status, one of "
+                f"{sorted(CANONICAL_PLAN_STATUSES)}; got {since!r}"
+            ),
+        )
+    queue = request.app.state.task_queue
+    if await queue.get_plan(plan_id) is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Plan not found"
+        )
+    effective = waiting.clamp_timeout(timeout)
+
+    async def read() -> _PlanSnapshot:
+        return await _plan_snapshot(queue, plan_id)
+
+    def changed(first: _PlanSnapshot, current: _PlanSnapshot) -> bool:
+        current_fp = _plan_fingerprint(*current)
+        if since is not None or fingerprint is not None:
+            return (since is not None and current[0].get("status") != since) or (
+                fingerprint is not None and current_fp != fingerprint
+            )
+        return current_fp != _plan_fingerprint(*first)
+
+    outcome = await waiting.wait_for_change(
+        read,
+        changed=changed,
+        resting=lambda snap: waiting.plan_is_resting(str(snap[0]["waiting_on"])),
+        event_bus=request.app.state.event_bus,
+        timeout=effective,
+    )
+    plan, tasks = outcome.snapshot
+    return {
+        **plan,
+        "plan_id": plan_id,
+        "tasks": [
+            {
+                "task_id": t.get("id"),
+                "title": t.get("title"),
+                "status": t.get("status"),
+                "attempt": t.get("attempt"),
+                "pr_url": t.get("pr_url"),
+            }
+            for t in tasks
+        ],
+        "fingerprint": _plan_fingerprint(plan, tasks),
+        "previous": since if since is not None else str(outcome.first[0]["status"]),
+        "changed": outcome.changed,
+        "timed_out": outcome.timed_out,
+        "timeout_seconds": effective,
+        "waited_seconds": round(outcome.waited_seconds, 3),
+    }
 
 
 @router.post("/plans/{plan_id}/approve", response_model=PlanResponse)
@@ -326,7 +483,7 @@ async def approve_plan(request: Request, plan_id: str) -> dict[str, Any]:
     updated = await queue.get_plan(plan_id)
     if updated is None:
         raise HTTPException(status_code=500, detail="Plan approval failed")
-    return cast(dict[str, Any], updated)
+    return await _derived(queue, updated)
 
 
 @router.post("/plans/{plan_id}/reject", response_model=PlanResponse)
@@ -355,7 +512,7 @@ async def reject_plan(request: Request, plan_id: str) -> dict[str, Any]:
     updated = await queue.get_plan(plan_id)
     if updated is None:
         raise HTTPException(status_code=500, detail="Plan rejection failed")
-    return cast(dict[str, Any], updated)
+    return await _derived(queue, updated)
 
 
 class PromoteRequest(BaseModel):
@@ -441,7 +598,7 @@ async def promote_plan(request: Request, body: PromoteRequest) -> dict[str, Any]
     plan = await queue.get_plan(plan_id)
     if plan is None:
         raise HTTPException(status_code=500, detail="promotion failed")
-    return cast(dict[str, Any], plan)
+    return await _derived(queue, plan)
 
 
 @router.post("/plans/{plan_id}/approve-merges")
