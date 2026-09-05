@@ -1366,8 +1366,8 @@
         '<span class="health-attention"' + attentionTitle + '>' + esc(attentionLabel) + '</span>' : "";
       return '<div class="health-bar">' +
         '<div class="health-item"><span class="health-dot ' + esc(opusStatus) + '"></span><span>Opus ' + esc(opusStatus.replace("_", " ")) + '</span></div>' +
-        '<div class="health-item"><span' + agentTitle + '>Agents: ' + esc(agentText) + '</span></div>' +
-        '<div class="health-item"><span>Queue: ' + esc(queueText) + '</span></div>' +
+        '<div class="health-item"><span class="health-agents"' + agentTitle + '>Agents: ' + esc(agentText) + '</span></div>' +
+        '<div class="health-item"><span class="health-queue">Queue: ' + esc(queueText) + '</span></div>' +
         '<span class="health-spacer"></span>' + attentionBadge +
       '</div>';
     }
@@ -2424,6 +2424,21 @@
           _opusDot.className = "health-dot " + _s;
           const _opusTxt = _opusDot.nextElementSibling;
           if (_opusTxt) _opusTxt.textContent = "Opus " + _s.replace("_", " ");
+        }
+        // Same in-place refresh for the two counts beside the pill. The strip
+        // is rendered with the dashboard, BEFORE the first poll answers, and
+        // read "Agents: ?" next to a sidebar that said 3 (seen twice on
+        // 2026-09-05). Measured values only; "?" when nothing was measured.
+        const _agentsItem = document.querySelector(".health-bar .health-agents");
+        if (_agentsItem) {
+          const _measured = measuredAgentCount == null ? "?" : String(measuredAgentCount);
+          _agentsItem.textContent = "Agents: " + _measured;
+          _agentsItem.title = measuredAgentCount == null
+            ? "not measured yet, or the agent manager could not be reached" : "";
+        }
+        const _queueItem = document.querySelector(".health-bar .health-queue");
+        if (_queueItem) {
+          _queueItem.textContent = "Queue: " + (measuredQueueCount == null ? "?" : String(measuredQueueCount));
         }
         setConnection("agent", status.agent_model, status.opus_state.status);
         setConnection("subagent", status.subagent_model, status.subagent_model.connected ? "connected" : "disconnected", status.lm_studio_url);
