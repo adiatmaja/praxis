@@ -444,6 +444,7 @@ async def test_a_failing_digest_lookup_never_stalls_the_loop(
 
     # Must complete without raising, even though the digest lookup blew up.
     await orch.run_once()
+    await orch.drain_background()
 
 
 def _proposal(hours_old: float = 1.0, **overrides) -> dict:

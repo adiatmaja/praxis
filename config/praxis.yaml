@@ -29,6 +29,17 @@ worker_timeout_minutes: 60
 # reference box; raise it on a larger one, lower it on a laptop.
 max_agent_concurrency: 3
 
+# How many brain stages may be in flight at once, across every plan and project
+# on this install: a plan's decomposition and a task's review each take one
+# slot for as long as their brain call runs, and a stage that finds no free
+# slot waits for one (nothing is charged; `praxis status` lists it as waiting).
+# Until 2026-09-05 the loop ran these one at a time inside its pass: three
+# plans submitted together decomposed back to back at about 50 s each, and the
+# third of three concurrent reviews waited 3m04s in `reviewing`. Size this to
+# what the planner's provider tolerates in parallel; 1 restores the old
+# ordering (the pass itself no longer blocks on a stage either way).
+max_brain_concurrency: 3
+
 # How often the approvals digest event may fire, in hours. Parked work is
 # surfaced on poll_task, poll_plan, `praxis pending`, and the dashboard badge
 # continuously; this only rate-limits the SSE event.

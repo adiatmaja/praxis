@@ -140,6 +140,7 @@ async def test_a_plan_waiting_on_a_human_answer_is_never_written_failed(
     orch.handle_clarification = AsyncMock()  # type: ignore[method-assign]
 
     await orch.process_plan_once(plan_id, project)
+    await orch.drain_background()
 
     plan = await task_queue.get_plan(plan_id)
     assert plan is not None
@@ -167,6 +168,7 @@ async def test_the_stall_event_names_the_task_waiting_on_a_human(
     orch.handle_clarification = AsyncMock()  # type: ignore[method-assign]
 
     await orch.process_plan_once(plan_id, project)
+    await orch.drain_background()
 
     published = _drain(events)
     stalled = [e for e in published if e["type"] == "plan_stalled"]
@@ -194,6 +196,7 @@ async def test_an_answered_question_is_not_reported_as_waiting_on_a_human(
     orch.handle_clarification = AsyncMock()  # type: ignore[method-assign]
 
     await orch.process_plan_once(plan_id, project)
+    await orch.drain_background()
 
     published = _drain(events)
     assert [e for e in published if e["type"] == "plan_stalled"] == [], published

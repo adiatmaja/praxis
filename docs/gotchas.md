@@ -4478,11 +4478,12 @@ the plan's own last step and the plan wait rests on it. `ContextSync._run_revise
 bounded (`DEFAULT_REVISE_TIMEOUT`, 600 s; measured 4m33s on a 20-commit clone) and kills
 the CLI on expiry.
 
-Still serialized, and recorded rather than changed: decomposition (three ran back to
-back, about 50 s each, so plan A's first leaf waited 1m44s to dispatch behind B's and C's
-brain calls) and review (three concurrent leaves reviewed one at a time; the third waited
-3m04s in `reviewing`). Those are the pass's own work, not follow-ups of a finished plan,
-and making them concurrent is a different change with a different risk.
+Still serialized at the time, and recorded rather than changed: decomposition (three ran
+back to back, about 50 s each, so plan A's first leaf waited 1m44s to dispatch behind B's
+and C's brain calls) and review (three concurrent leaves reviewed one at a time; the third
+waited 3m04s in `reviewing`). Those are the pass's own work, not follow-ups of a finished
+plan, and making them concurrent was a different change with a different risk. It was made
+the same day; see "The pass awaited every brain call inline, so stages are jobs now".
 
 
 ## A plan's false premise is invisible to a review graded against the leaf
@@ -4534,3 +4535,88 @@ stamp unparsed.
 The stall itself was self-inflicted (4,400 tests on the same box that runs Docker
 Desktop) and is exactly the adverse infrastructure the session was after: a busy host, a
 brief network hiccup, or a proxy restart will do the same in production.
+
+
+## The pass awaited every brain call inline, so stages are jobs now
+
+Round 13 (2026-09-05). `run_once` is one sequential pass over the runnable plans, and
+until this change `process_plan_once` AWAITED the two brain-call stages inside it: a
+plan's decomposition (`decompose_pending_execute_plan`, or `plan_and_activate` for a
+spec) and every REVIEWING task's `review_task`. Read back out of the container log for
+probe 7: three plans submitted at 05:00:40, 05:00:53 and 05:01:07 decomposed one after
+another at 73 s, 51 s and 41 s (the whole run also sat 5m24s behind the previous plan's
+completion follow-ups, fixed the same day), and plan A's first leaf dispatched at
+05:09:01, 1m44s after A activated, because B's and C's decompositions ran in between.
+Their three reviews waited 1 s, 74 s and 112 s in `reviewing` for the review ahead of
+them. On the 19-leaf plan (`64e5c41a`) wave 1 spawned at 05:49:22 and its three workers
+were done by 05:50:12; the three reviews then ran serially from 05:50:24 to 05:53:16 and
+wave 2 spawned at 05:53:29, so dispatch of independent, already-dispatchable leaves
+waited 4m07s for reviews it had nothing to do with. Review waits across the first two
+waves were 26, 85, 148, 184, 238, 288 and 410 s.
+
+Both stages are now STAGE JOBS. `Orchestrator._start_stage(key, stage, plan_id,
+task_id, factory)` creates a tracked `asyncio.Task` that takes one slot of an
+`asyncio.Semaphore(max_brain_concurrency)` and then runs the coroutine the factory
+builds; the pass starts it and moves on. The setting is `max_brain_concurrency` (YAML
+and env, default 3, floored at 1, passed from `main.py`), the brain-side twin of
+`max_agent_concurrency`. The things that were load-bearing under the sequential pass are
+kept by three rules, each with a test in `tests/test_pass_serves_stages_concurrently.py`
+that goes red when the interleaving is wrong rather than green because things happened
+to run one after another:
+
+- **The key dedupes.** A decomposition leaves its plan PENDING with no graph and a review
+  leaves its task REVIEWING for the whole call, which is exactly the state that made the
+  pass start it, so the next pass sees the same row. Keyed `plan:<plan_id>` and
+  `review:<task_id>`, a stage in flight is never started again. Without the key a plan
+  would be activated twice (two task rows per leaf, two workers on two copies of the same
+  branch) and a task reviewed twice (a second brain call and a second `task_outcomes` row
+  for one attempt), and `plan_attempts` would stop being the only decomposition bound.
+  The factory, not a coroutine, is what makes a deduplicated call leave nothing
+  un-awaited.
+- **REVIEWING is already "active" everywhere that matters.** The single-branch hold
+  (`get_active_tasks_on_branch`) and the terminal decision in `process_plan_once` both
+  read REVIEWING as a task still holding its branch, so a review in flight holds a second
+  worker off the shared branch across plans and never lets its plan complete early.
+  Pinned under an actual interleaving: plan A's review blocked in the background while
+  plan B's dispatch runs on the same shared branch, and a plan whose only task is under a
+  blocked review staying ACTIVE until the verdict lands.
+- **One merge into a repository at a time.** Two passing reviews of one plan can now
+  reach `backend.merge` together, and the local backend merges in a throwaway clone and
+  pushes the base back, so the second push is non-fast-forward and its task is left
+  REVIEWING with a `pass` outcome row already written. `ReviewMixin._merge_under_repo_lock`
+  holds one `asyncio.Lock` per `repo_url` around the ONLY `await backend.merge(` in the
+  mixin (a source test counts it), and `_land_merged_pr` is the one landing seat the
+  auto-merge arm and `approve_task_merge` both call, running the merged row and the
+  checkbox push inside the lock. The lock is not re-entrant; the first draft of the
+  landing helper took it and then called the locked helper, and would have deadlocked
+  the first auto-merge. The integration-PR merge takes the same lock.
+
+A stage's failure is its own: logged with the key, never propagated to the loop, and a
+`ProviderAuthError` is republished as `provider_auth_required` because `run_loop`'s
+handler for it used to see the exception only when the stage raised through the pass.
+`shutdown` cancels stages along with the follow-ups, and `LLMRouter._execute_one` now
+KILLS its subprocess on cancellation rather than leaving a `claude -p` running to
+completion for an answer nobody reads. A cancelled stage leaves its row exactly as it
+found it, so the next start decides it again. `handle_clarification` is still awaited
+inline (rare, and a different contract); recorded, not changed.
+
+What tests have to do differently: a test that drives `run_once` or `process_plan_once`
+and then asserts on the result of a decomposition or a review must `await
+orch.drain_background()` first. Twenty-seven call sites across seven files gained that
+line. Eight of them failed without it; the rest passed because a fake that raises or
+returns at once finishes at the pass's next `await`, which is scheduling luck and not a
+contract. `drain_background` loops until nothing is tracked, since a review that completes
+a plan spawns that plan's follow-ups.
+
+Observing it: `GET /api/status` carries `brain_stages` (`cap`, and `in_flight` rows with
+`stage`, `plan_id`, `task_id`, `state` of `waiting` or `running`, and
+`running_for_seconds`); `praxis status` prints a "Brain stages: N in flight (cap M)" line
+with one row per stage; the orchestrator log says "Stage review started for plan X task Y
+(2 of 3 brain slots busy, waited 0.0s for a slot)" and "Stage review for review:Y
+finished in 64.2s".
+
+Thirteen behaviour mutations were run and all are red, two only after the guards were
+fixed: the first floor mutation (`int(x) or 1`) was equivalent to the code for zero, and
+the first shutdown guard asserted `background_count == 0` after `_stage_jobs.clear()`, so
+a shutdown that merely forgot the stages passed it; it now asserts the blocked stage's
+`finally` ran, which only a real cancellation produces.

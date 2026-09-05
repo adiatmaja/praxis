@@ -958,6 +958,7 @@ class TestOrchestrationLoop:
         )
 
         await orch.run_once()
+        await orch.drain_background()
 
         plan = await task_queue.get_plan(plan_id)
         tasks = await task_queue.get_tasks_for_plan(plan_id)
@@ -994,6 +995,7 @@ class TestOrchestrationLoop:
         )
 
         await orch.run_once()
+        await orch.drain_background()
 
         mock_opus.plan_spec.assert_not_called()
         plan = await task_queue.get_plan(plan_id)
@@ -1031,6 +1033,7 @@ class TestOrchestrationLoop:
         )
 
         await orch.run_once()
+        await orch.drain_background()
 
         mock_opus.plan_spec.assert_not_called()
         plan = await task_queue.get_plan(plan_id)
@@ -1063,6 +1066,7 @@ class TestOrchestrationLoop:
         )
 
         await orch.run_once()
+        await orch.drain_background()
         # The proposal is a background follow-up of a COMPLETED plan since
         # 2026-09-05 (probe 7): the loop no longer waits for the brain call.
         await orch.drain_background()
@@ -2031,6 +2035,7 @@ class TestProcessPlanOnceEvents:
         project = await db.fetch_one("SELECT * FROM projects WHERE id = 'p2'")
         assert project is not None
         await orch.process_plan_once(plan_id, dict(project))
+        await orch.drain_background()
 
         assert any(e["type"] == "plan_stalled" for e in published), published
         stall_event = next(e for e in published if e["type"] == "plan_stalled")
@@ -2086,6 +2091,7 @@ class TestProcessPlanOnceEvents:
         project = await db.fetch_one("SELECT * FROM projects WHERE id = 'p3'")
         assert project is not None
         await orch.process_plan_once(plan_id, dict(project))
+        await orch.drain_background()
 
         assert any(e["type"] == "plan_completed_with_failures" for e in published), (
             published
@@ -2157,6 +2163,7 @@ class TestProcessPlanOnceEvents:
         project = await db.fetch_one("SELECT * FROM projects WHERE id = 'p4'")
         assert project is not None
         await orch.process_plan_once(plan_id, dict(project))
+        await orch.drain_background()
 
         # Must NOT emit plan_completed_with_failures while PASSED task awaits merge
         assert not any(
@@ -2224,6 +2231,7 @@ class TestProcessPlanOnceEvents:
         project = await db.fetch_one("SELECT * FROM projects WHERE id = 'p5'")
         assert project is not None
         await orch.process_plan_once(plan_id, dict(project))
+        await orch.drain_background()
 
         row = await db.fetch_one("SELECT status FROM plans WHERE id = ?", (plan_id,))
         assert row is not None
@@ -2296,6 +2304,7 @@ class TestProcessPlanOnceEvents:
         project = await db.fetch_one("SELECT * FROM projects WHERE id = 'p6'")
         assert project is not None
         await orch.process_plan_once(plan_id, dict(project))
+        await orch.drain_background()
 
         row = await db.fetch_one("SELECT status FROM plans WHERE id = ?", (plan_id,))
         assert row is not None

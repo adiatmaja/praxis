@@ -198,6 +198,7 @@ async def test_a_dispatch_pass_picks_the_retried_leaf_up(
     assert project is not None
     for plan in await queue.get_runnable_plans():
         await orchestrator.process_plan_once(str(plan["id"]), project)
+        await orchestrator.drain_background()
 
     assert dispatched == [failed_id], (
         f"a dispatch pass over plan {plan_id} did not offer the retried leaf"

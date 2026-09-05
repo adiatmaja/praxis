@@ -1725,6 +1725,33 @@ def status() -> None:
             "agent manager; Docker may be unavailable)"
         )
     _print_open_runs(data)
+    _print_brain_stages(data)
+
+
+def _print_brain_stages(data: dict[str, Any]) -> None:
+    """Print the brain's in-flight stages (decompositions, reviews) and the cap.
+
+    Absent on an older server, so a missing key prints nothing rather than a
+    measurement nobody took. Ids are server text: escaped, never bare.
+    """
+    stages = data.get("brain_stages")
+    if not isinstance(stages, dict):
+        return
+    in_flight = stages.get("in_flight") or []
+    cap = stages.get("cap")
+    console.print()
+    console.print(f"Brain stages: {len(in_flight)} in flight (cap {cap})")
+    for stage in in_flight:
+        what = f"{stage.get('stage')} plan {stage.get('plan_id')}"
+        if stage.get("task_id"):
+            what += f" task {stage.get('task_id')}"
+        clock = format_duration(stage.get("running_for_seconds"))
+        verb = (
+            f"running for {clock}"
+            if stage.get("state") == "running"
+            else f"waiting for a slot, {clock}"
+        )
+        console.print(f"  {escape(what)}: {verb}", soft_wrap=True)
 
 
 def _print_open_runs(data: dict[str, Any]) -> None:

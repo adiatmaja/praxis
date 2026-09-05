@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import shutil
 from collections.abc import Awaitable, Callable
 
@@ -341,7 +342,14 @@ class LLMRouter:
             cwd=cwd,
         )
         stdin_input = None if prompt_in_argv else prompt.encode()
-        stdout, stderr = await proc.communicate(input=stdin_input)
+        try:
+            stdout, stderr = await proc.communicate(input=stdin_input)
+        except asyncio.CancelledError:
+            # A cancelled brain stage (shutdown, a reload) must not leave the
+            # CLI running to completion for an answer nobody will read.
+            with contextlib.suppress(ProcessLookupError):
+                proc.kill()
+            raise
         err = stderr.decode()
         raw_out = stdout.decode()
         # Auth check first: codex exits 0 while printing a 401 to stderr, so a

@@ -2185,25 +2185,10 @@ class ReviewMixin:
             base_branch = ref.base or (plan.get("plan_branch_name") if plan else None)
             if auto_merge_eligible(project, base_branch):
                 await _record("pass", None)
-                await backend.merge(ref)
-                await self._tq.mark_merged(task_id)
-                await self._sync_plan_checkbox(task)
-                self._bus.publish(
-                    {
-                        "type": "task_completed",
-                        "task_id": task_id,
-                        "pr_url": task["pr_url"],
-                    }
-                )
-                # The third merge site, and it lands exactly what the other two
-                # land: in single-branch mode N tasks share ONE pull request, so
-                # merging it puts every sibling's work on the base branch too.
-                # Without this they stayed PASSED on an already-merged PR, and
-                # unlike the operator-driven path nobody typed a verb here, so
-                # there was no one in the loop to notice. LAST, and never before
-                # the task the merge was FOR is recorded, matching
-                # ``approve_task_merge``.
-                await self._sweep_merged_siblings(task)
+                # Through the ONE landing seat, under the repository's merge
+                # lock: reviews run concurrently now, so two passing leaves of
+                # one plan can reach this line together.
+                await self._land_merged_pr(task, project, backend, ref)
                 return
             # Default: park the reviewed PR for explicit human approval.
             await _record("pass", None)
@@ -2883,9 +2868,80 @@ class ReviewMixin:
             msg = f"Task {task_id} has an unparseable pr_url {task['pr_url']!r}"
             raise ValueError(msg) from exc
         # Human approval: no auto_merge gate or protected-branch check applies here.
-        await backend.merge(ref)
-        await self._tq.mark_merged(task_id)
-        await self._sync_plan_checkbox(task)
+        await self._land_merged_pr(task, project, backend, ref)
+
+    def _merge_lock(self, repo_url: str) -> asyncio.Lock:
+        """The one lock every merge into ``repo_url`` takes.
+
+        Reviews run as concurrent stages since 2026-09-05, so two passing
+        leaves of one plan can reach their merge together, and an operator's
+        ``praxis merge`` can land beside either. The local backend merges in a
+        throwaway clone and pushes the base back, so two at once is one
+        non-fast-forward push and a task left REVIEWING with a pass already
+        recorded; GitHub serializes server-side but the checkbox sync that
+        follows a merge pushes to the same repository too. Per repository, not
+        global: two projects never share a remote's refs.
+
+        Lazily created on the instance rather than in ``Orchestrator.__init__``
+        so a mixin-only double still gets one.
+        """
+        locks: dict[str, asyncio.Lock] = self.__dict__.setdefault("_merge_locks", {})
+        lock = locks.get(repo_url)
+        if lock is None:
+            lock = locks[repo_url] = asyncio.Lock()
+        return lock
+
+    async def _merge_under_repo_lock(
+        self,
+        backend: GitBackend,
+        ref: PullRequestRef,
+        repo_url: str,
+        then: Callable[[], Coroutine[Any, Any, None]] | None = None,
+    ) -> None:
+        """The ONLY ``backend.merge`` call in this mixin; every landing routes here.
+
+        ``then`` runs INSIDE the lock, for the writes that must not interleave
+        with the next merge into the same repository (the merged row, and the
+        checkbox push, which pushes to that repository too). The lock is not
+        re-entrant, so a caller never holds it around this call.
+        """
+        async with self._merge_lock(repo_url):
+            await backend.merge(ref)
+            if then is not None:
+                await then()
+
+    async def _land_merged_pr(
+        self,
+        task: dict[str, Any],
+        project: dict[str, Any],
+        backend: GitBackend,
+        ref: PullRequestRef,
+    ) -> None:
+        """Merge a task's pull request and record everything that merge means.
+
+        Shared by the review's auto-merge arm and the operator's
+        ``approve_task_merge``, so the two cannot drift and both sit under the
+        repository's merge lock. The lock covers the merge, the row and the
+        checkbox push (which pushes to the same repository); the event and the
+        sibling sweep are DB and bus work and run outside it. The sweep is LAST
+        and never before the task the merge was FOR is recorded: one merge can
+        land several tasks, but the one asked for must not depend on the others.
+
+        Args:
+            task: The task row whose pull request is being landed.
+            project: Its project, for ``repo_url``.
+            backend: The git backend for that repository.
+            ref: The pull request to merge.
+        """
+        task_id = str(task["id"])
+
+        async def _record_landed() -> None:
+            await self._tq.mark_merged(task_id)
+            await self._sync_plan_checkbox(task)
+
+        await self._merge_under_repo_lock(
+            backend, ref, project["repo_url"], then=_record_landed
+        )
         self._bus.publish(
             {
                 "type": "task_completed",
@@ -2893,9 +2949,6 @@ class ReviewMixin:
                 "pr_url": task["pr_url"],
             }
         )
-        # LAST, and never before the task the operator actually named is
-        # recorded: one merge can land several tasks, but the one that was
-        # asked for must not depend on any of the others.
         await self._sweep_merged_siblings(task)
 
     async def _sweep_merged_siblings(self, merged_task: dict[str, Any]) -> None:
@@ -3746,7 +3799,7 @@ class ReviewMixin:
         except ValueError as exc:
             msg = f"Plan {plan_id} has an unparseable integration PR url {pr_url!r}"
             raise ValueError(msg) from exc
-        await backend.merge(ref)
+        await self._merge_under_repo_lock(backend, ref, project["repo_url"])
         await self._tq.mark_plan_integrated(plan_id)
         self._bus.publish(
             {

@@ -180,6 +180,7 @@ async def test_submitted_spec_text_reaches_the_planner_prompt(
     )
 
     await orchestrator.run_once()
+    await orchestrator.drain_background()
 
     assert router.prompts, "the planner was never called"
     assert SPEC_TEXT in router.prompts[0], (

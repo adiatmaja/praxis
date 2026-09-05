@@ -266,5 +266,6 @@ async def test_loop_calls_handle_clarification_for_asked_tasks(db: Database) -> 
     orch.dispatch_pending_tasks = AsyncMock()  # type: ignore[method-assign]
 
     await orch.process_plan_once(plan_id, project)
+    await orch.drain_background()
 
     assert task_id in answered

@@ -516,6 +516,11 @@ story. New gotchas go in `docs/gotchas.md` first. (No count is quoted on purpose
   an 18-leaf wave out to exactly three workers and refused the fourth ("Concurrent agent
   cap reached (3 of 3 running)", re-dispatched when a slot opens, nothing charged).
   `main.py` passes it; `tests/test_max_agent_concurrency_is_a_setting.py` pins the kwarg.
+  **`max_brain_concurrency` (YAML, env; default 3) is its twin for BRAIN stages**
+  (2026-09-05): how many decompositions and reviews may run at once; a stage that finds
+  no slot waits (visible as `waiting` on `/api/status` and `praxis status`), and `1`
+  restores the old ordering without the pass ever blocking on a stage again. See the
+  stage-jobs entry under "The loop".
 - **Worker preset env vars are BARE compose pass-throughs** (`- DEFAULT_WORKER_HARNESS`),
   never `${VAR:-default}`: any expansion form sets the var even when unset and silently
   suppresses the mounted YAML.
@@ -653,9 +658,36 @@ story. New gotchas go in `docs/gotchas.md` first. (No count is quoted on purpose
   cancels; tests `await orch.drain_background()` before asserting on a proposal or a
   `context_draft_ready` event). The integration PR stays INLINE: it is the plan's own
   last step and the wait rests on it. `ContextSync._run_revise` is bounded by
-  `DEFAULT_REVISE_TIMEOUT` (600 s) and kills the CLI. Decomposition and review are STILL
-  serialized in the pass (three decompositions ran back to back, ~50 s each; the third
-  of three concurrent reviews waited 3 min): known, recorded, not changed.
+  `DEFAULT_REVISE_TIMEOUT` (600 s) and kills the CLI.
+- **DECOMPOSITION AND REVIEW ARE STAGE JOBS, NOT AWAITED IN THE PASS** (2026-09-05,
+  round 13). Measured before: three plans submitted together decomposed back to back at
+  73/51/41 s and plan A's first leaf dispatched 1m44s after A activated; on the 19-leaf
+  plan the three reviews of wave 1 ran serially and wave 2 spawned only after the last
+  of them, 4m07s after wave 1. `Orchestrator._start_stage` now starts each planning seat
+  and each review as a tracked `asyncio.Task` keyed `plan:<id>` / `review:<id>`, under
+  one semaphore sized by **`max_brain_concurrency`** (YAML/env, default 3, passed from
+  `main.py`, floored at 1; mirrors `max_agent_concurrency`). Three rules carry the old
+  invariants: the KEY dedupes (the plan reads PENDING with no graph and the task reads
+  REVIEWING for the whole call, exactly what the next pass sees, so without it a plan is
+  activated twice and a task reviewed twice, and `plan_attempts` would no longer be the
+  only bound); the single-branch hold and the terminal decision already read REVIEWING as
+  active, so a review in flight holds the shared branch and never completes its plan
+  early; and EVERY merge into a repository goes through
+  `ReviewMixin._merge_under_repo_lock`, one `asyncio.Lock` per `repo_url`, because two
+  passing reviews can now reach `backend.merge` together and the local backend's
+  clone-merge-push would lose one (`_land_merged_pr` is the one landing seat for the
+  auto-merge arm and `approve_task_merge`; `tests/test_pass_serves_stages_concurrently.py`
+  pins exactly ONE bare `await backend.merge(` in the mixin). A stage failure is that
+  stage's problem (logged with the key; `ProviderAuthError` republished as
+  `provider_auth_required`, which `run_loop` no longer sees); `shutdown` cancels stages
+  and the router KILLS the cancelled CLI. **Tests that drive a pass and then assert on a
+  decomposition or a review must `await orch.drain_background()` first**: 27 call sites
+  gained one; a test that passes without it is passing on scheduling luck.
+  `GET /api/status` serves `brain_stages` (`cap`, `in_flight` with `waiting`/`running`
+  and elapsed) and `praxis status` prints a "Brain stages" line. `handle_clarification`
+  is still inline (rare; recorded). Thirteen behaviour mutations red, two of them only
+  after the guards were strengthened (an equivalent floor mutation, and a shutdown guard
+  that checked the count after `clear()` instead of the cancellation itself).
 - **A plan reaches the gate TWICE**: each task onto the plan branch, then the plan's own
   integration PR. The URL lives on `plans.integration_pr_url`; `integration_merged_at`
   takes it back out of `pending`.

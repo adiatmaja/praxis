@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import functools
 import logging
 import shutil
 import stat
+import time
 import uuid
-from collections.abc import Coroutine
+from collections.abc import Callable, Coroutine
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
@@ -61,6 +64,11 @@ _DEFAULT_LOOP_INTERVAL_SECONDS = 5.0
 # question the settings layer already answers.
 _DEFAULT_CALLBACK_GRACE_SECONDS = 5.0
 _DEFAULT_WORKER_TIMEOUT_MINUTES = 60.0
+
+# Matches ``Settings.max_brain_concurrency`` and the shipped YAML, for the same
+# reason as the two above. How many brain STAGES (a plan's decomposition, a
+# task's review) may run at once; see ``Orchestrator._start_stage``.
+_DEFAULT_MAX_BRAIN_CONCURRENCY = 3
 
 # Floor applied to a configured interval of 0 or less. A non-positive value
 # is refused rather than honored: passed straight to asyncio.wait_for it
@@ -129,6 +137,32 @@ _CLONE_TIMEOUT_SECONDS = 300.0
 # in perfectly valid JSON and drops one key is an ordinary slip.
 _REQUIRED_PLAN_KEYS = ("plan_slug", "tasks")
 _REQUIRED_TASK_KEYS = ("title", "slug", "description")
+
+
+@dataclass
+class _StageJob:
+    """One brain stage the pass has started and not yet seen finish.
+
+    Decomposition and review used to be awaited INLINE in the sequential pass,
+    so every plan on the install waited behind whichever brain call happened to
+    be running (measured on probe 7, 2026-09-05: three plans decomposed back to
+    back at 73, 51 and 41 s; their reviews waited 1, 74 and 112 s in ``reviewing``
+    for the review ahead). A stage is now a tracked task the pass starts and moves on
+    from. The KEY is what keeps the old invariants: ``plan:<id>`` and
+    ``review:<id>`` are never started twice while in flight, so a plan cannot
+    be activated twice and a task cannot be reviewed twice, and
+    ``plan_attempts`` stays the only decomposition bound.
+    """
+
+    stage: str
+    plan_id: str
+    task_id: str | None
+    started_monotonic: float = field(default_factory=time.monotonic)
+    state: str = "waiting"
+    task: asyncio.Task[None] | None = None
+
+    def running_for_seconds(self) -> float:
+        return max(0.0, time.monotonic() - self.started_monotonic)
 
 
 def _planner_workspace_base() -> Path:
@@ -485,6 +519,7 @@ class Orchestrator(DispatchMixin, ReviewMixin, ReconcileMixin, ImprovementMixin)
         spec_reader: Any = None,
         callback_grace: float = _DEFAULT_CALLBACK_GRACE_SECONDS,
         worker_timeout_minutes: float = _DEFAULT_WORKER_TIMEOUT_MINUTES,
+        max_brain_concurrency: int = _DEFAULT_MAX_BRAIN_CONCURRENCY,
     ) -> None:
         self._tq = task_queue
         self._agents = agent_manager
@@ -517,6 +552,15 @@ class Orchestrator(DispatchMixin, ReviewMixin, ReconcileMixin, ImprovementMixin)
         #: undecomposed for 5m41s behind one completion. Tracked so
         #: ``shutdown`` cancels them and ``drain_background`` awaits them.
         self._background: set[asyncio.Task[None]] = set()
+        #: Brain stages in flight, keyed ``plan:<plan_id>`` / ``review:<task_id>``.
+        #: The key is the dedupe: a pass that finds one in flight starts nothing.
+        #: See ``_StageJob`` and ``_start_stage``.
+        self._stage_jobs: dict[str, _StageJob] = {}
+        # Floored at one, never honoured at zero or below: zero slots is a
+        # loop that decomposes and reviews nothing while every row reads as
+        # a healthy plan mid-decomposition. Same rule as ``loop_interval``.
+        self._max_brain_concurrency: int = max(1, int(max_brain_concurrency))
+        self._brain_slots = asyncio.Semaphore(self._max_brain_concurrency)
         # Seconds to wait for an in-flight agent-done callback before a
         # monitor concludes a container exited without reporting completion.
         # Taken from the CALLER since 2026-08-29: `callback_grace` had been a
@@ -1245,12 +1289,23 @@ class Orchestrator(DispatchMixin, ReviewMixin, ReconcileMixin, ImprovementMixin)
         plan = await self._tq.get_plan(plan_id)
         if plan is None:
             return
+        # Both planning seats are STAGES: started here, awaited by nobody in
+        # this pass, deduplicated on ``plan:<id>`` so the next pass (which sees
+        # the same PENDING row with no graph) starts nothing. The row itself
+        # says what happened afterwards: ACTIVE, FAILED with ``error``, or
+        # PENDING with an attempt charged, exactly as before.
         if (
             plan["status"] == PlanStatus.PENDING
             and plan["source"] == "execute-plan"
             and plan["opus_plan"] is None
         ):
-            await self.decompose_pending_execute_plan(plan_id, project)
+            self._start_stage(
+                f"plan:{plan_id}",
+                "decompose",
+                plan_id,
+                None,
+                lambda: self.decompose_pending_execute_plan(plan_id, project),
+            )
             return
         if (
             plan["status"] == PlanStatus.PENDING
@@ -1258,11 +1313,16 @@ class Orchestrator(DispatchMixin, ReviewMixin, ReconcileMixin, ImprovementMixin)
             and plan["opus_plan"] is not None
         ):
             return
-        if plan["status"] == PlanStatus.PENDING:
-            await self.plan_and_activate(plan_id, project)
-            return
-        if plan["status"] == PlanStatus.ACTIVE and plan["opus_plan"] is None:
-            await self.plan_and_activate(plan_id, project)
+        if plan["status"] == PlanStatus.PENDING or (
+            plan["status"] == PlanStatus.ACTIVE and plan["opus_plan"] is None
+        ):
+            self._start_stage(
+                f"plan:{plan_id}",
+                "plan",
+                plan_id,
+                None,
+                lambda: self.plan_and_activate(plan_id, project),
+            )
             return
         if plan["status"] != PlanStatus.ACTIVE:
             return
@@ -1271,7 +1331,18 @@ class Orchestrator(DispatchMixin, ReviewMixin, ReconcileMixin, ImprovementMixin)
         tasks = await self._tq.get_tasks_for_plan(plan_id)
         for task in tasks:
             if task["status"] == TaskStatus.REVIEWING:
-                await self.review_task(task["id"], project)
+                # A review is a STAGE too, keyed on the task: the task reads
+                # REVIEWING for the whole call, which is what the next pass
+                # sees and what the single-branch hold and the terminal
+                # decision below both already treat as active work.
+                task_id = str(task["id"])
+                self._start_stage(
+                    f"review:{task_id}",
+                    "review",
+                    plan_id,
+                    task_id,
+                    functools.partial(self.review_task, task_id, project),
+                )
                 continue
             if (
                 task["status"] == TaskStatus.NEEDS_CLARIFICATION
@@ -1401,30 +1472,169 @@ class Orchestrator(DispatchMixin, ReviewMixin, ReconcileMixin, ImprovementMixin)
         task.add_done_callback(self._background.discard)
 
     @property
+    def max_brain_concurrency(self) -> int:
+        """How many brain stages may run at once (the floored setting)."""
+        return self._max_brain_concurrency
+
+    def _start_stage(
+        self,
+        key: str,
+        stage: str,
+        plan_id: str,
+        task_id: str | None,
+        factory: Callable[[], Coroutine[Any, Any, Any]],
+    ) -> bool:
+        """Start a brain stage as a tracked task, unless one is already in flight.
+
+        The pass calls this instead of awaiting the stage. Three properties are
+        load-bearing and each has a test in
+        ``tests/test_pass_serves_stages_concurrently.py``:
+
+        * ``key`` deduplicates. Decomposition leaves the plan PENDING with no
+          graph and review leaves the task REVIEWING for the whole call, so the
+          next pass sees exactly the state that triggered this one. Without
+          the key a plan would be activated twice (two task rows per leaf, two
+          workers) and a task reviewed twice (a second brain call and a second
+          outcome row for one attempt).
+        * every stage takes one of ``max_brain_concurrency`` slots BEFORE its
+          coroutine is created, so a stage that finds no free slot waits
+          (visible as ``waiting`` on ``/api/status``) and nothing runs outside
+          the bound.
+        * a failure inside a stage is that stage's problem: logged with the
+          key, never propagated to the loop. ``ProviderAuthError`` is
+          re-published as ``provider_auth_required``, which ``run_loop`` used
+          to do when the stage raised through the pass.
+
+        Args:
+            key: The dedupe key, ``plan:<plan_id>`` or ``review:<task_id>``.
+            stage: A label for the log and the status payload.
+            plan_id: The plan the stage belongs to.
+            task_id: The task, for a review; None for a planning stage.
+            factory: Builds the coroutine. A factory rather than a coroutine
+                so a deduplicated call creates nothing to leave un-awaited.
+
+        Returns:
+            True when a stage was started, False when one was already in flight.
+        """
+        if key in self._stage_jobs:
+            return False
+        job = _StageJob(stage=stage, plan_id=plan_id, task_id=task_id)
+
+        async def guarded() -> None:
+            async with self._brain_slots:
+                job.state = "running"
+                busy = sum(1 for j in self._stage_jobs.values() if j.state == "running")
+                logger.info(
+                    "Stage %s started for plan %s%s (%d of %d brain slots busy, "
+                    "waited %.1fs for a slot)",
+                    stage,
+                    plan_id,
+                    f" task {task_id}" if task_id else "",
+                    busy,
+                    self._max_brain_concurrency,
+                    job.running_for_seconds(),
+                )
+                started = time.monotonic()
+                try:
+                    await factory()
+                except asyncio.CancelledError:
+                    logger.info("Stage %s for %s cancelled", stage, key)
+                    raise
+                except ProviderAuthError as exc:
+                    logger.warning(
+                        "Stage %s for %s: provider %s needs login: %s",
+                        stage,
+                        key,
+                        exc.provider,
+                        exc.login_hint,
+                    )
+                    self._bus.publish(
+                        {
+                            "type": "provider_auth_required",
+                            "provider": exc.provider,
+                            "login_hint": exc.login_hint,
+                        }
+                    )
+                except Exception:  # noqa: BLE001 - one stage must not starve the rest
+                    logger.exception(
+                        "Stage %s for %s failed; the row keeps its state and the "
+                        "next pass decides again",
+                        stage,
+                        key,
+                    )
+                finally:
+                    logger.info(
+                        "Stage %s for %s finished in %.1fs",
+                        stage,
+                        key,
+                        time.monotonic() - started,
+                    )
+
+        task = asyncio.create_task(guarded(), name=key)
+        job.task = task
+        self._stage_jobs[key] = job
+
+        def _forget(_done: asyncio.Task[None]) -> None:
+            if self._stage_jobs.get(key) is job:
+                del self._stage_jobs[key]
+
+        task.add_done_callback(_forget)
+        return True
+
+    def brain_stages_snapshot(self) -> dict[str, Any]:
+        """What the brain is doing right now, for ``GET /api/status``."""
+        return {
+            "cap": self._max_brain_concurrency,
+            "in_flight": [
+                {
+                    "stage": job.stage,
+                    "plan_id": job.plan_id,
+                    "task_id": job.task_id,
+                    "state": job.state,
+                    "running_for_seconds": round(job.running_for_seconds(), 1),
+                }
+                for job in self._stage_jobs.values()
+            ],
+        }
+
+    def _tracked_tasks(self) -> list[asyncio.Task[None]]:
+        stage_tasks = [j.task for j in self._stage_jobs.values() if j.task is not None]
+        return [*self._background, *stage_tasks]
+
+    @property
     def background_count(self) -> int:
-        """How many follow-ups are still running."""
-        return len(self._background)
+        """How many follow-ups and brain stages are still running."""
+        return len(self._tracked_tasks())
 
     async def drain_background(self) -> None:
-        """Await every background follow-up (tests, and an orderly stop)."""
-        pending = list(self._background)
-        if pending:
+        """Await every background follow-up and brain stage (tests, orderly stop).
+
+        A stage may START another (a review that completes a plan whose
+        follow-ups then spawn), so this loops until nothing is tracked.
+        """
+        while pending := self._tracked_tasks():
             await asyncio.gather(*pending, return_exceptions=True)
 
     async def shutdown(self) -> None:
-        """Cancel all in-flight log monitors and background follow-ups."""
+        """Cancel all in-flight log monitors, brain stages and follow-ups.
+
+        A cancelled stage leaves its row exactly as it found it (PENDING with
+        no graph, or REVIEWING), so the next start decides it again; the brain
+        call it was making is killed by the router.
+        """
         monitors = list(self._monitors.values())
         for task in monitors:
             task.cancel()
         if monitors:
             await asyncio.gather(*monitors, return_exceptions=True)
         self._monitors.clear()
-        background = list(self._background)
+        background = self._tracked_tasks()
         for task in background:
             task.cancel()
         if background:
             await asyncio.gather(*background, return_exceptions=True)
         self._background.clear()
+        self._stage_jobs.clear()
 
     async def run_once(self) -> None:
         """Run one orchestration pass over all pending and active plans."""

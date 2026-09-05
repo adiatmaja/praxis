@@ -221,6 +221,7 @@ async def test_a_malformed_pending_input_payload_is_bounded_not_retried_forever(
 
     for _pass in range(_PASSES):
         await orchestrator.run_once()
+        await orchestrator.drain_background()
 
     plan = await task_queue.get_plan(plan_id)
     assert plan is not None
@@ -256,6 +257,7 @@ async def test_a_decomposer_that_keeps_raising_is_charged_and_goes_terminal(
 
     for _pass in range(_PASSES):
         await orchestrator.run_once()
+        await orchestrator.drain_background()
 
     plan = await task_queue.get_plan(plan_id)
     assert plan is not None
@@ -283,6 +285,7 @@ async def test_pending_input_that_is_not_json_is_terminal_on_the_first_pass(
     orchestrator = _orchestrator(task_queue, _RecordingBus())
 
     await orchestrator.run_once()
+    await orchestrator.drain_background()
 
     plan = await task_queue.get_plan(plan_id)
     assert plan is not None
@@ -306,6 +309,7 @@ async def test_an_execute_plan_row_with_no_input_says_so(
     orchestrator = _orchestrator(task_queue, _RecordingBus())
 
     await orchestrator.run_once()
+    await orchestrator.drain_background()
 
     plan = await task_queue.get_plan(plan_id)
     assert plan is not None
@@ -346,6 +350,7 @@ async def test_a_dead_session_on_the_planner_seat_is_bounded_and_names_the_login
     # row, and the bound is only worth anything if the two agree.
     for _pass in range(_PASSES):
         await orchestrator.run_once()
+        await orchestrator.drain_background()
 
     plan = await task_queue.get_plan(plan_id)
     assert plan is not None
@@ -377,6 +382,7 @@ async def test_a_dead_session_on_the_execute_plan_seat_is_bounded_too(
 
     for _pass in range(_PASSES):
         await orchestrator.run_once()
+        await orchestrator.drain_background()
 
     plan = await task_queue.get_plan(plan_id)
     assert plan is not None
@@ -407,6 +413,7 @@ async def test_a_gateway_outage_still_waits_and_now_says_so_on_the_row(
 
     for _pass in range(_PASSES):
         await orchestrator.run_once()
+        await orchestrator.drain_background()
 
     plan = await task_queue.get_plan(plan_id)
     assert plan is not None
@@ -445,6 +452,7 @@ async def test_an_empty_graph_from_the_planner_does_not_sit_active_forever(
 
     for _pass in range(3):
         await orchestrator.process_plan_once(plan_id, project)
+        await orchestrator.drain_background()
 
     plan = await task_queue.get_plan(plan_id)
     assert plan is not None
@@ -480,6 +488,7 @@ async def test_an_empty_graph_from_the_decomposer_does_not_sit_active_forever(
 
     for _pass in range(3):
         await orchestrator.run_once()
+        await orchestrator.drain_background()
 
     plan = await task_queue.get_plan(plan_id)
     assert plan is not None
@@ -512,6 +521,7 @@ async def test_a_real_graph_still_activates_on_both_seats(
     orchestrator._opus.plan_spec.return_value = dict(_ONE_LEAF)
 
     await orchestrator.process_plan_once(planner_plan_id, project)
+    await orchestrator.drain_background()
 
     planned = await task_queue.get_plan(planner_plan_id)
     assert planned is not None
@@ -523,6 +533,7 @@ async def test_a_real_graph_still_activates_on_both_seats(
     _stub_decompose(monkeypatch, _ONE_LEAF)
 
     await orchestrator.process_plan_once(execute_plan_id, project)
+    await orchestrator.drain_background()
 
     executed = await task_queue.get_plan(execute_plan_id)
     assert executed is not None

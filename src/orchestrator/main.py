@@ -153,6 +153,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         # Settings field, and a hardcoded 5.0 nothing ever overrode.
         callback_grace=settings.callback_grace,
         worker_timeout_minutes=settings.worker_timeout_minutes,
+        max_brain_concurrency=settings.max_brain_concurrency,
     )
 
     from orchestrator.core.context_sync import ContextSync

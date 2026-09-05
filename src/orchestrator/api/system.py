@@ -610,7 +610,24 @@ async def system_status(request: Request) -> dict[str, Any]:
         "running": running,
         "running_count": len(running),
         "running_known": running_known,
+        # The BRAIN's side of "what is running": decompositions and reviews
+        # in flight as concurrent stages, with the cap they run under. A
+        # person watching a multi-plan submission reads the concurrency here.
+        "brain_stages": _brain_stages(request),
     }
+
+
+def _brain_stages(request: Request) -> dict[str, Any]:
+    """The orchestrator's stage snapshot, or an honest "unknown" shape."""
+    orchestrator = getattr(request.app.state, "orchestrator", None)
+    snapshot = getattr(orchestrator, "brain_stages_snapshot", None)
+    if snapshot is None:
+        return {"cap": None, "in_flight": []}
+    try:
+        return dict(snapshot())
+    except Exception as exc:  # noqa: BLE001 - status must answer regardless
+        logger.warning("Could not read the brain stages for /api/status: %s", exc)
+        return {"cap": None, "in_flight": []}
 
 
 @router.get("/lm-models")

@@ -160,6 +160,14 @@ class Settings(BaseSettings):
     # no attempt was charged. Until then the 3 lived only in AgentManager's
     # constructor default, which no operator could reach.
     max_agent_concurrency: int = 3
+    # How many BRAIN stages (a plan's decomposition, a task's review) may be in
+    # flight at once across the install. Until 2026-09-05 the orchestration pass
+    # awaited each of them inline, one after another: three plans submitted
+    # together decomposed back to back at ~50 s each, and the third of three
+    # concurrent reviews waited 3m04s in `reviewing`. Mirrors
+    # max_agent_concurrency; 1 restores that ordering (the pass itself still
+    # never blocks on a stage).
+    max_brain_concurrency: int = 3
     # URL agent containers POST their completion callback to. Reachable from
     # inside a container, so it uses host.docker.internal and must match the
     # port the orchestrator actually listens on. None => derived from `port`.
