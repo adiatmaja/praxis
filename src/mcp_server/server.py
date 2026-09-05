@@ -1063,7 +1063,22 @@ def _plan_next_action(data: dict[str, Any]) -> tuple[str, str]:
             ),
         )
     if status in {"failed", "rejected"}:
-        return "none", f"{status}: {data.get('error') or 'no reason recorded'}"
+        if data.get("error"):
+            return "none", f"{status}: {data['error']}"
+        failed_ids = [
+            str(t.get("task_id")) for t in tasks if t.get("status") == "failed"
+        ]
+        if failed_ids:
+            # The plan failed because its leaves did; each leaf's own feedback
+            # carries the reason (probe 8: the model probe's refusal sat on
+            # the task while this line said "no reason recorded").
+            calls = ", ".join(f"wait_task({tid})" for tid in failed_ids)
+            return (
+                "none",
+                f"{status}: {len(failed_ids)} leaf failed terminally; the reason "
+                f"is on the leaf, read it with {calls}",
+            )
+        return "none", f"{status}: no reason recorded"
     if plan_awaits_approval(data):
         plan_id = data.get("plan_id")
         return (

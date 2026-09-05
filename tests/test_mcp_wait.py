@@ -539,3 +539,25 @@ async def test_wait_task_pending_behind_a_failure_says_retry_the_blocker() -> No
     result = await server.wait_task_impl(client, task_id=TASK_ID)
     assert result["next_action"] == "retry"
     assert "retry_task(aaaa)" in result["summary"]
+
+
+async def test_wait_plan_failed_without_a_plan_error_names_the_failed_leaves() -> None:
+    """Probe 8, live: the only leaf was refused by the model probe with a full
+    reason on the task, the plan went FAILED with a NULL error, and the summary
+    said "failed: no reason recorded". The reason is one wait_task away."""
+    client = _plan_routes(
+        _plan_wait(
+            status="failed",
+            terminal=True,
+            waiting_on="nothing",
+            error=None,
+            tasks=[
+                {"task_id": "t1", "title": "A", "status": "failed", "pr_url": None},
+                {"task_id": "t2", "title": "B", "status": "pending", "pr_url": None},
+            ],
+        )
+    )
+    result = await server.wait_plan_impl(client, plan_id=PLAN_ID)
+    assert result["next_action"] == "none"
+    assert "no reason recorded" not in result["summary"]
+    assert "wait_task(t1)" in result["summary"]
