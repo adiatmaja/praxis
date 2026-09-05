@@ -342,7 +342,8 @@ async def test_unsubscribes_when_read_raises() -> None:
     bus = EventBus()
 
     async def boom() -> str:
-        raise RuntimeError("db gone")
+        msg = "db gone"
+        raise RuntimeError(msg)
 
     with pytest.raises(RuntimeError):
         await waiting.wait_for_change(
@@ -353,30 +354,6 @@ async def test_unsubscribes_when_read_raises() -> None:
             timeout=1.0,
         )
     assert bus.subscriber_count == 0
-
-
-def test_pending_autonomous_proposal_waits_on_a_human_not_the_planner() -> None:
-    """A ``pending`` plan whose source is ``autonomous`` is parked at the
-    PROPOSAL gate: nothing decomposes it until a person approves it, so a
-    wait that called it "planner" would block on a state only a human moves."""
-    assert (
-        waiting.plan_waiting_on(
-            {"status": "pending", "opus_plan": None, "source": "autonomous"}, []
-        )
-        == "human"
-    )
-    assert (
-        waiting.plan_waiting_on(
-            {"status": "pending", "opus_plan": None, "source": "user"}, []
-        )
-        == "planner"
-    )
-    assert (
-        waiting.plan_waiting_on(
-            {"status": "pending", "opus_plan": None, "source": "execute-plan"}, []
-        )
-        == "planner"
-    )
 
 
 def test_pending_autonomous_proposal_waits_on_a_human_not_the_planner() -> None:

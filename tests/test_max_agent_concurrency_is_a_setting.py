@@ -46,7 +46,8 @@ def test_the_lifespan_passes_the_cap_to_the_agent_manager(
     class Spy(real):  # type: ignore[misc,valid-type]
         def __init__(self, *args: Any, **kwargs: Any) -> None:
             seen.update(kwargs)
-            raise RuntimeError("spy: not building a real manager")
+            msg = "spy: not building a real manager"
+            raise RuntimeError(msg)
 
     monkeypatch.setattr(main_mod, "AgentManager", Spy)
     monkeypatch.setenv("AUTH_TOKEN", "t")

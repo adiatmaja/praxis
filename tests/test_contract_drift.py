@@ -294,7 +294,8 @@ def test_a_created_file_the_plan_described_as_existing_is_a_strong_finding() -> 
     assert not drift.clean
     line = summary_line(drift)
     assert "src/textkit/tokenizer.py" in line
-    assert "existing" in line and "created" in line
+    assert "existing" in line
+    assert "created" in line
     assert as_payload(drift)["created_described_as_existing"] == [
         "src/textkit/tokenizer.py"
     ]
