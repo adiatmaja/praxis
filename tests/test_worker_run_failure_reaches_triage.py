@@ -513,3 +513,81 @@ async def test_a_throttled_triage_still_settles_the_task(
         "a deferral must not stamp a decision, or the leaf loses the triage "
         "call it never got"
     )
+
+
+# ---------------------------------------------------------------------------
+# A base branch deleted under the worker is INFRASTRUCTURE, not the worker.
+# ---------------------------------------------------------------------------
+
+
+async def test_a_failure_with_the_plan_branch_gone_from_the_remote_is_not_charged(
+    client: AsyncClient, db: Database, auth_headers: dict[str, str]
+) -> None:
+    """Probe 6c, 2026-09-05: the plan branch was deleted on GitHub while the
+    worker ran. The worker built the module correctly and its ``gh pr create``
+    failed with "Base ref must be a branch"; the callback said ``failed`` and
+    the worker was charged a ``run_failed`` outcome row, the one table the
+    capability loop reads. Whether the base branch still exists is a fact
+    Praxis can ask the remote before deciding whose fault a failure is."""
+    task_id, run_id = await _seed_in_progress_task(
+        client, db, auth_headers, attempt=1, max_retries=3
+    )
+    orch = client.app.state.orchestrator  # type: ignore[attr-defined]
+    triage = _triage_ready(orch, TriageDecision(decision="escalate", reason="probe"))
+    orch._git = AsyncMock()
+    orch._git.remote_head_sha = AsyncMock(return_value=None)
+
+    await _post(client, task_id, run_id, status="failed")
+
+    queue: TaskQueue = client.app.state.task_queue  # type: ignore[attr-defined]
+    task = await queue.get_task(task_id)
+    assert task is not None
+    assert await _outcome_rows(db, task_id) == [], (
+        "an infrastructure fault was written into the capability ledger"
+    )
+    triage.assert_not_awaited()
+    assert task["status"] == TaskStatus.PENDING, "the retry recreates the branch"
+    assert task["attempt"] == 2
+    feedback = str(task["review_feedback"] or "")
+    assert "plan/2026-07-04-retry" in feedback
+    assert "not on the remote" in feedback or "no longer exists" in feedback
+    orch._git.remote_head_sha.assert_awaited()
+    args = orch._git.remote_head_sha.await_args.args
+    assert args[1] == "plan/2026-07-04-retry"
+
+
+async def test_a_failure_with_the_plan_branch_present_is_charged_as_before(
+    client: AsyncClient, db: Database, auth_headers: dict[str, str]
+) -> None:
+    task_id, run_id = await _seed_in_progress_task(
+        client, db, auth_headers, attempt=1, max_retries=3
+    )
+    orch = client.app.state.orchestrator  # type: ignore[attr-defined]
+    _triage_ready(orch, TriageDecision(decision="escalate", reason="probe"))
+    orch._git = AsyncMock()
+    orch._git.remote_head_sha = AsyncMock(return_value="abc123")
+
+    await _post(client, task_id, run_id, status="failed")
+
+    rows = await _outcome_rows(db, task_id)
+    assert len(rows) == 1
+    assert rows[0]["failure_class"] == FailureClass.RUN_FAILED.value
+
+
+async def test_a_failure_whose_branch_cannot_be_asked_about_is_charged_as_before(
+    client: AsyncClient, db: Database, auth_headers: dict[str, str]
+) -> None:
+    """Cannot ask is not an answer: the probe raising keeps the existing rule."""
+    task_id, run_id = await _seed_in_progress_task(
+        client, db, auth_headers, attempt=1, max_retries=3
+    )
+    orch = client.app.state.orchestrator  # type: ignore[attr-defined]
+    _triage_ready(orch, TriageDecision(decision="escalate", reason="probe"))
+    orch._git = AsyncMock()
+    orch._git.remote_head_sha = AsyncMock(side_effect=RuntimeError("ls-remote: 502"))
+
+    await _post(client, task_id, run_id, status="failed")
+
+    rows = await _outcome_rows(db, task_id)
+    assert len(rows) == 1
+    assert rows[0]["failure_class"] == FailureClass.RUN_FAILED.value

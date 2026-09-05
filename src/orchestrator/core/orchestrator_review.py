@@ -1672,6 +1672,26 @@ class ReviewMixin:
             task_type: The leaf's type from the plan graph.
         """
         status_before = task["status"]
+        vanished = await self._plan_branch_vanished(project, plan)
+        if vanished is not None:
+            # INFRASTRUCTURE, not the worker. Probe 6c (2026-09-05): the plan
+            # branch was deleted on GitHub while the worker ran; it built the
+            # leaf correctly and `gh pr create` failed with "Base ref must be a
+            # branch", and this route charged it a RUN_FAILED row, in the one
+            # table the capability loop reads. Whether the base branch still
+            # exists is a fact the remote answers before whose-fault is
+            # decided. No outcome row, no triage; a plain retry, and the next
+            # attempt's entrypoint recreates the branch from the default.
+            base = project.get("default_branch") or "main"
+            guidance = (
+                f"Retry as normal. The plan branch {vanished} is not on the "
+                "remote: it was deleted during this attempt, which is not the "
+                "worker's doing, so this attempt was not counted against the "
+                f"worker; the next attempt recreates it from {base}. "
+                f"Original reason: {feedback}"
+            )
+            await self._fail_and_maybe_retry(task["id"], task, project, guidance)
+            return
         await self._record_task_outcome(
             task,
             project,
@@ -1683,6 +1703,34 @@ class ReviewMixin:
         )
         await self._triage_then_fail(task, project, plan, feedback, None, None, "")
         await self._settle_if_triage_deferred(task, project, feedback, status_before)
+
+    async def _plan_branch_vanished(
+        self, project: dict[str, Any], plan: dict[str, Any] | None
+    ) -> str | None:
+        """The plan branch's name when the remote no longer has it, else None.
+
+        Answers only on a POSITIVE absence: no plan, no branch name, no git
+        handle, or a probe that raises all return None, and None keeps the
+        caller's existing rule (worker-attributable). Cannot ask is not an
+        answer, exactly as ``_nothing_to_integrate_reason`` treats it.
+        """
+        if plan is None or self._git is None:
+            return None
+        branch = plan.get("plan_branch_name")
+        repo_url = project.get("repo_url")
+        if not branch or not repo_url:
+            return None
+        try:
+            sha = await self._git.remote_head_sha(str(repo_url), str(branch))
+        except Exception as exc:  # noqa: BLE001 - cannot ask is not an answer
+            logger.warning(
+                "Could not ask the remote whether plan branch %s still exists "
+                "(%s); treating the failure as worker-attributable as before",
+                branch,
+                exc,
+            )
+            return None
+        return str(branch) if sha is None else None
 
     async def _settle_if_triage_deferred(
         self,
