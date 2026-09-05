@@ -511,6 +511,11 @@ story. New gotchas go in `docs/gotchas.md` first. (No count is quoted on purpose
 - **A doctor probe must not mutate what it diagnoses**: the agy credentials probe mounts
   the real volume read-only and layers a tmpfs over the writable path, so the kernel
   guarantees it cannot silently seed the "no credentials" state it is checking for.
+- **`max_agent_concurrency` (YAML, env; default 3) bounds agent containers install-wide**
+  (2026-09-05). It lived only in `AgentManager`'s constructor default until probe 9b fanned
+  an 18-leaf wave out to exactly three workers and refused the fourth ("Concurrent agent
+  cap reached (3 of 3 running)", re-dispatched when a slot opens, nothing charged).
+  `main.py` passes it; `tests/test_max_agent_concurrency_is_a_setting.py` pins the kwarg.
 - **Worker preset env vars are BARE compose pass-throughs** (`- DEFAULT_WORKER_HARNESS`),
   never `${VAR:-default}`: any expansion form sets the var even when unset and silently
   suppresses the mounted YAML.

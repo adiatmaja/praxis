@@ -153,6 +153,13 @@ class Settings(BaseSettings):
     # and 0 or less disables the bound entirely, which is a supported state for
     # anyone whose workers are expected to run longer than an hour.
     worker_timeout_minutes: int = 60
+    # How many agent containers may run at once across the whole install.
+    # Observed on 2026-09-05 (a 19-leaf plan with 18 independent leaves): the
+    # cap of 3 held exactly, the fourth leaf was refused with "Concurrent agent
+    # cap reached (3 of 3 running)" and re-dispatched when a slot opened, and
+    # no attempt was charged. Until then the 3 lived only in AgentManager's
+    # constructor default, which no operator could reach.
+    max_agent_concurrency: int = 3
     # URL agent containers POST their completion callback to. Reachable from
     # inside a container, so it uses host.docker.internal and must match the
     # port the orchestrator actually listens on. None => derived from `port`.

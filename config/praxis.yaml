@@ -22,6 +22,13 @@ callback_grace: 5      # seconds to wait before reconciling a missing callback
 # any non-positive value) to disable the bound entirely.
 worker_timeout_minutes: 60
 
+# How many agent containers may run at once, across every plan and project on
+# this install. The fourth leaf of an independent wave waits for a slot and is
+# re-dispatched when one opens; nothing is charged to it. Measured 2026-09-05:
+# three Gemini Flash workers ran side by side without contention on the
+# reference box; raise it on a larger one, lower it on a laptop.
+max_agent_concurrency: 3
+
 # How often the approvals digest event may fire, in hours. Parked work is
 # surfaced on poll_task, poll_plan, `praxis pending`, and the dashboard badge
 # continuously; this only rate-limits the SSE event.
