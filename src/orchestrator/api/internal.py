@@ -745,6 +745,7 @@ async def agent_done(request: Request, body: AgentDonePayload) -> dict[str, str]
                     find_provider_signal,
                     provider_error_feedback,
                 )
+                from orchestrator.core.provider_quota import deferral_deadline
 
                 # Hoisted out of the retry chain below because a SECOND decision reads
                 # it now. A transient provider/gateway error is not the worker failing;
@@ -896,9 +897,6 @@ async def agent_done(request: Request, body: AgentDonePayload) -> dict[str, str]
                         ),
                     )
                 elif provider_error_run:
-                    from datetime import UTC as _UTC
-                    from datetime import datetime as _datetime
-
                     # BOUNDED, by the same rule the reconcile path obeys and by
                     # the same three functions. Until 2026-08-27 this branch was
                     # the bare UPDATE below with no streak counter at all, and
@@ -954,11 +952,16 @@ async def agent_done(request: Request, body: AgentDonePayload) -> dict[str, str]
                         # the next person who moves the gate.
                         assert provider_signal is not None  # nosec B101
                         guidance = provider_error_feedback(provider_signal, feedback)
-                        now = _datetime.now(_UTC).isoformat()
-                        await queue._db.execute(
-                            "UPDATE tasks SET status = ?, review_feedback = ?, "
-                            "updated_at = ? WHERE id = ?",
-                            (TaskStatus.PENDING, guidance, now, body.task_id),
+                        # When the provider named a reset time, the re-queue is
+                        # NOT-BEFORE that instant. Without it the next tick
+                        # dispatches straight back into the same exhausted
+                        # quota and five of those spend the cap in about two
+                        # minutes, an hour before the quota returns. None (no
+                        # hint, or one past the ceiling) keeps today's
+                        # behaviour exactly.
+                        retry_after = deferral_deadline(provider_signal.line)
+                        await queue.requeue_after_provider_error(
+                            body.task_id, guidance, retry_after
                         )
                         request.app.state.event_bus.publish(
                             {
@@ -968,15 +971,24 @@ async def agent_done(request: Request, body: AgentDonePayload) -> dict[str, str]
                                 "signal": provider_signal.signal,
                                 "evidence": provider_signal.line,
                                 "consecutive_errors": streak,
+                                "retry_after": (
+                                    retry_after.isoformat() if retry_after else None
+                                ),
                             }
                         )
                         logger.warning(
                             "Task %s worker provider/gateway error (streak %d/%d); "
-                            "re-queued without consuming a retry attempt. Matched "
+                            "re-queued without consuming a retry attempt%s. Matched "
                             "%r in worker log line %r; the worker reported: %s",
                             task_id,
                             streak,
                             cap,
+                            (
+                                f", held until {retry_after.isoformat()} because the "
+                                "provider named a reset time"
+                                if retry_after
+                                else ""
+                            ),
                             provider_signal.signal,
                             _scrub(provider_signal.line),
                             _scrub(feedback),

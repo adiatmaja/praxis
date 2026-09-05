@@ -654,6 +654,12 @@ class TaskQueue:
         it is a broader behavior change to the clarification flow that is
         out of scope here, and is not needed to prevent the resume bug.
 
+        ``provider_retry_after`` IS cleared, for the opposite reason: every
+        caller of this method means "run this again", and a leaf that spent
+        its respawns during a quota outage would otherwise come back PENDING
+        and still held until a deadline the human has decided not to wait for.
+        This is the only verb that can shorten a deferral, so it must.
+
         The plan is reactivated HERE rather than at any endpoint, and that
         placement is the point. Every caller of this method means one thing by
         it -- this leaf is going to run again -- and a leaf that is going to run
@@ -687,7 +693,8 @@ class TaskQueue:
         await self._db.execute(
             """UPDATE tasks
                SET status = ?, attempt = ?, updated_at = ?,
-                   worker_session_id = NULL, worker_session_harness = NULL
+                   worker_session_id = NULL, worker_session_harness = NULL,
+                   provider_retry_after = NULL
                WHERE id = ?""",
             (TaskStatus.PENDING, int(task["attempt"]) + 1, now, task_id),
         )
@@ -732,6 +739,49 @@ class TaskQueue:
             (TaskStatus.PENDING, int(task["attempt"]) + 1, feedback, now, task_id),
         )
         return await self._reactivate_plan_for_requeue(str(task["plan_id"]), task_id)
+
+    async def requeue_after_provider_error(
+        self, task_id: str, feedback: str, retry_after: datetime | None = None
+    ) -> None:
+        """Re-queue a task the PROVIDER failed, not before ``retry_after``.
+
+        The columns are exactly the ones the two provider-error seats wrote
+        before this method existed - status, feedback, ``updated_at`` and
+        nothing else - because a provider outage costs the task nothing: no
+        attempt, no cleared worker session, no plan reactivation. The one
+        addition is the deadline, and it is written on EVERY call, ``None``
+        included: a re-queue owns that column outright, or a quota deferral
+        outlives the outage that replaced it and holds the leaf against a
+        deadline nothing is waiting for.
+
+        The SQL lives here rather than at the two call sites so both reach the
+        same answer to "when may this run again"; ``api/internal`` and
+        ``orchestrator_reconcile`` each had their own copy of the UPDATE, which
+        is how a column added to one of them goes missing from the other.
+
+        Args:
+            task_id: The task to put back in the queue.
+            feedback: Worker-facing guidance for the next attempt, carrying the
+                evidence line (``provider_errors.provider_error_feedback``).
+            retry_after: The instant the provider said its quota returns, or
+                None when it named none. None means dispatch may pick the task
+                up on the very next tick, which is the behaviour every
+                signal-without-a-hint keeps.
+        """
+        now = datetime.now(UTC).isoformat()
+        await self._db.execute(
+            """UPDATE tasks
+               SET status = ?, review_feedback = ?, provider_retry_after = ?,
+                   updated_at = ?
+               WHERE id = ?""",
+            (
+                TaskStatus.PENDING,
+                feedback,
+                retry_after.isoformat() if retry_after is not None else None,
+                now,
+                task_id,
+            ),
+        )
 
     async def _reactivate_plan_for_requeue(self, plan_id: str, task_id: str) -> bool:
         """Put a plan back in the loop's reach when one of its leaves is requeued.

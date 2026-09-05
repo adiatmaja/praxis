@@ -4743,3 +4743,57 @@ exited-container arm). `tests/test_requeue_never_passes_through_failed.py` insta
 trigger that records every status the row passes through, which is the only way to see a
 write no later read can, and drives the review, callback and reconcile paths plus the
 terminal positive control.
+
+
+## A provider that says WHEN its quota returns is now believed, and bounded
+
+Round 13's walk (2026-09-05) established that an agy quota exhaustion was being charged
+to the worker, and fixed the classification. It left the harder half undone, recorded at
+the time as the open item: the provider had said "Resets in 1h15m27s" and nothing used
+it. The task was re-queued immediately, a container respawned on the next tick into the
+same exhausted quota, and five of those spent `PROVIDER_ERROR_RESPAWN_CAP` in about two
+minutes, ending the leaf with `worker_endpoint_unreachable` an hour and thirteen minutes
+before the quota would have returned. Built 2026-09-06.
+
+`core/provider_quota.py` parses the hint out of the EVIDENCE line that
+`find_provider_signal` already returns, and every rule in it points the same way: the cue
+phrase ("resets in") is REQUIRED, because a worker log is full of durations and Praxis is
+dogfooded on itself, so this module's own prose travels through container logs; anything
+unreadable yields NO hint, which is byte-for-byte today's behaviour; a hint of zero is no
+hint; and the deferral is CAPPED at six hours, because the symptom of an over-long defer
+is a leaf sitting PENDING on a plan that reads ACTIVE with a null `error`, this
+repository's most expensive shape. `remaining_seconds` has ONE polarity, so no caller
+decides what a broken value means: absent, unreadable and past all answer None, and None
+always means "dispatch may proceed".
+
+The deadline lands on `tasks.provider_retry_after` (migration 15, schema version is 15
+now) through `TaskQueue.requeue_after_provider_error`, the one writer both provider-error
+seats call: the callback router and reconcile each had their own copy of that UPDATE,
+which is exactly how a column added to one goes missing from the other. It is written on
+EVERY call, `None` included, so a quota deferral cannot outlive the outage that replaced
+it. `retry_task` clears it, and is the only verb that can shorten a wait.
+
+**WHERE the hold is applied is the claim, not that it exists.**
+`_ready_after_provider_deferral` runs in `dispatch_pending_tasks` BEFORE the wave verify
+gate and before the single-branch truncation, because "a deferred leaf costs nothing" is
+only true there. Moving it after the gate leaves every other test in the file passing
+while a held leaf pays for a plan-branch clone and a full project test run it can never
+use; that mutation SURVIVED until `test_a_held_leaf_never_reaches_the_wave_verify_gate`
+was written to assert on the GATE rather than on the spawn.
+
+`core/waiting.py` gains a fifth answer, `provider`, at both scopes. A task holds it while
+its deadline stands, and a human gate still outranks it (only a human gate names an
+action). A PLAN answers `provider` only when nothing else can move: no leaf in progress
+or reviewing, no human gate open, and EVERY pending leaf deferred. One dispatchable
+sibling is what the plan is really waiting for, and `any` in place of `all` there is a
+mutation the tests kill. It reaches `GET /api/tasks/{id}`, MCP `poll_task` and
+`praxis task`, which prints the deadline and the time remaining.
+
+Two limits, stated rather than papered over. `praxis retry` answers 409 on a PENDING
+task, and a deferred task is PENDING, so the operator's way to force one early is
+`POST /api/tasks/{id}/force-status {"status": "pending"}`, which routes through the same
+`retry_task`. The retry endpoint's gate was deliberately NOT widened: `retry_task` bumps
+`attempt`, and charging a leaf for a fault that was never the worker's is the thing this
+whole path exists to avoid. And a deferred task is not "resting", because the engine
+really does resume it, so a wait blocks and ends at its 90 s cap carrying
+`waiting_on: provider` and the deadline.

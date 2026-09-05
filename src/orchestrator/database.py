@@ -454,6 +454,35 @@ async def _migration_0014_integration_state(
     )
 
 
+async def _migration_0015_provider_retry_after(
+    connection: aiosqlite.Connection,
+) -> None:
+    """Add tasks.provider_retry_after: the instant a provider quota comes back.
+
+    Measured live on 2026-09-05 (round 13): agy refused every worker with
+    "Individual quota reached ... Resets in 1h15m27s." That wording is
+    classified as a provider error, so each run was re-queued without spending
+    an attempt and re-dispatched on the next loop tick into the same exhausted
+    quota; five of those spend the respawn cap in about two minutes and the
+    leaf goes terminal an hour and thirteen minutes early.
+
+    The hint is a fact about the FUTURE, so no other row can carry it: the run
+    is closed, the task is PENDING, and the next tick is a different process's
+    read of the database. ISO-8601 UTC text, written by the two provider-error
+    re-queue seats and read by dispatch and by ``core/waiting``.
+
+    NULLABLE, and the NULL is the state of every row: "no provider has asked us
+    to wait". A NOT NULL column with any default would put a deadline on every
+    task and make the dispatch gate a race against the clock.
+    """
+    cursor = await connection.execute("PRAGMA table_info(tasks)")
+    cols = {row[1] for row in await cursor.fetchall()}
+    if "provider_retry_after" not in cols:
+        await connection.execute(
+            "ALTER TABLE tasks ADD COLUMN provider_retry_after TEXT"
+        )
+
+
 MIGRATIONS: list[Migration] = [
     Migration(1, "baseline: schema as of 2026-07-02", _migration_0001_baseline),
     Migration(
@@ -520,6 +549,11 @@ MIGRATIONS: list[Migration] = [
         14,
         "add plans.integration_state so a completed plan says whether integration ran",
         _migration_0014_integration_state,
+    ),
+    Migration(
+        15,
+        "add tasks.provider_retry_after so a quota's reset time defers the re-queue",
+        _migration_0015_provider_retry_after,
     ),
 ]
 

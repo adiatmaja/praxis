@@ -14,7 +14,7 @@ from typing import Any, cast
 from mcp.server.fastmcp import FastMCP
 
 from mcp_server.client import PraxisClient, PraxisClientError
-from orchestrator.core import status_vocab
+from orchestrator.core import provider_quota, status_vocab
 from orchestrator.core.approvals import plan_awaits_approval
 
 # The reachability rule is SHARED, not MCP's. `poll_plan` was its first reader
@@ -246,6 +246,16 @@ def _task_summary(task: dict[str, Any], *, running_for_seconds: object = None) -
         running_for_seconds, bool
     ):
         parts.append(f"running for {format_duration(float(running_for_seconds))}")
+    # In the SUMMARY, for the same reason the elapsed time is: an assistant
+    # relaying "Login: pending" to a person describes a worker about to start,
+    # and invites another poll a minute later. A deferred leaf is not queued
+    # for a worker at all - the endpoint said when its quota returns and
+    # dispatch is honouring it.
+    deferred = provider_quota.remaining_seconds(task.get("provider_retry_after"))
+    if deferred is not None:
+        parts.append(
+            f"waiting on the provider quota for another {format_duration(deferred)}"
+        )
     if task.get("pr_url"):
         parts.append(str(task["pr_url"]))
     attempt = task.get("attempt")
@@ -330,6 +340,10 @@ async def poll_task_impl(client: Any, task_id: str) -> dict[str, Any]:
         # number, and "we cannot tell you" must stay distinguishable from
         # zero.
         "running_for_seconds": running_for,
+        # When the model endpoint said its quota returns, or None. Structured
+        # as well as folded into the summary: a caller deciding whether to poll
+        # again needs the instant, not only the prose.
+        "provider_retry_after": task.get("provider_retry_after"),
         # Structured, both tiers, alongside the summary's strong-tier warning.
         # ``None`` means the check never ran (a task older than the column, or
         # a review that failed before a diff existed) and must not be read as

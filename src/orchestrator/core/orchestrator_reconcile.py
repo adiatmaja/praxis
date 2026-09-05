@@ -25,6 +25,7 @@ from orchestrator.core.provider_errors import (
     is_provider_error,
     provider_error_feedback,
 )
+from orchestrator.core.provider_quota import deferral_deadline
 from orchestrator.core.status_vocab import GATED_STATUSES, TERMINAL_STATUSES
 from orchestrator.models.schemas import PlanStatus, TaskStatus
 
@@ -2181,16 +2182,14 @@ class ReconcileMixin:
                 backoff = min(cast(Any, self)._provider_error_backoff * streak, 30.0)
                 if backoff > 0:
                     await asyncio.sleep(backoff)
-                now = datetime.now(UTC).isoformat()
-                await self._tq._db.execute(
-                    "UPDATE tasks SET status = ?, review_feedback = ?, updated_at = ? "
-                    "WHERE id = ?",
-                    (
-                        TaskStatus.PENDING,
-                        provider_error_feedback(found, reason),
-                        now,
-                        run["task_id"],
-                    ),
+                # The same NOT-BEFORE the callback path applies, from the same
+                # function and the same evidence line. Both seats or neither:
+                # reconcile is what disposes of every container that exited
+                # without a callback, and a quota outage is exactly when
+                # callbacks go missing.
+                retry_after = deferral_deadline(found.line)
+                await self._tq.requeue_after_provider_error(
+                    run["task_id"], provider_error_feedback(found, reason), retry_after
                 )
                 self._bus.publish(
                     {
@@ -2200,15 +2199,24 @@ class ReconcileMixin:
                         "signal": found.signal,
                         "evidence": found.line,
                         "consecutive_errors": streak,
+                        "retry_after": (
+                            retry_after.isoformat() if retry_after else None
+                        ),
                     }
                 )
                 logger.warning(
                     "Worker provider/gateway error for task %s (streak %d/%d); "
-                    "re-queued without consuming a retry attempt. Matched %r in "
+                    "re-queued without consuming a retry attempt%s. Matched %r in "
                     "worker log line %r; the reported reason was: %s",
                     run["task_id"],
                     streak,
                     cap,
+                    (
+                        f", held until {retry_after.isoformat()} because the "
+                        "provider named a reset time"
+                        if retry_after
+                        else ""
+                    ),
                     found.signal,
                     found.line,
                     reason,

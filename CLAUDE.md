@@ -343,7 +343,20 @@ Tables: `users`, `projects`, `plans`, `tasks`, `agent_runs`, `opus_state`,
   `core/waiting.plan_waiting_on` rests on it: completed + merged: `nothing`; + open PR:
   `human`; + recorded state or error: `nothing`; + NULL: `review` (integrating).
   `praxis plans` renders `(no PR; already on base)` and `(integrating)` from it.
-- **Schema version is 14; `tests/test_migrations.py` pins it.** Idempotency is proved by
+- **`tasks.provider_retry_after` (migration 15) is when a PROVIDER said its quota
+  returns**, and until then dispatch spends nothing on that leaf. Written by BOTH
+  provider-error re-queue seats (the callback router and reconcile) through the one
+  writer `TaskQueue.requeue_after_provider_error`, which owns the column on every call
+  so a stale deferral cannot outlive the outage that replaced it; cleared by
+  `retry_task`, the only verb that can shorten a wait. NULL for almost every row.
+  `core/provider_quota.py` is the parse and the ONE polarity (`remaining_seconds`
+  answers None for absent, unreadable AND past, so an unparseable stamp runs the task
+  rather than parking it forever). The hold is applied in `dispatch_pending_tasks`
+  BEFORE the wave verify gate, which is the load-bearing placement: after it, a held
+  leaf pays for a plan-branch clone and full test run it can never use, and every other
+  test in the file still passes (that mutation SURVIVED until
+  `test_a_held_leaf_never_reaches_the_wave_verify_gate` was added).
+- **Schema version is 15; `tests/test_migrations.py` pins it.** Idempotency is proved by
   invoking a step DIRECTLY TWICE, never by rewinding `user_version`: a rewind that no
   longer reaches far enough silently stops re-running the step, and a `count(...) == 1`
   assertion passes whether the step re-ran or never ran at all.
@@ -781,9 +794,12 @@ story. New gotchas go in `docs/gotchas.md` first. (No count is quoted on purpose
   in three seconds with "Individual quota reached ... Resets in 1h15m27s" and, because
   the harness reports plain `failed`, eleven calibration rows and two brain-authored
   `split`s were charged to a model that never ran. `quota reached` / `Quota exceeded` /
-  `RESOURCE_EXHAUSTED` are signals now. Honouring the reset time is NOT built (the
-  respawn cap still ends the leaf in about two minutes, honestly). When a run fails in
-  seconds, read `praxis logs <task-id>` before believing the attempt count.
+  `RESOURCE_EXHAUSTED` are signals now. **The reset time IS honoured since 2026-09-06**:
+  `core/provider_quota.py` parses "Resets in 1h15m27s" out of the EVIDENCE line, both
+  re-queue seats store it on `tasks.provider_retry_after` (migration 15), and dispatch
+  holds the leaf until then, spending nothing. Capped at six hours; anything unreadable
+  yields NO hint and today's behaviour exactly. When a run fails in seconds, read
+  `praxis logs <task-id>` before believing the attempt count.
 - **The wave verify gate makes the same comparison, or it parks a plan forever, invisibly**
   (2026-08-26): a plan branch red for a SIBLING's contract was called a regression, and
   since `merged_count` cannot advance while the wave is parked the verdict was permanent
@@ -903,7 +919,7 @@ story. New gotchas go in `docs/gotchas.md` first. (No count is quoted on purpose
   level, got `None` for `status` every cycle (the row is nested under `task`), and would
   have waited ten minutes on a worker that finished in 40 s. Now the detail payload
   MIRRORS `status`/`attempt`/`pr_url`/`plan_id` at the top level with `terminal` and
-  `waiting_on` (`worker`/`review`/`human`/`nothing`; plans add `planner`) beside them,
+  `waiting_on` (`worker`/`review`/`human`/`provider`/`nothing`; plans add `planner`) beside them,
   the plan payload carries the same two as REQUIRED fields (a default would have hidden
   the three routes that returned a bare row), and `GET /api/{tasks,plans}/{id}/wait`
   blocks on the event bus. Three rules: the bus is a WAKE-UP, never the truth (not every

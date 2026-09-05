@@ -20,6 +20,7 @@ from rich.text import Text
 from cli.doctor import doctor as _doctor
 from cli.init import _fetch_presets_or_defaults, parse_env
 from cli.init import init as _init
+from orchestrator.core import provider_quota
 from orchestrator.core.approvals import plan_awaits_approval
 from orchestrator.core.run_elapsed import format_duration
 from orchestrator.core.settings_file import config_file_path
@@ -1069,6 +1070,12 @@ def task(task_id: str = typer.Argument(..., help="Task ID")) -> None:
     running_line = _running_line(data.get("running_for_seconds"))
     if running_line:
         console.print(Text(running_line))
+    # Beside the running line and for the mirror-image reason: that one says a
+    # worker IS going, this one says why none is and when one will be. Both
+    # are the difference between a row that looks stuck and a row that is.
+    provider_line = _provider_wait_line(task_data.get("provider_retry_after"))
+    if provider_line:
+        console.print(Text(provider_line))
     # BEFORE the feedback, and unconditionally when there is something to say:
     # this is the fact the feedback structurally cannot carry, because the
     # reviewer grades the diff against the LEAF's plan_text. A human inspecting
@@ -1897,6 +1904,29 @@ def _running_line(running_for_seconds: object) -> str:
     ):
         return ""
     return f"Running for: {format_duration(float(running_for_seconds))}"
+
+
+def _provider_wait_line(provider_retry_after: object) -> str:
+    """ "Waiting on the provider quota ..." while one is deferring this task.
+
+    Prints nothing for the overwhelming majority of tasks, which no provider
+    has deferred. The line exists because the alternative reading of the row -
+    ``Status: pending``, nothing running, nothing in the feedback - is a leaf
+    that looks stuck, and the honest fact is that Praxis is deliberately not
+    spawning a worker yet and will do so by itself.
+
+    No remedy verb is named on purpose: ``praxis retry`` answers 409 on a
+    PENDING task, and a hint naming a verb that cannot do the job is worse than
+    no hint.
+    """
+    remaining = provider_quota.remaining_seconds(provider_retry_after)
+    if remaining is None:
+        return ""
+    return (
+        f"Waiting on the provider quota until {provider_retry_after} "
+        f"({format_duration(remaining)} to go); no worker is running and no "
+        "attempt is being spent. Praxis dispatches it again by itself."
+    )
 
 
 def _drift_line(drift: object) -> str:

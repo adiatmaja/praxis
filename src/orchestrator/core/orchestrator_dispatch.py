@@ -49,6 +49,7 @@ from orchestrator.core.progress_handover import (
     Commit,
     render_handover,
 )
+from orchestrator.core.provider_quota import remaining_seconds
 from orchestrator.core.session_resume import resolve_resume_session
 from orchestrator.core.settings_file import config_file_path
 from orchestrator.core.token_budget import ContextBudgetExceeded
@@ -324,6 +325,47 @@ class DispatchMixin:
         def _task_prompt(self, task: dict[str, Any], project: dict[str, Any]) -> str:
             pass
 
+    def _ready_after_provider_deferral(
+        self, plan_id: str, tasks: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
+        """Drop tasks a provider asked us to leave alone until a stated time.
+
+        The provider-error path re-queues a task without spending an attempt,
+        which is right, and then the next tick dispatched it straight back into
+        the same outage. When the provider named a reset time
+        (``tasks.provider_retry_after``, written by both re-queue seats) that
+        is the one fact available to stop the respawn budget being spent an
+        hour before the quota returns.
+
+        A held task is left exactly as it is - PENDING, same attempt, no run
+        row, no event - because a container that is never spawned must leave no
+        trace for reconcile to dispose of.
+
+        Args:
+            plan_id: The plan being dispatched, for the log line.
+            tasks: What ``get_dispatchable_tasks`` returned.
+
+        Returns:
+            The subset that may be dispatched now. Everything whose deadline is
+            absent, unreadable or past is in it: ``provider_quota`` answers
+            None for all three, so an unparseable stamp runs the task rather
+            than parking it forever.
+        """
+        ready: list[dict[str, Any]] = []
+        for task in tasks:
+            remaining = remaining_seconds(task.get("provider_retry_after"))
+            if remaining is None:
+                ready.append(task)
+                continue
+            task_logger(logger, plan_id=plan_id, task_id=task["id"]).info(
+                "Held for %.0fs more: the provider named %s as the time its "
+                "quota returns, so no worker is spawned and no attempt is "
+                "spent until then",
+                remaining,
+                task.get("provider_retry_after"),
+            )
+        return ready
+
     async def dispatch_pending_tasks(
         self,
         plan_id: str,
@@ -352,6 +394,13 @@ class DispatchMixin:
         slug_to_plan_task = slug_to_graph_task(graph_tasks)
 
         dispatchable = await self._tq.get_dispatchable_tasks(plan_id)
+
+        # A provider that said WHEN its quota resets is honoured, and the hold
+        # is applied HERE - before the wave verify gate, the single-branch
+        # truncation and anything else that spends work on a task - because a
+        # deferred leaf must cost nothing at all while it waits. Everything
+        # below this line treats what is left as ready.
+        dispatchable = self._ready_after_provider_deferral(plan_id, dispatchable)
 
         # HIGH-2: per-wave cross-leaf verification. A new wave becomes
         # dispatchable only after the previous wave's tasks are MERGED to the

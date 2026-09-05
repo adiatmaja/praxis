@@ -35,6 +35,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any, Generic, TypeVar
 
+from orchestrator.core import provider_quota
 from orchestrator.core.approvals import plan_awaits_approval
 from orchestrator.core.event_bus import EventBus
 from orchestrator.core.plan_reachability import (
@@ -56,9 +57,12 @@ DEFAULT_TICK_SECONDS = 2.0
 
 #: Every value ``task_waiting_on`` / ``plan_waiting_on`` may answer. ``planner``
 #: is plan-only: a plan with no task rows yet is inside a multi-minute brain
-#: call whose only in-flight signal is ``plan_attempts``.
+#: call whose only in-flight signal is ``plan_attempts``. ``provider`` is
+#: task-only: the model endpoint said when its quota returns and dispatch is
+#: honouring it, so nothing is running, nobody has to act, and the engine
+#: resumes by itself - which is none of the other four.
 WAITING_ON_VALUES: frozenset[str] = frozenset(
-    {"planner", "worker", "review", "human", "nothing"}
+    {"planner", "worker", "review", "human", "provider", "nothing"}
 )
 
 _TASK_WAITING_ON: dict[str, str] = {
@@ -89,7 +93,11 @@ def task_is_terminal(status: str) -> bool:
     return status in TERMINAL_STATUSES
 
 
-def task_waiting_on(status: str, blockers: dict[str, Any] | None = None) -> str:
+def task_waiting_on(
+    status: str,
+    blockers: dict[str, Any] | None = None,
+    provider_retry_after: object = None,
+) -> str:
     """Who has to act before a task in ``status`` moves again.
 
     Args:
@@ -100,15 +108,22 @@ def task_waiting_on(status: str, blockers: dict[str, Any] | None = None) -> str:
             dependency does, one edge away; seen live on probe 1, where
             ``wait_task`` on the second leaf said "wait again" while the plan
             correctly named the merge gate.
+        provider_retry_after: The task's ``provider_retry_after`` column. While
+            it names a future instant, dispatch refuses to spawn a worker for
+            this leaf, so "waiting on the worker" is a false reading of a task
+            with no container running and none due for an hour - the reading
+            that makes a person keep polling.
 
     Returns:
         ``worker`` (queued or implementing), ``review`` (the brain is grading
         a PR), ``human`` (the merge gate or a clarification: nothing but a
-        person moves it) or ``nothing`` (terminal). A status the map does not
-        name is terminal if the vocabulary says so and otherwise read as
-        ``worker``: the failure mode of a new status is then "keeps waiting",
-        which a timeout ends, rather than "returns at once as resting", which
-        would tell a caller a live task was finished.
+        person moves it), ``provider`` (a stated quota reset the engine is
+        honouring; nobody acts and it resumes by itself) or ``nothing``
+        (terminal). A status the map does not name is terminal if the
+        vocabulary says so and otherwise read as ``worker``: the failure mode
+        of a new status is then "keeps waiting", which a timeout ends, rather
+        than "returns at once as resting", which would tell a caller a live
+        task was finished.
     """
     if task_is_terminal(status):
         return "nothing"
@@ -117,13 +132,30 @@ def task_waiting_on(status: str, blockers: dict[str, Any] | None = None) -> str:
         and blockers
         and (blockers.get("gated") or blockers.get("failed"))
     ):
+        # A human gate outranks a provider deferral deliberately: both can be
+        # true at once for a leaf whose sibling is parked, and only one of them
+        # names an action somebody can take.
         return "human"
+    if status == TaskStatus.PENDING.value and provider_quota.is_deferred(
+        provider_retry_after
+    ):
+        return "provider"
     return _TASK_WAITING_ON.get(status, "worker")
 
 
-def task_is_resting(status: str, blockers: dict[str, Any] | None = None) -> bool:
-    """Whether a wait on a task in ``status`` should return at once."""
-    return task_waiting_on(status, blockers) in _RESTING
+def task_is_resting(
+    status: str,
+    blockers: dict[str, Any] | None = None,
+    provider_retry_after: object = None,
+) -> bool:
+    """Whether a wait on a task in ``status`` should return at once.
+
+    A provider deferral is NOT resting: the engine really does resume the task
+    by itself, so a wait on it is a wait on the engine, ended by the timeout
+    rather than by a person. Only the states nothing but a human moves, and the
+    terminal ones, return immediately.
+    """
+    return task_waiting_on(status, blockers, provider_retry_after) in _RESTING
 
 
 def _blocker(row: dict[str, Any]) -> dict[str, Any]:
@@ -257,6 +289,23 @@ def plan_waiting_on(plan: dict[str, Any], tasks: list[dict[str, Any]]) -> str:
         state = derive_stalled_by_failure_state(opus_plan_json, tasks)
         if stalled_task_ids(state):
             return "human"
+        # Nothing is moving and no human gate is open, so the only question
+        # left is whether the loop CAN dispatch. A leaf a provider asked us to
+        # leave alone until a stated time cannot be, and if that is true of
+        # every pending leaf then no worker is running and none is due:
+        # answering "worker" there is what keeps a person, or an assistant,
+        # waiting on a plan nothing is working on. ALL of them, deliberately:
+        # one dispatchable sibling is what the plan is really waiting for.
+        pending = [
+            task
+            for task in tasks
+            if str(task.get("status")) == TaskStatus.PENDING.value
+        ]
+        if pending and all(
+            provider_quota.is_deferred(task.get("provider_retry_after"))
+            for task in pending
+        ):
+            return "provider"
         return "worker"
     # Every leaf terminal on a plan the loop has not yet closed: the next tick
     # completes or fails it. Nobody has to act; the engine will.

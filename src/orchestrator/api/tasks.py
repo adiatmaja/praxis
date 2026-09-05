@@ -122,8 +122,14 @@ async def _task_detail(queue: Any, task: dict[str, Any]) -> dict[str, Any]:
         "pr_url": task.get("pr_url"),
         "plan_id": task.get("plan_id"),
         "terminal": waiting.task_is_terminal(task_status),
-        "waiting_on": waiting.task_waiting_on(task_status, blockers),
+        "waiting_on": waiting.task_waiting_on(
+            task_status, blockers, task.get("provider_retry_after")
+        ),
         "blocked_by": blockers,
+        # Mirrored at the top level beside ``waiting_on``, because a caller
+        # told "waiting on the provider" and not WHEN has learned only that it
+        # should keep asking. NULL for every task no provider has deferred.
+        "provider_retry_after": task.get("provider_retry_after"),
         "fingerprint": _task_fingerprint(task),
     }
 

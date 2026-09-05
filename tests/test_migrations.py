@@ -119,8 +119,8 @@ async def test_escalation_index_defaults_to_zero(tmp_path):
 
 
 @pytest.mark.unit
-def test_current_schema_version_is_fourteen():
-    assert CURRENT_SCHEMA_VERSION == 14
+def test_current_schema_version_is_fifteen():
+    assert CURRENT_SCHEMA_VERSION == 15
 
 
 @pytest.mark.unit
@@ -430,5 +430,63 @@ async def test_migration_14_is_idempotent_and_never_overwrites_a_recorded_state(
         assert states["noop"] == "skipped"
         assert states["opened"] == "opened"
         assert states["live"] is None
+    finally:
+        await db.close()
+
+
+@pytest.mark.unit
+async def test_migration_adds_provider_retry_after_defaulting_to_null(tmp_path):
+    """A task can carry the instant a provider quota said it would reset.
+
+    NULLABLE and NULL by default, and the NULL is load-bearing in the same way
+    ``review_base_sha``'s is: it means "no provider has asked us to wait", which
+    is the state every row is in and the state dispatch must treat as ready.
+    A NOT NULL column with any default would put a deadline on every task row
+    and make the dispatch gate a coin toss against the clock.
+    """
+    db = Database(f"sqlite+aiosqlite:///{tmp_path / 'retryafter.db'}")
+    await db.initialize()
+    await db.execute("INSERT INTO users (id, name, token_hash) VALUES ('u1', 'U', 'h')")
+    await db.execute(
+        "INSERT INTO projects (id, user_id, name, repo_url) "
+        "VALUES ('proj1', 'u1', 'P', 'https://example.com/repo')"
+    )
+    await db.execute(
+        "INSERT INTO plans (id, project_id, source, status) "
+        "VALUES ('p1', 'proj1', 'test', 'active')"
+    )
+    await db.execute(
+        "INSERT INTO tasks (id, plan_id, title, description, branch_name) "
+        "VALUES ('t1', 'p1', 'T', 'D', 'agent/t')"
+    )
+    row = await db.fetch_one("SELECT provider_retry_after FROM tasks WHERE id = 't1'")
+    assert row is not None
+    assert row["provider_retry_after"] is None
+    await db.close()
+
+
+@pytest.mark.unit
+async def test_migration_15_is_idempotent(tmp_path):
+    """Re-applying the step against a table that already has the column.
+
+    Invoked DIRECTLY twice rather than by rewinding ``user_version``, for the
+    reason given in ``test_migration_12_is_idempotent``: the rewind stops
+    reaching the step as soon as a later migration lands, and the surviving
+    assertion cannot tell a re-applied guard from a step that never ran.
+    """
+    from orchestrator.database import _migration_0015_provider_retry_after
+
+    db = Database(f"sqlite+aiosqlite:///{tmp_path / 'm15-idem.db'}")
+    await db.initialize()
+    # try/finally: without it a FAILING version of this test hangs instead of
+    # failing, because the raising second call skips close() and the aiosqlite
+    # worker thread keeps the loop alive until the suite times out.
+    try:
+        connection = db._connection
+        assert connection is not None
+        await _migration_0015_provider_retry_after(connection)
+        await _migration_0015_provider_retry_after(connection)
+        names = [r["name"] for r in await db.fetch_all("PRAGMA table_info(tasks)")]
+        assert names.count("provider_retry_after") == 1
     finally:
         await db.close()
