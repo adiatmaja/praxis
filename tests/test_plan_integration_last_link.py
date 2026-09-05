@@ -546,4 +546,6 @@ async def test_the_outcome_is_recorded_before_the_context_sync_draft_runs(
 
     orch._context_sync = _Sync()
     await orch.on_plan_completed(plan_id)
+    # The draft is a background follow-up now; the record still precedes it.
+    await orch.drain_background()
     assert seen == [_INTEGRATION_OPENED]

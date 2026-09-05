@@ -13,7 +13,7 @@ import json
 import logging
 import tempfile
 from collections import Counter
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Callable, Coroutine, Iterator, Mapping, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -1107,6 +1107,7 @@ class ReviewMixin:
         _opus: Any
         _doc_indexer: Any
         _context_sync: Any
+        _spawn_background: Callable[[Coroutine[Any, Any, Any], str], None]
         _effective_settings: Any
         _llm_router: Any
 
@@ -5102,6 +5103,22 @@ class ReviewMixin:
 
         if self._context_sync is None:
             return
+        # In the BACKGROUND: the draft is a clone plus a brain call, minutes
+        # on a real repository, and it ran inline here while every other
+        # plan's decomposition and dispatch waited (probe 7, 2026-09-05).
+        self._spawn_background(
+            self._draft_context_sync(plan_id, project, str(repo_url), plan_branch),
+            f"context-sync:{plan_id}",
+        )
+
+    async def _draft_context_sync(
+        self,
+        plan_id: str,
+        project: dict[str, Any],
+        repo_url: str,
+        plan_branch: str | None,
+    ) -> None:
+        """Draft the context sync for a completed plan and announce it."""
         summary = f"Completed plan: {plan_branch or plan_id}"
         draft = await self._context_sync.draft(repo_url, summary)
         self._bus.publish(

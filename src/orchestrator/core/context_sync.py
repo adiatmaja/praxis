@@ -28,13 +28,23 @@ REVISE_PROMPT = (
 class ContextSync:
     """Drafts and (on approval) commits CLAUDE.md / MEMORY.md updates."""
 
+    #: The longest the revise brain call may run. It had NO bound: a bare
+    #: ``claude -p`` awaited with ``communicate()`` and nothing else, so a
+    #: hung CLI held its caller forever. Ten minutes is far past a real draft
+    #: (measured 4m33s on a 20-commit clone) and far short of forever.
+    DEFAULT_REVISE_TIMEOUT: float = 600.0
+
     def __init__(
         self,
         workspace_base: str,
         credentials: GitHubCredentialProvider | str,
         memory_md_path: str,
+        revise_timeout: float | None = None,
     ) -> None:
         self._base = workspace_base
+        self._revise_timeout = (
+            self.DEFAULT_REVISE_TIMEOUT if revise_timeout is None else revise_timeout
+        )
         if isinstance(credentials, str):
             self._provider: GitHubCredentialProvider = PatCredentialProvider(
                 credentials
@@ -59,7 +69,15 @@ class ContextSync:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-        await proc.communicate()
+        try:
+            await asyncio.wait_for(proc.communicate(), timeout=self._revise_timeout)
+        except TimeoutError:
+            proc.kill()
+            logger.warning(
+                "Context-sync revise exceeded %.0fs and was killed; the draft "
+                "carries whatever the CLI wrote before that",
+                self._revise_timeout,
+            )
 
     def _git_diff(self, workspace: str) -> str:
         result = subprocess.run(  # noqa: S603, S607

@@ -4457,3 +4457,29 @@ NULL forever, because `get_runnable_plans` never returns a completed plan; that 
 honest "the stage did not run" a wait reports as timed out with `waiting_on: review`, not
 a false rest, and it is a probe for the restart condition, not something to paper over
 with a timer.
+
+
+## A completed plan's follow-up brain calls held the whole loop
+
+Probe 7 (2026-09-05): three plans submitted together, one on a different rig. After the
+ordinal plan's last leaf merged at 05:00:23 the loop opened its integration PR and then,
+INLINE in the same sequential pass, ran the context-sync draft (a bare `claude -p` with
+the prompt on argv and NO timeout, awaited with `communicate()` and nothing else) and the
+improvement analysis (another brain call). The loop's next line was logged at 05:06:04.
+The three new plans sat `pending` with no decomposition for 5m41s, every `wait_plan`
+on them read "waiting on the planner", and `praxis status` showed no worker.
+
+Both follow-ups are side effects of a plan that is already COMPLETED, so they now run in
+the background (`Orchestrator._spawn_background`, tracked in `_background`; `shutdown`
+cancels them; `drain_background` awaits them, which tests must call before asserting on
+an improvement proposal or a `context_draft_ready` event). Exceptions are logged with a
+label and never reach the loop. The integration PR is deliberately still inline: it is
+the plan's own last step and the plan wait rests on it. `ContextSync._run_revise` is
+bounded (`DEFAULT_REVISE_TIMEOUT`, 600 s; measured 4m33s on a 20-commit clone) and kills
+the CLI on expiry.
+
+Still serialized, and recorded rather than changed: decomposition (three ran back to
+back, about 50 s each, so plan A's first leaf waited 1m44s to dispatch behind B's and C's
+brain calls) and review (three concurrent leaves reviewed one at a time; the third waited
+3m04s in `reviewing`). Those are the pass's own work, not follow-ups of a finished plan,
+and making them concurrent is a different change with a different risk.

@@ -634,6 +634,17 @@ story. New gotchas go in `docs/gotchas.md` first. (No count is quoted on purpose
   `remote_head_sha` returns None for an absent branch and RAISES when it cannot ask, so
   None is an ANSWER; only the exception falls through to the creation attempt. Likewise
   `base_contains` returns `None` for "could not ask" and only `True` changes the flow.
+- **A COMPLETED plan's follow-ups run in the BACKGROUND, never inline in the pass**
+  (2026-09-05, probe 7). The context-sync draft (a bare `claude -p`, formerly with no
+  timeout) and the improvement analysis are brain calls of minutes, and `run_once` is one
+  sequential pass: measured, three freshly submitted plans sat undecomposed for 5m41s
+  behind one completion. `Orchestrator._spawn_background` runs both (tracked; `shutdown`
+  cancels; tests `await orch.drain_background()` before asserting on a proposal or a
+  `context_draft_ready` event). The integration PR stays INLINE: it is the plan's own
+  last step and the wait rests on it. `ContextSync._run_revise` is bounded by
+  `DEFAULT_REVISE_TIMEOUT` (600 s) and kills the CLI. Decomposition and review are STILL
+  serialized in the pass (three decompositions ran back to back, ~50 s each; the third
+  of three concurrent reviews waited 3 min): known, recorded, not changed.
 - **A plan reaches the gate TWICE**: each task onto the plan branch, then the plan's own
   integration PR. The URL lives on `plans.integration_pr_url`; `integration_merged_at`
   takes it back out of `pending`.

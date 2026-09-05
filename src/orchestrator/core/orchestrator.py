@@ -8,6 +8,7 @@ import logging
 import shutil
 import stat
 import uuid
+from collections.abc import Coroutine
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
@@ -509,6 +510,13 @@ class Orchestrator(DispatchMixin, ReviewMixin, ReconcileMixin, ImprovementMixin)
         self._callback_token = callback_token
         # Background log-streaming monitors, keyed by agent-run id.
         self._monitors: dict[str, asyncio.Task[None]] = {}
+        #: Follow-ups of a plan that is already COMPLETED (the context-sync
+        #: draft, the improvement analysis): brain calls of minutes that used
+        #: to run INLINE in the sequential pass, so every other plan waited
+        #: behind them. Measured on probe 7 (2026-09-05): three plans sat
+        #: undecomposed for 5m41s behind one completion. Tracked so
+        #: ``shutdown`` cancels them and ``drain_background`` awaits them.
+        self._background: set[asyncio.Task[None]] = set()
         # Seconds to wait for an in-flight agent-done callback before a
         # monitor concludes a container exited without reporting completion.
         # Taken from the CALLER since 2026-08-29: `callback_grace` had been a
@@ -1336,13 +1344,10 @@ class Orchestrator(DispatchMixin, ReviewMixin, ReconcileMixin, ImprovementMixin)
                     logger.warning(
                         "on_plan_completed failed for plan %s: %s", plan_id, exc
                     )
-            analysis = await self.check_improvements(plan_id, project)
-            if analysis is not None:
-                await self.create_improvement_plan(
-                    project["id"],
-                    analysis,
-                    activate=not bool(project["approval_gate"]),
-                )
+            self._spawn_background(
+                self._propose_improvements(plan_id, project),
+                f"improvements:{plan_id}",
+            )
             return
 
         # A leaf parked on an unanswered question wedges the plan exactly the
@@ -1362,14 +1367,64 @@ class Orchestrator(DispatchMixin, ReviewMixin, ReconcileMixin, ImprovementMixin)
                 }
             )
 
+    async def _propose_improvements(
+        self, plan_id: str, project: dict[str, Any]
+    ) -> None:
+        """The improvement analysis and its plan, as one background follow-up."""
+        analysis = await self.check_improvements(plan_id, project)
+        if analysis is not None:
+            await self.create_improvement_plan(
+                project["id"],
+                analysis,
+                activate=not bool(project["approval_gate"]),
+            )
+
+    def _spawn_background(self, coro: Coroutine[Any, Any, Any], label: str) -> None:
+        """Run a completed plan's follow-up without holding the loop.
+
+        Exceptions are logged with the label and never propagate: a follow-up
+        is a side effect of a plan that is already COMPLETED, and the loop's
+        next plan must not pay for it. The task is tracked so ``shutdown``
+        cancels it and tests can await it through ``drain_background``.
+        """
+
+        async def guarded() -> None:
+            try:
+                await coro
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001 - logged, never fatal to the loop
+                logger.exception("Background follow-up %s failed", label)
+
+        task = asyncio.create_task(guarded(), name=label)
+        self._background.add(task)
+        task.add_done_callback(self._background.discard)
+
+    @property
+    def background_count(self) -> int:
+        """How many follow-ups are still running."""
+        return len(self._background)
+
+    async def drain_background(self) -> None:
+        """Await every background follow-up (tests, and an orderly stop)."""
+        pending = list(self._background)
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
+
     async def shutdown(self) -> None:
-        """Cancel all in-flight log monitors."""
+        """Cancel all in-flight log monitors and background follow-ups."""
         monitors = list(self._monitors.values())
         for task in monitors:
             task.cancel()
         if monitors:
             await asyncio.gather(*monitors, return_exceptions=True)
         self._monitors.clear()
+        background = list(self._background)
+        for task in background:
+            task.cancel()
+        if background:
+            await asyncio.gather(*background, return_exceptions=True)
+        self._background.clear()
 
     async def run_once(self) -> None:
         """Run one orchestration pass over all pending and active plans."""

@@ -1063,6 +1063,9 @@ class TestOrchestrationLoop:
         )
 
         await orch.run_once()
+        # The proposal is a background follow-up of a COMPLETED plan since
+        # 2026-09-05 (probe 7): the loop no longer waits for the brain call.
+        await orch.drain_background()
 
         completed = await task_queue.get_plan(plan_id)
         plans = await task_queue.get_plans_for_project("p1")
