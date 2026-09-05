@@ -4608,6 +4608,17 @@ returns at once finishes at the pass's next `await`, which is scheduling luck an
 contract. `drain_background` loops until nothing is tracked, since a review that completes
 a plan spawns that plan's follow-ups.
 
+Measured after, on the same probes (2026-09-05, worker opencode / qwen3.8-27b): three
+plans submitted together decomposed concurrently in 40.5, 44.4 and 62.7 s, each waiting
+0.0 s for a slot, and each plan's first leaf dispatched 6 to 12 s after it activated
+(before: 1m44s). The ready-to-review wait fell from 1 / 74 / 112 s to 7, 8, 2, 1, 2 and
+6 s, the loop interval being the floor, and two reviews of two different plans started
+33 ms apart and ran together. On the 19-leaf fan-out, a wave's last worker went from ready
+to the NEXT worker spawned in 9 s where round 12 took 3m17s behind three serial reviews,
+and that wave's three reviews all started in the same second while dispatch kept running.
+A review also started while the 40 KB decomposition held a slot for 217 s, which the
+sequential pass could not do at all.
+
 Observing it: `GET /api/status` carries `brain_stages` (`cap`, and `in_flight` rows with
 `stage`, `plan_id`, `task_id`, `state` of `waiting` or `running`, and
 `running_for_seconds`); `praxis status` prints a "Brain stages: N in flight (cap M)" line
