@@ -693,6 +693,46 @@ class TaskQueue:
         )
         return await self._reactivate_plan_for_requeue(str(task["plan_id"]), task_id)
 
+    async def requeue_failed_attempt(self, task_id: str, feedback: str) -> bool:
+        """Record a failed attempt and requeue the task, in ONE write.
+
+        Every re-queue site used to call ``fail_task`` (status FAILED, feedback)
+        and then ``retry_task`` (status PENDING, attempt + 1) as two statements,
+        so a reader between them saw a terminal failure nobody had decided.
+        Seen live on 2026-09-05: ``wait_plan`` answered ``failed, attempt 1,
+        retry_task(<id>)`` for a leaf that read ``pending, attempt 2`` a second
+        later, and a client following that advice would have been told 409.
+        Under concurrent reviews the window is no longer only the loop's own.
+
+        Same columns as the pair it replaces (feedback, attempt, the cleared
+        worker session) and the same plan reactivation, so the callers cannot
+        drift from ``retry_task``'s contract. ``fail_task`` is now what a
+        TERMINAL verdict writes, and nothing else.
+
+        Args:
+            task_id: The task whose attempt just failed.
+            feedback: What to store as ``review_feedback`` for the next attempt.
+
+        Returns:
+            Whether the owning plan was taken back out of ``failed``.
+
+        Raises:
+            ValueError: If the task does not exist.
+        """
+        task = await self.get_task(task_id)
+        if task is None:
+            message = f"Task {task_id} not found"
+            raise ValueError(message)
+        now = datetime.now(UTC).isoformat()
+        await self._db.execute(
+            """UPDATE tasks
+               SET status = ?, attempt = ?, review_feedback = ?, updated_at = ?,
+                   worker_session_id = NULL, worker_session_harness = NULL
+               WHERE id = ?""",
+            (TaskStatus.PENDING, int(task["attempt"]) + 1, feedback, now, task_id),
+        )
+        return await self._reactivate_plan_for_requeue(str(task["plan_id"]), task_id)
+
     async def _reactivate_plan_for_requeue(self, plan_id: str, task_id: str) -> bool:
         """Put a plan back in the loop's reach when one of its leaves is requeued.
 

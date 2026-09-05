@@ -996,8 +996,9 @@ async def agent_done(request: Request, body: AgentDonePayload) -> dict[str, str]
                     # ``fail_task`` then ``retry_task`` is the order the review path
                     # already uses (``orchestrator_review._fail_and_maybe_retry``); the
                     # two paths differing on the same question is what let this sit.
-                    await queue.fail_task(body.task_id, feedback)
-                    await queue.retry_task(body.task_id)
+                    # ONE write, never FAILED then PENDING: see
+                    # ``TaskQueue.requeue_failed_attempt``.
+                    await queue.requeue_failed_attempt(body.task_id, feedback)
                     request.app.state.event_bus.publish(
                         {
                             "type": "task_retry",

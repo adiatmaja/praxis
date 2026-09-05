@@ -876,6 +876,12 @@ story. New gotchas go in `docs/gotchas.md` first. (No count is quoted on purpose
   `RUN_FAILED` means the run itself ended in failure and nothing reached a review. The
   no-change route passes triage the measured `(0, 0, "")`; the run-failure route passes
   `(None, None, "")`, because nothing counted anything there.
+- **A re-queue is ONE write to `pending`, never `failed` then `pending`** (2026-09-05):
+  `TaskQueue.requeue_failed_attempt` replaced the `fail_task` + `retry_task` pair at every
+  re-queue site (`rg -n "requeue_failed_attempt\(" src/`); a `wait_plan` had read the
+  intermediate FAILED and advised `retry_task` on a task that was pending a second later.
+  `fail_task` is the TERMINAL verdict only. The guard is a SQL trigger auditing every
+  status write.
 - **A requeue REACTIVATES a `failed` plan, or the recovery is inert** (fixed 2026-08-27):
   dispatch reaches a task through two gates that both key on the PLAN
   (`get_runnable_plans` selects `pending`/`active`; `process_plan_once` returns unless

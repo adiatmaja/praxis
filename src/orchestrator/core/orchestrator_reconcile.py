@@ -2000,9 +2000,10 @@ class ReconcileMixin:
             if project is not None:
                 max_retries = int(project["max_retries"])
 
-        await self._tq.fail_task(run["task_id"], reason)
         if can_retry and task is not None and int(task["attempt"]) < max_retries:
-            await self._tq.retry_task(run["task_id"])
+            # ONE write, never FAILED then PENDING: see
+            # ``TaskQueue.requeue_failed_attempt``.
+            await self._tq.requeue_failed_attempt(run["task_id"], reason)
             self._bus.publish(
                 {
                     "type": "task_retry",
@@ -2019,6 +2020,7 @@ class ReconcileMixin:
                 reason,
             )
         else:
+            await self._tq.fail_task(run["task_id"], reason)
             escalation = "block"
             if project is not None:
                 escalation = await self._decide_escalation(

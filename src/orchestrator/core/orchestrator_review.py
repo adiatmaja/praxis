@@ -1138,8 +1138,8 @@ class ReviewMixin:
             project: Project dict, read for ``max_retries``.
             feedback: Message stored as ``review_feedback`` and published.
         """
-        await self._tq.fail_task(task_id, feedback)
         if task.get("implement_harness") == BRAIN_IMPLEMENTER:
+            await self._tq.fail_task(task_id, feedback)
             # A micro edit is never retried. There is no worker to send it back
             # to, and re-running the lane would rewrite the identical content,
             # find the index clean, and close as a no-op, which would report
@@ -1157,7 +1157,9 @@ class ReviewMixin:
             )
             return
         if int(task["attempt"]) < int(project["max_retries"]):
-            await self._tq.retry_task(task_id)
+            # ONE write, never FAILED then PENDING: see
+            # ``TaskQueue.requeue_failed_attempt``.
+            await self._tq.requeue_failed_attempt(task_id, feedback)
             self._bus.publish(
                 {
                     "type": "task_retry",
@@ -1166,6 +1168,7 @@ class ReviewMixin:
                 }
             )
         else:
+            await self._tq.fail_task(task_id, feedback)
             self._bus.publish(
                 {
                     "type": "task_failed",
@@ -3845,9 +3848,8 @@ class ReviewMixin:
             msg = f"Task {task_id} has an unparseable pr_url {task['pr_url']!r}"
             raise ValueError(msg) from exc
         await backend.comment(ref, message)
-        await self._tq.fail_task(task_id, message)
         if int(task["attempt"]) < int(project["max_retries"]):
-            await self._tq.retry_task(task_id)
+            await self._tq.requeue_failed_attempt(task_id, message)
             self._bus.publish(
                 {
                     "type": "task_retry",
@@ -3856,6 +3858,7 @@ class ReviewMixin:
                 }
             )
         else:
+            await self._tq.fail_task(task_id, message)
             self._bus.publish(
                 {"type": "task_failed", "task_id": task_id, "feedback": message}
             )

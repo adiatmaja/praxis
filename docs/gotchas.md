@@ -4709,3 +4709,26 @@ TERM and report `failed`. What remained was a labelling hazard, and that is what
 ...`, so nobody reads the harness's word as Praxis's judgement. Revisit only if a second
 case appears where the harness's word and the orchestrator's disposition legitimately
 differ for a reason the task row cannot carry.
+
+
+## A re-queued attempt passed through FAILED, and a wait read it as terminal
+
+Round 13 (2026-09-05), seen on `wait_plan` during the first live probe: the answer was
+`status: failed, attempt 1, next_action: retry, retry_task(<id>)` for a leaf that read
+`pending, attempt 2` a second later. Every re-queue site wrote `fail_task` (status FAILED
+plus the feedback) and then `retry_task` (status PENDING, attempt + 1) as two statements,
+and the wait endpoint re-reads the row on every wake, so a reader landing between the two
+saw a terminal failure nobody had decided. Following the advice would have returned 409
+from the retry endpoint, and a client that stops on `retry` stopped on a task the loop was
+about to run again. Concurrent reviews widen the window: the intermediate write is no
+longer only the loop's own.
+
+`TaskQueue.requeue_failed_attempt(task_id, feedback)` writes the feedback, the attempt
+and `pending` in ONE statement and reactivates a `failed` plan exactly as `retry_task`
+does; `fail_task` is now what a TERMINAL verdict writes and nothing else. Four sites were
+routed through it (`rg -n "requeue_failed_attempt\(" src/` derives them: the review
+verdict path, the unparseable-ref path, the callback's worker-`failed` arm and reconcile's
+exited-container arm). `tests/test_requeue_never_passes_through_failed.py` installs a SQL
+trigger that records every status the row passes through, which is the only way to see a
+write no later read can, and drives the review, callback and reconcile paths plus the
+terminal positive control.
