@@ -4691,3 +4691,21 @@ of the agent's post-sleep output and an elapsed time under ten seconds; a handle
 agent holds the captured pipe open). The images must be rebuilt after this change: an
 entrypoint edit does nothing until `praxis init` (or the hand export of the entrypoint
 hashes) followed by `docker compose --profile agents build`.
+
+
+## A killed worker's run row read `completed`: the word is the harness's, not a verdict
+
+Round 12, probe 2: a bare `docker stop` made the agy harness exit 0, its EXIT trap posted
+`completed` with no PR, the orchestrator failed the task from the shape of that callback,
+and `agent_runs.status` kept the word `completed`. The open question was whether the row
+deserves a second column carrying the orchestrator's disposition. Decided in round 13
+(2026-09-05): **no column**. `agent_runs.status` records what the HARNESS reported, which
+is a fact worth keeping exactly as sent; the orchestrator's verdict on the attempt already
+lives on the task (`status`, `review_feedback`, the `task_outcomes` row), and a per-run
+copy of it would be a second place for the same judgement to drift. The one observed lie
+was the harness's, under SIGTERM, and it is fixed at its source: both entrypoints now trap
+TERM and report `failed`. What remained was a labelling hazard, and that is what changed:
+`praxis logs` prints the run header as `run <id>  |  harness reported <status>  |  started
+...`, so nobody reads the harness's word as Praxis's judgement. Revisit only if a second
+case appears where the harness's word and the orchestrator's disposition legitimately
+differ for a reason the task row cannot carry.

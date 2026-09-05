@@ -1093,6 +1093,9 @@ story. New gotchas go in `docs/gotchas.md` first. (No count is quoted on purpose
   defers traps while a foreground command runs. The agent now runs in the background under
   job control (`run_agent`), `on_term` kills its process group and exits 143 (a `failed`
   callback). Rebuild the agent images after any entrypoint edit.
+  **A run row's `status` is the HARNESS's word, never a verdict** (decided 2026-09-05: no
+  disposition column; the verdict lives on the task). `praxis logs` says "harness reported
+  <status>" for that reason.
 - **A planner that answers in prose is PERMANENTLY failed, never retried**: no JSON
   anywhere in the reply means a refusal/question/permission request, structural not
   keyword-matched; malformed JSON is the transient bucket and retries to a bound.

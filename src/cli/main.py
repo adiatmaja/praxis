@@ -1336,8 +1336,13 @@ def _print_run_log(run: dict[str, Any], tail: int) -> None:
         run: An ``agent_runs`` row as returned by ``GET /api/tasks/{id}``.
         tail: Lines to print from the end; 0 means all of them.
     """
+    # "harness reported", because ``agent_runs.status`` is the word the HARNESS
+    # sent and nothing more: a worker killed from outside once reported
+    # ``completed`` while the orchestrator failed the task from the shape of
+    # its callback. The verdict lives on the task (`praxis task <id>`); this
+    # header must not read like one.
     header = (
-        f"run {run['id']}  |  {run.get('status') or '?'}  |  "
+        f"run {run['id']}  |  harness reported {run.get('status') or '?'}  |  "
         f"started {run.get('started_at') or '?'}"
     )
     console.print(f"[bold]{header}[/bold]")

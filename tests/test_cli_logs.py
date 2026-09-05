@@ -174,3 +174,22 @@ def test_an_unknown_task_surfaces_the_api_error(monkeypatch) -> None:
 
     assert result.exit_code == 1
     assert "404" in result.stdout
+
+
+def test_the_run_header_says_the_status_is_the_harness_report(monkeypatch) -> None:
+    """``agent_runs.status`` is the word the HARNESS sent, not a verdict.
+
+    A worker killed from outside once reported ``completed`` (round 12, probe
+    2) while the orchestrator failed the task from the shape of its callback,
+    and the bare header read as if Praxis had judged the run complete. The
+    verdict lives on the task; the header must say whose word this is.
+    """
+    _patch_client(
+        monkeypatch,
+        {"task": {"status": "failed"}, "runs": [_run("r1", "x", status="completed")]},
+    )
+
+    result = runner.invoke(app, ["logs", FULL_TASK_ID])
+
+    assert result.exit_code == 0
+    assert "harness reported completed" in result.stdout
