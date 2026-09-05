@@ -37,27 +37,34 @@ switching tools.
 
 ## A session, end to end
 
-An illustrative session, condensed (mock output, not a capture). You wrote the plan,
-`my-api` is your repo, and the ask overrides the default worker preset, naming Gemini
-on its `agy` (Antigravity) harness:
+A real run, not a mock, captured 2026-09-05 on `adiatmaja/praxis-stress`. The plan asked
+for eighteen small string helpers for a package called `textkit`, one module and one test
+file each, plus a nineteenth task exporting all of them; the worker was `qwen3.8-27b` on
+the `opencode` harness, three running at a time:
 
 ```
-you        "use praxis to implement docs/plans/rate-limit.md on my-api,
-            worker gemini on the agy harness"
+you        "use praxis to implement this plan on praxis-stress,
+            worker qwen3.8-27b on the opencode harness"
               Called praxis (execute_plan)
-assistant  plan accepted: 4 tasks, each sized to what gemini can implement
+assistant  plan decomposed into 19 tasks in 217s, each sized to what qwen3.8-27b
+           can implement
               ...workers run in Docker containers; your session keeps going...
-              ...task 3 failed verify, re-dispatched with feedback (attempt 2/3)...
-              Called praxis (poll_plan)
-assistant  task 1 passed verify and review, its PR is parked for your approval;
-           task 2 depends on it and dispatches once you merge:
-           https://github.com/you/my-api/pull/17
-you        "the diff looks right. merge it"        (or: praxis merge <task-id>)
-              ...implement, verify, review, approve, until every task lands...
-assistant  4/4 tasks merged; the integration PR to main is parked for you:
-           https://github.com/you/my-api/pull/21
+              ...camel_to_snake passed its verify gate, then the review model
+                 REJECTED it: the plan required two edge cases it skipped,
+                 repeated internal whitespace and tabs/newlines. Re-dispatched
+                 with that feedback...
+              ...attempt 2 added exactly those two cases and passed review...
+              Called praxis (wait_plan)
+assistant  19/19 tasks passed review and merged; the caught-and-fixed leaf is
+           https://github.com/adiatmaja/praxis-stress/pull/66, the rest are
+           #64 to #78 and #80 to #83. The integration PR to main is parked for you:
+           https://github.com/adiatmaja/praxis-stress/pull/85
 you        "merge it"                              (or: praxis merge-plan <id>)
 ```
+
+Zero terminal failures across the nineteen tasks. The rejected leaf is the fact worth
+sitting with: nothing but the gate caught the gap, the worker fixed it on the next
+attempt, and no human read a diff until the finished PR was already parked for approval.
 
 Pull requests are the unit of trust: *inspectable, revertible, approved by you*.
 GitHub is the one platform Praxis speaks today; local-only mode runs the same loop
