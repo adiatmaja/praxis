@@ -77,6 +77,15 @@ _PROVIDER_SIGNALS: tuple[str, ...] = (
     "ECONNREFUSED",
     "ECONNRESET",
     "connect ENOENT",
+    # A subscription or API quota, exhausted. Found live on 2026-09-05: agy
+    # answered every worker in three seconds with "Individual quota reached.
+    # Please upgrade your subscription to increase your limits. Resets in
+    # 1h15m27s." and the harness reported plain `failed`, so eleven calibration
+    # rows and two brain-authored splits were charged to a model that never
+    # ran. The model never answered; the failure is the endpoint's.
+    "quota reached",
+    "Quota exceeded",
+    "RESOURCE_EXHAUSTED",
 )
 
 _RATE_LIMIT_SIGNALS: tuple[str, ...] = (

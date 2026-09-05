@@ -4620,3 +4620,46 @@ fixed: the first floor mutation (`int(x) or 1`) was equivalent to the code for z
 the first shutdown guard asserted `background_count == 0` after `_stage_jobs.clear()`, so
 a shutdown that merely forgot the stages passed it; it now asserts the blocked stage's
 `finally` ran, which only a real cancellation produces.
+
+
+## A provider quota is not a worker failure, and one walk paid the whole price
+
+Round 13 (2026-09-05), the first live run after decomposition and review became
+concurrent stages. Three plans were submitted together and every agy worker exited in
+about three seconds with the JSON line `{"status":"ERROR", ..., "error":"Individual
+quota reached. Please upgrade your subscription to increase your limits. Resets in
+1h15m27s."}`. The agy entrypoint reports `failed` for every non-zero exit, and
+`find_provider_signal` knew gateway and HTTP shapes (`HTTP 429`, `Too Many Requests`,
+`Bad Gateway`, `Connection refused`) but not this wording, so the callback path took
+the worker-attributable arm on all of them. In two minutes: eleven `task_outcomes` rows
+(`fail/run_failed`, `fail/no_output`) written against Gemini 3.7 Flash (Low), which is
+the one table the capability engine reads; three leaves terminally failed at attempt 3
+and their plans stalled; adaptive triage spent a brain call per leaf on an evidence pack
+of `(None, None, "")` and answered `split` twice, so two plans (`61856df4`, `3eae943e`)
+now carry child leaves the brain invented from nothing ("Create pad_right module
+implementation" / "Create pad_right test module"), and the third split was refused by
+the leaf standard for missing verification commands. The first `split` ever observed on
+a real repository, and it was decided on noise. None of it says a thing about the
+worker: the model never answered.
+
+The fix is the signal list. `quota reached`, `Quota exceeded` and `RESOURCE_EXHAUSTED`
+join `_PROVIDER_SIGNALS`, so the existing provider-error arm handles the shape: the run
+is re-queued without spending an attempt, no calibration row is written, no triage call
+is made, the re-queue is bounded by the shared respawn cap, and the stored feedback and
+the `worker_provider_error` event carry the evidence line, which is the one with the
+reset time in it. `tests/test_agy_quota_is_a_provider_error.py` drives the verbatim
+container log through the real endpoint.
+
+What it does NOT do, recorded rather than built: honour "Resets in 1h15m27s". The
+provider-error path backs off `min(2 s x streak, 30 s)` and stops respawning after five
+consecutive provider errors with `worker_endpoint_unreachable`, so under an hour-long
+quota outage a leaf still goes terminal in about two minutes, honestly this time (no
+row, no triage, a reason naming the quota and the reset time), and the plan stalls until
+`praxis retry` after the reset. Parsing the reset duration into a not-before time for the
+re-queue is the better product and needs a column; it is the open item.
+
+The general rule this re-states: **a worker failure is attributable only when the model
+ANSWERED**. A harness exit code cannot tell the two apart, the classifier's word list is
+the only thing that does, and every new provider brings its own wording. When a walk
+shows a run failing in seconds, read the container log before believing the attempt
+count: `praxis logs <task-id>` prints it.

@@ -777,6 +777,13 @@ story. New gotchas go in `docs/gotchas.md` first. (No count is quoted on purpose
   attempt N/M failed (HTTP ...)` lines are EXCLUDED from the scan: they report the
   ORCHESTRATOR's answer to the callback, not the model endpoint's, and `HTTP 503` on one
   re-queued a real failure for free. Exact prefix at line start, nothing wider.
+  **A QUOTA is a provider error too** (2026-09-05, round 13): agy answered every worker
+  in three seconds with "Individual quota reached ... Resets in 1h15m27s" and, because
+  the harness reports plain `failed`, eleven calibration rows and two brain-authored
+  `split`s were charged to a model that never ran. `quota reached` / `Quota exceeded` /
+  `RESOURCE_EXHAUSTED` are signals now. Honouring the reset time is NOT built (the
+  respawn cap still ends the leaf in about two minutes, honestly). When a run fails in
+  seconds, read `praxis logs <task-id>` before believing the attempt count.
 - **The wave verify gate makes the same comparison, or it parks a plan forever, invisibly**
   (2026-08-26): a plan branch red for a SIBLING's contract was called a regression, and
   since `merged_count` cannot advance while the wave is parked the verdict was permanent
