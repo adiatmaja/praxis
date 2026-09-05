@@ -4508,3 +4508,29 @@ worker "reused" is its own invention. Deliberately narrow (same line, listed cue
 plan that says "Create src/x.py" can never match; and advisory, like the other tiers.
 Four mutations red: tier never computed, edited files counted as created, cue ignored,
 verdict still clean with a phantom.
+
+
+## Reconcile gave up on a clean exit 73 seconds before the harness did
+
+Seen live on 2026-09-05 while a full test suite ran on the host: Docker's port proxy
+stalled for about a minute, `/health` timed out twice, and three workers that had just
+exited 0 could not land their callbacks. Reconcile's `_reconcile_exited` waits
+`callback_grace` (5 s), re-reads the run, and closes it "Agent container exited (code 0)
+without a completion callback"; it did that to all three, requeued them as attempt 2, and
+when the callbacks finally arrived (fifteen redeliveries inside 20 ms once the proxy
+came back) every one was refused as a duplicate of a run already disposed of. The work
+was pushed and finished; it was thrown away and re-run. Nothing was charged.
+
+The entrypoint's own budget is 5 attempts at `--max-time 10` with sleeps of 4, 6, 8 and
+10 s: 78 s. A 5 s grace judged that budget from the wrong side. Reconcile now reads
+Docker's `FinishedAt` (a new `finished_at` on `get_container_status`) and, for a
+container that exited CLEAN less than `CALLBACK_RETRY_WINDOW_SECONDS` (90 s) ago, leaves
+the run open for a later pass with an INFO line saying so. The pass never sleeps for it.
+A non-zero exit keeps today's disposal (a crashed worker is not retrying anything), and
+so does a status that carries no stamp or one that cannot be parsed: cannot ask is not an
+answer. Three mutations red: the check removed, non-zero exits included, the nanosecond
+stamp unparsed.
+
+The stall itself was self-inflicted (4,400 tests on the same box that runs Docker
+Desktop) and is exactly the adverse infrastructure the session was after: a busy host, a
+brief network hiccup, or a proxy restart will do the same in production.

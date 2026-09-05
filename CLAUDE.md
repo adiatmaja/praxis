@@ -930,6 +930,15 @@ story. New gotchas go in `docs/gotchas.md` first. (No count is quoted on purpose
   monitor). An unreadable start stamp never expires a run. The reason is worker-facing
   GUIDANCE (it lands in `review_feedback`, which the Bible injects into the next attempt),
   so it names the ACTION first and disclaims attribution second.
+- **A container that exited CLEAN inside the harness's callback-retry window is left
+  OPEN** (2026-09-05, `CALLBACK_RETRY_WINDOW_SECONDS` = 90 in `orchestrator_reconcile`).
+  The entrypoint retries its callback 5 times at `--max-time 10` with 4+6+8+10 s of
+  backoff (78 s worst case) while reconcile's grace was 5 s: when the host stalled for a
+  minute, three workers exited 0, reconcile closed all three "without a completion
+  callback", their redeliveries were refused as duplicates, and finished work was thrown
+  away and re-run as attempt 2. The window is judged from Docker's own `FinishedAt`
+  (now on `get_container_status`), never by sleeping in the pass; a non-zero exit, an
+  unreadable stamp, or a double that does not say WHEN keep the old disposal.
 - **The expiry WAITS `_callback_grace`, re-reads the run, and disposes of nothing once
   `finished_at` is set** (fixed 2026-08-29, found on the bound's FIRST live firing: the
   worker reported `completed` 404ms AFTER the kill). `complete_agent_run` closes a run

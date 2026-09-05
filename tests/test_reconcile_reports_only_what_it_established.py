@@ -344,3 +344,114 @@ class _Bus:
 
     def publish(self, event: dict[str, Any]) -> None:
         self.published.append(event)
+
+
+# ---------------------------------------------------------------------------
+# A container that exited clean seconds ago may still be RETRYING its callback.
+# ---------------------------------------------------------------------------
+
+
+def _iso_seconds_ago(seconds: float) -> str:
+    from datetime import UTC, datetime, timedelta
+
+    stamp = datetime.now(UTC) - timedelta(seconds=seconds)
+    # Docker's RFC 3339 shape, nanoseconds and a trailing Z.
+    return stamp.strftime("%Y-%m-%dT%H:%M:%S.%f") + "000Z"
+
+
+async def _exited_run(db: Database) -> tuple[Any, str]:
+    tq = await _seed(db)
+    await _project(db, "pA", REPO)
+    await _plan(db, "planA", "pA")
+    await _task(db, "tA", "planA", "agent/x", "in_progress")
+    run_id = await tq.create_agent_run("tA", "container-xyz")
+    return tq, run_id
+
+
+@pytest.mark.integration
+async def test_a_clean_exit_inside_the_callback_retry_window_is_left_open(
+    db: Database,
+) -> None:
+    """Live on 2026-09-05: the host stalled for about a minute, three workers
+    exited 0 while their callbacks could not land, reconcile closed all three
+    as "without a completion callback" after its 5 s grace, and their
+    redeliveries were then refused as duplicates. Finished work was thrown
+    away and re-run. The entrypoint retries for up to about 78 s (5 attempts
+    at 10 s plus 4+6+8+10 s of backoff); reconcile must not dispose of a run
+    that exited clean inside that window."""
+    tq, run_id = await _exited_run(db)
+    harness = _ReconcileHarness(tq, _FakeGit([]))
+    harness._callback_grace = 0.0
+    harness._bus = _Bus()
+    await harness._reconcile_exited(
+        {"id": run_id, "task_id": "tA", "container_id": "container-xyz"},
+        {"status": "exited", "exit_code": 0, "finished_at": _iso_seconds_ago(20)},
+    )
+    run = await tq.get_agent_run(run_id)
+    assert run is not None
+    assert run["finished_at"] is None, "disposed of a run whose callback is still due"
+    task = await tq.get_task("tA")
+    assert task is not None
+    assert task["status"] == "in_progress"
+
+
+@pytest.mark.integration
+async def test_a_clean_exit_past_the_callback_retry_window_is_failed(
+    db: Database,
+) -> None:
+    tq, run_id = await _exited_run(db)
+    harness = _ReconcileHarness(tq, _FakeGit([]))
+    harness._callback_grace = 0.0
+    harness._bus = _Bus()
+    await harness._reconcile_exited(
+        {"id": run_id, "task_id": "tA", "container_id": "container-xyz"},
+        {"status": "exited", "exit_code": 0, "finished_at": _iso_seconds_ago(200)},
+    )
+    task = await tq.get_task("tA")
+    assert task is not None
+    assert "without a completion callback" in (task["review_feedback"] or "")
+
+
+@pytest.mark.integration
+async def test_a_status_without_an_exit_time_keeps_the_old_disposal(
+    db: Database,
+) -> None:
+    """A double (or an older manager) that does not say WHEN keeps today's rule."""
+    tq, run_id = await _exited_run(db)
+    harness = _ReconcileHarness(tq, _FakeGit([]))
+    harness._callback_grace = 0.0
+    harness._bus = _Bus()
+    await harness._reconcile_exited(
+        {"id": run_id, "task_id": "tA", "container_id": "container-xyz"},
+        {"status": "exited", "exit_code": 0},
+    )
+    task = await tq.get_task("tA")
+    assert task is not None
+    assert "without a completion callback" in (task["review_feedback"] or "")
+
+
+def test_the_retry_window_covers_the_entrypoints_budget() -> None:
+    """5 attempts at `--max-time 10` plus sleeps of 4, 6, 8 and 10 s is 78 s."""
+    from orchestrator.core import orchestrator_reconcile as mod
+
+    assert mod.CALLBACK_RETRY_WINDOW_SECONDS >= 78.0
+
+
+def test_get_container_status_reports_when_the_container_finished() -> None:
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+
+    from orchestrator.core.agent_manager import AgentManager
+
+    manager = AgentManager.__new__(AgentManager)
+    fake = SimpleNamespace(
+        status="exited",
+        attrs={
+            "State": {"ExitCode": 0, "FinishedAt": "2026-09-05T06:01:45.123456789Z"}
+        },
+    )
+    manager._client = MagicMock()
+    manager._client.containers.get.return_value = fake
+    status = manager.get_container_status("container-xyz")
+    assert status is not None
+    assert status["finished_at"] == "2026-09-05T06:01:45.123456789Z"

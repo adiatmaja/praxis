@@ -906,9 +906,14 @@ class AgentManager:
             container = self._client.containers.get(container_id)
         except docker.errors.NotFound:
             return None
+        state = container.attrs.get("State", {})
         return {
             "status": container.status,
-            "exit_code": container.attrs["State"]["ExitCode"],
+            "exit_code": state.get("ExitCode"),
+            # Docker's RFC 3339 stamp of the exit ("0001-01-01T00:00:00Z" while
+            # running). Reconcile reads it to tell "exited seconds ago, its
+            # callback may still be retrying" from "exited long ago".
+            "finished_at": state.get("FinishedAt"),
         }
 
     def get_container_logs(self, container_id: str, tail: int | str = 500) -> str:

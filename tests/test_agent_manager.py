@@ -228,6 +228,7 @@ def test_get_container_status(mock_docker: MagicMock) -> None:
     assert manager.get_container_status("abc123") == {
         "status": "exited",
         "exit_code": 0,
+        "finished_at": None,
     }
 
 

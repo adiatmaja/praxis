@@ -706,6 +706,46 @@ def _seconds_since(timestamp: Any, now: datetime) -> float | None:
     return (now - parsed).total_seconds()
 
 
+#: How long a container that exited CLEAN may go without its callback before
+#: reconcile disposes of it. The entrypoint retries the callback 5 times at
+#: ``--max-time 10`` with sleeps of 4, 6, 8 and 10 s between them: 78 s worst
+#: case. Below this, "no callback yet" is not "no callback".
+CALLBACK_RETRY_WINDOW_SECONDS: float = 90.0
+
+
+def _exited_seconds_ago(status: dict[str, Any] | None) -> float | None:
+    """Seconds since Docker's ``FinishedAt``, or None when it cannot be read.
+
+    Docker writes RFC 3339 with nanoseconds and a trailing ``Z``, and the zero
+    time ``0001-01-01T00:00:00Z`` while a container is still running. Both
+    unreadable shapes and the zero time answer None, which keeps the caller's
+    existing rule.
+    """
+    from datetime import UTC, datetime
+
+    raw = None if status is None else status.get("finished_at")
+    if not isinstance(raw, str) or raw.startswith("0001-01-01"):
+        return None
+    text = raw.strip()
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    if "." in text:
+        head, _, tail = text.partition(".")
+        digits = ""
+        i = 0
+        while i < len(tail) and tail[i].isdigit():
+            digits += tail[i]
+            i += 1
+        text = f"{head}.{digits[:6]}{tail[i:]}"
+    try:
+        stamp = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if stamp.tzinfo is None:
+        stamp = stamp.replace(tzinfo=UTC)
+    return max(0.0, (datetime.now(UTC) - stamp).total_seconds())
+
+
 def _worker_timeout_reason(elapsed: float, bound: float) -> str:
     """What a timed-out task's next attempt, and its operator, are told.
 
@@ -1806,6 +1846,14 @@ class ReconcileMixin:
     ) -> None:
         """Fail a run whose container exited without a completion callback.
 
+        A container that exited CLEAN inside ``CALLBACK_RETRY_WINDOW_SECONDS``
+        is left open: its entrypoint may still be retrying the callback. Live
+        on 2026-09-05 the host stalled for about a minute, three workers
+        exited 0 while their callbacks could not land, this method closed all
+        three after the 5 s grace, and their redeliveries were refused as
+        duplicates: finished work thrown away and re-run. The window is judged
+        from Docker's own exit stamp, never by sleeping in the pass.
+
         Waits a grace period first: the agent-done callback may still be in
         flight, in which case the run is already past ``running`` and we do
         nothing.
@@ -1818,6 +1866,22 @@ class ReconcileMixin:
         # of the callback that had already settled it. Same predicate as the
         # claim and as ``get_running_runs``.
         if current is None or current["finished_at"] is not None:
+            return
+        exited_ago = _exited_seconds_ago(status)
+        if (
+            status is not None
+            and status.get("exit_code") == 0
+            and exited_ago is not None
+            and exited_ago < CALLBACK_RETRY_WINDOW_SECONDS
+        ):
+            logger.info(
+                "Run %s: container exited clean %.0fs ago and no callback has "
+                "landed yet; the harness retries for up to %.0fs, so the run "
+                "stays open for a later pass",
+                run["id"],
+                exited_ago,
+                CALLBACK_RETRY_WINDOW_SECONDS,
+            )
             return
         logs = self._safe_logs(run["container_id"]) or str(current["logs"] or "")
         if status is None:
