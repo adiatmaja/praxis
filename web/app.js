@@ -220,9 +220,10 @@
       if (!drift || typeof drift !== "object") return "";
       const named = drift.named_not_authorised || [];
       const unmentioned = drift.unmentioned || [];
-      if (drift.gradable && !named.length && !unmentioned.length) return "";
+      const phantom = drift.created_described_as_existing || [];
+      if (drift.gradable && !named.length && !unmentioned.length && !phantom.length) return "";
       if (!drift.gradable && !drift.why_not) return "";
-      const tone = named.length ? "#b45309" : "inherit";
+      const tone = (named.length || phantom.length) ? "#b45309" : "inherit";
       return '<div class="detail-section"><div class="detail-section-title">Plan paths</div>' +
         '<div class="detail-card" style="font-size:12px;line-height:1.6;color:' + tone + ';">' +
         esc(drift.summary || drift.why_not || "") + '</div></div>';

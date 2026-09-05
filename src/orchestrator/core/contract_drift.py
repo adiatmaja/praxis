@@ -118,6 +118,15 @@ class ContractDrift:
     named_not_authorised: list[str] = field(default_factory=list)
     unmentioned: list[str] = field(default_factory=list)
     authorised: list[str] = field(default_factory=list)
+    #: Paths this diff CREATED that the plan document describes as already
+    #: existing ("the package already has X", "next to the existing helper").
+    #: Probe 9e (2026-09-05): a plan asserted a `tokenizer.py` with `words`
+    #: and `_normalize`; neither existed; the worker invented both, the
+    #: reviewer praised it for "reusing _normalize", and the two tiers above
+    #: were silent because the path WAS authorised. A false premise in the
+    #: plan is the one thing a review graded against the leaf's text cannot
+    #: see, and the diff plus the plan's own wording is enough to say it.
+    created_described_as_existing: list[str] = field(default_factory=list)
 
     @property
     def clean(self) -> bool:
@@ -126,7 +135,12 @@ class ContractDrift:
         Never true for an ungradable task: "nothing was found" and "nothing was
         looked for" are the two states this whole module exists to keep apart.
         """
-        return self.gradable and not self.named_not_authorised and not self.unmentioned
+        return (
+            self.gradable
+            and not self.named_not_authorised
+            and not self.unmentioned
+            and not self.created_described_as_existing
+        )
 
 
 def changed_paths(diff: str) -> list[str]:
@@ -150,6 +164,42 @@ def changed_paths(diff: str) -> list[str]:
             if path and path != _DEV_NULL:
                 seen.setdefault(path, None)
     return list(seen)
+
+
+#: Wording that says a path is ALREADY THERE. Deliberately narrow: a plan
+#: that says "Create src/x.py" must never match, and a match needs the cue
+#: and the path on the same line.
+_EXISTING_CUE_RE = re.compile(
+    r"\b(already (?:has|have|exists?|contains?|provides?)|existing|next to the)\b",
+    re.IGNORECASE,
+)
+
+
+def created_paths(diff: str) -> list[str]:
+    """Return every path a unified diff CREATES (``--- /dev/null`` headers)."""
+    created: list[str] = []
+    previous_was_dev_null = False
+    for line in (diff or "").splitlines():
+        old = _OLD_RE.match(line)
+        if old is not None:
+            previous_was_dev_null = old.group(1).strip() == _DEV_NULL
+            continue
+        new = _NEW_RE.match(line)
+        if new is not None:
+            path = new.group(1).strip().split("\t")[0].strip()
+            if previous_was_dev_null and path and path != _DEV_NULL:
+                created.append(path)
+            previous_was_dev_null = False
+    return created
+
+
+def plan_paths_described_as_existing(plan_document: str) -> set[str]:
+    """Paths the plan mentions on a line that also says they already exist."""
+    out: set[str] = set()
+    for line in (plan_document or "").splitlines():
+        if _EXISTING_CUE_RE.search(line):
+            out.update(_PATH_RE.findall(line))
+    return out
 
 
 def plan_authorised_paths(plan_document: str) -> set[str]:
@@ -212,11 +262,15 @@ def assess(diff: str, plan_document: str | None) -> ContractDrift:
         else:
             unmentioned.append(path)
 
+    described = plan_paths_described_as_existing(plan_document)
+    phantom = [p for p in created_paths(diff) if _matches(p, described)]
+
     return ContractDrift(
         gradable=True,
         named_not_authorised=named,
         unmentioned=unmentioned,
         authorised=sorted(authorised),
+        created_described_as_existing=phantom,
     )
 
 
@@ -234,6 +288,14 @@ def summary_line(drift: ContractDrift) -> str:
     if drift.clean:
         return "Plan paths: this diff stayed inside the paths the plan authorised."
     parts: list[str] = []
+    if drift.created_described_as_existing:
+        parts.append(
+            "the plan describes "
+            + ", ".join(drift.created_described_as_existing)
+            + " as already existing, but this diff created it from nothing - the "
+            'plan\'s premise was false and whatever the worker "reused" is its '
+            "own invention; read the file before approving"
+        )
     if drift.named_not_authorised:
         parts.append(
             "this diff edits "
@@ -280,5 +342,6 @@ def as_payload(drift: ContractDrift) -> dict[str, object]:
         "why_not": drift.why_not,
         "named_not_authorised": list(drift.named_not_authorised),
         "unmentioned": list(drift.unmentioned),
+        "created_described_as_existing": list(drift.created_described_as_existing),
         "summary": summary_line(drift),
     }

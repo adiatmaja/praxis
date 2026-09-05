@@ -1887,7 +1887,9 @@ def _drift_line(drift: object) -> str:
     if not isinstance(drift, dict):
         return ""
     if drift.get("gradable") and not (
-        drift.get("named_not_authorised") or drift.get("unmentioned")
+        drift.get("named_not_authorised")
+        or drift.get("unmentioned")
+        or drift.get("created_described_as_existing")
     ):
         return ""
     summary = drift.get("summary")
@@ -1907,6 +1909,9 @@ def _drift_glance(drift: object) -> str:
     named = drift.get("named_not_authorised") or []
     if named:
         return f"{len(named)} unauthorised"
+    phantom = drift.get("created_described_as_existing") or []
+    if phantom:
+        return f"{len(phantom)} phantom"
     if drift.get("unmentioned"):
         return "new paths"
     return ""

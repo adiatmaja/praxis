@@ -262,6 +262,12 @@ def _task_summary(task: dict[str, Any], *, running_for_seconds: object = None) -
     if isinstance(drift, dict) and drift.get("named_not_authorised"):
         named = ", ".join(str(p) for p in drift["named_not_authorised"])
         parts.append(f"WARNING: diff edits {named}, which the plan never authorised")
+    if isinstance(drift, dict) and drift.get("created_described_as_existing"):
+        phantom = ", ".join(str(p) for p in drift["created_described_as_existing"])
+        parts.append(
+            f"WARNING: the plan describes {phantom} as existing but this diff "
+            "created it; the plan's premise was false"
+        )
     return ", ".join(parts)
 
 
@@ -997,6 +1003,12 @@ async def wait_task_impl(
     if isinstance(drift, dict) and drift.get("named_not_authorised"):
         named = ", ".join(str(p) for p in drift["named_not_authorised"])
         head += f". WARNING: diff edits {named}, which the plan never authorised"
+    if isinstance(drift, dict) and drift.get("created_described_as_existing"):
+        phantom = ", ".join(str(p) for p in drift["created_described_as_existing"])
+        head += (
+            f". WARNING: the plan describes {phantom} as existing but this diff "
+            "created it; the plan's premise was false"
+        )
     summary = f"{head}. Next: {sentence}."
 
     result: dict[str, Any] = {

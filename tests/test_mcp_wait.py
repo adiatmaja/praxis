@@ -561,3 +561,21 @@ async def test_wait_plan_failed_without_a_plan_error_names_the_failed_leaves() -
     assert result["next_action"] == "none"
     assert "no reason recorded" not in result["summary"]
     assert "wait_task(t1)" in result["summary"]
+
+
+async def test_wait_task_summary_warns_about_a_phantom_premise() -> None:
+    body = _task_wait(
+        status="passed", previous="reviewing", waiting_on="human", pr_url=PR
+    )
+    body["task"]["contract_drift"] = {
+        "gradable": True,
+        "named_not_authorised": [],
+        "unmentioned": [],
+        "created_described_as_existing": ["src/textkit/tokenizer.py"],
+        "summary": "Plan paths: ...",
+    }
+    client = _routes(body)
+    result = await server.wait_task_impl(client, task_id=TASK_ID)
+    assert "WARNING" in result["summary"]
+    assert "tokenizer.py" in result["summary"]
+    assert "existing" in result["summary"]

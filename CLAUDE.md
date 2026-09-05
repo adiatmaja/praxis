@@ -591,7 +591,13 @@ story. New gotchas go in `docs/gotchas.md` first. (No count is quoted on purpose
   `GET /api/approvals/pending`, MCP `poll_task` (strong tier in the SUMMARY, so a relaying
   assistant repeats it) and the dashboard. TWO tiers: a path the plan NAMES but never
   authorises (strong - caught PR #103) versus one the plan never mentions (weak - a new
-  sibling file, the normal output of the sizing rule). ADVISORY everywhere and wrapped so
+  sibling file, the normal output of the sizing rule). **A THIRD tier since 2026-09-05
+  (probe 9e): a path the diff CREATED that the plan DESCRIBES as already existing**
+  (`created_described_as_existing`; the cue is "already has/exists", "existing", "next to
+  the" on the same plan line as the path). A plan asserted a `tokenizer.py` with `words`
+  and `_normalize`; neither existed; the worker invented both and the reviewer praised it
+  for "reusing `_normalize`". Strong tier: in the MCP summary, the CLI glance ("1
+  phantom") and the dashboard block. ADVISORY everywhere and wrapped so
   it cannot wedge a review. **The same signal was REFUSED as an F3 validator rule and that
   is not a contradiction**: a false positive costs a brain call and can fail a plan
   upstream, and one glance here. Full account, with the mutation-proven properties, in

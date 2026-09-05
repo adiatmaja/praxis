@@ -172,3 +172,32 @@ def test_praxis_pending_omits_the_column_when_every_row_is_clean(monkeypatch) ->
 
     assert result.exit_code == 0
     assert "Plan paths" not in flat(result)
+
+
+def test_a_phantom_premise_alone_is_rendered_on_the_task_and_in_the_glance() -> None:
+    """The strong tier that probe 9e needed: no unauthorised path, no unmentioned
+    path, and still something a human must read before approving."""
+    from cli.main import _drift_glance, _drift_line
+
+    drift = {
+        "gradable": True,
+        "why_not": "",
+        "named_not_authorised": [],
+        "unmentioned": [],
+        "created_described_as_existing": ["src/textkit/tokenizer.py"],
+        "summary": "Plan paths: the plan describes src/textkit/tokenizer.py as existing, but this diff created it.",
+    }
+    assert "created" in _drift_line(drift)
+    assert _drift_glance(drift) == "1 phantom"
+
+
+def test_the_dashboard_drift_block_renders_a_phantom_premise() -> None:
+    """Pinned on the emission: the block must read the new list, or a task whose
+    only finding is a false premise renders nothing at the gate."""
+    from pathlib import Path
+
+    app_js = Path("web/app.js").read_text(encoding="utf-8")
+    start = app_js.index("function contractDriftBlock(")
+    body = app_js[start : app_js.index("function renderMarkdown(")]
+    assert "created_described_as_existing" in body
+    assert "phantom.length" in body

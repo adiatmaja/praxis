@@ -4483,3 +4483,28 @@ back, about 50 s each, so plan A's first leaf waited 1m44s to dispatch behind B'
 brain calls) and review (three concurrent leaves reviewed one at a time; the third waited
 3m04s in `reviewing`). Those are the pass's own work, not follow-ups of a finished plan,
 and making them concurrent is a different change with a different risk.
+
+
+## A plan's false premise is invisible to a review graded against the leaf
+
+Probe 9e (2026-09-05): a plan on praxis-stress said "the package already has
+`src/textkit/tokenizer.py` exposing `words(text)`; add `sentences` next to it and reuse
+the module's existing `_normalize` helper". No such file existed. Decomposition accepted
+the plan (a validator cannot know a repository's contents), the worker created the whole
+module (51 lines, no deletions) including a `words` and a `_normalize` of its own
+invention, the reviewer passed it and praised it for "reusing `_normalize` without
+duplication", and the contract-drift line said the diff stayed inside the authorised
+paths, which was true. Every gate was correct on its own terms and the human at the
+merge gate was told nothing.
+
+The fact is cheap and needs no natural-language judgement about the plan as a whole:
+the diff's `--- /dev/null` headers say which files it CREATED, and a plan line that
+carries both a path and a cue that it already exists ("already has", "already exists",
+"existing", "next to the") says which files the plan believed were there. Their
+intersection is `ContractDrift.created_described_as_existing`, a strong tier beside
+`named_not_authorised`: the MCP summary warns, `praxis pending` glances "N phantom",
+the dashboard block colours it, and the summary line tells the reader that whatever the
+worker "reused" is its own invention. Deliberately narrow (same line, listed cues) so a
+plan that says "Create src/x.py" can never match; and advisory, like the other tiers.
+Four mutations red: tier never computed, edited files counted as created, cue ignored,
+verdict still clean with a phantom.

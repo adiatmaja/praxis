@@ -239,3 +239,74 @@ def test_payload_carries_the_reason_when_ungradable():
     payload = as_payload(ContractDrift(gradable=False, why_not=NO_PLAN_DOCUMENT))
     assert payload["gradable"] is False
     assert payload["summary"] == NO_PLAN_DOCUMENT
+
+
+# ---------------------------------------------------------------------------
+# A plan that DESCRIBES a file as existing, which the diff then CREATES.
+# ---------------------------------------------------------------------------
+
+_NEW_FILE_DIFF = """diff --git a/src/textkit/tokenizer.py b/src/textkit/tokenizer.py
+new file mode 100644
+--- /dev/null
++++ b/src/textkit/tokenizer.py
+@@ -0,0 +1,3 @@
++def words(text):
++    return text.split()
++def sentences(text): ...
+"""
+
+_EDIT_DIFF = """diff --git a/src/textkit/tokenizer.py b/src/textkit/tokenizer.py
+--- a/src/textkit/tokenizer.py
++++ b/src/textkit/tokenizer.py
+@@ -1,2 +1,3 @@
+ def words(text):
+     return text.split()
++def sentences(text): ...
+"""
+
+_PHANTOM_PLAN = """# Extend the tokenizer
+
+The package already has src/textkit/tokenizer.py exposing words(text); add
+sentences next to the existing helper.
+
+## Task 1
+Files: src/textkit/tokenizer.py
+Steps: add sentences() next to the existing words function.
+"""
+
+_HONEST_PLAN = """# Add a tokenizer
+
+## Task 1
+Files: src/textkit/tokenizer.py
+Steps: Create src/textkit/tokenizer.py with words() and sentences().
+"""
+
+
+def test_a_created_file_the_plan_described_as_existing_is_a_strong_finding() -> None:
+    """Probe 9e, live: the plan asserted `tokenizer.py` "already has words";
+    the worker created all 51 lines of it, the reviewer praised it for
+    "reusing _normalize", and this module said the diff stayed inside the
+    authorised paths. A false premise in the plan is the one thing a review
+    graded against the leaf's own text structurally cannot see."""
+    drift = assess(_NEW_FILE_DIFF, _PHANTOM_PLAN)
+    assert drift.gradable
+    assert drift.created_described_as_existing == ["src/textkit/tokenizer.py"]
+    assert not drift.clean
+    line = summary_line(drift)
+    assert "src/textkit/tokenizer.py" in line
+    assert "existing" in line and "created" in line
+    assert as_payload(drift)["created_described_as_existing"] == [
+        "src/textkit/tokenizer.py"
+    ]
+
+
+def test_a_created_file_the_plan_asked_to_create_is_not_a_finding() -> None:
+    drift = assess(_NEW_FILE_DIFF, _HONEST_PLAN)
+    assert drift.created_described_as_existing == []
+    assert drift.clean
+
+
+def test_editing_a_file_the_plan_described_as_existing_is_not_a_finding() -> None:
+    drift = assess(_EDIT_DIFF, _PHANTOM_PLAN)
+    assert drift.created_described_as_existing == []
+    assert drift.clean
