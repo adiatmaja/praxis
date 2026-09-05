@@ -455,3 +455,21 @@ def test_get_container_status_reports_when_the_container_finished() -> None:
     status = manager.get_container_status("container-xyz")
     assert status is not None
     assert status["finished_at"] == "2026-09-05T06:01:45.123456789Z"
+
+
+@pytest.mark.integration
+async def test_a_crash_inside_the_callback_retry_window_is_still_failed(
+    db: Database,
+) -> None:
+    """The window is for CLEAN exits only: a worker that died is not retrying."""
+    tq, run_id = await _exited_run(db)
+    harness = _ReconcileHarness(tq, _FakeGit([]))
+    harness._callback_grace = 0.0
+    harness._bus = _Bus()
+    await harness._reconcile_exited(
+        {"id": run_id, "task_id": "tA", "container_id": "container-xyz"},
+        {"status": "exited", "exit_code": 137, "finished_at": _iso_seconds_ago(20)},
+    )
+    task = await tq.get_task("tA")
+    assert task is not None
+    assert "exited (code 137)" in (task["review_feedback"] or "")
