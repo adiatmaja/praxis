@@ -43,8 +43,8 @@ def test_health_bar_renders_addressable_agent_and_queue_items() -> None:
 
 def test_poll_status_refreshes_the_health_bar_agents_and_queue_in_place() -> None:
     body = _body("pollStatus")
-    assert '.health-bar .health-agents' in body
-    assert '.health-bar .health-queue' in body
+    assert ".health-bar .health-agents" in body
+    assert ".health-bar .health-queue" in body
     # The measured values, never the sidebar's rendered text (that read back
     # "?" as NaN once already), and "?" when nothing was measured.
     agents_write = body[body.index(".health-bar .health-agents") :]
