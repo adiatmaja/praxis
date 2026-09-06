@@ -114,7 +114,9 @@ The rest of `core/`, grouped by concern:
 
 - **Routing & settings:** `llm_router`, `roles`, `effective_settings`, `settings_file`,
   `opus_bridge` (legacy name, all brain calls), `thinking`, `provider_errors`,
-  `escalation`, `worker_presets`, `bench_mode`
+  `escalation`, `worker_presets`, `bench_mode`, `provider_quota` (WHEN a provider
+  says its quota returns, parsed from the evidence line `provider_errors` matched;
+  one polarity, so absent, unreadable and past all mean "dispatch may proceed")
 - **Execution:** `task_queue`, `plan_reachability` (pure derivation over
   `(plans.opus_plan, task rows)`, no DB: which pending leaves can never be dispatched,
   reproducing `get_dispatchable_tasks`'s pairing rule rather than a second copy),
@@ -136,7 +138,9 @@ The rest of `core/`, grouped by concern:
 - **Docs & context:** `brainstorm`, `context_sync`, `context_scrub`, `doc_indexer`,
   `markdown_utils`, `backfill`, `spec_docs`
 - **Operability:** `doctor`, `doctor_probes`, `verify_gate`, `build_info`, `entrypoint_hash`,
-  `approvals`, `event_bus`, `log_context`
+  `approvals`, `event_bus`, `log_context`, `waiting` (the ONE derivation of who a
+  task or plan is waiting on: `planner`/`worker`/`review`/`human`/`provider`/`nothing`,
+  and what the blocking `/wait` endpoints rest on)
 
 ## Commands
 
@@ -215,7 +219,7 @@ uv run ruff check --fix src/ tests/
 uv run mypy src/orchestrator/ --ignore-missing-imports
 
 # What CI actually runs (.github/workflows/ci.yml, `lint`). Mypy reports the
-# file COUNT it checked - 117 at the time of writing - so a narrower scope is
+# file COUNT it checked - 121 at the time of writing - so a narrower scope is
 # visible in the output if you look.
 uv run ruff format --check src/ tests/ bench/
 uv run ruff check src/ tests/ bench/
@@ -250,7 +254,7 @@ Workflows in `.github/workflows/` (added 2026-07-02, verified green on runners):
   was `src/orchestrator/`, so a `src/cli/` error was invisible to a local run that reported
   "Success: no issues found" - the most convincing possible green. **A narrower scope is
   not a weaker check, it is a DIFFERENT check.** Mypy prints the file count it checked;
-  compare it (117) before believing a clean run. Both reds of 2026-08-26 were local checks
+  compare it (121) before believing a clean run. Both reds of 2026-08-26 were local checks
   that passed for a reason CI does not share. `uv run bandit` exits `program not found` (bandit
   is NOT a dev dependency; CI uses `uvx`), and grepping that error for findings looks
   exactly like a clean scan - run `uvx bandit -r src/ -c pyproject.toml` and read the

@@ -52,22 +52,40 @@
                        └─────────────────┘
 ```
 
+## What runs at the same time
+
+The loop makes one pass every `loop_interval` seconds, and the pass never blocks on a
+brain call. A plan's decomposition and a task's review are each started as a tracked
+job, keyed so the same plan is never decomposed twice and the same task never reviewed
+twice while one is in flight, and bounded by `max_brain_concurrency` (default 3). Worker
+containers are bounded separately by `max_agent_concurrency` (default 3). So several
+plans decompose together, several leaves are reviewed together, and dispatch keeps
+running while they do; a stage that finds no free slot waits for one, which
+`praxis status` shows as a brain stage in the `waiting` state.
+
+Three things stay serialized on purpose. In auto-delegate (single-branch) mode only one
+task at a time may hold the shared work branch, because per-task review scoping is bounded
+to the commits a task added after the branch head recorded at its dispatch. Merges into
+one repository are serialized, because two passing reviews can now reach the merge
+together. And a worker whose provider named a quota reset time is held until then, costing
+nothing while it waits.
+
 ## Two entry paths
 
 1. **Direct spec → run (legacy):** submit a spec and let Opus plan it (steps below).
 2. **Doc-driven Spec → Plan → Run (preferred, Spec 1):** Create a spec via the chat
    (committed to `docs/**/specs/`), Generate Plan (committed to `docs/**/plans/` with a
-   `spec_path:` link), then **Promote to Run** — `POST /api/plans/promote` reads the
+   `spec_path:` link), then **Promote to Run**: `POST /api/plans/promote` reads the
    `plan.md`, derives tasks (`plan_derive`: deterministic parser → local LM Studio
    fallback), and creates a DB plan that feeds the same orchestration cycle from step 3.
    Markdown docs in the target repo are the source of truth; the DB is an execution ledger.
 
 ## Step-by-Step
 
-1. **Spec submission** — User submits a specification via Web UI, CLI, or REST API,
+1. **Spec submission**: User submits a specification via Web UI, CLI, or REST API,
    targeting a registered GitHub repository (or promotes an existing `plan.md`).
 
-2. **Planning** — Orchestrator routes the planning call through the `LLMRouter` at the
+2. **Planning**: Orchestrator routes the planning call through the `LLMRouter` at the
    `plan_spec` call-site. What that resolves to is the **plan role chain** in
    `config/praxis.yaml` (`plan: [sonnet, opus]`), not `CALL_SITE_DEFAULTS`: once a
    call-site has a role, `EffectiveSettings.call_site_chain` returns the role chain and
@@ -77,10 +95,10 @@
    list with dependency graph. (For the Promote path, tasks are derived locally instead,
    with no brain call.)
 
-3. **Plan activation** — Orchestrator creates a `plan/{date}-{slug}` branch from main,
+3. **Plan activation**: Orchestrator creates a `plan/{date}-{slug}` branch from main,
    stores the parsed plan in SQLite, and marks the plan as `active`.
 
-4. **Task dispatch** — For each task with no unmet dependencies, orchestrator spawns
+4. **Task dispatch**: For each task with no unmet dependencies, orchestrator spawns
    a Docker container running the project's selected harness (OpenCode by default,
    or agy). The container:
    - Clones the repo
@@ -92,7 +110,7 @@
    - Commits, pushes, and creates a PR targeting the plan branch
    - Calls back to `/api/internal/agent-done` when finished
 
-5. **Code review** — Orchestrator fetches the diff and routes it to
+5. **Code review**: Orchestrator fetches the diff and routes it to
    the review call-site: `review_diff_first` for the first read, `review_diff_rereview`
    for a re-read after fixes. Both carry the `review` role, so both resolve through the
    role chain in `config/praxis.yaml` (`review: [sonnet, haiku]`) and both run on Sonnet;
@@ -125,15 +143,15 @@
    into the next worker's prompt by `core/worker_bible.py`, which is written for
    the floor model.
 
-6. **Pass** — PR is squash-merged into the plan branch. Agent branch is deleted.
+6. **Pass**: PR is squash-merged into the plan branch. Agent branch is deleted.
 
-7. **Fail** — Feedback is posted as a PR comment. Task is re-dispatched with the
+7. **Fail**: Feedback is posted as a PR comment. Task is re-dispatched with the
    feedback included in the prompt (max 3 retries).
 
-8. **Integration** — When all tasks are merged into the plan branch, an integration
+8. **Integration**: When all tasks are merged into the plan branch, an integration
    PR is created targeting main.
 
-9. **Improvement loop** (optional) — If autonomous improvement is enabled, Opus
+9. **Improvement loop** (optional): If autonomous improvement is enabled, Opus
    analyzes the completed plan and proposes further improvements. If confidence
    exceeds the project's threshold:
    - With approval gate ON: plan is created with `pending` status, awaiting user approval

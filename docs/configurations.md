@@ -43,6 +43,8 @@ be a cost-tier example, which is why the second dimension was easy to miss.
 | Git backend | project `repo_url` plus `allow_local_repo_paths` | per project, admitted globally |
 | Worker endpoint | `LM_STUDIO_URL` | global; it also repoints every router call-site that resolves to the `local` provider |
 | Retry and leaf bounds | `max_retries` (per project), `max_leaves_per_plan` (global) | per project or global |
+| Workers running at once | `max_agent_concurrency` in `config/praxis.yaml` (default 3) | global; the fourth leaf waits for a slot and is re-dispatched, nothing charged |
+| Brain stages running at once | `max_brain_concurrency` in `config/praxis.yaml` (default 3) | global; a decomposition or a review takes one slot for as long as its call runs, and `1` restores the pre-2026-09 ordering without the pass ever blocking |
 
 `config/praxis.yaml` is **mounted, not baked**, so editing it takes effect on
 `docker compose restart orchestrator` and never needs an image rebuild.
