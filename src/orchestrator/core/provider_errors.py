@@ -53,12 +53,6 @@ whatever the duration.
 import re
 from dataclasses import dataclass
 
-from orchestrator.core.llm_router import (
-    ProviderAuthError,
-    ProviderOutputError,
-    ProviderRateLimitError,
-)
-
 
 _PROVIDER_SIGNALS: tuple[str, ...] = (
     "Forbidden: request was blocked by a gateway or proxy",
@@ -270,6 +264,12 @@ def permanent_worker_config_error(
 
 def is_unavailability(exc: BaseException) -> bool:
     """Return True if the exception represents a transient provider unavailability."""
+    from orchestrator.core.llm_router import (
+        ProviderAuthError,
+        ProviderOutputError,
+        ProviderRateLimitError,
+    )
+
     if isinstance(exc, ProviderRateLimitError):
         # By TYPE, ahead of the wording scan below, and load-bearing: the
         # evidence for a throttle is frequently on the provider's STDOUT while

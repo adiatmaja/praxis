@@ -64,12 +64,14 @@ class ImprovementMixin:
         # whose whole point is that there is one.
         async def _refuse_empty_graph(
             self, plan_id: str, opus_plan: dict[str, Any]
-        ) -> bool: ...
+        ) -> bool:
+            raise NotImplementedError
 
         # Same story: defined on ``Orchestrator``, resolved through the MRO,
         # declared here only so mypy can see it. It is the single writer of the
         # three facts a terminal plan needs together (error, status, event).
-        async def _fail_plan(self, plan_id: str, reason: str) -> None: ...
+        async def _fail_plan(self, plan_id: str, reason: str) -> None:
+            raise NotImplementedError
 
     async def _repo_survey(self, project: dict[str, Any]) -> str | None:
         """Return a survey of the project's repository, or None if unavailable.

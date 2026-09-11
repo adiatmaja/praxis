@@ -209,8 +209,6 @@ class EffectiveSettings:
         Global settings_overrides (key ``models.<call_site>``) override the
         built-in defaults. Per-project overrides can extend this later.
         """
-        import json
-
         from orchestrator.core.llm_router import CALL_SITE_DEFAULTS
 
         default = dict(CALL_SITE_DEFAULTS[call_site])
@@ -393,8 +391,6 @@ class EffectiveSettings:
         Returns:
             A populated CapabilityProfile instance.
         """
-        import json
-
         model_name = model or "default"
         yaml_data = await self._get_yaml()
         defaults: dict = yaml_data.get("capability", {}).get("default", {})

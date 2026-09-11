@@ -228,11 +228,11 @@ class GitBackend(Protocol):
 
     async def comment(self, ref: PullRequestRef, body: str) -> None:
         """Record review feedback against the change."""
-        ...
+        raise NotImplementedError
 
     async def merge(self, ref: PullRequestRef) -> None:
         """Squash-merge the change into its base."""
-        ...
+        raise NotImplementedError
 
     async def base_contains(self, base: str, head: str) -> bool | None:
         """Whether ``base`` already carries every commit on ``head``.
@@ -253,7 +253,7 @@ class GitBackend(Protocol):
             not, and None when the question could not be established. None is
             "unknown", never "no": the caller must let it fall through.
         """
-        ...
+        raise NotImplementedError
 
     async def open_integration_pr(
         self, base: str, head: str, title: str, body: str

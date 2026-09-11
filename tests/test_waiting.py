@@ -251,7 +251,7 @@ async def test_returns_when_an_event_wakes_it_and_the_state_moved() -> None:
         timeout=5.0,
         tick=10.0,  # far beyond the timeout: only the event can wake this
     )
-    await mover
+    _ = await mover
     assert outcome.changed is True
     assert outcome.snapshot == "in_progress"
     assert outcome.timed_out is False
@@ -304,13 +304,13 @@ async def test_subscribes_before_the_first_read_so_nothing_is_missed() -> None:
     a full tick: here the tick is longer than the timeout, so it times out."""
     bus = EventBus()
 
-    class _PublishingReads(_Reads):
-        async def __call__(self) -> str:
-            if self.calls == 0:
-                bus.publish({"type": "agent_dispatched"})
-            return await super().__call__()
+    reads_helper = _Reads("pending", "in_progress")
 
-    reads = _PublishingReads("pending", "in_progress")
+    async def reads() -> str:
+        if reads_helper.calls == 0:
+            bus.publish({"type": "agent_dispatched"})
+        return await reads_helper()
+
     outcome = await waiting.wait_for_change(
         reads,
         changed=_differs,

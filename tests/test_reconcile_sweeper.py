@@ -612,11 +612,10 @@ async def test_quarantined_repo_is_not_probed_on_the_next_tick() -> None:
     """Once quarantined, the next pass must not call list_remote_branches at
     all -- the noise this whole fix exists to remove comes from that call."""
     repo_url = "https://example.invalid/dead.git"
-    attempts = 0
+    calls: list[str] = []
 
     async def fake_list_remote_branches(url: str) -> list[str]:
-        nonlocal attempts
-        attempts += 1
+        calls.append(url)
         msg = "git ls-remote failed (exit 128): repository not found"
         raise RuntimeError(msg)
 
@@ -642,7 +641,7 @@ async def test_quarantined_repo_is_not_probed_on_the_next_tick() -> None:
             ledger=ledger,
             repo_probe_state=repo_probe_state,
         )
-    assert attempts == threshold  # quarantine has just kicked in
+    assert len(calls) == threshold  # quarantine has just kicked in
 
     outcome = await rec.sweep_dead_branches(
         repo_url=repo_url,
@@ -653,7 +652,7 @@ async def test_quarantined_repo_is_not_probed_on_the_next_tick() -> None:
     )
 
     assert outcome == "quarantined"
-    assert attempts == threshold  # NOT probed again
+    assert len(calls) == threshold  # NOT probed again
 
 
 @pytest.mark.asyncio

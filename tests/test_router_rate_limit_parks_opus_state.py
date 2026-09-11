@@ -985,10 +985,6 @@ async def test_an_ordinary_decompose_failure_neither_parks_nor_defers(
     actually read.
     """
     proc = _cli_proc(mocker, stdout=b"", stderr=b"Blocked by policy", returncode=1)
-
-    async def _chain(call_site: str, project_id: str | None) -> list[dict]:  # noqa: ARG001
-        return [{"provider": "claude", "model": "claude-sonnet-4-6", "effort": None}]
-
     router = _router_over(mocker, proc)
     task_queue, plan_id, project = await _pending_execute_plan(db)
     orchestrator = _decompose_orchestrator(

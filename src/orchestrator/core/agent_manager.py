@@ -13,7 +13,7 @@ import shutil
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import Any, Protocol
 
 import docker.errors
 import httpx
@@ -108,8 +108,8 @@ _LOCAL_GH_TOKEN_PLACEHOLDER = "local-mode-no-token"  # nosec B105 - not a secret
 _DEFAULT_MAX_AGENT_CONCURRENCY: int = 3
 
 
-if TYPE_CHECKING:
-    from orchestrator.core.effective_settings import EffectiveSettings
+class _EffectiveSettingsLike(Protocol):
+    async def lm_studio_url(self) -> str: ...
 
 
 logger = logging.getLogger(__name__)
@@ -407,6 +407,7 @@ _HOST_DISK_UNOBSERVABLE = (
 #: ``config._LOGGED_DOTENV_OVERRIDES``: the notice describes the DEPLOYMENT,
 #: not the task, so repeating it per spawn is noise an operator learns to skip.
 _LOGGED_HOST_DISK_BLIND: bool = False
+__all__ = ["_LOGGED_HOST_DISK_BLIND"]
 
 
 def measure_disk_headroom() -> DiskHeadroom:
@@ -600,7 +601,7 @@ class AgentManager:
         self,
         lm_studio_url: str,
         github_token: str | None = None,
-        effective_settings: EffectiveSettings | None = None,
+        effective_settings: _EffectiveSettingsLike | None = None,
         credentials: GitHubCredentialProvider | str | None = None,
         git_author_name: str | None = None,
         git_author_email: str | None = None,

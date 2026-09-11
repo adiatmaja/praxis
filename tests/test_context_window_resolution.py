@@ -1052,9 +1052,7 @@ async def test_a_probe_returning_nothing_is_unknown_on_every_harness(harness_id)
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize(
-    "override", [0, -1, "131072", 8192.0, True, None], ids=lambda v: repr(v)
-)
+@pytest.mark.parametrize("override", [0, -1, "131072", 8192.0, True, None], ids=repr)
 async def test_a_non_positive_int_override_is_not_a_window(override):
     """A NULL column, a typo, or a mock must all read as "not declared".
 

@@ -237,7 +237,7 @@ async def test_wait_task_returns_when_the_status_moves(
             f"/api/tasks/{task_id}/wait", params={"timeout": 20}, headers=auth_headers
         )
     ).json()
-    await mover
+    _ = await mover
     assert time.monotonic() - started < 3.0
     assert body["changed"] is True
     assert body["timed_out"] is False
@@ -424,7 +424,7 @@ async def test_wait_plan_wakes_on_a_leaf_transition_not_only_the_plan_status(
             f"/api/plans/{plan_id}/wait", params={"timeout": 20}, headers=auth_headers
         )
     ).json()
-    await mover
+    _ = await mover
     assert time.monotonic() - started < 3.0
     assert body["changed"] is True
     assert body["status"] == "active"
@@ -549,7 +549,7 @@ async def test_wait_plan_keeps_waiting_while_the_integration_stage_runs(
             f"/api/plans/{plan_id}/wait", params={"timeout": 20}, headers=auth_headers
         )
     ).json()
-    await mover
+    _ = await mover
     assert body["changed"] is True
     assert body["waiting_on"] == "human"
     assert body["integration_pr_url"] == "https://github.com/u/a/pull/9"
@@ -582,9 +582,7 @@ async def test_wait_plan_serves_the_planning_cap_like_the_plan_payload_does(
 async def test_pending_leaf_behind_the_merge_gate_waits_on_a_human(
     client: AsyncClient, db: Database, auth_headers: dict[str, str]
 ) -> None:
-    plan_id, (first, second) = await _plan_with_tasks(
-        client, db, auth_headers, chain=True
-    )
+    _, (first, second) = await _plan_with_tasks(client, db, auth_headers, chain=True)
     queue = client.app.state.task_queue  # type: ignore[attr-defined]
     await db.execute(
         "UPDATE tasks SET pr_url = ? WHERE id = ?",

@@ -41,15 +41,13 @@ def test_the_lifespan_passes_the_cap_to_the_agent_manager(
     """Pinned on the EMISSION: the kwarg the lifespan hands the manager. A
     setting nothing passes is decoration (``callback_grace`` was, for months)."""
     seen: dict[str, Any] = {}
-    real = main_mod.AgentManager
 
-    class Spy(real):  # type: ignore[misc,valid-type]
-        def __init__(self, *args: Any, **kwargs: Any) -> None:
-            seen.update(kwargs)
-            msg = "spy: not building a real manager"
-            raise RuntimeError(msg)
+    def spy_agent_manager(*args: Any, **kwargs: Any) -> None:
+        seen.update(kwargs)
+        msg = "spy: not building a real manager"
+        raise RuntimeError(msg)
 
-    monkeypatch.setattr(main_mod, "AgentManager", Spy)
+    monkeypatch.setattr(main_mod, "AgentManager", spy_agent_manager)
     monkeypatch.setenv("AUTH_TOKEN", "t")
     monkeypatch.setenv("GITHUB_TOKEN", "placeholder")
     monkeypatch.setenv("MAX_AGENT_CONCURRENCY", "5")

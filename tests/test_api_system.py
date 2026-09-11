@@ -11,9 +11,12 @@ from httpx import AsyncClient
 # the module attribute with a tripwire. These tests exercise the real body, so
 # they need the real function; `sys_mod.probe_provider_roundtrip` would raise.
 # This is the documented escape hatch from that fixture.
-from orchestrator.api.system import probe_provider_roundtrip as real_roundtrip
+import orchestrator.api.system as sys_mod
 from orchestrator.database import Database
 from tests.conftest import seed_user
+
+
+real_roundtrip = sys_mod.probe_provider_roundtrip
 
 
 # ---------------------------------------------------------------------------

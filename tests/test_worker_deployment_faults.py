@@ -115,13 +115,14 @@ def test_the_permanent_fault_reason_names_the_model_and_the_endpoint() -> None:
     is parsed out of the endpoint's own wording rather than taken from the
     caller, so the reason quotes what the endpoint actually rejected.
     """
+    endpoint = "https://pcllm.sigmasolusi.com"
     reason = permanent_worker_config_error(
         _as_container_log(MODEL_NOT_SERVED_LOG),
-        endpoint="https://pcllm.sigmasolusi.com",
+        endpoint=endpoint,
     )
     assert reason is not None
     assert "glm-4.7" in reason
-    assert "https://pcllm.sigmasolusi.com" in reason
+    assert endpoint in reason
 
 
 def test_the_reason_is_still_usable_when_the_caller_has_no_endpoint() -> None:
@@ -199,8 +200,10 @@ def test_ordinary_worker_and_gateway_failures_are_not_permanent_faults(
         # A worker whose LEAF is about this repo's own model handling. Praxis
         # is dogfooded on itself, so its container logs quote its own source.
         '+    r\'^\\s*Error: Invalid model identifier "(?P<model>[^"]+)"\',',
-        "  the endpoint replies Error: Invalid model identifier when the model "
-        "is missing, so we",
+        (
+            "  the endpoint replies Error: Invalid model identifier when the model "
+            "is missing, so we"
+        ),
         'assert "Invalid model identifier" in reason',
     ],
 )

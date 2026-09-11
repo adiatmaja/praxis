@@ -728,27 +728,35 @@ def render_blast_radius(radius: BlastRadius) -> str:
 
     qualifier = "" if radius.complete else "at least "
     lines = [
-        "Repo-wide occurrences of the identifiers this diff defines or "
-        "redefines, counted across the checkout:",
+        (
+            "Repo-wide occurrences of the identifiers this diff defines or "
+            "redefines, counted across the checkout:"
+        ),
         "",
     ]
     lines += [
-        f"- `{occurrence.identifier}` occurs {qualifier}{occurrence.count} "
-        "times in this repository"
+        (
+            f"- `{occurrence.identifier}` occurs {qualifier}{occurrence.count} "
+            "times in this repository"
+        )
         for occurrence in radius.occurrences
     ]
     lines += [
         "",
-        "Consider what else depends on the old behaviour, including code the "
-        "diff does not show. A change can be correct everywhere the diff shows "
-        "it and still make something elsewhere inert: a CSS property that only "
-        "applies inside a flex container whose parent stopped being one, an "
-        "override that no longer overrides, a caller relying on a shape that "
-        "changed. If a count is high, say in your feedback what you checked "
-        "and what you could not.",
+        (
+            "Consider what else depends on the old behaviour, including code the "
+            "diff does not show. A change can be correct everywhere the diff shows "
+            "it and still make something elsewhere inert: a CSS property that only "
+            "applies inside a flex container whose parent stopped being one, an "
+            "override that no longer overrides, a caller relying on a shape that "
+            "changed. If a count is high, say in your feedback what you checked "
+            "and what you could not."
+        ),
         "",
-        "These are literal text occurrences, not a call graph. Treat them as a "
-        "hint about reach.",
+        (
+            "These are literal text occurrences, not a call graph. Treat them as a "
+            "hint about reach."
+        ),
     ]
     if radius.omitted:
         lines += [

@@ -438,7 +438,7 @@ async def test_reviews_and_decompositions_share_one_bound(
     project = await _project(db)
     task_queue = TaskQueue(db)
     await _pending_execute_plans(task_queue, project["id"], 1)
-    plan_id, _ids = await _reviewing_tasks(task_queue, project["id"], 1)
+    await _reviewing_tasks(task_queue, project["id"], 1)
     gate = _Gate()
     _blocked_decompose(monkeypatch, gate)
     orch = _orchestrator(task_queue, _RecordingBus(), max_brain_concurrency=1)
@@ -893,5 +893,5 @@ async def test_a_cancelled_brain_call_kills_its_subprocess(
     await asyncio.sleep(0.05)
     job.cancel()
     with pytest.raises(asyncio.CancelledError):
-        await job
+        _ = await job
     assert proc.killed, "the cancelled brain call left its subprocess running"

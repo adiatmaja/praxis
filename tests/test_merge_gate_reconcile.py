@@ -211,7 +211,7 @@ async def test_a_merged_pr_takes_the_task_out_of_the_gate(
     gate: _Gate, captured_events: list[dict[str, Any]]
 ) -> None:
     """The live defect's happy half: PR 73 merged, the row never noticed."""
-    _plan, (task_id,) = await _plan_with_tasks(gate.queue, "proj1", ["only"])
+    _, (task_id,) = await _plan_with_tasks(gate.queue, "proj1", ["only"])
     await _park(gate.queue, task_id, PR_A)
     gate.backend.answers[PR_A] = "MERGED"
 
@@ -242,7 +242,7 @@ async def test_one_merged_pr_takes_every_sibling_out_of_the_gate(
     parked just because they reached the gate late. That is the sweep's job, and
     it is the only thing that can do it here.
     """
-    _plan, ids = await _plan_with_tasks(gate.queue, "proj1", ["a", "b", "c"])
+    _, ids = await _plan_with_tasks(gate.queue, "proj1", ["a", "b", "c"])
     old, *fresh = ids
     await _park(gate.queue, old, PR_A)
     for task_id in fresh:
@@ -273,7 +273,7 @@ async def test_a_sibling_already_swept_this_pass_is_not_recorded_twice(
     it, because ``mark_merged`` is idempotent; the duplicated side effects are
     the observable.
     """
-    _plan, ids = await _plan_with_tasks(gate.queue, "proj1", ["a", "b", "c"])
+    _, ids = await _plan_with_tasks(gate.queue, "proj1", ["a", "b", "c"])
     for task_id in ids:
         await _park(gate.queue, task_id, PR_A)
     gate.backend.answers[PR_A] = "MERGED"
@@ -302,7 +302,7 @@ async def test_a_closed_pr_fails_the_task_and_never_marks_it_merged(
     fabricate a verdict and unblock every dependent leaf on work that is not
     on the base branch.
     """
-    _plan, (task_id,) = await _plan_with_tasks(gate.queue, "proj1", ["only"])
+    _, (task_id,) = await _plan_with_tasks(gate.queue, "proj1", ["only"])
     await _park(gate.queue, task_id, PR_A)
     gate.backend.answers[PR_A] = "CLOSED"
 
@@ -363,7 +363,7 @@ async def test_every_task_on_one_closed_pr_leaves_in_the_same_pass(
     still drain, one row per five minutes, which is the kind of convergence
     nobody watching the list can distinguish from being stuck.
     """
-    _plan, ids = await _plan_with_tasks(gate.queue, "proj1", ["a", "b", "c"])
+    _, ids = await _plan_with_tasks(gate.queue, "proj1", ["a", "b", "c"])
     for task_id in ids:
         await _park(gate.queue, task_id, PR_A)
     gate.backend.answers[PR_A] = "CLOSED"
@@ -386,7 +386,7 @@ async def test_a_closed_pr_does_not_redispatch_a_worker(
     request supplies none, so a retry would reproduce the same change, re-park
     it at the gate, and loop autonomously off a human's rejection.
     """
-    _plan, (task_id,) = await _plan_with_tasks(gate.queue, "proj1", ["only"])
+    _, (task_id,) = await _plan_with_tasks(gate.queue, "proj1", ["only"])
     await _park(gate.queue, task_id, PR_A)
     gate.backend.answers[PR_A] = "CLOSED"
 
@@ -404,7 +404,7 @@ async def test_a_closed_pr_does_not_redispatch_a_worker(
 @pytest.mark.integration
 async def test_an_open_pr_is_left_parked(gate: _Gate) -> None:
     """The correct state, and the common case. Acting on it is the bug."""
-    _plan, (task_id,) = await _plan_with_tasks(gate.queue, "proj1", ["only"])
+    _, (task_id,) = await _plan_with_tasks(gate.queue, "proj1", ["only"])
     await _park(gate.queue, task_id, PR_A)
     gate.backend.answers[PR_A] = "OPEN"
 
@@ -416,7 +416,7 @@ async def test_an_open_pr_is_left_parked(gate: _Gate) -> None:
 @pytest.mark.integration
 async def test_an_unanswerable_probe_leaves_the_task_parked(gate: _Gate) -> None:
     """Cannot ask is not evidence of anything. Never guess."""
-    _plan, (task_id,) = await _plan_with_tasks(gate.queue, "proj1", ["only"])
+    _, (task_id,) = await _plan_with_tasks(gate.queue, "proj1", ["only"])
     await _park(gate.queue, task_id, PR_A)
     gate.backend.answers[PR_A] = None
 
@@ -428,7 +428,7 @@ async def test_an_unanswerable_probe_leaves_the_task_parked(gate: _Gate) -> None
 @pytest.mark.integration
 async def test_an_unrecognised_state_leaves_the_task_parked(gate: _Gate) -> None:
     """A vocabulary Praxis does not know is an unknown, not a verdict."""
-    _plan, (task_id,) = await _plan_with_tasks(gate.queue, "proj1", ["only"])
+    _, (task_id,) = await _plan_with_tasks(gate.queue, "proj1", ["only"])
     await _park(gate.queue, task_id, PR_A)
     gate.backend.answers[PR_A] = "DRAFT"
 
@@ -447,7 +447,7 @@ async def test_an_unreachable_remote_warns_once_not_every_pass(
     ``caplog.text``: the text of an INFO line mentioning the same URL would
     satisfy a substring check and the guard would never fail.
     """
-    _plan, (task_id,) = await _plan_with_tasks(gate.queue, "proj1", ["only"])
+    _, (task_id,) = await _plan_with_tasks(gate.queue, "proj1", ["only"])
     await _park(gate.queue, task_id, PR_A)
     gate.backend.raises = RuntimeError("gh: could not resolve host")
 
@@ -478,7 +478,7 @@ async def test_a_local_ref_is_never_probed(
     for. It is skipped OUTRIGHT: not probed, and not reported as "could not
     ask" either, which would be a warning about a question that does not exist.
     """
-    _plan, (task_id,) = await _plan_with_tasks(gate.queue, "proj1", ["only"])
+    _, (task_id,) = await _plan_with_tasks(gate.queue, "proj1", ["only"])
     await _park(gate.queue, task_id, LOCAL_PR)
 
     with caplog.at_level(logging.INFO, logger=reconcile_mod.__name__):
@@ -503,7 +503,7 @@ async def test_a_local_ref_does_not_starve_a_github_row_beside_it(
     ``return`` would leave every GitHub row unreconciled and look identical to
     a working reconciler on a local-only install.
     """
-    _plan, ids = await _plan_with_tasks(gate.queue, "proj1", ["local", "remote"])
+    _, ids = await _plan_with_tasks(gate.queue, "proj1", ["local", "remote"])
     local_task, github_task = ids
     await _park(gate.queue, local_task, LOCAL_PR)
     await _park(gate.queue, github_task, PR_A)
@@ -523,7 +523,7 @@ async def test_a_local_ref_does_not_starve_a_github_row_beside_it(
 @pytest.mark.integration
 async def test_a_probed_pr_is_not_probed_again_next_pass(gate: _Gate) -> None:
     """One network call per parked row on a 5-second loop is the cost to beat."""
-    _plan, (task_id,) = await _plan_with_tasks(gate.queue, "proj1", ["only"])
+    _, (task_id,) = await _plan_with_tasks(gate.queue, "proj1", ["only"])
     await _park(gate.queue, task_id, PR_A)
     gate.backend.answers[PR_A] = "OPEN"
 
@@ -541,7 +541,7 @@ async def test_a_freshly_parked_row_is_not_probed(gate: _Gate) -> None:
     the pass that parks it, on the happy path where the operator is about to
     run ``praxis merge`` anyway.
     """
-    _plan, (task_id,) = await _plan_with_tasks(gate.queue, "proj1", ["only"])
+    _, (task_id,) = await _plan_with_tasks(gate.queue, "proj1", ["only"])
     await _park(gate.queue, task_id, PR_A, age_hours=0.0)
     gate.backend.answers[PR_A] = "MERGED"
 
@@ -561,7 +561,7 @@ async def test_a_broken_row_does_not_strand_the_rows_behind_it(
     gate: _Gate,
 ) -> None:
     """One row that cannot be recorded must not cost the rest their pass."""
-    _plan, ids = await _plan_with_tasks(gate.queue, "proj1", ["bad", "good"])
+    _, ids = await _plan_with_tasks(gate.queue, "proj1", ["bad", "good"])
     bad, good = ids
     await _park(gate.queue, bad, PR_A)
     await _park(gate.queue, good, PR_B)
@@ -591,7 +591,7 @@ async def test_reconcile_runs_actually_reconciles_the_merge_gate(
     tested, and dead. ``reconcile_runs`` is what the orchestration pass invokes,
     so this is the only assertion that the fix is wired in at all.
     """
-    _plan, (task_id,) = await _plan_with_tasks(gate.queue, "proj1", ["only"])
+    _, (task_id,) = await _plan_with_tasks(gate.queue, "proj1", ["only"])
     await _park(gate.queue, task_id, PR_A)
     gate.backend.answers[PR_A] = "MERGED"
 
@@ -768,7 +768,7 @@ async def test_positive_control_the_reconciler_acts_at_all(gate: _Gate) -> None:
     share actually moves a row, so their silence means the scoping worked
     rather than that nothing ran.
     """
-    _plan, ids = await _plan_with_tasks(gate.queue, "proj1", ["merged", "closed"])
+    _, ids = await _plan_with_tasks(gate.queue, "proj1", ["merged", "closed"])
     merged_task, closed_task = ids
     await _park(gate.queue, merged_task, PR_A)
     await _park(gate.queue, closed_task, PR_B)
