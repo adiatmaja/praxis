@@ -28,7 +28,7 @@ dependencies = [
     "bcrypt>=4.0",
     "sse-starlette>=2.0",
     "mcp>=1.28.1",
-    "pyjwt>=2.8",
+    "pyjwt>=2.14.0",
     "cryptography>=50.0",
 ]
 
