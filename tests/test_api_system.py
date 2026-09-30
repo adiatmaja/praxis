@@ -55,7 +55,6 @@ def _make_roundtrip_proc(
 
 def _install_roundtrip(mocker: pytest.MonkeyPatch, proc: object) -> None:
     """Make the next `claude -p` spawn return this fake, cache cleared."""
-    import orchestrator.api.system as sys_mod
 
     sys_mod._roundtrip_probe_cache.clear()
 
@@ -152,7 +151,6 @@ async def test_status_probes_the_planners_own_provider_when_it_is_a_cli(
     happy path stays correctly measured: `connected_measured` is True and
     `cli_available` tracks the real probe result, not a fabricated value.
     """
-    import orchestrator.api.system as sys_mod
 
     sys_mod._provider_probe_cache.clear()
     await seed_user(db)
@@ -190,7 +188,6 @@ async def test_status_does_not_fabricate_connectivity_for_a_local_planner(
     in either direction: `connected_measured` False, `connected` False (never
     invented True), and a detail naming the actual provider.
     """
-    import orchestrator.api.system as sys_mod
 
     sys_mod._provider_probe_cache.clear()
     await seed_user(db)
@@ -309,7 +306,6 @@ async def test_status_includes_subagent_model(
 @pytest.mark.unit
 async def test_probe_provider_cli_missing(mocker: pytest.MonkeyPatch) -> None:
     """OSError (binary not found) → cli_available=False, authenticated=False."""
-    import orchestrator.api.system as sys_mod
 
     # Clear cache so prior test state doesn't bleed in
     sys_mod._provider_probe_cache.clear()
@@ -328,7 +324,6 @@ async def test_probe_provider_cli_missing(mocker: pytest.MonkeyPatch) -> None:
 @pytest.mark.unit
 async def test_probe_provider_codex_auth_ok(mocker: pytest.MonkeyPatch) -> None:
     """codex --version exit 0 + codex login status exit 0 → authenticated=True."""
-    import orchestrator.api.system as sys_mod
 
     sys_mod._provider_probe_cache.clear()
 
@@ -352,7 +347,6 @@ async def test_probe_provider_codex_auth_ok(mocker: pytest.MonkeyPatch) -> None:
 @pytest.mark.unit
 async def test_probe_provider_codex_auth_fail(mocker: pytest.MonkeyPatch) -> None:
     """codex --version exit 0 but codex login status nonzero → authenticated=False."""
-    import orchestrator.api.system as sys_mod
 
     sys_mod._provider_probe_cache.clear()
 
@@ -376,7 +370,6 @@ async def test_probe_provider_codex_auth_fail(mocker: pytest.MonkeyPatch) -> Non
 @pytest.mark.unit
 async def test_probe_provider_timeout_handled(mocker: pytest.MonkeyPatch) -> None:
     """TimeoutError from asyncio.wait_for is caught; returns cli_available=False."""
-    import orchestrator.api.system as sys_mod
 
     sys_mod._provider_probe_cache.clear()
 
@@ -395,7 +388,6 @@ async def test_probe_provider_timeout_handled(mocker: pytest.MonkeyPatch) -> Non
 @pytest.mark.unit
 async def test_probe_provider_agy_no_auth_cmd(mocker: pytest.MonkeyPatch) -> None:
     """agy has no auth command; cli_available=True → authenticated=True (best-effort)."""
-    import orchestrator.api.system as sys_mod
 
     sys_mod._provider_probe_cache.clear()
 
@@ -463,7 +455,6 @@ async def test_roundtrip_false_when_the_cli_echoes_the_prompt_back(
     mode, or a refusal that quotes the prompt it refused, would otherwise
     report the planner healthy without the model ever answering.
     """
-    import orchestrator.api.system as sys_mod
 
     echoed = f"> {sys_mod._ROUNDTRIP_PROMPT}\nrequest denied\n".encode()
     _install_roundtrip(mocker, _make_roundtrip_proc(mocker, 0, echoed))
@@ -477,7 +468,6 @@ async def test_roundtrip_false_when_the_cli_echoes_the_prompt_back(
 async def test_roundtrip_false_when_the_cli_is_not_on_path(
     mocker: pytest.MonkeyPatch,
 ) -> None:
-    import orchestrator.api.system as sys_mod
 
     sys_mod._roundtrip_probe_cache.clear()
     mocker.patch("orchestrator.api.system.shutil.which", return_value=None)
@@ -536,7 +526,6 @@ async def test_roundtrip_is_not_defined_for_other_providers(
     mocker: pytest.MonkeyPatch,
 ) -> None:
     """None means "not probed", which must not read as a refusal."""
-    import orchestrator.api.system as sys_mod
 
     sys_mod._roundtrip_probe_cache.clear()
 
@@ -551,7 +540,6 @@ async def test_roundtrip_false_when_the_cli_cannot_be_spawned(
     mocker: pytest.MonkeyPatch,
 ) -> None:
     """A shim that resolves on PATH but will not exec (Windows WinError 2)."""
-    import orchestrator.api.system as sys_mod
 
     sys_mod._roundtrip_probe_cache.clear()
     mocker.patch(
@@ -595,8 +583,6 @@ async def test_roundtrip_spends_only_one_call_per_cache_window(
         spawns += 1
         return _make_roundtrip_proc(mocker, 0, b"PONG\n")
 
-    import orchestrator.api.system as sys_mod
-
     sys_mod._roundtrip_probe_cache.clear()
     mocker.patch("asyncio.create_subprocess_exec", new=_counting_exec)
 
@@ -616,7 +602,6 @@ async def test_status_includes_providers(
     mocker: pytest.MonkeyPatch,
 ) -> None:
     """GET /api/status response contains a 'providers' list with the right shape."""
-    import orchestrator.api.system as sys_mod
 
     sys_mod._provider_probe_cache.clear()
     await seed_user(db)
@@ -667,7 +652,6 @@ async def test_status_includes_build(
     mocker: pytest.MonkeyPatch,
 ) -> None:
     """GET /api/status includes a 'build' key."""
-    import orchestrator.api.system as sys_mod
 
     sys_mod._provider_probe_cache.clear()
     await seed_user(db)
@@ -698,7 +682,6 @@ async def test_status_includes_build(
 
 def _stub_probes(mocker: pytest.MonkeyPatch) -> None:
     """Make the CLI probes hermetic so a status call cannot touch the machine."""
-    import orchestrator.api.system as sys_mod
 
     sys_mod._provider_probe_cache.clear()
     mocker.patch(
